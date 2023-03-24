@@ -22,6 +22,7 @@ from music_assistant.common.models.enums import (
 MetadataTypes = int | bool | str | list[str]
 
 JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_mappings")
+JOINED_KEYS = ("barcode", "isrc")
 
 
 @dataclass(frozen=True)
@@ -77,11 +78,25 @@ class MediaItemImage(DataClassDictMixin):
 
     type: ImageType
     url: str
-    is_file: bool = False  # indicator that image is local filepath instead of url
+    source: str = "http"  # set to instance_id of file provider if path is local
 
     def __hash__(self):
         """Return custom hash."""
         return hash(self.url)
+
+
+@dataclass(frozen=True)
+class MediaItemChapter(DataClassDictMixin):
+    """Model for a chapter."""
+
+    chapter_id: int
+    position_start: float
+    position_end: float | None = None
+    title: str | None = None
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash(self.number)
 
 
 @dataclass
@@ -100,6 +115,7 @@ class MediaItemMetadata(DataClassDictMixin):
     ean: str | None = None
     label: str | None = None
     links: set[MediaItemLink] | None = None
+    chapters: list[MediaItemChapter] | None = None
     performers: set[str] | None = None
     preview: str | None = None
     replaygain: float | None = None
@@ -151,8 +167,9 @@ class MediaItem(DataClassDictMixin):
     # sort_name and uri are auto generated, do not override unless really needed
     sort_name: str | None = None
     uri: str | None = None
-    # timestamp is used to determine when the item was added to the library
-    timestamp: int = 0
+    # timestamps to determine when the item was added/modified to the db
+    timestamp_added: int = 0
+    timestamp_modified: int = 0
 
     def __post_init__(self):
         """Call after init."""
@@ -169,6 +186,9 @@ class MediaItem(DataClassDictMixin):
         for key in JSON_KEYS:
             if key in db_row and db_row[key] is not None:
                 db_row[key] = json_loads(db_row[key])
+        for key in JOINED_KEYS:
+            if key in db_row:
+                db_row[key] = (db_row[key] or "").split(";")
         if "in_library" in db_row:
             db_row["in_library"] = bool(db_row["in_library"])
         if db_row.get("albums"):
@@ -180,8 +200,17 @@ class MediaItem(DataClassDictMixin):
 
     def to_db_row(self) -> dict:
         """Create dict from item suitable for db."""
+
+        def get_db_value(key, value) -> Any:
+            """Transform value for db storage."""
+            if key in JSON_KEYS:
+                return json_dumps(value)
+            if key in JOINED_KEYS:
+                return ";".join(value)
+            return value
+
         return {
-            key: json_dumps(value) if key in JSON_KEYS else value
+            key: get_db_value(key, value)
             for key, value in self.to_dict().items()
             if key
             not in [
@@ -273,7 +302,7 @@ class Album(MediaItem):
     year: int | None = None
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     album_type: AlbumType = AlbumType.UNKNOWN
-    upc: str | None = None
+    barcode: set[str] = field(default_factory=set)
     musicbrainz_id: str | None = None  # release group id
 
     @property
@@ -308,7 +337,7 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
-    isrc: str | None = None
+    isrc: set[str] = field(default_factory=set)
     musicbrainz_id: str | None = None  # Recording ID
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     # album track only
@@ -334,14 +363,6 @@ class Track(MediaItem):
         return None
 
     @property
-    def isrcs(self) -> tuple[str, ...]:
-        """Split multiple values in isrc field."""
-        # sometimes the isrc contains multiple values, split by semicolon
-        if not self.isrc:
-            return tuple()
-        return tuple(self.isrc.split(";"))
-
-    @property
     def artist(self) -> Artist | ItemMapping | None:
         """Return (first) artist of track."""
         if self.artists:
@@ -352,6 +373,16 @@ class Track(MediaItem):
     def artist(self, artist: Artist | ItemMapping) -> None:
         """Set (first/only) artist of track."""
         self.artists = [artist]
+
+    @property
+    def has_chapters(self) -> bool:
+        """
+        Return boolean if this Track has chapters.
+
+        This is often an indicator that this track is an episode from a
+        Podcast or AudioBook.
+        """
+        return self.metadata and self.metadata.chapters and len(self.metadata.chapters) > 1
 
 
 @dataclass

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from time import time
 
+from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType
 from music_assistant.common.models.media_items import Radio, Track
@@ -84,6 +85,8 @@ class RadioController(MediaControllerBase[Radio]):
                 )
 
             # insert new item
+            item.timestamp_added = int(utc_timestamp())
+            item.timestamp_modified = int(utc_timestamp())
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
@@ -117,6 +120,7 @@ class RadioController(MediaControllerBase[Radio]):
                 "sort_name": item.sort_name,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
+                "timestamp_modified": int(utc_timestamp()),
             },
         )
         # update/set provider_mappings table

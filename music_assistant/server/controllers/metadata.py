@@ -102,7 +102,7 @@ class MetaDataController:
             self.scan_busy = False
             LOGGER.info("Finished scan for missing artist metadata")
 
-        self.mass.create_task(scan_artist_metadata)
+        # self.mass.create_task(scan_artist_metadata)
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
@@ -273,9 +273,9 @@ class MetaDataController:
             for img in media_item.metadata.images:
                 if img.type != img_type:
                     continue
-                if img.is_file and not allow_local:
+                if img.source != "http" and not allow_local:
                     continue
-                if img.is_file and resolve_local:
+                if img.source != "http" and resolve_local:
                     # return imageproxy url for local filesystem items
                     # the original path is double encoded
                     encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
@@ -298,10 +298,10 @@ class MetaDataController:
         return None
 
     async def get_thumbnail(
-        self, path: str, size: int | None = None, base64: bool = False
+        self, path_or_url: str, size: int | None = None, source: str = "http", base64: bool = False
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        thumbnail = await get_image_thumb(self.mass, path, size)
+        thumbnail = await get_image_thumb(self.mass, path_or_url, size=size, source=source)
         if base64:
             enc_image = b64encode(thumbnail).decode()
             thumbnail = f"data:image/png;base64,{enc_image}"
@@ -310,13 +310,14 @@ class MetaDataController:
     async def _handle_imageproxy(self, request: web.Request) -> web.Response:
         """Handle request for image proxy."""
         path = request.query["path"]
+        source = request.query.get("source", "http")
         size = int(request.query.get("size", "0"))
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote(path)
 
         try:
-            image_data = await self.get_thumbnail(path, size)
+            image_data = await self.get_thumbnail(path, size=size, source=source)
         except Exception as err:
             LOGGER.exception(str(err), exc_info=err)
             image_data = None

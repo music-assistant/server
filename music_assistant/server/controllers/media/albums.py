@@ -6,6 +6,7 @@ import contextlib
 from random import choice, random
 from typing import TYPE_CHECKING
 
+from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
@@ -151,13 +152,18 @@ class AlbumsController(MediaControllerBase[Album]):
         assert item.artist, f"Album {item.name} is missing artist"
         async with self._db_add_lock:
             cur_item = None
-            # always try to grab existing item by musicbrainz_id/upc
+            # always try to grab existing item by musicbrainz_id
             if item.musicbrainz_id:
                 match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.music.database.get_row(self.db_table, match)
-            if not cur_item and item.upc:
-                match = {"upc": item.upc}
-                cur_item = await self.mass.music.database.get_row(self.db_table, match)
+            # try barcode/upc
+            if not cur_item and item.barcode:
+                for barcode in item.barcode:
+                    if search_result := await self.mass.music.database.search(
+                        self.db_table, barcode, "barcode"
+                    ):
+                        cur_item = search_result[0]
+                        break
             if not cur_item:
                 # fallback to search and match
                 for row in await self.mass.music.database.search(self.db_table, item.name):
@@ -180,6 +186,8 @@ class AlbumsController(MediaControllerBase[Album]):
                     **item.to_db_row(),
                     "artists": serialize_to_json(album_artists) or None,
                     "sort_artist": sort_artist,
+                    "timestamp_added": int(utc_timestamp()),
+                    "timestamp_modified": int(utc_timestamp()),
                 },
             )
             item_id = new_item["item_id"]
@@ -205,11 +213,14 @@ class AlbumsController(MediaControllerBase[Album]):
             metadata.last_refresh = None
             provider_mappings = item.provider_mappings
             album_artists = await self._get_album_artists(item, overwrite=True)
+            barcode = item.barcode
         else:
             is_file_provider = item.provider.startswith("filesystem")
             metadata = cur_item.metadata.update(item.metadata, is_file_provider)
             provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
             album_artists = await self._get_album_artists(item, cur_item)
+            barcode = cur_item.barcode
+            barcode.update(item.barcode)
 
         if item.album_type != AlbumType.UNKNOWN:
             album_type = item.album_type
@@ -227,12 +238,13 @@ class AlbumsController(MediaControllerBase[Album]):
                 "sort_artist": sort_artist,
                 "version": item.version if overwrite else cur_item.version,
                 "year": item.year or cur_item.year,
-                "upc": item.upc or cur_item.upc,
-                "album_type": album_type,
+                "barcode": ";".join(barcode),
+                "album_type": album_type.value,
                 "artists": serialize_to_json(album_artists) or None,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
+                "timestamp_modified": int(utc_timestamp()),
             },
         )
         # update/set provider_mappings table

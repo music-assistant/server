@@ -25,7 +25,6 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumType,
     Artist,
     BrowseFolder,
     ContentType,
@@ -66,7 +65,7 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     ),
 )
 
-TRACK_EXTENSIONS = ("mp3", "m4a", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
+TRACK_EXTENSIONS = ("mp3", "m4a", "m4b", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
 PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
@@ -366,15 +365,13 @@ class FileSystemProviderBase(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            item_id=prov_album_id, provider_instance=self.instance_id
-        )
-        if db_album is None:
-            raise MediaNotFoundError(f"Album not found: {prov_album_id}")
-        if await self.exists(prov_album_id):
-            # if path exists on disk allow parsing full details to allow refresh of metadata
-            return await self._parse_album(db_album.name, prov_album_id, db_album.artists)
-        return db_album
+        # all data is originated from the actual files (tracks) so grab the data from there
+        for track in await self.get_album_tracks(prov_album_id):
+            for prov_mapping in track.provider_mappings:
+                if prov_mapping.provider_instance == self.instance_id:
+                    full_track = await self.get_track(prov_mapping.item_id)
+                    return full_track.album
+        raise MediaNotFoundError(f"Album not found: {prov_album_id}")
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -464,35 +461,30 @@ class FileSystemProviderBase(MusicProvider):
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
-            track.metadata.images = [MediaItemImage(ImageType.THUMB, file_item.path, True)]
+            track.metadata.images = [
+                MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
+            ]
             if track.album:
                 # set embedded cover on album
                 track.album.metadata.images = track.metadata.images
 
         # parse other info
         track.duration = tags.duration or 0
-        track.metadata.genres = tags.genres
+        track.metadata.genres = set(tags.genres)
         track.disc_number = tags.disc
         track.track_number = tags.track
-        track.isrc = tags.get("isrc")
+        track.isrc.update(tags.isrc)
         track.metadata.copyright = tags.get("copyright")
         track.metadata.lyrics = tags.get("lyrics")
         track.musicbrainz_id = tags.musicbrainz_trackid
+        track.metadata.chapters = tags.chapters
         if track.album:
             if not track.album.musicbrainz_id:
                 track.album.musicbrainz_id = tags.musicbrainz_releasegroupid
             if not track.album.year:
                 track.album.year = tags.year
-            if not track.album.upc:
-                track.album.upc = tags.get("barcode")
-        # try to parse albumtype
-        if track.album and track.album.album_type == AlbumType.UNKNOWN:
-            album_type = tags.album_type
-            try:
-                track.album.album_type = AlbumType(album_type)
-            except (ValueError, KeyError):
-                if track.album.sort_name in track.sort_name:
-                    track.album.album_type = AlbumType.SINGLE
+            track.album.barcode.update(tags.barcode)
+            track.album.album_type = tags.album_type
 
         # set checksum to invalidate any cached listings
         checksum_timestamp = str(int(time()))
@@ -812,8 +804,8 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext != ext:
                     continue
                 try:
-                    images.append(MediaItemImage(ImageType(item.name), item.path, True))
+                    images.append(MediaItemImage(ImageType(item.name), item.path, self.instance_id))
                 except ValueError:
                     if "folder" in item.name or "AlbumArt" in item.name or "Artist" in item.name:
-                        images.append(MediaItemImage(ImageType.THUMB, item.path, True))
+                        images.append(MediaItemImage(ImageType.THUMB, item.path, self.instance_id))
         return images

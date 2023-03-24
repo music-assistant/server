@@ -74,18 +74,17 @@ class MusicbrainzProvider(MetadataProvider):
                     artistname=artist.name, album_mbid=ref_album.musicbrainz_id
                 ):
                     return musicbrainz_id
-            # try matching on album upc
-            if ref_album.upc and (
-                musicbrainz_id := await self._search_artist_by_album(
+            # try matching on album barcode
+            for barcode in ref_album.barcode:
+                if musicbrainz_id := await self._search_artist_by_album(
                     artistname=artist.name,
-                    album_upc=ref_album.upc,
-                )
-            ):
-                return musicbrainz_id
+                    album_barcode=barcode,
+                ):
+                    return musicbrainz_id
 
         # try again with matching on track isrc
         for ref_track in ref_tracks:
-            for isrc in ref_track.isrcs:
+            for isrc in ref_track.isrc:
                 if musicbrainz_id := await self._search_artist_by_track(
                     artistname=artist.name,
                     track_isrc=isrc,
@@ -106,17 +105,17 @@ class MusicbrainzProvider(MetadataProvider):
         self,
         artistname: str,
         albumname: str | None = None,
-        album_upc: str | None = None,
+        album_barcode: str | None = None,
     ) -> str | None:
-        """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
-        assert albumname or album_upc
+        """Retrieve musicbrainz artist id by providing the artist name and albumname or barcode."""
+        assert albumname or album_barcode
         for searchartist in (
             artistname,
             re.sub(LUCENE_SPECIAL, r"\\\1", create_sort_name(artistname)),
         ):
-            if album_upc:
-                # search by album UPC (barcode)
-                query = f"barcode:{album_upc}"
+            if album_barcode:
+                # search by album barcode (EAN or UPC)
+                query = f"barcode:{album_barcode}"
             elif albumname:
                 # search by name
                 searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
@@ -126,7 +125,7 @@ class MusicbrainzProvider(MetadataProvider):
                 for strict in (True, False):
                     for item in result["releases"]:
                         if not (
-                            album_upc
+                            album_barcode
                             or (albumname and compare_strings(item["title"], albumname, strict))
                         ):
                             continue
@@ -171,7 +170,7 @@ class MusicbrainzProvider(MetadataProvider):
         return None
 
     async def _search_artist_by_album_mbid(self, artistname: str, album_mbid: str) -> str | None:
-        """Retrieve musicbrainz artist id by providing the artist name and albumname or upc."""
+        """Retrieve musicbrainz artist id by providing the artist name or album id."""
         result = await self.get_data(f"release-group/{album_mbid}?inc=artist-credits")
         if result and "artist-credit" in result:
             for item in result["artist-credit"]:

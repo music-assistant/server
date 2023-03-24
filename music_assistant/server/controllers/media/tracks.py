@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 
+from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
@@ -221,9 +222,12 @@ class TracksController(MediaControllerBase[Track]):
             if item.musicbrainz_id:
                 match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.music.database.get_row(self.db_table, match)
-            for isrc in item.isrcs:
-                match = {"isrc": isrc}
-                cur_item = await self.mass.music.database.get_row(self.db_table, match)
+            for isrc in item.isrc:
+                if search_result := await self.mass.music.database.search(
+                    self.db_table, isrc, "isrc"
+                ):
+                    cur_item = search_result[0]
+                    break
             if not cur_item:
                 # fallback to matching
                 match = {"sort_name": item.sort_name}
@@ -251,6 +255,8 @@ class TracksController(MediaControllerBase[Track]):
                     "albums": serialize_to_json(track_albums),
                     "sort_artist": sort_artist,
                     "sort_album": sort_album,
+                    "timestamp_added": int(utc_timestamp()),
+                    "timestamp_modified": int(utc_timestamp()),
                 },
             )
             item_id = new_item["item_id"]
@@ -276,11 +282,14 @@ class TracksController(MediaControllerBase[Track]):
             # we store a mapping to artists/albums on the item for easier access/listings
             track_artists = await self._get_track_artists(item, overwrite=True)
             track_albums = await self._get_track_albums(item, overwrite=True)
+            isrc = item.isrc
         else:
             metadata = cur_item.metadata.update(item.metadata, "file" in item.provider)
             provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
             track_artists = await self._get_track_artists(cur_item, item)
             track_albums = await self._get_track_albums(cur_item, item)
+            isrc = cur_item.isrc
+            isrc.update(item.isrc)
 
         await self.mass.music.database.update(
             self.db_table,
@@ -294,7 +303,8 @@ class TracksController(MediaControllerBase[Track]):
                 "albums": serialize_to_json(track_albums),
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
-                "isrc": item.isrc or cur_item.isrc,
+                "isrc": ";".join(isrc),
+                "timestamp_modified": int(utc_timestamp()),
             },
         )
         # update/set provider_mappings table

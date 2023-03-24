@@ -11,6 +11,7 @@ from typing import Any
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
 from music_assistant.common.models.errors import InvalidDataError
+from music_assistant.common.models.media_items import MediaItemChapter
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
 
@@ -21,14 +22,17 @@ from music_assistant.server.helpers.process import AsyncProcess
 TAG_SPLITTER = ";"
 
 
-def split_items(org_str: str) -> tuple[str, ...]:
+def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
-    if not org_str:
+    if org_str is None:
         return tuple()
     if isinstance(org_str, list):
-        return org_str
+        return (x.strip() for x in org_str)
+    org_str = org_str.strip()
     if TAG_SPLITTER in org_str:
         return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
+    if split_slash and "/" in org_str:
+        return tuple(x.strip() for x in org_str.split("/"))
     return (org_str.strip(),)
 
 
@@ -154,12 +158,12 @@ class AudioTags:
     @property
     def musicbrainz_artistids(self) -> tuple[str, ...]:
         """Return musicbrainz_artistid tag(s) if present."""
-        return split_items(self.tags.get("musicbrainzartistid"))
+        return split_items(self.tags.get("musicbrainzartistid"), True)
 
     @property
     def musicbrainz_albumartistids(self) -> tuple[str, ...]:
         """Return musicbrainz_albumartistid tag if present."""
-        return split_items(self.tags.get("musicbrainzalbumartistid"))
+        return split_items(self.tags.get("musicbrainzalbumartistid"), True)
 
     @property
     def musicbrainz_releasegroupid(self) -> str | None:
@@ -176,15 +180,65 @@ class AudioTags:
     @property
     def album_type(self) -> AlbumType:
         """Return albumtype tag if present."""
+        # handle audiobook/podcast
+        if self.filename.endswith("m4b") and len(self.chapters) > 1:
+            return AlbumType.AUDIOBOOK
+        if "podcast" in self.tags.get("genre", "").lower() and len(self.chapters) > 1:
+            return AlbumType.PODCAST
         tag = self.tags.get("musicbrainzalbumtype", self.tags.get("musicbrainzalbumtype"))
         if tag is None:
             return AlbumType.UNKNOWN
         # the album type tag is messy within id3 and may even contain multiple types
         # try to parse one in order of preference
-        for album_type in (AlbumType.COMPILATION, AlbumType.EP, AlbumType.SINGLE, AlbumType.ALBUM):
+        for album_type in (
+            AlbumType.PODCAST,
+            AlbumType.AUDIOBOOK,
+            AlbumType.COMPILATION,
+            AlbumType.EP,
+            AlbumType.SINGLE,
+            AlbumType.ALBUM,
+        ):
             if album_type.value in tag.lower():
                 return album_type
+
         return AlbumType.UNKNOWN
+
+    @property
+    def isrc(self) -> tuple[str, ...]:
+        """Return isrc tag(s)."""
+        if tag := self.tags.get("isrc"):
+            return split_items(tag, True)
+        if tag := self.tags.get("tsrc"):
+            return split_items(tag, True)
+        return tuple()
+
+    @property
+    def barcode(self) -> tuple[str, ...]:
+        """Return barcode (upc/ean) tag(s)."""
+        # prefer multi-artist tag
+        if tag := self.tags.get("barcode"):
+            return split_items(tag, True)
+        if tag := self.tags.get("upc"):
+            return split_items(tag, True)
+        if tag := self.tags.get("ean"):
+            return split_items(tag, True)
+        return tuple()
+
+    @property
+    def chapters(self) -> list[MediaItemChapter]:
+        """Return chapters in MediaItem (if any)."""
+        chapters: list[MediaItemChapter] = []
+        if raw_chapters := self.raw.get("chapters"):
+            for chapter_data in raw_chapters:
+                chapters.append(
+                    MediaItemChapter(
+                        chapter_id=chapter_data["id"],
+                        position_start=chapter_data["start"],
+                        position_end=chapter_data["end"],
+                        title=chapter_data.get("tags", {}).get("title"),
+                    )
+                )
+        return chapters
 
     @classmethod
     def parse(cls, raw: dict) -> AudioTags:
@@ -233,9 +287,12 @@ async def parse_tags(
         "-hide_banner",
         "-loglevel",
         "fatal",
+        "-threads",
+        "0",
         "-show_error",
         "-show_format",
         "-show_streams",
+        "-show_chapters",
         "-print_format",
         "json",
         "-i",
@@ -247,18 +304,11 @@ async def parse_tags(
     ) as proc:
         if file_path == "-":
             # feed the file contents to the process
-            async def chunk_feeder():
-                bytes_written = 0
-                async for chunk in input_file:
-                    try:
-                        await proc.write(chunk)
-                    except BrokenPipeError:
-                        break  # race-condition: read enough data for tags
 
-                    # grabbing the first 5MB is enough to get the embedded tags
-                    bytes_written += len(chunk)
-                    if bytes_written > (5 * 1024000):
-                        break
+            async def chunk_feeder():
+                async for chunk in input_file:
+                    await proc.write(chunk)
+
                 proc.write_eof()
 
             proc.attach_task(chunk_feeder())
@@ -306,17 +356,9 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         if file_path == "-":
             # feed the file contents to the process
             async def chunk_feeder():
-                bytes_written = 0
                 async for chunk in input_file:
-                    try:
-                        await proc.write(chunk)
-                    except BrokenPipeError:
-                        break  # race-condition: read enough data for tags
+                    await proc.write(chunk)
 
-                    # grabbing the first 5MB is enough to get the embedded image
-                    bytes_written += len(chunk)
-                    if bytes_written > (5 * 1024000):
-                        break
                 proc.write_eof()
 
             proc.attach_task(chunk_feeder())
