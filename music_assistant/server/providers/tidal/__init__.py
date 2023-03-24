@@ -161,11 +161,6 @@ class TidalProvider(MusicProvider):
         for playlist in playlists_obj:
             yield await self._parse_playlist(playlist)
 
-    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
-        radios_obj = await get_library_radios(self._tidal_session)
-        for radio in radios_obj:
-            yield await self._parse_radio(radio)
-
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         album_obj = await get_album(self._tidal_session, prov_album_id)
