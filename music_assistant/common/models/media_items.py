@@ -136,13 +136,13 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if isinstance(cur_val, list):
+            if cur_val is None or allow_overwrite:  # noqa: SIM114
+                setattr(self, fld.name, new_val)
+            elif isinstance(cur_val, list):
                 new_val = merge_lists(cur_val, new_val)
                 setattr(self, fld.name, new_val)
             elif isinstance(cur_val, set):
                 new_val = cur_val.update(new_val)
-                setattr(self, fld.name, new_val)
-            elif cur_val is None or allow_overwrite:  # noqa: SIM114
                 setattr(self, fld.name, new_val)
             elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
                 # some fields are always allowed to be overwritten
@@ -187,8 +187,10 @@ class MediaItem(DataClassDictMixin):
             if key in db_row and db_row[key] is not None:
                 db_row[key] = json_loads(db_row[key])
         for key in JOINED_KEYS:
-            if key in db_row:
-                db_row[key] = (db_row[key] or "").split(";")
+            if key not in db_row:
+                continue
+            db_row[key] = db_row[key].strip()
+            db_row[key] = db_row[key].split(";") if db_row[key] else []
         if "in_library" in db_row:
             db_row["in_library"] = bool(db_row["in_library"])
         if db_row.get("albums"):
@@ -248,11 +250,6 @@ class MediaItem(DataClassDictMixin):
             )
         }
         self.provider_mappings.add(prov_mapping)
-
-    @property
-    def last_refresh(self) -> int:
-        """Return timestamp the metadata was last refreshed (0 if full data never retrieved)."""
-        return self.metadata.last_refresh or 0
 
     def __hash__(self):
         """Return custom hash."""

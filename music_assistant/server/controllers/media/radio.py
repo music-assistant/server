@@ -73,16 +73,14 @@ class RadioController(MediaControllerBase[Radio]):
         )
         return db_item
 
-    async def add_db_item(self, item: Radio, overwrite_existing: bool = False) -> Radio:
+    async def add_db_item(self, item: Radio) -> Radio:
         """Add a new item record to the database."""
-        assert item.provider_mappings
+        assert item.provider_mappings, "Item is missing provider mapping(s)"
         async with self._db_add_lock:
             match = {"name": item.name}
             if cur_item := await self.mass.music.database.get_row(self.db_table, match):
                 # update existing
-                return await self.update_db_item(
-                    cur_item["item_id"], item, overwrite=overwrite_existing
-                )
+                return await self.update_db_item(cur_item["item_id"], item)
 
             # insert new item
             item.timestamp_added = int(utc_timestamp())
@@ -99,17 +97,12 @@ class RadioController(MediaControllerBase[Radio]):
         self,
         item_id: int,
         item: Radio,
-        overwrite: bool = False,
     ) -> Radio:
         """Update Radio record in the database."""
+        assert item.provider_mappings, "Item is missing provider mapping(s)"
         cur_item = await self.get_db_item(item_id)
-        if overwrite:
-            metadata = item.metadata
-            provider_mappings = item.provider_mappings
-        else:
-            metadata = cur_item.metadata.update(item.metadata)
-            provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
-
+        metadata = cur_item.metadata.update(item.metadata)
+        provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
         match = {"item_id": item_id}
         await self.mass.music.database.update(
             self.db_table,

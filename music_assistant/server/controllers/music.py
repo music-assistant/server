@@ -691,7 +691,6 @@ class MusicController:
                     provider_mappings json,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
-                    UNIQUE(name, owner)
                 );"""
         )
         await self.database.execute(

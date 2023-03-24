@@ -139,7 +139,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             provider_domain=provider_domain,
             provider_instance=provider_instance,
         )
-        if db_item and (time() - db_item.last_refresh) > REFRESH_INTERVAL:
+        if db_item and (time() - (db_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
             force_refresh = True
         if db_item and force_refresh:
