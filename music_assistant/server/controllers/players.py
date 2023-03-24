@@ -67,7 +67,7 @@ class PlayerController:
         return_unavailable: bool = True,
         return_hidden: bool = True,
         return_disabled: bool = False,
-    ) -> tuple[Player]:
+    ) -> tuple[Player, ...]:
         """Return all registered players."""
         return tuple(
             player

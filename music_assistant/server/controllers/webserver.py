@@ -44,6 +44,12 @@ class WebserverController:
         self.port = await select_free_port(8095, 9200)
         LOGGER.info("Starting webserver on port %s", self.port)
         self._apprunner = web.AppRunner(self.webapp, access_log=None)
+        # setup stream paths
+        self.webapp.router.add_get("/stream/preview", self.mass.streams.serve_preview)
+        self.webapp.router.add_get(
+            "/stream/{player_id}/{queue_item_id}/{stream_id}.{fmt}",
+            self.mass.streams.serve_queue_stream,
+        )
 
         # setup frontend
         frontend_dir = locate_frontend()
@@ -107,7 +113,7 @@ class WebserverController:
                 return await handler(request)
         # deny all other requests
         LOGGER.debug(
-            "Received %s request to %s from %s\nheaders: %s\n",
+            "Received unhandled %s request to %s from %s\nheaders: %s\n",
             request.method,
             request.path,
             request.remote,
