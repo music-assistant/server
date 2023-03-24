@@ -1,4 +1,6 @@
 """Soundcloud support for MusicAssistant."""
+from __future__ import annotations
+
 import asyncio
 from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING
