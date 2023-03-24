@@ -31,9 +31,9 @@ class SoundcloudAsyncAPI:
 
     async def get(self, url, headers=None, params=None):
         """Async get."""
-        async with self.http_session as session:
-            async with session.get(url=url, params=params, headers=headers) as response:
-                return await response.json()
+        session = self.http_session
+        async with session.get(url=url, params=params, headers=headers) as response:
+            return await response.json()
 
     async def login(self):
         """Login to soundcloud."""
