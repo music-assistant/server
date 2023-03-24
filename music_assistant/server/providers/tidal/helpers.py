@@ -7,8 +7,20 @@ This also nicely separates the parsing logic from the Tidal provider logic.
 """
 
 import asyncio
+from copy import copy
 
 import tidalapi
+
+
+def fetched_user_parse(self, json_obj):
+    self.id = json_obj["id"]
+    self.first_name = json_obj["firstName"]
+    self.last_name = json_obj["lastName"]
+
+    return copy(self)
+
+
+tidalapi.FetchedUser.parse = fetched_user_parse
 
 
 async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[str, str]:
