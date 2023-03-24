@@ -367,14 +367,14 @@ async def parse_artist(mass, artist: deezer.Artist) -> Artist:
     if isinstance(artist, deezer.Track):
         artst = Artist(
             item_id=str(artist.id),
-            provider="deezer",
+            provider=mass.domain,
             name=artist.title,
             media_type=MediaType.ARTIST,
             sort_name=artist.title_short,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist.id),
-                    provider_domain="deezer",
+                    provider_domain=mass.domain,
                     provider_instance=mass.instance_id,
                     content_type=ContentType.MP3,
                 )
@@ -399,14 +399,14 @@ async def parse_album(mass, album: deezer.Album) -> Album:
     almb = Album(
         album_type=await parse_album_type(album_type=album.type),
         item_id=str(album.id),
-        provider="deezer",
+        provider=mass.domain,
         name=album.title,
         artists=[await parse_artist(mass=mass, artist=album.artist)],
         media_type=MediaType.ALBUM,
         provider_mappings={
             ProviderMapping(
                 item_id=str(album.id),
-                provider_domain="deezer",
+                provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
                 content_type=ContentType.MP3,
             )
@@ -420,13 +420,13 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
     """Parse the deezer-python playlist to a MASS playlist."""
     almb = Playlist(
         item_id=str(playlist.id),
-        provider="deezer",
+        provider=mass.domain,
         name=playlist.title,
         media_type=MediaType.ALBUM,
         provider_mappings={
             ProviderMapping(
                 item_id=str(playlist.id),
-                provider_domain="deezer",
+                provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
                 content_type=ContentType.MP3,
             )
@@ -482,7 +482,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
     """Parse the deezer-python track to a MASS track."""
     trk = Track(
         item_id=str(track.id),
-        provider="deezer",
+        provider=mass.domain,
         name=track.title,
         media_type=MediaType.TRACK,
         sort_name=track.title_short,
@@ -494,7 +494,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
         provider_mappings={
             ProviderMapping(
                 item_id=str(track.id),
-                provider_domain="deezer",
+                provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
                 content_type=ContentType.MP3,
             )

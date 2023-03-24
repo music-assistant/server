@@ -1,18 +1,30 @@
 """Deezer musicprovider support for MusicAssistant."""
 from collections.abc import AsyncGenerator
+from time import time
 
 import deezer
 
-from music_assistant.common.models.enums import MediaType, ProviderFeature
-from music_assistant.common.models.media_items import Album, Artist, Playlist, SearchResults, Track
+from music_assistant.common.models.enums import ContentType, MediaType, ProviderFeature
+from music_assistant.common.models.media_items import (
+    Album,
+    Artist,
+    Playlist,
+    SearchResults,
+    StreamDetails,
+    Track,
+)
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
     Credential,
+    add_user_albums,
+    add_user_artists,
+    add_user_tracks,
     get_album,
     get_artist,
     get_playlist,
     get_track,
+    get_url,
     get_user_albums,
     get_user_artists,
     get_user_playlists,
@@ -21,6 +33,9 @@ from .helpers import (
     parse_artist,
     parse_playlist,
     parse_track,
+    remove_user_albums,
+    remove_user_artists,
+    remove_user_tracks,
     search,
 )
 
@@ -134,3 +149,86 @@ class DeezerProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         return await parse_track(mass=self, track=await get_track(track_id=int(prov_track_id)))
+
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
+        """Get all tracks in a playlist."""
+        playlist = await get_playlist(creds=self.creds, playlist_id=prov_playlist_id)
+        tracks = []
+        for track in playlist.tracks:
+            tracks.append(await parse_track(mass=self, track=track))
+        return tracks
+
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
+        """Get albums by an artist."""
+        artist = await get_artist(artist_id=int(prov_artist_id))
+        albums = []
+        for album in artist.get_albums():
+            albums.append(await parse_album(mass=self, album=album))
+        return albums
+
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get top tracks of an artist."""
+        artist = await get_artist(artist_id=int(prov_artist_id))
+        tracks = []
+        for track in artist.get_top():
+            tracks.append(await parse_track(mass=self, track=track))
+        return tracks
+
+    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Add an item to the library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await add_user_artists(
+                artist_id=int(prov_item_id),
+                creds=self.creds,
+            )
+        elif media_type == MediaType.ALBUM:
+            result = await add_user_albums(
+                album_id=int(prov_item_id),
+                creds=self.creds,
+            )
+        elif media_type == MediaType.TRACK:
+            result = await add_user_tracks(
+                track_id=int(prov_item_id),
+                creds=self.creds,
+            )
+        else:
+            raise NotImplementedError
+        return result
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove an item to the library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await remove_user_artists(
+                artist_id=int(prov_item_id),
+                creds=self.creds,
+            )
+        elif media_type == MediaType.ALBUM:
+            result = await remove_user_albums(
+                album_id=int(prov_item_id),
+                creds=self.creds,
+            )
+        elif media_type == MediaType.TRACK:
+            result = await remove_user_tracks(
+                track_id=int(prov_item_id),
+                creds=self.creds,
+            )
+        else:
+            raise NotImplementedError
+        return result
+
+    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+        """Return the content details for the given track when it will be streamed."""
+        track = await get_track(track_id=int(item_id))
+        details = StreamDetails(
+            provider=self.domain,
+            item_id=item_id,
+            content_type=ContentType.MP3,
+            media_type=MediaType.TRACK,
+            stream_title=track.title,
+            duration=track.duration,
+            expires=time() + 3600,
+            direct=await get_url(mass=self, track_id=item_id, creds=self.creds),
+        )
+        return details
