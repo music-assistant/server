@@ -21,14 +21,12 @@ from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
     ImageType,
-    LinkType,
     MediaType,
 )
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
     MediaItemImage,
-    MediaItemLink,
     MediaItemMetadata,
     Playlist,
     ProviderMapping,
@@ -75,9 +73,8 @@ async def get_deezer_client(creds: Credential = None) -> deezer.Client:  # type:
     return await asyncio.to_thread(_authorize)
 
 
-async def get_artist(artist_id: int) -> deezer.Artist:
+async def get_artist(client: deezer.Client, artist_id: int) -> deezer.Artist:
     """Async wrapper of the deezer-python get_artist function."""
-    client = await get_deezer_client()
 
     def _get_artist():
         artist = client.get_artist(artist_id=artist_id)
@@ -86,9 +83,8 @@ async def get_artist(artist_id: int) -> deezer.Artist:
     return await asyncio.to_thread(_get_artist)
 
 
-async def get_album(album_id: int) -> deezer.Album:
+async def get_album(client: deezer.Client, album_id: int) -> deezer.Album:
     """Async wrapper of the deezer-python get_album function."""
-    client = await get_deezer_client()
 
     def _get_album():
         album = client.get_album(album_id=album_id)
@@ -97,9 +93,8 @@ async def get_album(album_id: int) -> deezer.Album:
     return await asyncio.to_thread(_get_album)
 
 
-async def get_playlist(creds: Credential, playlist_id) -> deezer.Playlist:
+async def get_playlist(client: deezer.Client, playlist_id) -> deezer.Playlist:
     """Async wrapper of the deezer-python get_playlist function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_playlist():
         playlist = client.get_playlist(playlist_id=playlist_id)
@@ -108,9 +103,8 @@ async def get_playlist(creds: Credential, playlist_id) -> deezer.Playlist:
     return await asyncio.to_thread(_get_playlist)
 
 
-async def get_track(track_id: int) -> deezer.Track:
+async def get_track(client: deezer.Client, track_id: int) -> deezer.Track:
     """Async wrapper of the deezer-python get_track function."""
-    client = await get_deezer_client()
 
     def _get_track():
         track = client.get_track(track_id=track_id)
@@ -119,9 +113,8 @@ async def get_track(track_id: int) -> deezer.Track:
     return await asyncio.to_thread(_get_track)
 
 
-async def get_user_artists(creds: Credential) -> deezer.PaginatedList:
+async def get_user_artists(client: deezer.Client) -> deezer.PaginatedList:
     """Async wrapper of the deezer-python get_user_artists function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_artist():
         artists = client.get_user_artists()
@@ -130,9 +123,8 @@ async def get_user_artists(creds: Credential) -> deezer.PaginatedList:
     return await asyncio.to_thread(_get_artist)
 
 
-async def get_user_playlists(creds: Credential) -> deezer.PaginatedList:
+async def get_user_playlists(client: deezer.Client) -> deezer.PaginatedList:
     """Async wrapper of the deezer-python get_user_playlists function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_playlist():
         playlists = client.get_user().get_playlists()
@@ -141,9 +133,8 @@ async def get_user_playlists(creds: Credential) -> deezer.PaginatedList:
     return await asyncio.to_thread(_get_playlist)
 
 
-async def get_user_albums(creds: Credential) -> deezer.PaginatedList:
+async def get_user_albums(client: deezer.Client) -> deezer.PaginatedList:
     """Async wrapper of the deezer-python get_user_albums function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_album():
         albums = client.get_user_albums()
@@ -152,9 +143,8 @@ async def get_user_albums(creds: Credential) -> deezer.PaginatedList:
     return await asyncio.to_thread(_get_album)
 
 
-async def get_user_tracks(creds: Credential) -> deezer.PaginatedList:
+async def get_user_tracks(client: deezer.Client) -> deezer.PaginatedList:
     """Async wrapper of the deezer-python get_user_tracks function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_track():
         tracks = client.get_user_tracks()
@@ -163,9 +153,8 @@ async def get_user_tracks(creds: Credential) -> deezer.PaginatedList:
     return await asyncio.to_thread(_get_track)
 
 
-async def add_user_albums(creds: Credential, album_id: int) -> bool:
+async def add_user_albums(client: deezer.Client, album_id: int) -> bool:
     """Async wrapper of the deezer-python add_user_albums function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_track():
         success = client.add_user_album(album_id=album_id)
@@ -174,9 +163,8 @@ async def add_user_albums(creds: Credential, album_id: int) -> bool:
     return await asyncio.to_thread(_get_track)
 
 
-async def remove_user_albums(creds: Credential, album_id: int) -> bool:
+async def remove_user_albums(client: deezer.Client, album_id: int) -> bool:
     """Async wrapper of the deezer-python remove_user_albums function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_track():
         success = client.remove_user_album(album_id=album_id)
@@ -185,9 +173,8 @@ async def remove_user_albums(creds: Credential, album_id: int) -> bool:
     return await asyncio.to_thread(_get_track)
 
 
-async def add_user_tracks(creds: Credential, track_id: int) -> bool:
+async def add_user_tracks(client: deezer.Client, track_id: int) -> bool:
     """Async wrapper of the deezer-python add_user_tracks function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_track():
         success = client.add_user_track(track_id=track_id)
@@ -196,9 +183,8 @@ async def add_user_tracks(creds: Credential, track_id: int) -> bool:
     return await asyncio.to_thread(_get_track)
 
 
-async def remove_user_tracks(creds: Credential, track_id: int) -> bool:
+async def remove_user_tracks(client: deezer.Client, track_id: int) -> bool:
     """Async wrapper of the deezer-python remove_user_tracks function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_track():
         success = client.remove_user_track(track_id=track_id)
@@ -207,9 +193,8 @@ async def remove_user_tracks(creds: Credential, track_id: int) -> bool:
     return await asyncio.to_thread(_get_track)
 
 
-async def add_user_artists(creds: Credential, artist_id: int) -> bool:
+async def add_user_artists(client: deezer.Client, artist_id: int) -> bool:
     """Async wrapper of the deezer-python add_user_artists function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_artist():
         success = client.add_user_artist(artist_id=artist_id)
@@ -218,9 +203,8 @@ async def add_user_artists(creds: Credential, artist_id: int) -> bool:
     return await asyncio.to_thread(_get_artist)
 
 
-async def remove_user_artists(creds: Credential, artist_id: int) -> bool:
+async def remove_user_artists(client: deezer.Client, artist_id: int) -> bool:
     """Async wrapper of the deezer-python remove_user_artists function."""
-    client = await get_deezer_client(creds=creds)
 
     def _get_artist():
         success = client.remove_user_artist(artist_id=artist_id)
@@ -229,19 +213,31 @@ async def remove_user_artists(creds: Credential, artist_id: int) -> bool:
     return await asyncio.to_thread(_get_artist)
 
 
-async def search(query: str, filter: str = None) -> deezer.PaginatedList:  # type: ignore
-    """Async wrapper of the deezer-python search function."""
-    client = await get_deezer_client()
+async def search_album(client: deezer.Client, query: str) -> deezer.PaginatedList:
+    """Async wrapper of the deezer-python search_albums function."""
 
     def _search():
-        if filter == "album":
-            result = client.search_albums(query=query)
-        elif filter == "artist":
-            result = client.search_artists(query=query)
-        elif filter == "track":
-            result = client.search(query=query)
-        else:
-            result = client.search(query=query)
+        result = client.search_albums(query=query)
+        return result
+
+    return await asyncio.to_thread(_search)
+
+
+async def search_track(client: deezer.Client, query: str) -> deezer.PaginatedList:
+    """Async wrapper of the deezer-python search function."""
+
+    def _search():
+        result = client.search(query=query)
+        return result
+
+    return await asyncio.to_thread(_search)
+
+
+async def search_artist(client: deezer.Client, query: str) -> deezer.PaginatedList:
+    """Async wrapper of the deezer-python search_artist function."""
+
+    def _search():
+        result = client.search_artists(query=query)
         return result
 
     return await asyncio.to_thread(_search)
@@ -249,7 +245,7 @@ async def search(query: str, filter: str = None) -> deezer.PaginatedList:  # typ
 
 async def _get_sid(mass):
     """Get a session id."""
-    return await _get_http(
+    result = await _get_http(
         mass=mass,
         url="http://www.deezer.com/ajax/gw-light.php",
         params={"method": "deezer.ping", "api_version": "1.0", "api_token": ""},
@@ -259,11 +255,12 @@ async def _get_sid(mass):
     ][
         "SESSION"
     ]
+    return result
 
 
 async def _get_user_data(mass, tok, sid):
     """Get user data."""
-    return await _get_http(
+    result = await _get_http(
         mass=mass,
         url="https://www.deezer.com/ajax/gw-light.php",
         params={
@@ -276,6 +273,7 @@ async def _get_user_data(mass, tok, sid):
     )[  # type: ignore
         "results"
     ]
+    return result
 
 
 async def _get_song_info(mass, tok, sid, track_id):
@@ -364,13 +362,12 @@ async def get_url(mass, track_id, creds: Credential) -> str:
 
 async def parse_artist(mass, artist: deezer.Artist) -> Artist:
     """Parse the deezer-python artist to a MASS artist."""
-    if isinstance(artist, deezer.Track):
+    if isinstance(artist, deezer.Artist):
         artst = Artist(
             item_id=str(artist.id),
             provider=mass.domain,
-            name=artist.title,
+            name=artist.name,
             media_type=MediaType.ARTIST,
-            sort_name=artist.title_short,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(artist.id),
@@ -401,7 +398,7 @@ async def parse_album(mass, album: deezer.Album) -> Album:
         item_id=str(album.id),
         provider=mass.domain,
         name=album.title,
-        artists=[await parse_artist(mass=mass, artist=album.artist)],
+        artists=[await parse_artist(mass=mass, artist=await get_artist_from_album(album=album))],
         media_type=MediaType.ALBUM,
         provider_mappings={
             ProviderMapping(
@@ -439,8 +436,6 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
 async def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadata:
     """Parse the playlist metadata."""
     metadata = MediaItemMetadata(
-        links={MediaItemLink(type=LinkType.WEBSITE, url=playlist.link)},
-        preview=playlist.preview,
         images=[MediaItemImage(type=ImageType.THUMB, url=playlist.picture_big, is_file=False)],
     )
     return metadata
@@ -448,21 +443,31 @@ async def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadat
 
 async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
     """Parse the track metadata."""
-    metadata = MediaItemMetadata(
-        links={MediaItemLink(type=LinkType.WEBSITE, url=track.link)},
-        preview=track.preview,
-        images=[
-            MediaItemImage(type=ImageType.THUMB, url=track.get_album().cover_big, is_file=False)
-        ],
-    )
+    try:
+        url = (await get_album_from_track(track=track)).cover_big
+    except Exception:
+        url = False
+    if url:
+        metadata = MediaItemMetadata(
+            preview=track.preview,
+            images=[
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    url=(await get_album_from_track(track=track)).cover_big,
+                    is_file=False,
+                )
+            ],
+        )
+    else:
+        metadata = MediaItemMetadata(
+            preview=track.preview,
+        )
     return metadata
 
 
 async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
     """Parse the album metadata."""
     metadata = MediaItemMetadata(
-        links={MediaItemLink(type=LinkType.WEBSITE, url=album.link)},
-        preview=album.preview,
         images=[MediaItemImage(type=ImageType.THUMB, url=album.cover_big, is_file=False)],
     )
     return metadata
@@ -471,15 +476,66 @@ async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
 async def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
     """Parse the artist metadata."""
     metadata = MediaItemMetadata(
-        links={MediaItemLink(type=LinkType.WEBSITE, url=artist.link)},
-        preview=artist.preview,
-        images=[MediaItemImage(type=ImageType.THUMB, url=artist.cover_big, is_file=False)],
+        images=[MediaItemImage(type=ImageType.THUMB, url=artist.picture_big, is_file=False)],
     )
     return metadata
 
 
+async def _get_album(mass, track: deezer.Track) -> Album | None:
+    try:
+        return await parse_album(mass=mass, album=await get_album_from_track(track=track))
+    except Exception:
+        return None
+
+
+async def get_album_from_track(track: deezer.Track) -> deezer.Album:
+    """Get track's artist."""
+
+    def _get_album_from_track():
+        return track.get_album()
+
+    return await asyncio.to_thread(_get_album_from_track)
+
+
+async def get_artist_from_track(track: deezer.Track) -> deezer.Artist:
+    """Get track's artist."""
+
+    def _get_artist_from_track():
+        return track.get_artist()
+
+    return await asyncio.to_thread(_get_artist_from_track)
+
+
+async def get_artist_from_album(album: deezer.Album) -> deezer.Artist:
+    """Get track's artist."""
+
+    def _get_artist_from_album():
+        return album.get_artist()
+
+    return await asyncio.to_thread(_get_artist_from_album)
+
+
+async def get_albums_by_artist(artist: deezer.Artist) -> deezer.PaginatedList:
+    """Get albums by an artist."""
+
+    def _get_albums_by_artist():
+        return artist.get_albums()
+
+    return await asyncio.to_thread(_get_albums_by_artist)
+
+
+async def get_artist_top(artist: deezer.Artist) -> deezer.PaginatedList:
+    """Get top tracks by an artist."""
+
+    def _get_artist_top():
+        return artist.get_top()
+
+    return await asyncio.to_thread(_get_artist_top)
+
+
 async def parse_track(mass, track: deezer.Track) -> Track:
     """Parse the deezer-python track to a MASS track."""
+    artist = await get_artist_from_track(track=track)
     trk = Track(
         item_id=str(track.id),
         provider=mass.domain,
@@ -488,9 +544,8 @@ async def parse_track(mass, track: deezer.Track) -> Track:
         sort_name=track.title_short,
         position=track.track_position,
         duration=track.duration,
-        version=track.title_version,
-        artists=[await parse_artist(mass=mass, artist=track.artist)],
-        album=await parse_album(mass=mass, album=track.album),
+        artists=[await parse_artist(mass=mass, artist=artist)],
+        album=await _get_album(mass=mass, track=track),
         provider_mappings={
             ProviderMapping(
                 item_id=str(track.id),
