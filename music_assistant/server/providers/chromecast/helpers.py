@@ -1,12 +1,16 @@
 """Helpers to deal with Cast devices."""
 from __future__ import annotations
 
+import urllib.error
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Self
 from uuid import UUID
 
 from pychromecast import dial
 from pychromecast.const import CAST_TYPE_GROUP
+from zeroconf import ServiceInfo
+
+from music_assistant.constants import CONF_HIDE_GROUP_CHILDS
 
 if TYPE_CHECKING:
     from pychromecast.controllers.media import MediaStatus
@@ -37,6 +41,8 @@ class ChromecastInfo:
     cast_type: str | None = None
     manufacturer: str | None = None
     is_dynamic_group: bool | None = None
+    is_multichannel_group: bool = False  # group created for e.g. stereo pair
+    is_multichannel_child: bool = False  # speaker that is part of multichannel setup
 
     @property
     def is_audio_group(self) -> bool:
@@ -71,20 +77,42 @@ class ChromecastInfo:
             self.cast_type = cast_info.cast_type
             self.manufacturer = cast_info.manufacturer
 
-        if not self.is_audio_group or self.is_dynamic_group is not None:
-            # We have all information, no need to check HTTP API.
-            return
-
         # Fill out missing group information via HTTP API.
-        http_group_status = dial.get_multizone_status(
+        dynamic_groups, multichannel_groups = get_multizone_info(self.services, zconf)
+        self.is_dynamic_group = self.uuid in dynamic_groups
+        if self.uuid in multichannel_groups:
+            self.is_multichannel_group = True
+        elif multichannel_groups:
+            self.is_multichannel_child = True
+
+
+def get_multizone_info(services: list[ServiceInfo], zconf: Zeroconf, timeout=30):
+    """Get multizone info from eureka endpoint."""
+    dynamic_groups: set[str] = set()
+    multichannel_groups: set[str] = set()
+    try:
+        _, status = dial._get_status(
+            services,
+            zconf,
+            "/setup/eureka_info?params=multizone",
+            True,
+            timeout,
             None,
-            services=self.services,
-            zconf=zconf,
         )
-        if http_group_status is not None:
-            self.is_dynamic_group = any(
-                g.uuid == self.uuid for g in http_group_status.dynamic_groups
-            )
+        if "multizone" in status and "dynamic_groups" in status["multizone"]:
+            for group in status["multizone"]["dynamic_groups"]:
+                if udn := group.get("uuid"):
+                    uuid = UUID(udn.replace("-", ""))
+                    dynamic_groups.add(uuid)
+
+        if "multizone" in status and "groups" in status["multizone"]:
+            for group in status["multizone"]["groups"]:
+                if group["multichannel_group"] and (udn := group.get("uuid")):
+                    uuid = UUID(udn.replace("-", ""))
+                    multichannel_groups.add(uuid)
+    except (urllib.error.HTTPError, urllib.error.URLError, OSError, ValueError):
+        pass
+    return (dynamic_groups, multichannel_groups)
 
 
 class CastStatusListener:
@@ -123,39 +151,75 @@ class CastStatusListener:
 
     def new_cast_status(self, status: CastStatus) -> None:
         """Handle updated CastStatus."""
-        if self._valid:
-            self.prov.on_new_cast_status(self.castplayer, status)
+        if not self._valid:
+            return
+        self.prov.on_new_cast_status(self.castplayer, status)
 
     def new_media_status(self, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
-        if self._valid:
-            self.prov.on_new_media_status(self.castplayer, status)
+        if not self._valid:
+            return
+        self.prov.on_new_media_status(self.castplayer, status)
 
     def new_connection_status(self, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
-        if self._valid:
-            self.prov.on_new_connection_status(self.castplayer, status)
+        if not self._valid:
+            return
+        self.prov.on_new_connection_status(self.castplayer, status)
 
-    @staticmethod
-    def added_to_multizone(group_uuid):
+    def added_to_multizone(self, group_uuid):
         """Handle the cast added to a group."""
-        print("##### added_to_multizone: %s" % group_uuid)
+        self.prov.logger.debug(
+            "%s is added to multizone: %s", self.castplayer.player.display_name, group_uuid
+        )
+        if group_player := self.prov.castplayers.get(group_uuid):
+            hide_group_childs = self.prov.mass.config.get_player_config_value(
+                group_player.player_id, CONF_HIDE_GROUP_CHILDS
+            ).value
+            if hide_group_childs == "always":
+                self.castplayer.player.hidden_by.add(group_uuid)
 
     def removed_from_multizone(self, group_uuid):
         """Handle the cast removed from a group."""
-        if self._valid:
-            # self._cast_device.multizone_new_media_status(group_uuid, None)
-            print("##### removed_from_multizone: %s" % group_uuid)
+        if not self._valid:
+            return
+        if group_uuid in self.castplayer.player.hidden_by:
+            self.castplayer.player.hidden_by.remove(group_uuid)
+        self.prov.logger.debug(
+            "%s is removed from multizone: %s", self.castplayer.player.display_name, group_uuid
+        )
 
     def multizone_new_cast_status(self, group_uuid, cast_status):  # noqa: ARG002
         """Handle reception of a new CastStatus for a group."""
-        print("##### multizone_new_cast_status: %s" % group_uuid)
+        if group_player := self.prov.castplayers.get(group_uuid):
+            hide_group_childs = self.prov.mass.config.get_player_config_value(
+                group_uuid, CONF_HIDE_GROUP_CHILDS
+            ).value
+            if hide_group_childs == "always":
+                self.castplayer.player.hidden_by.add(group_uuid)
+            if group_player.cc.media_controller.is_active:
+                self.castplayer.active_group = group_uuid
+                if hide_group_childs == "active":
+                    self.castplayer.player.hidden_by.add(group_uuid)
+            elif group_uuid == self.castplayer.active_group:
+                self.castplayer.active_group = None
+                if hide_group_childs != "always" and group_uuid in self.castplayer.player.hidden_by:
+                    self.castplayer.player.hidden_by.remove(group_uuid)
+        self.prov.logger.debug(
+            "%s got new cast status for group: %s", self.castplayer.player.display_name, group_uuid
+        )
 
     def multizone_new_media_status(self, group_uuid, media_status):  # noqa: ARG002
         """Handle reception of a new MediaStatus for a group."""
-        if self._valid:
-            # self._cast_device.multizone_new_media_status(group_uuid, media_status)
-            print("##### multizone_new_media_status: %s" % group_uuid)
+        if not self._valid:
+            return
+        self.prov.logger.debug(
+            "%s got new media_status for group: %s", self.castplayer.player.display_name, group_uuid
+        )
+
+    def load_media_failed(self, item, error_code):
+        """Call when media failed to load."""
+        self.prov.logger.warning("Load media failed: %s - error code: %s", item, error_code)
 
     def invalidate(self):
         """

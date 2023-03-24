@@ -20,7 +20,7 @@ from music_assistant.server.helpers.process import AsyncProcess
 TAG_SPLITTER = ";"
 
 
-def split_items(org_str: str) -> tuple[str]:
+def split_items(org_str: str) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if not org_str:
         return tuple()
@@ -29,7 +29,7 @@ def split_items(org_str: str) -> tuple[str]:
     return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
 
 
-def split_artists(org_artists: str | tuple[str]) -> tuple[str]:
+def split_artists(org_artists: str | tuple[str, ...]) -> tuple[str, ...]:
     """Parse all artists from a string."""
     final_artists = set()
     # when not using the multi artist tag, the artist string may contain
@@ -77,7 +77,7 @@ class AudioTags:
         return self.tags.get("album")
 
     @property
-    def artists(self) -> tuple[str]:
+    def artists(self) -> tuple[str, ...]:
         """Return track artists."""
         # prefer multi-artist tag
         if tag := self.tags.get("artists"):
@@ -96,7 +96,7 @@ class AudioTags:
         return (UNKNOWN_ARTIST,)
 
     @property
-    def album_artists(self) -> tuple[str]:
+    def album_artists(self) -> tuple[str, ...]:
         """Return (all) album artists (if any)."""
         # prefer multi-artist tag
         if tag := self.tags.get("albumartists"):
@@ -109,7 +109,7 @@ class AudioTags:
         return tuple()
 
     @property
-    def genres(self) -> tuple[str]:
+    def genres(self) -> tuple[str, ...]:
         """Return (all) genres, if any."""
         return split_items(self.tags.get("genre"))
 
@@ -139,12 +139,12 @@ class AudioTags:
         return None
 
     @property
-    def musicbrainz_artistids(self) -> tuple[str]:
+    def musicbrainz_artistids(self) -> tuple[str, ...]:
         """Return musicbrainz_artistid tag(s) if present."""
         return split_items(self.tags.get("musicbrainzartistid"))
 
     @property
-    def musicbrainz_albumartistids(self) -> tuple[str]:
+    def musicbrainz_albumartistids(self) -> tuple[str, ...]:
         """Return musicbrainz_albumartistid tag if present."""
         return split_items(self.tags.get("musicbrainzalbumartistid"))
 

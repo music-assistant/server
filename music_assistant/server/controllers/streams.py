@@ -185,12 +185,6 @@ class StreamsController:
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.webapp.router.add_get("/stream/preview", self._serve_preview)
-        self.mass.webapp.router.add_get(
-            "/stream/{player_id}/{queue_item_id}/{stream_id}.{fmt}",
-            self._serve_queue_stream,
-        )
-
         ffmpeg_present, libsoxr_support, version = await check_audio_support()
         if not ffmpeg_present:
             LOGGER.error("FFmpeg binary not found on your system, playback will NOT work!.")
@@ -282,18 +276,18 @@ class StreamsController:
 
         # generate player-specific URL for the stream job
         fmt = content_type.value
-        url = f"{self.mass.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
+        url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 
     def get_preview_url(self, provider_domain_or_instance_id: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
         return (
-            f"{self.mass.base_url}/stream/preview?"
+            f"{self.mass.webserver.base_url}/stream/preview?"
             f"provider={provider_domain_or_instance_id}&item_id={enc_track_id}"
         )
 
-    async def _serve_queue_stream(self, request: web.Request) -> web.Response:
+    async def serve_queue_stream(self, request: web.Request) -> web.Response:
         """Serve Queue Stream audio to player(s)."""
         LOGGER.debug(
             "Got %s request to %s from %s\nheaders: %s\n",
@@ -421,13 +415,14 @@ class StreamsController:
                     await resp.write(chunk)
                     bytes_streamed += len(chunk)
 
+                    # DISABLE FOR NOW TO AVOID ISSUES WITH SONOS ICW YOUTUBE MUSIC
                     # do not allow the player to prebuffer more than 30 seconds
-                    seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
-                    if (
-                        seconds_streamed > 30
-                        and (seconds_streamed - player.corrected_elapsed_time) > 30
-                    ):
-                        await asyncio.sleep(1)
+                    # seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
+                    # if (
+                    #     seconds_streamed > 30
+                    #     and (seconds_streamed - player.corrected_elapsed_time) > 30
+                    # ):
+                    #     await asyncio.sleep(1)
 
                     if not enable_icy:
                         continue
@@ -601,7 +596,7 @@ class StreamsController:
 
         LOGGER.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
-    async def _serve_preview(self, request: web.Request):
+    async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
         provider_domain_or_instance_id = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])

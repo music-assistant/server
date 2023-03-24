@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.config_entries import ConfigEntryValue, ProviderConfig
+from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import ProviderFeature, ProviderType
 from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
 from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
@@ -37,14 +37,9 @@ class Provider:
         """Return the features supported by this Provider."""
         return tuple()
 
-    async def setup(self) -> None:
-        """Handle async initialization of the provider.
-
-        Called when provider is registered (or its config updated).
+    async def unload(self) -> None:
         """
-
-    async def close(self) -> None:
-        """Handle close/cleanup of the provider.
+        Handle unload/close of the provider.
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
@@ -74,14 +69,6 @@ class Provider:
             postfix = self.instance_id[:-8]
             return f"{self.manifest.name}.{postfix}"
         return self.manifest.name
-
-    @property
-    def config_entries(self) -> list[ConfigEntryValue]:
-        """Return list of all ConfigEntries including values for this provider(instance)."""
-        return [
-            ConfigEntryValue.parse(x, self.config.values.get(x.key))
-            for x in self.manifest.config_entries
-        ]
 
     def to_dict(self, *args, **kwargs) -> ProviderInstance:  # noqa: ARG002
         """Return Provider(instance) as serializable dict."""

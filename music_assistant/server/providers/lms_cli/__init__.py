@@ -3,12 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import urllib.parse
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.util import select_free_port
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import PlayerState
 from music_assistant.server.models.plugin import PluginProvider
 
@@ -23,10 +24,33 @@ from .models import (
     player_status_from_mass,
 )
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
+
+
 # ruff: noqa: ARG002, E501
 
 ArgsType = list[int | str]
 KwargsType = dict[str, Any]
+
+
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = LmsCli(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return tuple()  # we do not have any config entries (yet)
 
 
 def parse_value(raw_value: int | str) -> int | str | tuple[str, int | str]:
@@ -64,15 +88,23 @@ class LmsCli(PluginProvider):
 
     cli_port: int = 9090
 
-    async def setup(self) -> None:
+    async def handle_setup(self) -> None:
         """Handle async initialization of the plugin."""
         self.logger.info("Registering jsonrpc endpoints on the webserver")
-        self.mass.webapp.router.add_get("/jsonrpc.js", self._handle_jsonrpc)
-        self.mass.webapp.router.add_post("/jsonrpc.js", self._handle_jsonrpc)
+        self.mass.webserver.register_route("/jsonrpc.js", self._handle_jsonrpc)
+        self.mass.webserver.register_route("/cometd", self._handle_cometd)
         # setup (telnet) cli for players requesting basic info on that port
         self.cli_port = await select_free_port(9090, 9190)
         self.logger.info("Starting (telnet) CLI on port %s", self.cli_port)
-        await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port),
+        await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port)
+
+    async def unload(self) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+        self.mass.webserver.unregister_route("/jsonrpc.js")
 
     async def _handle_cli_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -180,6 +212,10 @@ class LmsCli(PluginProvider):
                 }
             # return the response to the client
             return web.json_response(result, dumps=json_dumps)
+
+    async def _handle_cometd(self, request: web.Request) -> web.Response:
+        """Handle request for image proxy."""
+        return web.Response(status=404)
 
     def _handle_players(
         self,

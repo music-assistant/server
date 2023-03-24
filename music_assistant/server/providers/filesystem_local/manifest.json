@@ -3,32 +3,9 @@
   "domain": "filesystem_local",
   "name": "Local Filesystem",
   "description": "Support for music files that are present on a local accessible disk/folder.",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-    {
-      "key": "path",
-      "type": "string",
-      "label": "Path",
-      "default_value": "/media"
-    },
-    {
-      "key": "missing_album_artist_action",
-      "type": "string",
-      "label": "Action when a track is missing the Albumartist ID3 tag",
-      "default_value": "skip",
-      "description": "Music Assistant prefers information stored in ID3 tags and only uses online sources for additional metadata. This means that the ID3 tags need to be accurate, preferably tagged with MusicBrainz Picard.",
-      "advanced": true,
-      "required": false,
-      "options": [
-        { "title": "Skip track and log warning", "value": "skip" },
-        { "title": "Use Track artist(s)", "value": "track_artist" },
-        { "title": "Use Various Artists", "value": "various_artists" }
-      ]
-    }
-  ],
-
+  "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
   "multi_instance": true,
-  "init_class": "LocalFileSystemProvider"
+  "icon": "mdi:mdi-harddisk"
 }

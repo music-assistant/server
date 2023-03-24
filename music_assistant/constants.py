@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b10"
+__version__: Final[str] = "2.0.0b12"
 
 SCHEMA_VERSION: Final[int] = 19
 
@@ -23,10 +23,6 @@ SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
 
 # if duration is None (e.g. radio stream):Final[str] = 48 hours
 FALLBACK_DURATION: Final[int] = 172800
-
-# Name of the environment-variable to override base_url
-BASE_URL_OVERRIDE_ENVNAME: Final[str] = "MASS_BASE_URL"
-
 
 # config keys
 CONF_SERVER_ID: Final[str] = "server_id"
@@ -48,6 +44,7 @@ CONF_EQ_TREBLE: Final[str] = "eq_treble"
 CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_LOG_LEVEL: Final[str] = "log_level"
+CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

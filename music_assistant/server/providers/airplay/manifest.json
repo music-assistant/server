@@ -3,13 +3,12 @@
   "domain": "airplay",
   "name": "Airplay",
   "description": "Support for players that support the Airplay protocol.",
-  "codeowners": ["@marcelveldt"],
-  "config_entries": [
-  ],
+  "codeowners": ["@music-assistant"],
   "requirements": [],
   "documentation": "",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
-  "depends_on": "slimproto"
+  "depends_on": "slimproto",
+  "icon": "md:airplay"
 }
