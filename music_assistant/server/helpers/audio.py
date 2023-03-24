@@ -741,10 +741,12 @@ async def _get_ffmpeg_args(
     # generic args
     generic_args = [
         "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "quiet",
-        "-ignore_unknown",
+        # "-hide_banner",
+        # "-loglevel",
+        # "quiet",
+        # "-ignore_unknown",
+        "-movflags",
+        "faststart",
     ]
     # collect input args
     input_args = []
