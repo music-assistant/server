@@ -9,16 +9,20 @@ from plexapi.audio import Track as PlexTrack
 from plexapi.audio import Playlist as PlexPlaylist
 from plexapi.audio import Artist as PlexArtist
 
-from music_assistant.common.models.enums import ProviderFeature, MediaType, ImageType, ContentType
+from music_assistant.common.models.config_entries import ProviderConfig, ConfigEntry
+from music_assistant.common.models.enums import ProviderFeature, MediaType, ImageType, ContentType, ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed, InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import StreamDetails, Track, Playlist, Album, Artist, \
     MediaItemImage, ProviderMapping, SearchResults
+from music_assistant.common.models.provider import ProviderManifest
+from music_assistant.server import MusicAssistant
+from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from plexapi.server import PlexServer
 
-AUTH_TOKEN = "token"
-SERVER_NAME = "server"
-LIBRARY_NAME = "library"
+CONF_AUTH_TOKEN = "token"
+CONF_SERVER_NAME = "server"
+CONF_LIBRARY_NAME = "library"
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -31,21 +35,47 @@ SUPPORTED_FEATURES = (
 )
 
 
+async def setup(
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+) -> ProviderInstanceType:
+    """Initialize provider(instance) with given configuration."""
+    prov = PlexProvider(mass, manifest, config)
+    await prov.handle_setup()
+    return prov
+
+
+async def get_config_entries(
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+) -> tuple[ConfigEntry, ...]:
+    """Return Config entries to setup this provider."""
+    return (
+        ConfigEntry(
+            key=CONF_SERVER_NAME, type=ConfigEntryType.STRING, label="Server", required=True
+        ),
+        ConfigEntry(
+            key=CONF_LIBRARY_NAME, type=ConfigEntryType.STRING, label="Library", required=True
+        ),
+        ConfigEntry(
+            key=CONF_AUTH_TOKEN, type=ConfigEntryType.SECURE_STRING, label="Token", required=True
+        ),
+    )
+
+
 class PlexProvider(MusicProvider):
     _plex_server: PlexServer = None
     _plex_library: PlexMusicSection = None
 
-    async def setup(self) -> None:
-        if not self.config.get_value(AUTH_TOKEN):
+    async def handle_setup(self) -> None:
+        if not self.config.get_value(CONF_AUTH_TOKEN):
             raise LoginFailed("Invalid login credentials")
 
         def connect():
-            plex_account = MyPlexAccount(token=self.config.get_value(AUTH_TOKEN))
-            return plex_account.resource(self.config.get_value(SERVER_NAME)).connect()
+            plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
+            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect()
 
         self._plex_server = await self._run_async(connect)
         self._plex_library = await self._run_async(self._plex_server.library.section,
-                                                   self.config.get_value(LIBRARY_NAME))
+                                                   self.config.get_value(CONF_LIBRARY_NAME))
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
