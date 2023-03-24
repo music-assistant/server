@@ -1,44 +1,32 @@
 """Tidal musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
-import asyncio
-import json
 import os
-import platform
-import time
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from json.decoder import JSONDecodeError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
-import aiohttp
-import tidalapi
 from asyncio_throttle import Throttler
 
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumType,
     Artist,
-    BrowseFolder,
     ContentType,
     ImageType,
     MediaItemImage,
-    MediaType,
     Playlist,
     ProviderMapping,
-    Radio,
     StreamDetails,
     Track,
 )
-from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
+from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.server import MusicAssistant
 from music_assistant.server.helpers.app_vars import app_var
-from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -55,6 +43,7 @@ from .helpers import (
     get_playlist_tracks,
     get_track,
     get_track_url,
+    tidal_session,
 )
 
 if TYPE_CHECKING:
@@ -94,14 +83,13 @@ class TidalProvider(MusicProvider):
     _refresh_token: str | None = None
     _expiry_time: datetime | None = None
     _tidal_user: str | None = None
-    _tidal_session: tidalapi.Session | None = None
+    _tidal_session: str | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=0.1)
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
-
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
         # try login which will raise if it fails
@@ -121,18 +109,17 @@ class TidalProvider(MusicProvider):
 
     async def login(self) -> dict:
         """Log-in Tidal and return tokeninfo."""
-        session = tidalapi.Session()
-        if self._access_token:
-            session.load_oauth_session(
-                self._token_type, self._access_token, self._refresh_token, self._expiry_time
-            )
-        else:
-            session.login_oauth_simple()
-            self._token_type = session.token_type
-            self._access_token = session.access_token
-            self._refresh_token = session.refresh_token
-            self._expiry_time = session.expiry_time
-            self._tidal_user = session.user
+        session = await tidal_session(
+            self._token_type,
+            self._access_token,
+            self._refresh_token,
+            self._expiry_time,
+        )
+        self._token_type = session.token_type
+        self._access_token = session.access_token
+        self._refresh_token = session.refresh_token
+        self._expiry_time = session.expiry_time
+        self._tidal_user = session.user
         self._tidal_session = session
         return None
 

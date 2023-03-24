@@ -7,6 +7,7 @@ This also nicely separates the parsing logic from the Tidal provider logic.
 """
 
 import asyncio
+import webbrowser
 from copy import copy
 
 import tidalapi
@@ -21,6 +22,25 @@ def fetched_user_parse(self, json_obj):
 
 
 tidalapi.FetchedUser.parse = fetched_user_parse
+
+
+async def tidal_session(
+    token_type, access_token, refresh_token=None, expiry_time=None
+) -> tidalapi.Session:
+    """Async wrapper around the tidalapi Session function."""
+
+    def _tidal_session():
+        session = tidalapi.Session()
+        if access_token != None:
+            session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
+        else:
+            login, future = session.login_oauth()
+            webbrowser.open(f"https://{login.verification_uri_complete}")
+            result = future.result()
+
+        return session
+
+    return await asyncio.to_thread(_tidal_session)
 
 
 async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[str, str]:
