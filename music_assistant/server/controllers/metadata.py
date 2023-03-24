@@ -102,7 +102,7 @@ class MetaDataController:
             self.scan_busy = False
             LOGGER.info("Finished scan for missing artist metadata")
 
-        # self.mass.create_task(scan_artist_metadata)
+        self.mass.create_task(scan_artist_metadata)
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
