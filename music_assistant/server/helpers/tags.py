@@ -9,6 +9,7 @@ from json import JSONDecodeError
 from typing import Any
 
 from music_assistant.common.helpers.util import try_parse_int
+from music_assistant.common.models.enums import AlbumType
 from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
@@ -26,7 +27,9 @@ def split_items(org_str: str) -> tuple[str, ...]:
         return tuple()
     if isinstance(org_str, list):
         return org_str
-    return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
+    if TAG_SPLITTER in org_str:
+        return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
+    return (org_str.strip(),)
 
 
 def split_artists(org_artists: str | tuple[str, ...]) -> tuple[str, ...]:
@@ -72,6 +75,16 @@ class AudioTags:
         return title
 
     @property
+    def version(self) -> str:
+        """Return version tag (as-is)."""
+        if tag := self.tags.get("version"):
+            return tag
+        if (tag := self.tags.get("album_type")) and "live" in tag.lower():
+            # yes, this can happen
+            return "Live"
+        return ""
+
+    @property
     def album(self) -> str:
         """Return album tag (as-is) if present."""
         return self.tags.get("album")
@@ -84,7 +97,7 @@ class AudioTags:
             return split_items(tag)
         # fallback to regular artist string
         if tag := self.tags.get("artist"):
-            if ";" in tag:
+            if TAG_SPLITTER in tag:
                 return split_items(tag)
             return split_artists(tag)
         # fallback to parsing from filename
@@ -103,7 +116,7 @@ class AudioTags:
             return split_items(tag)
         # fallback to regular artist string
         if tag := self.tags.get("albumartist"):
-            if ";" in tag:
+            if TAG_SPLITTER in tag:
                 return split_items(tag)
             return split_artists(tag)
         return tuple()
@@ -161,11 +174,17 @@ class AudioTags:
         return self.tags.get("musicbrainzreleasetrackid")
 
     @property
-    def album_type(self) -> str | None:
+    def album_type(self) -> AlbumType:
         """Return albumtype tag if present."""
-        if tag := self.tags.get("musicbrainzalbumtype"):
-            return tag
-        return self.tags.get("releasetype")
+        tag = self.tags.get("musicbrainzalbumtype", self.tags.get("musicbrainzalbumtype"))
+        if tag is None:
+            return AlbumType.UNKNOWN
+        # the album type tag is messy within id3 and may even contain multiple types
+        # try to parse one in order of preference
+        for album_type in (AlbumType.COMPILATION, AlbumType.EP, AlbumType.SINGLE, AlbumType.ALBUM):
+            if album_type.value in tag.lower():
+                return album_type
+        return AlbumType.UNKNOWN
 
     @classmethod
     def parse(cls, raw: dict) -> AudioTags:

@@ -388,7 +388,7 @@ class FileSystemProviderBase(MusicProvider):
         input_file = file_item.local_path or self.read_file_content(file_item.absolute_path)
         tags = await parse_tags(input_file, file_item.file_size)
 
-        name, version = parse_title_and_version(tags.title)
+        name, version = parse_title_and_version(tags.title, tags.version)
         track = Track(
             item_id=file_item.path,
             provider=self.domain,
