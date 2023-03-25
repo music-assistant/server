@@ -135,4 +135,4 @@ convention = "pep257"
 max-branches=25
 max-returns=15
 max-args=10
-max-statements=51
+max-statements=50
