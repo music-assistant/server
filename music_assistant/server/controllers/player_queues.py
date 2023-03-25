@@ -143,6 +143,9 @@ class PlayerQueuesController:
             LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
 
+        if option == QueueOption.REPLACE:
+            self.clear(queue_id)
+
         # a single item or list of items may be provided
         if not isinstance(media, list):
             media = [media]
@@ -197,7 +200,6 @@ class PlayerQueuesController:
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            self.clear(queue_id)
             self.load(queue_id, queue_items=queue_items, shuffle=shuffle)
             await self.play_index(queue_id, 0)
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
