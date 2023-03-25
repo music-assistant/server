@@ -17,6 +17,9 @@ RUN set -x \
     && apt-get install -y --no-install-recommends \
         build-essential \
         libffi-dev \
+        gcc \
+        krb5-devel \
+        krb5-workstation \
         cargo \
         git
 

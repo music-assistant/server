@@ -112,7 +112,7 @@ class MusicAssistant:
             task.cancel()
         # cleanup all providers
         for prov_id in list(self._providers.keys()):
-            await self.unload_provider(prov_id)
+            asyncio.create_task(self.unload_provider(prov_id))
         # stop core controllers
         await self.streams.close()
         await self.webserver.close()

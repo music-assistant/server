@@ -5,7 +5,7 @@ from typing import Final
 
 __version__: Final[str] = "2.0.0b15"
 
-SCHEMA_VERSION: Final[int] = 20
+SCHEMA_VERSION: Final[int] = 21
 
 ROOT_LOGGER_NAME: Final[str] = "music_assistant"
 

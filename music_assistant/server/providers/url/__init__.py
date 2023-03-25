@@ -164,7 +164,7 @@ class URLProvider(MusicProvider):
         item_id, url, media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=ContentType.try_parse(media_info.format),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
