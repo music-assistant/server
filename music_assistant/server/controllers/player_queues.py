@@ -203,7 +203,7 @@ class PlayerQueuesController:
             await self.play_index(queue_id, 0)
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         elif option == QueueOption.NEXT:
-            await self.load(
+            self.load(
                 queue_id,
                 queue_items=queue_items,
                 insert_at_index=cur_index + 1,

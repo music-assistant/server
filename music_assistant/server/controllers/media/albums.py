@@ -82,14 +82,21 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance: str | None = None,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        if "database" not in (provider_domain, provider_instance):
-            # return provider album tracks
-            return await self._get_provider_album_tracks(
-                item_id, provider_domain or provider_instance
-            )
+        if "database" in (provider_domain, provider_instance):
+            if db_result := await self._get_db_album_tracks(item_id):
+                return db_result
+            # no results in db (yet), grab provider details
+            if db_album := await self.get_db_item(item_id):
+                for prov_mapping in db_album.provider_mappings:
+                    # returns the first provider that is available
+                    if not prov_mapping.available:
+                        continue
+                    return await self._get_provider_album_tracks(
+                        prov_mapping.item_id, provider_instance=prov_mapping.provider_instance
+                    )
 
-        # db_album requested: get results from first (non-file) provider
-        return await self._get_db_album_tracks(item_id)
+        # return provider album tracks
+        return await self._get_provider_album_tracks(item_id, provider_domain or provider_instance)
 
     async def versions(
         self,
@@ -134,12 +141,12 @@ class AlbumsController(MediaControllerBase[Album]):
         await self._match(db_item)
         # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
-        # dump album tracks in db
+        # preload album tracks in db
         for prov_mapping in db_item.provider_mappings:
             for track in await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
             ):
-                await self.mass.music.tracks.add_db_item(track)
+                await self.mass.music.tracks.get(track.item_id, track.provider, details=track)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
             db_item.uri,
