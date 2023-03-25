@@ -14,6 +14,7 @@ from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
     Artist,
+    DbAlbum,
     ItemMapping,
     MediaType,
     Track,
@@ -31,7 +32,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
     db_table = DB_TABLE_ALBUMS
     media_type = MediaType.ALBUM
-    item_cls = Album
+    item_cls = DbAlbum
 
     def __init__(self, *args, **kwargs):
         """Initialize class."""

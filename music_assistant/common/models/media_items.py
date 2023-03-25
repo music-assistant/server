@@ -319,6 +319,13 @@ class Album(MediaItem):
         return hash((self.provider, self.item_id))
 
 
+@dataclass
+class DbAlbum(Album):
+    """Model for an album when retrieved from the db."""
+
+    artists: list[ItemMapping] = field(default_factory=list)
+
+
 @dataclass(frozen=True)
 class TrackAlbumMapping(ItemMapping):
     """Model for a track that is mapped to an album."""
@@ -380,6 +387,16 @@ class Track(MediaItem):
         Podcast or AudioBook.
         """
         return self.metadata and self.metadata.chapters and len(self.metadata.chapters) > 1
+
+
+@dataclass
+class DbTrack(Track):
+    """Model for a track when retrieved from the db."""
+
+    artists: list[ItemMapping] = field(default_factory=list)
+    # album track only
+    album: ItemMapping | None = None
+    albums: list[TrackAlbumMapping] = field(default_factory=list)
 
 
 @dataclass

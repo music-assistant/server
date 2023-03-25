@@ -10,6 +10,7 @@ from music_assistant.common.models.errors import MediaNotFoundError, Unsupported
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    DbTrack,
     ItemMapping,
     Track,
     TrackAlbumMapping,
@@ -29,7 +30,7 @@ class TracksController(MediaControllerBase[Track]):
 
     db_table = DB_TABLE_TRACKS
     media_type = MediaType.TRACK
-    item_cls = Track
+    item_cls = DbTrack
 
     def __init__(self, *args, **kwargs):
         """Initialize class."""
