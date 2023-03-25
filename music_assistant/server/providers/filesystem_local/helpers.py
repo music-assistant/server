@@ -6,10 +6,12 @@ import os
 from music_assistant.server.helpers.compare import compare_strings
 
 
-def get_parentdir(base_path: str, name: str) -> str | None:
+def get_parentdir(base_path: str, name: str, skip: int = 0) -> str | None:
     """Look for folder name in path (to find dedicated artist or album folder)."""
+    if not base_path:
+        return None
     parentdir = os.path.dirname(base_path)
-    for _ in range(3):
+    for _ in range(skip, 3):
         dirname = parentdir.rsplit(os.sep)[-1]
         dirname = dirname.split("(")[0].split("[")[0].strip()
         if compare_strings(name, dirname, False):

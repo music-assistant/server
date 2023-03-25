@@ -49,6 +49,18 @@ if TYPE_CHECKING:
 
 CONF_ALT_APP = "alt_app"
 
+BASE_PLAYER_CONFIG_ENTRIES = (
+    ConfigEntry(
+        key=CONF_ALT_APP,
+        type=ConfigEntryType.BOOLEAN,
+        label="Use alternate Media app",
+        default_value=False,
+        description="Using the BubbleUPNP Media controller for playback improves "
+        "the playback experience but may not work on non-Google hardware.",
+        advanced=True,
+    ),
+)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -132,19 +144,7 @@ class ChromecastProvider(PlayerProvider):
     def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         cast_player = self.castplayers.get(player_id)
-        entries = (
-            ConfigEntry(
-                key=CONF_ALT_APP,
-                type=ConfigEntryType.BOOLEAN,
-                label="Use alternate Media app",
-                default_value=cast_player
-                and not cast_player.cast_info.is_audio_group
-                and cast_player.cast_info.manufacturer == "Google Inc.",
-                description="Using the BubbleUPNP Media controller for playback improves "
-                "the playback experience but may not work on non-Google hardware.",
-                advanced=True,
-            ),
-        )
+        entries = BASE_PLAYER_CONFIG_ENTRIES
         if (
             cast_player
             and cast_player.cast_info.is_audio_group

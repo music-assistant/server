@@ -508,6 +508,8 @@ class YoutubeMusicProvider(MusicProvider):
             album.metadata.images = await self._parse_thumbnails(album_obj["thumbnails"])
         if "description" in album_obj:
             album.metadata.description = unquote(album_obj["description"])
+        if "isExplicit" in album_obj:
+            album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
             album.artists = [
                 await self._parse_artist(artist)

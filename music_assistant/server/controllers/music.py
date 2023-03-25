@@ -599,6 +599,8 @@ class MusicController:
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
         )
+        # create indexes if needed
+        await self.__create_database_indexes()
         # compact db
         await self.database.execute("VACUUM")
 
@@ -635,12 +637,13 @@ class MusicController:
                     year INTEGER,
                     version TEXT,
                     in_library BOOLEAN DEFAULT 0,
-                    upc TEXT,
+                    barcode TEXT,
                     musicbrainz_id TEXT,
                     artists json,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -652,7 +655,8 @@ class MusicController:
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                     );"""
         )
         await self.database.execute(
@@ -671,7 +675,8 @@ class MusicController:
                     albums json,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -684,8 +689,8 @@ class MusicController:
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0,
-                    UNIQUE(name, owner)
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -696,7 +701,8 @@ class MusicController:
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -711,7 +717,8 @@ class MusicController:
                 );"""
         )
 
-        # create indexes
+    async def __create_database_indexes(self) -> None:
+        """Create database indexes."""
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
         )
@@ -752,4 +759,6 @@ class MusicController:
             "CREATE INDEX IF NOT EXISTS tracks_musicbrainz_id_idx on tracks(musicbrainz_id);"
         )
         await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);")
-        await self.database.execute("CREATE INDEX IF NOT EXISTS albums_upc_idx on albums(upc);")
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS albums_barcode_idx on albums(barcode);"
+        )
