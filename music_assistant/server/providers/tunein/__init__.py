@@ -188,7 +188,7 @@ class TuneInProvider(MusicProvider):
         if item_id.startswith("http"):
             # custom url
             return StreamDetails(
-                provider=self.domain,
+                provider=self.instance_id,
                 item_id=item_id,
                 content_type=ContentType.UNKNOWN,
                 media_type=MediaType.RADIO,

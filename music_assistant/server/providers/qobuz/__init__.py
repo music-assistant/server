@@ -363,7 +363,7 @@ class QobuzProvider(MusicProvider):
         self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
-            provider=self.domain,
+            provider=self.instance_id,
             content_type=content_type,
             duration=streamdata["duration"],
             sample_rate=int(streamdata["sampling_rate"] * 1000),

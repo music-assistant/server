@@ -251,7 +251,7 @@ class SoundcloudMusicProvider(MusicProvider):
         stream_format = track_details[0]["media"]["transcodings"][0]["format"]["mime_type"]
         url = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=ContentType.try_parse(stream_format),
             direct=url,
