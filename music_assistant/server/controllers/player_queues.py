@@ -125,8 +125,7 @@ class PlayerQueuesController:
         self.signal_update(queue_id)
 
     @api_command("players/queue/play_media")
-    async def play_media(
-        # pylint: disable=too-many-statements
+    async def play_media(  # noqa: PLR0915
         self,
         queue_id: str,
         media: MediaItemType | list[MediaItemType] | str | list[str],
