@@ -8,6 +8,7 @@ from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
 from asyncio_throttle import Throttler
+from tidalapi import Session
 
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
@@ -82,8 +83,8 @@ class TidalProvider(MusicProvider):
     _access_token: str | None = None
     _refresh_token: str | None = None
     _expiry_time: datetime | None = None
-    _tidal_user: str | None = None
-    _tidal_session: str | None = None
+    _tidal_user_id: str | None = None
+    _tidal_session: Session | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -107,44 +108,27 @@ class TidalProvider(MusicProvider):
             ProviderFeature.ARTIST_TOPTRACKS,
         )
 
-    async def login(self) -> dict:
-        """Log-in Tidal and return tokeninfo."""
-        session = await tidal_session(
-            self._token_type,
-            self._access_token,
-            self._refresh_token,
-            self._expiry_time,
-        )
-        self._token_type = session.token_type
-        self._access_token = session.access_token
-        self._refresh_token = session.refresh_token
-        self._expiry_time = session.expiry_time
-        self._tidal_user = session.user
-        self._tidal_session = session
-        return None
-
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
-        artists_obj = await get_library_artists(self._tidal_session, self._tidal_user.id)
-
+        artists_obj = await get_library_artists(self._tidal_session, self._tidal_user_id)
         for artist in artists_obj:
             yield await self._parse_artist(artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Tidal."""
-        albums_obj = await get_library_albums(self._tidal_session, self._tidal_user.id)
+        albums_obj = await get_library_albums(self._tidal_session, self._tidal_user_id)
         for album in albums_obj:
             yield await self._parse_album(album)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Tidal."""
-        tracks_obj = await get_library_tracks(self._tidal_session, self._tidal_user.id)
+        tracks_obj = await get_library_tracks(self._tidal_session, self._tidal_user_id)
         for track in tracks_obj:
             yield await self._parse_track(track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
-        playlists_obj = await get_library_playlists(self._tidal_session, self._tidal_user.id)
+        playlists_obj = await get_library_playlists(self._tidal_session, self._tidal_user_id)
         for playlist in playlists_obj:
             yield await self._parse_playlist(playlist)
 
@@ -375,3 +359,20 @@ class TidalProvider(MusicProvider):
         ]
         playlist.metadata.checksum = str(playlist_obj._etag)
         return playlist
+
+    async def login(self) -> dict:
+        """Log-in Tidal and return tokeninfo."""
+        session = await tidal_session(
+            self._tidal_session,
+            self._token_type,
+            self._access_token,
+            self._refresh_token,
+            self._expiry_time,
+        )
+        self._token_type = session.token_type
+        self._access_token = session.access_token
+        self._refresh_token = session.refresh_token
+        self._expiry_time = session.expiry_time
+        self._tidal_user_id = session.user.id
+        self._tidal_session = session
+        return None
