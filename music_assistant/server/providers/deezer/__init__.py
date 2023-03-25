@@ -53,6 +53,7 @@ from .helpers import (
     search_album,
     search_artist,
     search_track,
+    update_access_token,
 )
 
 SUPPORTED_FEATURES = (
@@ -74,7 +75,7 @@ SUPPORTED_FEATURES = (
 
 CONF_APP_ID = "app_id"
 CONF_APP_SECRET = "app_secret"
-CONF_ACCESS_TOKEN = "access_token"
+CONF_AUTHORIZATION_CODE = "authorization_code"
 
 
 async def setup(
@@ -106,11 +107,11 @@ async def get_config_entries(
             description="The APP SECRET you grabbed from deezer developer portal",
         ),
         ConfigEntry(
-            key=CONF_ACCESS_TOKEN,
+            key=CONF_AUTHORIZATION_CODE,
             type=ConfigEntryType.STRING,
-            label="Access token",
+            label="Authorization code",
             required=True,
-            description="The ACCESS TOKEN you got from oauth flow",
+            description="The auth code u got from deezer",
         ),
     )
 
@@ -126,11 +127,12 @@ class DeezerProvider(MusicProvider):
         """Set up the Deezer provider."""
         self._throttler = Throttler(rate_limit=4, period=1)
         self.creds = Credential(
-            self.config.get_value("app_id"),  # type: ignore
-            self.config.get_value("app_secret"),  # type: ignore
-            self.config.get_value("access_token"),  # type: ignore
+            self.config.get_value(CONF_APP_ID),  # type: ignore
+            self.config.get_value(CONF_APP_SECRET),  # type: ignore
+            self.config.get_value(CONF_AUTHORIZATION_CODE),  # type: ignore
         )
         try:
+            self.creds = await update_access_token(mass=self, creds=self.creds)
             self.client = await get_deezer_client(creds=self.creds)
         except Exception:
             raise LoginFailed("Invalid login credentials")
@@ -149,33 +151,71 @@ class DeezerProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         """
         result = SearchResults()
-        if media_types:
-            pass
-        search_results_track = await search_track(client=self.client, query=search_query)
-        index = 0
-        for thing in search_results_track:
-            if index >= limit:
-                break
-            track = await parse_track(self, thing)
-            result.tracks.append(track)
-            index += 1
-        search_results_artists = await search_artist(client=self.client, query=search_query)
-        index = 0
-        for thing in search_results_artists:
-            if index >= limit:
-                break
-            artist = await parse_artist(self, thing)
-            result.artists.append(artist)
-            index += 1
-        search_results_album = await search_album(client=self.client, query=search_query)
-        index = 0
-        for thing in search_results_album:
-            if index >= limit:
-                break
-            album = await parse_album(self, thing)
-            result.albums.append(album)
-            index += 1
-        return result
+        if media_types and len(media_types) > 0:  # type: ignore
+            for media_type in media_types:
+                if media_type == MediaType.TRACK:
+                    search_results_track = await search_track(
+                        client=self.client, query=search_query
+                    )
+                    index = 0
+                    for thing in search_results_track:
+                        if index >= limit:
+                            break
+                        track = await parse_track(self, thing)
+                        result.tracks.append(track)
+                        index += 1
+                elif media_type == MediaType.ARTIST:
+                    search_results_artists = await search_artist(
+                        client=self.client, query=search_query
+                    )
+                    index = 0
+                    for thing in search_results_artists:
+                        if index >= limit:
+                            break
+                        artist = await parse_artist(self, thing)
+                        result.artists.append(artist)
+                    index += 1
+                elif media_type == MediaType.ALBUM:
+                    search_results_album = await search_album(
+                        client=self.client, query=search_query
+                    )
+                    index = 0
+                    for thing in search_results_album:
+                        if index >= limit:
+                            break
+                        album = await parse_album(self, thing)
+                        result.albums.append(album)
+                        index += 1
+            return result
+        else:
+            # Add tracks
+            search_results_album = await search_album(client=self.client, query=search_query)
+            search_results_track = await search_track(client=self.client, query=search_query)
+            search_results_artists = await search_artist(client=self.client, query=search_query)
+            index = 0
+            for thing in search_results_track:
+                if index >= limit:
+                    break
+                track = await parse_track(self, thing)
+                result.tracks.append(track)
+                index += 1
+            # Add artists
+            index = 0
+            for thing in search_results_artists:
+                if index >= limit:
+                    break
+                artist = await parse_artist(self, thing)
+                result.artists.append(artist)
+                index += 1
+            # Add albums
+            index = 0
+            for thing in search_results_album:
+                if index >= limit:
+                    break
+                album = await parse_album(self, thing)
+                result.albums.append(album)
+                index += 1
+            return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Deezer."""

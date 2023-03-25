@@ -17,12 +17,7 @@ from time import time
 import aiohttp
 import deezer
 
-from music_assistant.common.models.enums import (
-    AlbumType,
-    ContentType,
-    ImageType,
-    MediaType,
-)
+from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -37,15 +32,17 @@ from music_assistant.common.models.media_items import (
 class Credential:
     """Class for storing credentials."""
 
-    def __init__(self, app_id: int, app_secret: str, access_token: str):
+    def __init__(self, app_id: int, app_secret: str, authorization_code: str):
         """Set the correct things."""
         self.app_id = app_id
         self.app_secret = app_secret
-        self.access_token = access_token
+        self.authorization_code = authorization_code
 
     app_id: int
     app_secret: str
+    authorization_code: str
     access_token: str
+    expiration_date: int
 
 
 async def get_deezer_client(creds: Credential = None) -> deezer.Client:  # type: ignore
@@ -338,11 +335,50 @@ async def _get_http(mass, url, params, headers):
         return result
 
 
-async def _post_http(mass, url, data, params, headers):
+async def update_access_token(mass, creds: Credential) -> Credential:
+    """Update the access_token."""
+    response = await _post_http(
+        mass=mass,
+        url="https://connect.deezer.com/oauth/access_token.php",
+        data={
+            "code": creds.authorization_code,
+            "app_id": creds.app_id,
+            "secret": creds.app_secret,
+        },
+        params={
+            "code": creds.authorization_code,
+            "app_id": creds.app_id,
+            "secret": creds.app_secret,
+        },
+        headers=None,
+    )
+    print(response.text)
+    print(
+        {
+            "code": creds.authorization_code,
+            "app_id": creds.app_id,
+            "secret": creds.app_secret,
+        }
+    )
+    creds.access_token = response["access_token"]
+    creds.expiration_date = time() + response["expires"]
+    return creds
+
+
+async def _post_http(mass, url, data, params=None, headers=None):
     async with mass.mass.http_session.post(
         url, headers=headers, params=params, json=data, verify_ssl=False
     ) as response:
-        return await response.json()
+        if response.status != 200:
+            raise Exception(f"HTTP Error {response.status}: {response.reason}")
+        response_text = await response.text()
+        print(response_text)
+        print(data)
+        try:
+            response_json = json.loads(response_text)
+            return response_json
+        except json.JSONDecodeError:
+            raise Exception(f"Failed to parse response as JSON: {response_text}")
 
 
 async def get_url(mass, track_id, creds: Credential) -> str:
@@ -362,25 +398,22 @@ async def get_url(mass, track_id, creds: Credential) -> str:
 
 async def parse_artist(mass, artist: deezer.Artist) -> Artist:
     """Parse the deezer-python artist to a MASS artist."""
-    if isinstance(artist, deezer.Artist):
-        artst = Artist(
-            item_id=str(artist.id),
-            provider=mass.domain,
-            name=artist.name,
-            media_type=MediaType.ARTIST,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=str(artist.id),
-                    provider_domain=mass.domain,
-                    provider_instance=mass.instance_id,
-                    content_type=ContentType.MP3,
-                )
-            },
-            metadata=await parse_metadata_artist(artist=artist),
-        )
-        return artst
-    else:
-        raise TypeError("var track must be of type Track")
+    artst = Artist(
+        item_id=str(artist.id),
+        provider=mass.domain,
+        name=artist.name,
+        media_type=MediaType.ARTIST,
+        provider_mappings={
+            ProviderMapping(
+                item_id=str(artist.id),
+                provider_domain=mass.domain,
+                provider_instance=mass.instance_id,
+                content_type=ContentType.MP3,
+            )
+        },
+        metadata=await parse_metadata_artist(artist=artist),
+    )
+    return artst
 
 
 async def parse_album_type(album_type: str) -> AlbumType:
