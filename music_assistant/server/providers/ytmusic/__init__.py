@@ -429,7 +429,7 @@ class YoutubeMusicProvider(MusicProvider):
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         stream_details = StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=ContentType.try_parse(stream_format["mimeType"]),
             direct=url,

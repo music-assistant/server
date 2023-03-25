@@ -69,6 +69,7 @@ PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
+IGNORE_DIRS = ("recycle", "Recently-Snaphot")
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -530,7 +531,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(item_id)
 
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=prov_mapping.content_type,
             media_type=MediaType.TRACK,

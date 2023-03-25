@@ -138,6 +138,7 @@ class PlayerQueuesController:
         - queue_opt: Which enqueue mode to use.
         - radio_mode: Enable radio mode for the given item(s).
         """
+        # ruff: noqa: PLR0915
         # pylint: disable=too-many-branches
         queue = self._queues[queue_id]
         if queue.announcement_in_progress:
@@ -219,6 +220,8 @@ class PlayerQueuesController:
             )
         # handle play: replace current loaded/playing index with new item(s)
         elif option == QueueOption.PLAY:
+            if cur_index <= len(self._queue_items[queue_id]) - 1:
+                cur_index = 0
             self.load(
                 queue_id,
                 queue_items=queue_items,
