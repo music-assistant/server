@@ -69,6 +69,7 @@ PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
+IGNORE_DIRS = ("recycle", "Recently-Snaphot")
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,

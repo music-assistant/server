@@ -17,6 +17,7 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.providers.filesystem_local.base import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    IGNORE_DIRS,
     FileSystemItem,
     FileSystemProviderBase,
 )
@@ -169,7 +170,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """
         abs_path = get_absolute_path(self._root_path, path)
         for entry in await asyncio.to_thread(smbclient.scandir, abs_path):
-            if entry.name.startswith("."):
+            if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
                 # skip invalid/system files and dirs
                 continue
             item = await create_item(self._root_path, entry)
