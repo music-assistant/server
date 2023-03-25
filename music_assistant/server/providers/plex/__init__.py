@@ -16,6 +16,11 @@ from music_assistant.common.models.media_items import StreamDetails, Track, Play
     MediaItemImage, ProviderMapping, SearchResults
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.server import MusicAssistant
+from aiohttp import ClientTimeout
+
+from music_assistant.server.helpers.audio import get_http_stream, get_media_stream
+from music_assistant.server.helpers.playlists import fetch_playlist
+from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from plexapi.server import PlexServer
@@ -36,7 +41,7 @@ SUPPORTED_FEATURES = (
 
 
 async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+        mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = PlexProvider(mass, manifest, config)
@@ -45,7 +50,7 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+        mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
@@ -392,11 +397,38 @@ class PlexProvider(MusicProvider):
 
         media = plex_track.media[0]
 
+        media_type = ContentType.try_parse(media.container)
+
+        if media_type != ContentType.M4A:
+            return StreamDetails(
+                item_id=plex_track.key,
+                provider=self.domain,
+                content_type=ContentType.try_parse(media.container),
+                duration=plex_track.duration,
+                channels=media.audioChannels,
+                direct=self._plex_server.url(media.parts[0].key, True),
+                data=plex_track,
+            )
+
+        url = plex_track.getStreamURL()
+        media_info = await parse_tags(url)
+
         return StreamDetails(
             item_id=plex_track.key,
             provider=self.domain,
-            content_type=ContentType.try_parse(media.container),
-            duration=plex_track.duration,
-            channels=media.audioChannels,
-            direct=self._plex_server.url(media.parts[0].key, True),
+            content_type=ContentType.try_parse(media_info.format),
+            sample_rate=media_info.sample_rate,
+            bit_depth=media_info.bits_per_sample,
+            data=plex_track,
         )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        url = streamdetails.data.getStreamURL(offset=seek_position)
+
+        timeout = ClientTimeout(total=0, connect=30, sock_read=600)
+        async with self.mass.http_session.get(url, timeout=timeout) as resp:
+            async for chunk in resp.content.iter_any():
+                yield chunk
