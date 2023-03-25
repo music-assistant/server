@@ -276,13 +276,11 @@ class TracksController(MediaControllerBase[Track]):
         metadata = cur_item.metadata.update(item.metadata, is_file_provider)
         provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
         cur_item.isrc.update(item.isrc)
-        # ID3 tags from file providers are leading for core metadata
         if is_file_provider:
             track_artists = await self._get_track_artists(item)
-            track_albums = await self._get_track_albums(item)
         else:
             track_artists = await self._get_track_artists(cur_item, item)
-            track_albums = await self._get_track_albums(cur_item, item)
+        track_albums = await self._get_track_albums(cur_item, item)
 
         await self.mass.music.database.update(
             self.db_table,

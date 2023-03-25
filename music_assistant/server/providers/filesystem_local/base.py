@@ -594,8 +594,12 @@ class FileSystemProviderBase(MusicProvider):
 
         # album
         if tags.album:
-            # work out if we have an album folder
-            album_dir = get_parentdir(file_item.path, tags.album)
+            # work out if we have an album and/or disc folder
+            # disc_dir is the folder level where the tracks are located
+            # this may be a separate disc folder (Disc 1, Disc 2 etc) underneath the album folder
+            # or this is an album folder with the disc attached
+            disc_dir = get_parentdir(file_item.path, f"disc {tags.disc or ''}")
+            album_dir = get_parentdir(disc_dir or file_item.path, tags.album)
 
             # album artist(s)
             if tags.album_artists:
@@ -634,6 +638,7 @@ class FileSystemProviderBase(MusicProvider):
             track.album = await self._parse_album(
                 tags.album,
                 album_dir,
+                disc_dir,
                 artists=album_artists,
             )
         else:
@@ -653,19 +658,20 @@ class FileSystemProviderBase(MusicProvider):
                     artist.musicbrainz_id = tags.musicbrainz_artistids[index]
             track.artists.append(artist)
 
-        # cover image - prefer album image, fallback to embedded
-        if track.album and track.album.image:
-            track.metadata.images = [track.album.image]
-        elif tags.has_cover_image:
+        # cover image - prefer embedded image, fallback to album cover
+        if tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
                 MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
             ]
-            if track.album:
-                # set embedded cover on album
-                track.album.metadata.images = track.metadata.images
+        elif track.album.image:
+            track.metadata.images = [track.album.image]
+
+        if track.album and not track.album.metadata.images:
+            # set embedded cover on album if it does not have one yet
+            track.album.metadata.images = track.metadata.images
 
         # parse other info
         track.duration = tags.duration or 0
@@ -755,12 +761,13 @@ class FileSystemProviderBase(MusicProvider):
             if genre := info.get("genre"):
                 artist.metadata.genres = set(split_items(genre))
         # find local images
-        artist.metadata.images = await self._get_local_images(artist_path) or None
+        if images := await self._get_local_images(artist_path):
+            artist.metadata.images = images
 
         return artist
 
     async def _parse_album(
-        self, name: str | None, album_path: str | None, artists: list[Artist]
+        self, name: str | None, album_path: str | None, disc_path: str | None, artists: list[Artist]
     ) -> Album | None:
         """Lookup metadata in Album folder."""
         assert (name or album_path) and artists
@@ -785,34 +792,40 @@ class FileSystemProviderBase(MusicProvider):
             # return basic object if there is no dedicated album folder
             return album
 
-        nfo_file = os.path.join(album_path, "album.nfo")
-        if await self.exists(nfo_file):
-            # found NFO file with metadata
-            # https://kodi.wiki/view/NFO_files/Artists
-            data = b""
-            async for chunk in self.read_file_content(nfo_file):
-                data += chunk
-            info = await asyncio.to_thread(xmltodict.parse, data)
-            info = info["album"]
-            album.name = info.get("title", info.get("name", name))
-            if sort_name := info.get("sortname"):
-                album.sort_name = sort_name
-            if musicbrainz_id := info.get("musicbrainzreleasegroupid"):
-                album.musicbrainz_id = musicbrainz_id
-            if mb_artist_id := info.get("musicbrainzalbumartistid"):  # noqa: SIM102
-                if album.artist and not album.artist.musicbrainz_id:
-                    album.artist.musicbrainz_id = mb_artist_id
-            if description := info.get("review"):
-                album.metadata.description = description
-            if year := info.get("year"):
-                album.year = int(year)
-            if genre := info.get("genre"):
-                album.metadata.genres = set(split_items(genre))
-        # parse name/version
-        album.name, album.version = parse_title_and_version(album.name)
-
-        # find local images
-        album.metadata.images = await self._get_local_images(album_path) or None
+        for folder_path in (disc_path, album_path):
+            if not folder_path:
+                continue
+            nfo_file = os.path.join(folder_path, "album.nfo")
+            if await self.exists(nfo_file):
+                # found NFO file with metadata
+                # https://kodi.wiki/view/NFO_files/Artists
+                data = b""
+                async for chunk in self.read_file_content(nfo_file):
+                    data += chunk
+                info = await asyncio.to_thread(xmltodict.parse, data)
+                info = info["album"]
+                album.name = info.get("title", info.get("name", name))
+                if sort_name := info.get("sortname"):
+                    album.sort_name = sort_name
+                if musicbrainz_id := info.get("musicbrainzreleasegroupid"):
+                    album.musicbrainz_id = musicbrainz_id
+                if mb_artist_id := info.get("musicbrainzalbumartistid"):  # noqa: SIM102
+                    if album.artist and not album.artist.musicbrainz_id:
+                        album.artist.musicbrainz_id = mb_artist_id
+                if description := info.get("review"):
+                    album.metadata.description = description
+                if year := info.get("year"):
+                    album.year = int(year)
+                if genre := info.get("genre"):
+                    album.metadata.genres = set(split_items(genre))
+            # parse name/version
+            album.name, album.version = parse_title_and_version(album.name)
+            # find local images
+            if images := await self._get_local_images(folder_path):
+                if album.metadata.images is None:
+                    album.metadata.images = images
+                else:
+                    album.metadata.images += images
 
         return album
 
