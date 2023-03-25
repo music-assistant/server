@@ -658,19 +658,20 @@ class FileSystemProviderBase(MusicProvider):
                     artist.musicbrainz_id = tags.musicbrainz_artistids[index]
             track.artists.append(artist)
 
-        # cover image - prefer album image, fallback to embedded
-        if track.album and track.album.image:
-            track.metadata.images = [track.album.image]
-        elif tags.has_cover_image:
+        # cover image - prefer embedded image, fallback to album cover
+        if tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
                 MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
             ]
-            if track.album:
-                # set embedded cover on album
-                track.album.metadata.images = track.metadata.images
+        elif track.album.image:
+            track.metadata.images = [track.album.image]
+
+        if track.album and not track.album.metadata.images:
+            # set embedded cover on album if it does not have one yet
+            track.album.metadata.images = track.metadata.images
 
         # parse other info
         track.duration = tags.duration or 0
