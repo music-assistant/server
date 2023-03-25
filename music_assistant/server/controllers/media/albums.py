@@ -349,7 +349,7 @@ class AlbumsController(MediaControllerBase[Album]):
         db_album = await self.get_db_item(item_id)
         # simply grab all tracks in the db that are linked to this album
         # TODO: adjust to json query instead of text search?
-        query = 'SELECT * FROM tracks WHERE albums LIKE "item_id":"{item_id}","provider":"database"'
+        query = f'SELECT * FROM {DB_TABLE_TRACKS} WHERE albums LIKE \'%"item_id":"{item_id}","provider":"database"%\''  # noqa: E501
         result = []
         for track in await self.mass.music.tracks.get_db_items_by_query(query):
             if album_mapping := next(
