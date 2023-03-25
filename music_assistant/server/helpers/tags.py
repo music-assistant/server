@@ -185,7 +185,11 @@ class AudioTags:
             return AlbumType.AUDIOBOOK
         if "podcast" in self.tags.get("genre", "").lower() and len(self.chapters) > 1:
             return AlbumType.PODCAST
-        tag = self.tags.get("musicbrainzalbumtype", self.tags.get("musicbrainzalbumtype"))
+        tag = (
+            self.tags.get("musicbrainzalbumtype")
+            or self.tags.get("albumtype")
+            or self.tags.get("releasetype")
+        )
         if tag is None:
             return AlbumType.UNKNOWN
         # the album type tag is messy within id3 and may even contain multiple types
