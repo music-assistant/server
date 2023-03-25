@@ -421,7 +421,9 @@ class SpotifyProvider(MusicProvider):
         if album_obj.get("images"):
             album.metadata.images = [MediaItemImage(ImageType.THUMB, album_obj["images"][0]["url"])]
         if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            album.upc = album_obj["external_ids"]["upc"]
+            album.barcode.add(album_obj["external_ids"]["upc"])
+        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
+            album.barcode.add(album_obj["external_ids"]["ean"])
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]
         if album_obj.get("release_date"):
@@ -466,7 +468,7 @@ class SpotifyProvider(MusicProvider):
         if "preview_url" in track_obj:
             track.metadata.preview = track_obj["preview_url"]
         if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
-            track.isrc = track_obj["external_ids"]["isrc"]
+            track.isrc.add(track_obj["external_ids"]["isrc"])
         if "album" in track_obj:
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):

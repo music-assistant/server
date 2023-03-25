@@ -100,6 +100,8 @@ class AlbumType(StrEnum):
     SINGLE = "single"
     COMPILATION = "compilation"
     EP = "ep"
+    PODCAST = "podcast"
+    AUDIOBOOK = "audiobook"
     UNKNOWN = "unknown"
 
 
@@ -116,6 +118,7 @@ class ContentType(StrEnum):
     AIFF = "aiff"
     WMA = "wma"
     M4A = "m4a"
+    M4B = "m4b"
     DSF = "dsf"
     WAVPACK = "wv"
     PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
