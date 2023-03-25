@@ -16,6 +16,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DEFAULT_DB_CACHE,
     ROOT_LOGGER_NAME,
+    SCHEMA_VERSION,
 )
 from music_assistant.server.helpers.database import DatabaseConnection
 
@@ -23,7 +24,6 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
-SCHEMA_VERSION = 1
 
 
 class CacheController:

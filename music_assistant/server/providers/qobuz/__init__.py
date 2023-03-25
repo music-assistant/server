@@ -473,11 +473,7 @@ class QobuzProvider(MusicProvider):
             album.metadata.genres = {album_obj["genre"]["name"]}
         if img := self.__get_image(album_obj):
             album.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
-        if len(album_obj["upc"]) == 13:
-            # qobuz writes ean as upc ?!
-            album.upc = album_obj["upc"][1:]
-        else:
-            album.upc = album_obj["upc"]
+        album.barcode.add(album_obj["upc"])
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
         if album_obj.get("released_at"):
@@ -530,7 +526,7 @@ class QobuzProvider(MusicProvider):
             if album:
                 track.album = album
         if track_obj.get("isrc"):
-            track.isrc = track_obj["isrc"]
+            track.isrc.add(track_obj["isrc"])
         if track_obj.get("performers"):
             track.metadata.performers = {x.strip() for x in track_obj["performers"].split("-")}
         if track_obj.get("copyright"):
