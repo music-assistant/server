@@ -143,7 +143,7 @@ class PlayerQueuesController:
             LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
 
-        if option == QueueOption.REPLACE:
+        if option in (QueueOption.PLAY, QueueOption.REPLACE):
             self.clear(queue_id)
 
         # a single item or list of items may be provided
