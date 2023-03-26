@@ -39,6 +39,7 @@ class TracksController(MediaControllerBase[Track]):
         self.mass.register_api_command("music/tracks", self.db_items)
         self.mass.register_api_command("music/track", self.get)
         self.mass.register_api_command("music/track/versions", self.versions)
+        self.mass.register_api_command("music/track/albums", self.albums)
         self.mass.register_api_command("music/track/update", self.update_db_item)
         self.mass.register_api_command("music/track/delete", self.delete_db_item)
         self.mass.register_api_command("music/track/preview", self.get_preview_url)
@@ -79,6 +80,7 @@ class TracksController(MediaControllerBase[Track]):
                     track.album.provider,
                     lazy=True,
                     details=track.album,
+                    add_to_db=add_to_db,
                 )
         except MediaNotFoundError:
             # edge case where playlist track has invalid albumdetails
@@ -88,7 +90,7 @@ class TracksController(MediaControllerBase[Track]):
         for artist in track.artists:
             full_artists.append(
                 await self.mass.music.artists.get(
-                    artist.item_id, artist.provider, lazy=True, details=artist
+                    artist.item_id, artist.provider, lazy=True, details=artist, add_to_db=add_to_db
                 )
             )
         track.artists = full_artists
@@ -124,7 +126,7 @@ class TracksController(MediaControllerBase[Track]):
     ) -> list[Track]:
         """Return all versions of a track we can find on all providers."""
         assert provider_domain or provider_instance, "Provider type or ID must be specified"
-        track = await self.get(item_id, provider_domain or provider_instance)
+        track = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {prov.domain for prov in self.mass.music.providers}
         search_query = f"{track.artist.name} - {track.name}"
@@ -146,6 +148,22 @@ class TracksController(MediaControllerBase[Track]):
 
         # return the aggregated result
         return all_versions.values()
+
+    async def albums(
+        self,
+        item_id: str,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
+    ) -> list[Album]:
+        """Return all albums the track appears on."""
+        assert provider_domain or provider_instance, "Provider type or ID must be specified"
+        track = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
+        return await asyncio.gather(
+            *[
+                self.mass.music.albums.get(album.item_id, album.provider, add_to_db=False)
+                for album in track.albums
+            ]
+        )
 
     async def get_preview_url(self, provider_domain: str, item_id: str) -> str:
         """Return url to short preview sample."""

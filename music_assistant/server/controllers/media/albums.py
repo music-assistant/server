@@ -72,6 +72,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 album.artist.provider,
                 lazy=True,
                 details=album.artist,
+                add_to_db=add_to_db,
             )
         return album
 
@@ -106,7 +107,7 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> list[Album]:
         """Return all versions of an album we can find on all providers."""
         assert provider_domain or provider_instance, "Provider type or ID must be specified"
-        album = await self.get(item_id, provider_domain or provider_instance)
+        album = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {item.domain for item in self.mass.music.providers}
         search_query = f"{album.artist.name} - {album.name}"
@@ -146,7 +147,9 @@ class AlbumsController(MediaControllerBase[Album]):
             for track in await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
             ):
-                await self.mass.music.tracks.get(track.item_id, track.provider, details=track)
+                await self.mass.music.tracks.get(
+                    track.item_id, track.provider, details=track, add_to_db=True
+                )
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
             db_item.uri,

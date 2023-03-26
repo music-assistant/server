@@ -79,7 +79,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return top tracks for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_domain, provider_instance)
+            artist = await self.get(item_id, provider_domain, provider_instance, add_to_db=False)
         # get results from all providers
         coros = [
             self.get_provider_artist_toptracks(
@@ -110,7 +110,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return (all/most popular) albums for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_domain or provider_instance)
+            artist = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
         # get results from all providers
         coros = [
             self.get_provider_artist_albums(
