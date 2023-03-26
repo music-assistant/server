@@ -284,7 +284,9 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        radio_mode = flow_mode or not queue_item.duration
+        radio_mode = (
+            flow_mode or not queue_item.duration or queue_item.media_type == MediaType.RADIO
+        )
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=sonos_player.player_id,
