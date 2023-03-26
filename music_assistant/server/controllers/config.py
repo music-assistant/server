@@ -457,6 +457,8 @@ class ConfigController:
 
     def decrypt_string(self, encrypted_str: str) -> str:
         """Decrypt a (password)string with Fernet."""
+        if not encrypted_str:
+            return encrypted_str
         if not encrypted_str.startswith(ENCRYPT_SUFFIX):
             return encrypted_str
         encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")

@@ -310,8 +310,16 @@ async def parse_tags(
             # feed the file contents to the process
 
             async def chunk_feeder():
+                bytes_read = 0
                 async for chunk in input_file:
                     await proc.write(chunk)
+                    bytes_read += len(chunk)
+
+                if bytes_read > 25 * 1000000:
+                    # this is possibly a m4a file with 'moove atom' metadata at the end of the file
+                    # we'll have to read the entire file to do something with it
+                    # for now we just ignore/deny these files
+                    raise RuntimeError("Tags not present at beginning of file")
 
                 proc.write_eof()
 
