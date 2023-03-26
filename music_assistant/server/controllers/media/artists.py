@@ -404,7 +404,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
                 ref_track = await self.mass.music.tracks.get(  # noqa: PLW2901
-                    ref_track.item_id, ref_track.provider
+                    ref_track.item_id, ref_track.provider, add_to_db=False
                 )
             for search_str in (
                 f"{db_artist.name} - {ref_track.name}",
