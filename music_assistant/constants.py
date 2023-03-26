@@ -45,6 +45,9 @@ CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
+CONF_ACCESS_TOKEN: Final[str] = "access_token"
+CONF_REFRESH_TOKEN: Final[str] = "refresh_token"
+CONF_EXPIRY_TIME: Final[str] = "expiry_time"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

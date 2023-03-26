@@ -33,11 +33,15 @@ async def tidal_session(
     """Async wrapper around the tidalapi Session function."""
 
     def _tidal_session():
-        if tidal_session is None:
+        if access_token is None and tidal_session is None:
             session = tidalapi.Session()
             login, future = session.login_oauth()
             webbrowser.open(f"https://{login.verification_uri_complete}")
             result = future.result()
+            return session
+        elif access_token is not None and tidal_session is None:
+            session = tidalapi.Session()
+            session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
             return session
         else:
             tidal_session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)

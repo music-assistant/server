@@ -2,7 +2,7 @@
   "type": "music",
   "domain": "tidal",
   "name": "Tidal",
-  "description": "Support for the Tidal streaming provider in Music Assistant.",
+  "description": "Support for the Tidal streaming provider in Music Assistant. Just hit save down below and you'll be taken to the Tidal device link page. That's all there is to it!",
   "codeowners": ["@jozefKruszynski"],
   "requirements": ["tidalapi==0.7.0"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/432",
