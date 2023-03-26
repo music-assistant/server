@@ -524,7 +524,7 @@ class PlayerQueuesController:
             player_item_index = self.index_by_id(queue_id, player.current_item_id)
             if player_item_index is None:
                 player_item_index = self._get_player_item_index(queue_id, player.current_url)
-            if queue.flow_mode:
+            if queue.flow_mode and player_item_index is not None:
                 # flow mode active, calculate current item
                 (
                     queue.current_index,
