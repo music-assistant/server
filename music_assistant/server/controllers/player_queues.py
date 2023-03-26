@@ -576,7 +576,7 @@ class PlayerQueuesController:
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
             fill_index = len(self._queue_items[queue_id]) - 5
-            if queue.radio_source and (queue.current_index >= fill_index):
+            if queue.radio_source and queue.current_index and (queue.current_index >= fill_index):
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
