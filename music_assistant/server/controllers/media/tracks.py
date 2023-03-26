@@ -67,13 +67,9 @@ class TracksController(MediaControllerBase[Track]):
         )
         # append full album details to full track item
         try:
-            cur_track_album = track.album
             if album_uri and (album := await self.mass.music.get_item_by_uri(album_uri)):
                 track.album = album
-                # if the track's primary album does not match, copy the image
-                # otherwise it will look weird
-                if album.uri != cur_track_album.uri and album.image:
-                    track.metadata.images = [album.image] + track.metadata.images
+                track.metadata.images = [album.image] + track.metadata.images
             elif track.album:
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
