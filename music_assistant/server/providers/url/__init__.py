@@ -53,6 +53,7 @@ class URLProvider(MusicProvider):
         Called when provider is registered.
         """
         self._full_url = {}
+        # self.mass.register_api_command("music/tracks", self.db_items)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -60,7 +61,7 @@ class URLProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        return await self.parse_item(prov_radio_id)
+        return await self.parse_item(prov_radio_id, force_radio=True)
 
     async def get_artist(self, prov_artist_id: str) -> Track:
         """Get full artist details by id."""
@@ -87,11 +88,13 @@ class URLProvider(MusicProvider):
             return await self.parse_item(prov_item_id)
         raise NotImplementedError
 
-    async def parse_item(self, item_id_or_url: str, force_refresh: bool = False) -> Track | Radio:
+    async def parse_item(
+        self, item_id_or_url: str, force_refresh: bool = False, force_radio: bool = False
+    ) -> Track | Radio:
         """Parse plain URL to MediaItem of type Radio or Track."""
         item_id, url, media_info = await self._get_media_info(item_id_or_url, force_refresh)
         is_radio = media_info.get("icy-name") or not media_info.duration
-        if is_radio:
+        if is_radio or force_radio:
             # treat as radio
             media_item = Radio(
                 item_id=item_id,
@@ -163,6 +166,8 @@ class URLProvider(MusicProvider):
         """Get streamdetails for a track/radio."""
         item_id, url, media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration
+        # we let ffmpeg handle with mpeg dash streams
+        mpeg_dash_stream = ".m3u" in url or ".pls" in url
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -170,7 +175,7 @@ class URLProvider(MusicProvider):
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
             sample_rate=media_info.sample_rate,
             bit_depth=media_info.bits_per_sample,
-            direct=None if is_radio else url,
+            direct=None if is_radio and not mpeg_dash_stream else url,
             data=url,
         )
 
