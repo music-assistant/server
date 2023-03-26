@@ -18,6 +18,7 @@ import aiohttp
 import deezer
 
 from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
+from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -32,17 +33,14 @@ from music_assistant.common.models.media_items import (
 class Credential:
     """Class for storing credentials."""
 
-    def __init__(self, app_id: int, app_secret: str, authorization_code: str):
+    def __init__(self, app_id: int, app_secret: str):
         """Set the correct things."""
         self.app_id = app_id
         self.app_secret = app_secret
-        self.authorization_code = authorization_code
 
     app_id: int
     app_secret: str
-    authorization_code: str
     access_token: str
-    expiration_date: int
 
 
 async def get_deezer_client(creds: Credential = None) -> deezer.Client:  # type: ignore
@@ -210,31 +208,31 @@ async def remove_user_artists(client: deezer.Client, artist_id: int) -> bool:
     return await asyncio.to_thread(_get_artist)
 
 
-async def search_album(client: deezer.Client, query: str) -> deezer.PaginatedList:
+async def search_album(client: deezer.Client, query: str, limit: int = 5) -> list[deezer.Album]:
     """Async wrapper of the deezer-python search_albums function."""
 
     def _search():
-        result = client.search_albums(query=query)
+        result = client.search_albums(query=query)[:limit]
         return result
 
     return await asyncio.to_thread(_search)
 
 
-async def search_track(client: deezer.Client, query: str) -> deezer.PaginatedList:
+async def search_track(client: deezer.Client, query: str, limit: int = 5) -> list[deezer.Track]:
     """Async wrapper of the deezer-python search function."""
 
     def _search():
-        result = client.search(query=query)
+        result = client.search(query=query)[:limit]
         return result
 
     return await asyncio.to_thread(_search)
 
 
-async def search_artist(client: deezer.Client, query: str) -> deezer.PaginatedList:
+async def search_artist(client: deezer.Client, query: str, limit: int = 5) -> list[deezer.Artist]:
     """Async wrapper of the deezer-python search_artist function."""
 
     def _search():
-        result = client.search_artists(query=query)
+        result = client.search_artists(query=query)[:limit]
         return result
 
     return await asyncio.to_thread(_search)
@@ -335,50 +333,38 @@ async def _get_http(mass, url, params, headers):
         return result
 
 
-async def update_access_token(mass, creds: Credential) -> Credential:
+async def update_access_token(mass, creds: Credential, code) -> Credential:
     """Update the access_token."""
     response = await _post_http(
         mass=mass,
         url="https://connect.deezer.com/oauth/access_token.php",
         data={
-            "code": creds.authorization_code,
+            "code": code,
             "app_id": creds.app_id,
             "secret": creds.app_secret,
         },
         params={
-            "code": creds.authorization_code,
+            "code": code,
             "app_id": creds.app_id,
             "secret": creds.app_secret,
         },
         headers=None,
     )
-    print(response.text)
-    print(
-        {
-            "code": creds.authorization_code,
-            "app_id": creds.app_id,
-            "secret": creds.app_secret,
-        }
-    )
-    creds.access_token = response["access_token"]
-    creds.expiration_date = time() + response["expires"]
+    try:
+        creds.access_token = response.split("=")[1].split("&")[0]
+    except Exception:
+        raise LoginFailed("Invalid auth code")
     return creds
 
 
-async def _post_http(mass, url, data, params=None, headers=None):
+async def _post_http(mass, url, data, params=None, headers=None) -> str:
     async with mass.mass.http_session.post(
         url, headers=headers, params=params, json=data, verify_ssl=False
     ) as response:
         if response.status != 200:
             raise Exception(f"HTTP Error {response.status}: {response.reason}")
         response_text = await response.text()
-        print(response_text)
-        print(data)
-        try:
-            response_json = json.loads(response_text)
-            return response_json
-        except json.JSONDecodeError:
-            raise Exception(f"Failed to parse response as JSON: {response_text}")
+        return response_text
 
 
 async def get_url(mass, track_id, creds: Credential) -> str:
@@ -392,7 +378,7 @@ async def get_url(mass, track_id, creds: Credential) -> str:
     track_id = song_info["SNG_ID"]
     url_resp = await _generate_url(mass, licence_token, [track_token])
     url_info = url_resp["data"][0]  # type: ignore
-    url = url_info["media"][0]["sources"][0]["url"]
+    url = json.loads(url_info)["media"][0]["sources"][0]["url"]
     return url
 
 
@@ -469,7 +455,7 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
 async def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadata:
     """Parse the playlist metadata."""
     metadata = MediaItemMetadata(
-        images=[MediaItemImage(type=ImageType.THUMB, url=playlist.picture_big, is_file=False)],
+        images=[MediaItemImage(type=ImageType.THUMB, url=playlist.picture_big)],
     )
     return metadata
 
@@ -487,7 +473,6 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
                 MediaItemImage(
                     type=ImageType.THUMB,
                     url=(await get_album_from_track(track=track)).cover_big,
-                    is_file=False,
                 )
             ],
         )
@@ -501,7 +486,7 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
 async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
     """Parse the album metadata."""
     metadata = MediaItemMetadata(
-        images=[MediaItemImage(type=ImageType.THUMB, url=album.cover_big, is_file=False)],
+        images=[MediaItemImage(type=ImageType.THUMB, url=album.cover_big)],
     )
     return metadata
 
@@ -509,7 +494,7 @@ async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
 async def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
     """Parse the artist metadata."""
     metadata = MediaItemMetadata(
-        images=[MediaItemImage(type=ImageType.THUMB, url=artist.picture_big, is_file=False)],
+        images=[MediaItemImage(type=ImageType.THUMB, url=artist.picture_big)],
     )
     return metadata
 
@@ -578,7 +563,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
         position=track.track_position,
         duration=track.duration,
         artists=[await parse_artist(mass=mass, artist=artist)],
-        album=await _get_album(mass=mass, track=track),
+        album=(await _get_album(mass=mass, track=track)),
         provider_mappings={
             ProviderMapping(
                 item_id=str(track.id),

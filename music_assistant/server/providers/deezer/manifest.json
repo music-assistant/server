@@ -2,7 +2,7 @@
   "type": "music",
   "domain": "deezer",
   "name": "Deezer",
-  "description": "Support for the Deezer streaming provider in Music Assistant.",
+  "description": "Support for the Deezer streaming provider in Music Assistant. Go to https://connect.deezer.com/oauth/auth.php?app_id=587964&redirect_uri=http://localhost:8080/oauth/return&perms=basic_access,email,offline_access,manage_library,manage_community,delete_library,listening_history to auth",
   "codeowners": ["@marcelveldt", "@Un10ck3d", "@music-assistant"],
   "requirements": ["deezer-python==5.8.1"],
   "multi_instance": true

@@ -73,8 +73,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_TRACKS_EDIT,
 )
 
-CONF_APP_ID = "app_id"
-CONF_APP_SECRET = "app_secret"
 CONF_AUTHORIZATION_CODE = "authorization_code"
 
 
@@ -92,20 +90,6 @@ async def get_config_entries(
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
-        ConfigEntry(
-            key=CONF_APP_ID,
-            type=ConfigEntryType.STRING,
-            label="App id",
-            required=True,
-            description="The APP ID you grabbed from deezer developer portal",
-        ),
-        ConfigEntry(
-            key=CONF_APP_SECRET,
-            type=ConfigEntryType.STRING,
-            label="App secret",
-            required=True,
-            description="The APP SECRET you grabbed from deezer developer portal",
-        ),
         ConfigEntry(
             key=CONF_AUTHORIZATION_CODE,
             type=ConfigEntryType.STRING,
@@ -125,17 +109,30 @@ class DeezerProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
+        auth_token = f"custom_data/{self.instance_id}/auth"
         self._throttler = Throttler(rate_limit=4, period=1)
         self.creds = Credential(
-            self.config.get_value(CONF_APP_ID),  # type: ignore
-            self.config.get_value(CONF_APP_SECRET),  # type: ignore
-            self.config.get_value(CONF_AUTHORIZATION_CODE),  # type: ignore
+            app_id=587964,
+            app_secret="3725582e5aeec225901e4eb03684dbfb",
         )
+        auth_encrypted = self.mass.config.get(auth_token)
+        if auth_encrypted:
+            auth = self.mass.config.decrypt_string(self.mass.config.get(auth_token))
+            self.creds.access_token = auth
+        else:
+            code = str(self.config.get_value(CONF_AUTHORIZATION_CODE))
+            # Reset auth code in config since its one time
+            self.mass.config.set(f"{self.instance_id}{CONF_AUTHORIZATION_CODE}", "")
+            self.creds = await update_access_token(mass=self, creds=self.creds, code=code)
+            self.mass.config.set(
+                key=auth_token, value=self.mass.config.encrypt_string(self.creds.access_token)
+            )
         try:
-            self.creds = await update_access_token(mass=self, creds=self.creds)
             self.client = await get_deezer_client(creds=self.creds)
         except Exception:
             raise LoginFailed("Invalid login credentials")
+        # Reset auth code since its one time
+        self.mass.config.set(f"{self.instance_id}{CONF_AUTHORIZATION_CODE}", "")
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -155,66 +152,42 @@ class DeezerProvider(MusicProvider):
             for media_type in media_types:
                 if media_type == MediaType.TRACK:
                     search_results_track = await search_track(
-                        client=self.client, query=search_query
+                        client=self.client, query=search_query, limit=limit
                     )
-                    index = 0
                     for thing in search_results_track:
-                        if index >= limit:
-                            break
-                        track = await parse_track(self, thing)
-                        result.tracks.append(track)
-                        index += 1
+                        result.tracks.append(await parse_track(self, thing))
                 elif media_type == MediaType.ARTIST:
                     search_results_artists = await search_artist(
-                        client=self.client, query=search_query
+                        client=self.client, query=search_query, limit=limit
                     )
-                    index = 0
                     for thing in search_results_artists:
-                        if index >= limit:
-                            break
-                        artist = await parse_artist(self, thing)
-                        result.artists.append(artist)
-                    index += 1
+                        result.artists.append(await parse_artist(self, thing))
                 elif media_type == MediaType.ALBUM:
                     search_results_album = await search_album(
-                        client=self.client, query=search_query
+                        client=self.client, query=search_query, limit=limit
                     )
-                    index = 0
                     for thing in search_results_album:
-                        if index >= limit:
-                            break
-                        album = await parse_album(self, thing)
-                        result.albums.append(album)
-                        index += 1
+                        result.albums.append(await parse_album(self, thing))
             return result
         else:
             # Add tracks
-            search_results_album = await search_album(client=self.client, query=search_query)
-            search_results_track = await search_track(client=self.client, query=search_query)
-            search_results_artists = await search_artist(client=self.client, query=search_query)
-            index = 0
+            search_results_album = await search_album(
+                client=self.client, query=search_query, limit=limit
+            )
+            search_results_track = await search_track(
+                client=self.client, query=search_query, limit=limit
+            )
+            search_results_artists = await search_artist(
+                client=self.client, query=search_query, limit=limit
+            )
             for thing in search_results_track:
-                if index >= limit:
-                    break
-                track = await parse_track(self, thing)
-                result.tracks.append(track)
-                index += 1
+                result.tracks.append(await parse_track(self, thing))
             # Add artists
-            index = 0
             for thing in search_results_artists:
-                if index >= limit:
-                    break
-                artist = await parse_artist(self, thing)
-                result.artists.append(artist)
-                index += 1
+                result.artists.append(await parse_artist(self, thing))
             # Add albums
-            index = 0
             for thing in search_results_album:
-                if index >= limit:
-                    break
-                album = await parse_album(self, thing)
-                result.albums.append(album)
-                index += 1
+                result.albums.append(await parse_album(self, thing))
             return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -287,12 +260,10 @@ class DeezerProvider(MusicProvider):
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get top tracks of an artist."""
+        """Get top 25 tracks of an artist."""
         artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
-        tracks = []
-        for track in await get_artist_top(artist=artist):
-            tracks.append(await parse_track(mass=self, track=track))
-        return tracks
+        top_tracks = (await get_artist_top(artist=artist))[:25]
+        return [await parse_track(mass=self, track=track) for track in top_tracks]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add an item to the library."""
