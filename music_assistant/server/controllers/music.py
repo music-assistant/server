@@ -11,12 +11,7 @@ from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature, ProviderType
 from music_assistant.common.models.errors import MusicAssistantError
-from music_assistant.common.models.media_items import (
-    BrowseFolder,
-    MediaItem,
-    MediaItemType,
-    SearchResults,
-)
+from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     CONF_DB_LIBRARY,
@@ -282,6 +277,7 @@ class MusicController:
         provider_instance: str | None = None,
         force_refresh: bool = False,
         lazy: bool = True,
+        add_to_db: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         assert (
@@ -297,6 +293,7 @@ class MusicController:
             provider_instance=provider_instance,
             force_refresh=force_refresh,
             lazy=lazy,
+            add_to_db=add_to_db,
         )
 
     @api_command("music/library/add")
@@ -375,7 +372,7 @@ class MusicController:
         ctrl = self.get_controller(media_type)
         await ctrl.delete_db_item(db_item_id, recursive)
 
-    async def refresh_items(self, items: list[MediaItem]) -> None:
+    async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
@@ -383,9 +380,10 @@ class MusicController:
         for media_item in items:
             self.mass.create_task(self.refresh_item(media_item))
 
+    @api_command("music/refresh_item")
     async def refresh_item(
         self,
-        media_item: MediaItem,
+        media_item: MediaItemType,
     ):
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
         try:
@@ -395,6 +393,7 @@ class MusicController:
                 provider_domain=media_item.provider,
                 force_refresh=True,
                 lazy=False,
+                add_to_db=True,
             )
         except MusicAssistantError:
             pass
@@ -465,7 +464,7 @@ class MusicController:
             allow_replace=True,
         )
 
-    async def library_add_items(self, items: list[MediaItem]) -> None:
+    async def library_add_items(self, items: list[MediaItemType]) -> None:
         """Add media item(s) to the library.
 
         Creates background tasks to process the action.
@@ -475,7 +474,7 @@ class MusicController:
                 self.add_to_library(media_item.media_type, media_item.item_id, media_item.provider)
             )
 
-    async def library_remove_items(self, items: list[MediaItem]) -> None:
+    async def library_remove_items(self, items: list[MediaItemType]) -> None:
         """Remove media item(s) from the library.
 
         Creates background tasks to process the action.

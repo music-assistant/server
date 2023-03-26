@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, Coroutine
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 30 * 60
 
 # pylint: disable=invalid-name
 

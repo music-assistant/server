@@ -181,7 +181,14 @@ class TracksController(MediaControllerBase[Track]):
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
-                    if compare_track(search_result_item, db_track):
+                    # do a basic compare first
+                    if not compare_track(search_result_item, db_track):
+                        continue
+                    # we must fetch the full album version, search results are simplified objects
+                    prov_track = await self.get_provider_item(
+                        search_result_item.item_id, search_result_item.provider
+                    )
+                    if compare_track(prov_track, db_track):
                         # 100% match, we can simply update the db with additional provider ids
                         match_found = True
                         await self.update_db_item(db_track.item_id, search_result_item)
