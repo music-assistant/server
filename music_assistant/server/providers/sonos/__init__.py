@@ -109,24 +109,18 @@ class SonosPlayer:
             self.track_info_updated = time.time()
             self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
 
+            current_item_id = None
             if track_metadata := self.track_info.get("metadata"):
                 # extract queue_item_id from metadata xml
                 try:
                     xml_root = ET.XML(track_metadata)
                     for match in xml_root.iter("{http://purl.org/dc/elements/1.1/}queueItemId"):
                         item_id = match.text
-                        self.current_item_id = item_id
+                        current_item_id = item_id
                         break
                 except (ET.ParseError, AttributeError):
-                    self.current_item_id = None
-
-            if (
-                self.current_item_id is None
-                and "/stream/" in self.track_info["uri"]
-                and self.player_id in self.track_info["uri"]
-            ):
-                # try to extract the item id from the uri
-                self.current_item_id = self.track_info["uri"].rsplit("/")[-2]
+                    pass
+            self.current_item_id = current_item_id
 
         # speaker info
         if update_speaker_info:
@@ -284,7 +278,9 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        radio_mode = flow_mode or not queue_item.duration
+        radio_mode = (
+            flow_mode or not queue_item.duration or queue_item.media_type == MediaType.RADIO
+        )
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=sonos_player.player_id,

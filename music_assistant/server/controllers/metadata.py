@@ -84,7 +84,7 @@ class MetaDataController:
             if self.scan_busy:
                 return
 
-            LOGGER.info("Start scan for missing artist metadata")
+            LOGGER.debug("Start scan for missing artist metadata")
             self.scan_busy = True
             async for artist in self.mass.music.artists.iter_db_items():
                 if artist.metadata.last_refresh is not None:
@@ -100,7 +100,7 @@ class MetaDataController:
                 # this is slow on purpose to not cause stress on the metadata providers
                 await asyncio.sleep(30)
             self.scan_busy = False
-            LOGGER.info("Finished scan for missing artist metadata")
+            LOGGER.debug("Finished scan for missing artist metadata")
 
         self.mass.create_task(scan_artist_metadata)
 

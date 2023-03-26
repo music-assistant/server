@@ -53,7 +53,7 @@ class AlbumsController(MediaControllerBase[Album]):
         force_refresh: bool = False,
         lazy: bool = True,
         details: Album = None,
-        force_provider_item: bool = False,
+        add_to_db: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
@@ -63,7 +63,7 @@ class AlbumsController(MediaControllerBase[Album]):
             force_refresh=force_refresh,
             lazy=lazy,
             details=details,
-            force_provider_item=force_provider_item,
+            add_to_db=add_to_db,
         )
         # append full artist details to full album item
         if album.artist:

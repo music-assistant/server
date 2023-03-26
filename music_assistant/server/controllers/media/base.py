@@ -126,14 +126,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         force_refresh: bool = False,
         lazy: bool = True,
         details: ItemCls = None,
-        force_provider_item: bool = False,
+        add_to_db: bool = True,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         assert (
             provider_domain or provider_instance
         ), "provider_domain or provider_instance must be supplied"
-        if force_provider_item:
-            return await self.get_provider_item(item_id, provider_instance)
+        if not add_to_db:
+            return await self.get_provider_item(item_id, provider_instance or provider_domain)
         if details and details.provider == "database":
             details = None
         db_item = await self.get_db_item_by_prov_id(

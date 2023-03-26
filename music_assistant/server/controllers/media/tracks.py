@@ -51,7 +51,8 @@ class TracksController(MediaControllerBase[Track]):
         force_refresh: bool = False,
         lazy: bool = True,
         details: Track = None,
-        force_provider_item: bool = False,
+        album_uri: str | None = None,
+        add_to_db: bool = True,
     ) -> Track:
         """Return (full) details for a single media item."""
         track = await super().get(
@@ -61,20 +62,27 @@ class TracksController(MediaControllerBase[Track]):
             force_refresh=force_refresh,
             lazy=lazy,
             details=details,
-            force_provider_item=force_provider_item,
+            add_to_db=add_to_db,
         )
         # append full album details to full track item
-        if track.album:
-            try:
+        try:
+            cur_track_album = track.album
+            if album_uri and (album := await self.mass.music.get_item_by_uri(album_uri)):
+                track.album = album
+                # if the track's primary album does not match, copy the image
+                # otherwise it will look weird
+                if album.uri != cur_track_album.uri and album.image:
+                    track.metadata.images = [album.image] + track.metadata.images
+            elif track.album:
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
                     track.album.provider,
                     lazy=True,
                     details=track.album,
                 )
-            except MediaNotFoundError:
-                # edge case where playlist track has invalid albumdetails
-                self.logger.warning("Unable to fetch album details %s", track.album.uri)
+        except MediaNotFoundError:
+            # edge case where playlist track has invalid albumdetails
+            self.logger.warning("Unable to fetch album details %s", track.album.uri)
         # append full artist details to full track item
         full_artists = []
         for artist in track.artists:
@@ -173,7 +181,14 @@ class TracksController(MediaControllerBase[Track]):
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
-                    if compare_track(search_result_item, db_track):
+                    # do a basic compare first
+                    if not compare_track(search_result_item, db_track):
+                        continue
+                    # we must fetch the full album version, search results are simplified objects
+                    prov_track = await self.get_provider_item(
+                        search_result_item.item_id, search_result_item.provider
+                    )
+                    if compare_track(prov_track, db_track):
                         # 100% match, we can simply update the db with additional provider ids
                         match_found = True
                         await self.update_db_item(db_track.item_id, search_result_item)
