@@ -125,7 +125,7 @@ class PlayerQueuesController:
         self.signal_update(queue_id)
 
     @api_command("players/queue/play_media")
-    async def play_media(
+    async def play_media(  # noqa: PLR0915
         self,
         queue_id: str,
         media: MediaItemType | list[MediaItemType] | str | list[str],
@@ -138,11 +138,14 @@ class PlayerQueuesController:
         - queue_opt: Which enqueue mode to use.
         - radio_mode: Enable radio mode for the given item(s).
         """
-        # pylint: disable=too-many-branches
+        # ruff: noqa: PLR0915
         queue = self._queues[queue_id]
         if queue.announcement_in_progress:
             LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
+
+        if option in QueueOption.REPLACE:
+            self.clear(queue_id)
 
         # a single item or list of items may be provided
         if not isinstance(media, list):
@@ -175,10 +178,6 @@ class PlayerQueuesController:
             ctrl = self.mass.music.get_controller(media_item.media_type)
             if radio_mode:
                 queue.radio_source.append(media_item)
-                # if radio mode enabled, grab the first batch of tracks here
-                tracks += await ctrl.dynamic_tracks(
-                    item_id=media_item.item_id, provider_domain=media_item.provider
-                )
             elif media_item.media_type in (
                 MediaType.ARTIST,
                 MediaType.ALBUM,
@@ -189,6 +188,10 @@ class PlayerQueuesController:
                 # single track or radio item
                 tracks += [media_item]
 
+        # Use collected media items to calculate the radio if radio mode is on
+        if radio_mode:
+            tracks = await self._get_radio_tracks(queue_id)
+
         # only add valid/available items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
 
@@ -198,7 +201,6 @@ class PlayerQueuesController:
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            self.clear(queue_id)
             self.load(queue_id, queue_items=queue_items, shuffle=shuffle)
             await self.play_index(queue_id, 0)
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
@@ -219,6 +221,8 @@ class PlayerQueuesController:
             )
         # handle play: replace current loaded/playing index with new item(s)
         elif option == QueueOption.PLAY:
+            if cur_index <= len(self._queue_items[queue_id]) - 1:
+                cur_index = 0
             self.load(
                 queue_id,
                 queue_items=queue_items,
@@ -732,6 +736,17 @@ class PlayerQueuesController:
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
         """Fill a Queue with (additional) Radio tracks."""
+        tracks = await self._get_radio_tracks(queue_id)
+        # fill queue - filter out unavailable items
+        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
+        self.load(
+            queue_id,
+            queue_items,
+            insert_at_index=len(self._queue_items[queue_id]) - 1,
+        )
+
+    async def _get_radio_tracks(self, queue_id: str) -> list[MediaItemType]:
+        """Call the registered music providers for dynamic tracks."""
         queue = self._queues[queue_id]
         assert queue.radio_source, "No Radio item(s) loaded/active!"
         tracks: list[MediaItemType] = []
@@ -745,13 +760,7 @@ class PlayerQueuesController:
             # make sure we do not grab too much items
             if len(tracks) >= 50:
                 break
-        # fill queue - filter out unavailable items
-        queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
-        self.load(
-            queue_id,
-            queue_items,
-            insert_at_index=len(self._queue_items[queue_id]) - 1,
-        )
+        return tracks
 
     def __get_queue_stream_index(
         self, queue: PlayerQueue, player: Player, start_index: int

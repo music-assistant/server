@@ -343,7 +343,7 @@ class SpotifyProvider(MusicProvider):
         await self.login()
         return StreamDetails(
             item_id=track.item_id,
-            provider=self.domain,
+            provider=self.instance_id,
             content_type=ContentType.OGG,
             duration=track.duration,
         )
