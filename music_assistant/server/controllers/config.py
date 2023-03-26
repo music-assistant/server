@@ -242,12 +242,13 @@ class ConfigController:
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
                 prov_entries = prov.get_player_config_entries(player_id)
+                if player := self.mass.players.get(player_id, False):
+                    raw_conf["default_name"] = player.display_name
             else:
                 prov_entries = tuple()
                 raw_conf["available"] = False
-                raw_conf["name"] = (
-                    raw_conf.get("name") or raw_conf.get("default_name") or raw_conf["player_id"]
-                )
+                raw_conf["name"] = raw_conf.get("name")
+                raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
             entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
             return PlayerConfig.parse(entries, raw_conf)
         raise KeyError(f"No config found for player id {player_id}")
