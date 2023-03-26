@@ -128,7 +128,7 @@ class StreamJob:
             if len(self.subscribers) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
 
-    async def _put_data(self, data: Any, timeout: float = 600) -> None:
+    async def _put_data(self, data: Any, timeout: float = 1200) -> None:
         """Put chunk of data to all subscribers."""
         async with asyncio.timeout(timeout):
             async with asyncio.TaskGroup() as tg:
@@ -378,6 +378,7 @@ class StreamsController:
                 " please create an issue report on the Music Assistant issue tracker.",
                 player.display_name,
             )
+            self.mass.create_task(self.mass.players.queues.next(player_id))
             raise web.HTTPBadRequest(reason="Stream is already running.")
 
         # all checks passed, start streaming!
@@ -415,14 +416,13 @@ class StreamsController:
                     await resp.write(chunk)
                     bytes_streamed += len(chunk)
 
-                    # DISABLE FOR NOW TO AVOID ISSUES WITH SONOS ICW YOUTUBE MUSIC
-                    # do not allow the player to prebuffer more than 30 seconds
-                    # seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
-                    # if (
-                    #     seconds_streamed > 30
-                    #     and (seconds_streamed - player.corrected_elapsed_time) > 30
-                    # ):
-                    #     await asyncio.sleep(1)
+                    # do not allow the player to prebuffer more than 60 seconds
+                    seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
+                    if (
+                        seconds_streamed > 120
+                        and (seconds_streamed - player.corrected_elapsed_time) > 30
+                    ):
+                        await asyncio.sleep(1)
 
                     if not enable_icy:
                         continue
