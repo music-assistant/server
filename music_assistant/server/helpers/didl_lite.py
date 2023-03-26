@@ -34,7 +34,7 @@ def create_didl_metadata(url: str, queue_item: QueueItem, flow_mode: bool = Fals
 
     if is_radio:
         # radio or other non-track item
-        image = queue_item.image_url if queue_item.image else ""
+        image = queue_item.image_url if queue_item.image_url else ""
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
             f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
