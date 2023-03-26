@@ -215,12 +215,14 @@ class Config(DataClassDictMixin):
         if update.values is not None:
             for key, new_val in update.values.items():
                 cur_val = self.values[key].value
-                if cur_val == new_val:
+                # parse entry to do type validation
+                parsed_val = ConfigEntryValue.parse(self.values[key], new_val)
+                if cur_val == parsed_val.value:
                     continue
-                if new_val is None:
-                    self.values[key].value = self.values[key].default_value
+                if parsed_val.value is None:
+                    self.values[key].value = parsed_val.default_value
                 else:
-                    self.values[key].value = new_val
+                    self.values[key].value = parsed_val.value
                 changed_keys.add(f"values/{key}")
 
         return changed_keys

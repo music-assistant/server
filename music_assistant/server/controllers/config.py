@@ -199,6 +199,10 @@ class ConfigController:
         """Add new Provider (instance) Config Flow."""
         if not config:
             return await self._get_default_provider_config(provider_domain)
+        for key, conf_entry_value in config.values.items():
+            # parse entry to do type validation
+            parsed_val = ConfigEntryValue.parse(conf_entry_value, conf_entry_value.value)
+            conf_entry_value.value = parsed_val.value
         # if provider config is provided, the frontend wants to submit a new provider instance
         # based on the earlier created template config.
         # try to load the provider first to catch errors before we save it.
