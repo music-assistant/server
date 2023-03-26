@@ -74,11 +74,12 @@ class QueueItem(DataClassDictMixin):
             name=name,
             duration=media_item.duration,
             media_item=media_item,
+            image_url=media_item.image,
         )
 
     async def resolve_image_url(self, mass: MusicAssistant) -> None:
         """Resolve Image URL for the MediaItem."""
-        if self.image_url:
+        if self.image_url and self.image_url.startswith("http"):
             return
         if not self.media_item:
             return
