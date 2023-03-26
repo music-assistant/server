@@ -125,18 +125,21 @@ class TidalProvider(MusicProvider):
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
         # try login which will raise if it fails
-        if self.mass.config.get(f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}"):
-            self._access_token = self.mass.config.get(
-                f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}"
-            )
-        if self.mass.config.get(f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}"):
-            self._refresh_token = self.mass.config.get(
-                f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}"
-            )
-        if self.mass.config.get(f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}"):
-            self._expiry_time = datetime.fromisoformat(
-                self.mass.config.get(f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}")
-            )
+        access_token = self.mass.config.get(
+            f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}"
+        )
+        refresh_token = self.mass.config.get(
+            f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}"
+        )
+        expiry_time = self.mass.config.get(
+            f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}"
+        )
+        if access_token is not None and access_token:
+            self._access_token = access_token
+        if refresh_token is not None and refresh_token:
+            self._refresh_token = refresh_token
+        if expiry_time is not None and expiry_time:
+            self._expiry_time = datetime.fromisoformat(expiry_time)
         await self.login()
 
     @property
@@ -425,6 +428,9 @@ class TidalProvider(MusicProvider):
             f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}",
             session.expiry_time.isoformat(),
         )
+        self._access_token = session.access_token
+        self._refresh_token = session.refresh_token
+        self._expiry_time = session.expiry_time
         self._tidal_user_id = session.user.id
         self._tidal_session = session
         return None
