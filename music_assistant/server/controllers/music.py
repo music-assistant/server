@@ -282,6 +282,7 @@ class MusicController:
         provider_instance: str | None = None,
         force_refresh: bool = False,
         lazy: bool = True,
+        add_to_db: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         assert (
@@ -297,6 +298,7 @@ class MusicController:
             provider_instance=provider_instance,
             force_refresh=force_refresh,
             lazy=lazy,
+            add_to_db=add_to_db,
         )
 
     @api_command("music/library/add")
@@ -383,6 +385,7 @@ class MusicController:
         for media_item in items:
             self.mass.create_task(self.refresh_item(media_item))
 
+    @api_command("music/refresh_item")
     async def refresh_item(
         self,
         media_item: MediaItem,
@@ -395,6 +398,7 @@ class MusicController:
                 provider_domain=media_item.provider,
                 force_refresh=True,
                 lazy=False,
+                add_to_db=True,
             )
         except MusicAssistantError:
             pass
