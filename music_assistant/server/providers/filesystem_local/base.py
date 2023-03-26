@@ -383,7 +383,11 @@ class FileSystemProviderBase(MusicProvider):
             raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
 
         file_item = await self.resolve(prov_playlist_id)
-        playlist = Playlist(file_item.path, provider=self.domain, name=file_item.name)
+        playlist = Playlist(
+            file_item.path,
+            provider=self.domain,
+            name=file_item.name.replace(f".{file_item.ext}", ""),
+        )
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
 
         playlist.add_provider_mapping(
