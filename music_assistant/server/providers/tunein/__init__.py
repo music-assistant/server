@@ -215,7 +215,7 @@ class TuneInProvider(MusicProvider):
                 media_type=MediaType.RADIO,
                 data=url,
                 expires=time() + 24 * 3600,
-                url=direct,
+                direct=direct,
             )
         raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
 
