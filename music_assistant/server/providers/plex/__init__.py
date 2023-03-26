@@ -18,8 +18,6 @@ from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.server import MusicAssistant
 from aiohttp import ClientTimeout
 
-from music_assistant.server.helpers.audio import get_http_stream, get_media_stream
-from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
@@ -157,7 +155,7 @@ class PlexProvider(MusicProvider):
         if plex_album.year:
             album.year = plex_album.year
         if plex_album.thumbUrl:
-            album.metadata.images = [MediaItemImage(ImageType.THUMB, plex_album.thumbUrl, True)]
+            album.metadata.images = [MediaItemImage(ImageType.THUMB, plex_album.thumbUrl, self.instance_id)]
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
@@ -182,7 +180,7 @@ class PlexProvider(MusicProvider):
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
         if plex_artist.thumbUrl:
-            artist.metadata.images = [MediaItemImage(ImageType.THUMB, plex_artist.thumbUrl, True)]
+            artist.metadata.images = [MediaItemImage(ImageType.THUMB, plex_artist.thumbUrl, self.instance_id)]
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_id),
@@ -201,7 +199,7 @@ class PlexProvider(MusicProvider):
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
         if plex_playlist.thumbUrl:
-            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, plex_playlist.thumbUrl, True)]
+            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, plex_playlist.thumbUrl, self.instance_id)]
         playlist.is_editable = True
         playlist.add_provider_mapping(
             ProviderMapping(
@@ -222,7 +220,7 @@ class PlexProvider(MusicProvider):
 
         # guard that track has valid artists
         if plex_track.thumbUrl:
-            track.metadata.images = [MediaItemImage(ImageType.THUMB, plex_track.thumbUrl, True)]
+            track.metadata.images = [MediaItemImage(ImageType.THUMB, plex_track.thumbUrl, self.instance_id)]
         if plex_track.parentKey:
             track.album = await self._get_data_cached(plex_track.parentKey, Album)
         if plex_track.duration:
