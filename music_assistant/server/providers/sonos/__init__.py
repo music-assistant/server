@@ -174,8 +174,10 @@ class SonosPlayer:
             # this player is the sync leader
             self.player.synced_to = None
             self.player.group_childs = {
-                x.uid for x in self.group_info.members if x.uid != self.player_id
+                x.uid for x in self.group_info.members if x.uid != self.player_id and x.is_visible
             }
+            if not self.player.group_childs:
+                self.player.type = PlayerType.STEREO_PAIR
         elif self.group_info and self.group_info.coordinator:
             # player is synced to
             self.player.synced_to = self.group_info.coordinator.uid
@@ -428,6 +430,9 @@ class SonosPlayerProvider(PlayerProvider):
 
         speaker_info = await asyncio.to_thread(soco_device.get_speaker_info, True)
         assert player_id not in self.sonosplayers
+
+        if soco_device not in soco_device.visible_zones:
+            return
 
         sonos_player = SonosPlayer(
             player_id=player_id,

@@ -69,6 +69,7 @@ PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
+IGNORE_DIRS = ("recycle", "Recently-Snaphot")
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -382,7 +383,11 @@ class FileSystemProviderBase(MusicProvider):
             raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
 
         file_item = await self.resolve(prov_playlist_id)
-        playlist = Playlist(file_item.path, provider=self.domain, name=file_item.name)
+        playlist = Playlist(
+            file_item.path,
+            provider=self.domain,
+            name=file_item.name.replace(f".{file_item.ext}", ""),
+        )
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
 
         playlist.add_provider_mapping(
@@ -530,7 +535,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(item_id)
 
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=prov_mapping.content_type,
             media_type=MediaType.TRACK,
@@ -658,19 +663,20 @@ class FileSystemProviderBase(MusicProvider):
                     artist.musicbrainz_id = tags.musicbrainz_artistids[index]
             track.artists.append(artist)
 
-        # cover image - prefer album image, fallback to embedded
-        if track.album and track.album.image:
-            track.metadata.images = [track.album.image]
-        elif tags.has_cover_image:
+        # cover image - prefer embedded image, fallback to album cover
+        if tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
                 MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
             ]
-            if track.album:
-                # set embedded cover on album
-                track.album.metadata.images = track.metadata.images
+        elif track.album.image:
+            track.metadata.images = [track.album.image]
+
+        if track.album and not track.album.metadata.images:
+            # set embedded cover on album if it does not have one yet
+            track.album.metadata.images = track.metadata.images
 
         # parse other info
         track.duration = tags.duration or 0
