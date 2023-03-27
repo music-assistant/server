@@ -522,15 +522,16 @@ class PlayerQueuesController:
         if queue.active:
             # update current item from player report
             player_item_index = self.index_by_id(queue_id, player.current_item_id)
-            if player_item_index is not None:
-                if queue.flow_mode:
-                    # flow mode active, calculate current item
-                    (
-                        queue.current_index,
-                        queue.elapsed_time,
-                    ) = self.__get_queue_stream_index(queue, player, player_item_index)
-                else:
-                    queue.current_index = player_item_index
+            if player_item_index is None:
+                player_item_index = self._get_player_item_index(queue_id, player.current_url)
+            if queue.flow_mode and player_item_index is not None:
+                # flow mode active, calculate current item
+                (
+                    queue.current_index,
+                    queue.elapsed_time,
+                ) = self.__get_queue_stream_index(queue, player, player_item_index)
+            else:
+                queue.current_index = player_item_index
 
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self.get_next_item(queue_id)
@@ -575,7 +576,7 @@ class PlayerQueuesController:
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
             fill_index = len(self._queue_items[queue_id]) - 5
-            if queue.radio_source and (queue.current_index >= fill_index):
+            if queue.radio_source and queue.current_index and (queue.current_index >= fill_index):
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
@@ -799,3 +800,11 @@ class PlayerQueuesController:
                     track_time = elapsed_time_queue + track_sec_skipped - total_time
                     break
         return queue_index, track_time
+
+    def _get_player_item_index(self, queue_id: str, url: str) -> str | None:
+        """Parse QueueItem ID from Player's current url."""
+        if url and self.mass.webserver.base_url in url and "/stream/" in url:
+            # try to extract the item id from the uri
+            current_item_id = url.rsplit("/")[-2]
+            return self.index_by_id(queue_id, current_item_id)
+        return None

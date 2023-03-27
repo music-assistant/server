@@ -529,7 +529,7 @@ class PlayerController:
                     player.active_queue == player.player_id and player.state == PlayerState.PLAYING
                 )
                 if player_playing:
-                    self.update(player_id)
+                    self.mass.loop.call_soon(self.update, player_id)
                 # Poll player;
                 # - every 360 seconds if the player if not powered
                 # - every 30 seconds if the player is powered
@@ -546,7 +546,7 @@ class PlayerController:
                             player.available = False
                             player.state = PlayerState.IDLE
                             player.powered = False
-                            self.update(player_id)
+                            self.mass.loop.call_soon(self.update, player_id)
                         except Exception as err:  # pylint: disable=broad-except
                             LOGGER.warning(
                                 "Error while requesting latest state from player %s: %s",
@@ -556,4 +556,5 @@ class PlayerController:
                             )
                     if count >= 360:
                         count = 0
+                    await asyncio.sleep(0)
             await asyncio.sleep(1)

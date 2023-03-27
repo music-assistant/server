@@ -126,14 +126,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         force_refresh: bool = False,
         lazy: bool = True,
         details: ItemCls = None,
-        force_provider_item: bool = False,
+        add_to_db: bool = True,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         assert (
             provider_domain or provider_instance
         ), "provider_domain or provider_instance must be supplied"
-        if force_provider_item:
-            return await self.get_provider_item(item_id, provider_instance)
+        if not add_to_db and "database" in (provider_domain, provider_instance):
+            return await self.get_provider_item(item_id, provider_instance or provider_domain)
         if details and details.provider == "database":
             details = None
         db_item = await self.get_db_item_by_prov_id(
@@ -144,7 +144,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if db_item and (time() - (db_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
             force_refresh = True
-        if db_item and force_refresh:
+        if db_item and force_refresh and add_to_db:
             # get (first) provider item id belonging to this db item
             provider_instance, item_id = await self.get_provider_mapping(db_item)
         elif db_item:
@@ -168,6 +168,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not details:
             # we couldn't get a match from any of the providers, raise error
             raise MediaNotFoundError(f"Item not found: {provider_domain or id}/{item_id}")
+        if not add_to_db:
+            return details
         # create task to add the item to the db, including matching metadata etc. takes some time
         # in 99% of the cases we just return lazy because we want the details as fast as possible
         # only if we really need to wait for the result (e.g. to prevent race conditions), we

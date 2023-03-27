@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 import smbclient
 from smbclient import path as smbpath
 
+from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 CONF_HOST = "host"
 CONF_SHARE = "share"
 CONF_SUBFOLDER = "subfolder"
+CONF_CONN_LIMIT = "connection_limit"
 
 
 async def setup(
@@ -44,6 +46,10 @@ async def setup(
     # silence logging a bit on smbprotocol
     logging.getLogger("smbprotocol").setLevel("WARNING")
     logging.getLogger("smbclient").setLevel("INFO")
+    # check if valid dns name is given
+    server: str = config.get_value(CONF_HOST)
+    if not await get_ip_from_host(server):
+        raise LoginFailed(f"Unable to resolve {server}, make sure the address is resolveable.")
     prov = SMBFileSystemProvider(mass, manifest, config)
     await prov.handle_setup()
     return prov
@@ -55,15 +61,15 @@ async def get_config_entries(
     """Return Config entries to setup this provider."""
     return (
         ConfigEntry(
-            key="host",
+            key=CONF_HOST,
             type=ConfigEntryType.STRING,
-            label="Remote host",
+            label="Server",
             required=True,
-            description="The (fqdn) hostname of the SMB/CIFS server to connect to."
+            description="The (fqdn) hostname of the SMB/CIFS/DFS server to connect to."
             "For example mynas.local.",
         ),
         ConfigEntry(
-            key="share",
+            key=CONF_SHARE,
             type=ConfigEntryType.STRING,
             label="Share",
             required=True,
@@ -71,7 +77,7 @@ async def get_config_entries(
             "the remote host, For example 'media'.",
         ),
         ConfigEntry(
-            key="username",
+            key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Username",
             required=True,
@@ -80,16 +86,16 @@ async def get_config_entries(
             "For anynymous access you may want to try with the user `guest`.",
         ),
         ConfigEntry(
-            key="password",
+            key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Username",
-            required=True,
-            default_value="guest",
+            label="Password",
+            required=False,
+            default_value=None,
             description="The username to authenticate to the remote server. "
             "For anynymous access you may want to try with the user `guest`.",
         ),
         ConfigEntry(
-            key="subfolder",
+            key=CONF_SUBFOLDER,
             type=ConfigEntryType.STRING,
             label="Subfolder",
             required=False,
@@ -98,6 +104,17 @@ async def get_config_entries(
             "E.g. 'collections' or 'albums/A-K'.",
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
+        ConfigEntry(
+            key=CONF_CONN_LIMIT,
+            type=ConfigEntryType.INTEGER,
+            label="Connection limit",
+            required=False,
+            default_value=5,
+            advanced=True,
+            description="[optional] Limit the number of concurrent connections. "
+            "Set the value high(er) for more performance but some (Windows) servers "
+            "may deny requests in that case",
+        ),
     )
 
 
@@ -127,30 +144,42 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-        # silence SMB.SMBConnection logger a bit
-        logging.getLogger("SMB.SMBConnection").setLevel("WARNING")
-
         server: str = self.config.get_value(CONF_HOST)
         share: str = self.config.get_value(CONF_SHARE)
         subfolder: str = self.config.get_value(CONF_SUBFOLDER)
-
-        # register smb session
-        self.logger.info("Connecting to server %s", server)
-        self._session = await asyncio.to_thread(
-            smbclient.register_session,
-            server,
-            username=self.config.get_value(CONF_USERNAME),
-            password=self.config.get_value(CONF_PASSWORD),
-        )
+        connection_limit: int = self.config.get_value(CONF_CONN_LIMIT)
+        self.semaphore = asyncio.Semaphore(connection_limit)
 
         # create windows like path (\\server\share\subfolder)
         if subfolder.endswith(os.sep):
             subfolder = subfolder[:-1]
         self._root_path = f"{os.sep}{os.sep}{server}{os.sep}{share}{os.sep}{subfolder}"
         self.logger.debug("Using root path: %s", self._root_path)
-        # validate provided path
-        if not await asyncio.to_thread(smbpath.isdir, self._root_path):
-            raise LoginFailed(f"Invalid share or subfolder given: {self._root_path}")
+
+        # register smb session
+        self.logger.info("Connecting to server %s", server)
+        try:
+            self._session = await asyncio.to_thread(
+                smbclient.register_session,
+                server,
+                username=self.config.get_value(CONF_USERNAME),
+                password=self.config.get_value(CONF_PASSWORD),
+            )
+            # validate provided path
+            if not await asyncio.to_thread(smbpath.isdir, self._root_path):
+                raise LoginFailed(f"Invalid subfolder given: {subfolder}")
+        except Exception as err:
+            if "Unable to negotiate " in str(err):
+                detail = "Invalid credentials"
+            elif "refused " in str(err):
+                detail = "Invalid hostname (or host not reachable)"
+            elif "STATUS_NOT_FOUND" in str(err):
+                detail = "Share does not exist"
+            elif "Invalid argument" in str(err) and "." not in server:
+                detail = "Make sure to enter a FQDN hostname or IP-address"
+            else:
+                detail = str(err)
+            raise LoginFailed(f"Connection failed for the given details: {detail}") from err
 
     async def listdir(
         self, path: str, recursive: bool = False
@@ -169,7 +198,9 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self._root_path, path)
-        for entry in await asyncio.to_thread(smbclient.scandir, abs_path):
+        async with self.semaphore:
+            entries = await asyncio.to_thread(smbclient.scandir, abs_path)
+        for entry in entries:
             if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
                 # skip invalid/system files and dirs
                 continue
@@ -207,7 +238,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             )
 
         # run in thread because strictly taken this may be blocking IO
-        return await asyncio.to_thread(_create_item)
+        async with self.semaphore:
+            return await asyncio.to_thread(_create_item)
 
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
@@ -215,7 +247,13 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             return False  # guard
         file_path = file_path.replace("\\", os.sep)
         abs_path = get_absolute_path(self._root_path, file_path)
-        return await asyncio.to_thread(smbpath.exists, abs_path)
+        async with self.semaphore:
+            try:
+                return await asyncio.to_thread(smbpath.exists, abs_path)
+            except Exception as err:
+                if "STATUS_OBJECT_NAME_INVALID" in str(err):
+                    return False
+                raise err
 
     async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
@@ -225,24 +263,26 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         queue = asyncio.Queue()
         self.logger.debug("Reading file contents for %s", abs_path)
 
-        def _reader():
-            with smbclient.open_file(abs_path, "rb", share_access="r") as _file:
-                if seek:
-                    _file.seek(seek)
-                # yield chunks of data from file
-                while True:
-                    data = _file.read(chunk_size)
-                    if not data:
-                        break
-                    self.mass.loop.call_soon_threadsafe(queue.put_nowait, data)
-            self.mass.loop.call_soon_threadsafe(queue.put_nowait, b"")
+        async with self.semaphore:
 
-        self.mass.create_task(_reader)
-        while True:
-            chunk = await queue.get()
-            if chunk == b"":
-                break
-            yield chunk
+            def _reader():
+                with smbclient.open_file(abs_path, "rb", share_access="r") as _file:
+                    if seek:
+                        _file.seek(seek)
+                    # yield chunks of data from file
+                    while True:
+                        data = _file.read(chunk_size)
+                        if not data:
+                            break
+                        self.mass.loop.call_soon_threadsafe(queue.put_nowait, data)
+                self.mass.loop.call_soon_threadsafe(queue.put_nowait, b"")
+
+            self.mass.create_task(_reader)
+            while True:
+                chunk = await queue.get()
+                if chunk == b"":
+                    break
+                yield chunk
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
@@ -253,4 +293,5 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             with smbclient.open_file(abs_path, "wb") as _file:
                 _file.write(data)
 
-        await asyncio.to_thread(_writer)
+        async with self.semaphore:
+            await asyncio.to_thread(_writer)

@@ -565,29 +565,9 @@ class FileSystemProviderBase(MusicProvider):
         """Get full track details by id."""
         # ruff: noqa: PLR0915, PLR0912
 
-        # m4a files are nasty because in 99% of the cases the metadata is
-        # at the end of the file (moov atom) so in order to read tags
-        # we need to read the entire file, which is not practically do-able with
-        # remote connections, so we ignore those files
-        large_m4a_file = (
-            file_item.ext in ("m4a", "m4b")
-            and not file_item.local_path
-            and file_item.file_size > 100000000
-        )
-        if large_m4a_file:
-            self.logger.warning(
-                "Large m4a file detected which is unsuitable for remote storage: %s"
-                " - consider converting this file to another file format or make sure "
-                "that `moov atom` metadata is at the beginning of the file. - "
-                "loading info for this file is going to take a long time!",
-                file_item.path,
-            )
-
         # parse tags
         input_file = file_item.local_path or self.read_file_content(file_item.absolute_path)
         tags = await parse_tags(input_file, file_item.file_size)
-        if large_m4a_file:
-            tags.has_cover_image = False
 
         name, version = parse_title_and_version(tags.title, tags.version)
         track = Track(
