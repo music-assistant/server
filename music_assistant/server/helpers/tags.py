@@ -88,7 +88,7 @@ class AudioTags:
             or self.tags.get("albumtype")
             or self.tags.get("releasetype")
         )
-        if album_type_tag and "live" in tag.lower():
+        if album_type_tag and "live" in album_type_tag.lower():
             # yes, this can happen
             return "Live"
         return ""
