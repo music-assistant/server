@@ -75,75 +75,35 @@ async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[s
     return await asyncio.to_thread(_get_library_artists)
 
 
-async def add_remove_library_artists(
-    session: tidalapi.Session, user_id: str, artist_id: str, add: bool = True
+async def library_items_add_remove(
+    session: tidalapi.Session, user_id: str, item_id: str, media_type: MediaType, add: bool = True
 ) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.artists function."""
+    """Async wrapper around the tidalapi Favorites.items add/remove function."""
 
-    def _add_remove_library_artists():
-        if add:
-            return tidalapi.Favorites(session, user_id).add_artist(artist_id)
-        if not add:
-            return tidalapi.Favorites(session, user_id).remove_artist(artist_id)
+    def _library_items_add_remove():
+        if media_type == MediaType.ARTIST:
+            if add:
+                return tidalapi.Favorites(session, user_id).add_artist(item_id)
+            if not add:
+                return tidalapi.Favorites(session, user_id).remove_artist(item_id)
+        if media_type == MediaType.ALBUM:
+            if add:
+                return tidalapi.Favorites(session, user_id).add_album(item_id)
+            if not add:
+                return tidalapi.Favorites(session, user_id).remove_album(item_id)
+        if media_type == MediaType.TRACK:
+            if add:
+                return tidalapi.Favorites(session, user_id).add_track(item_id)
+            if not add:
+                return tidalapi.Favorites(session, user_id).remove_track(item_id)
+        if media_type == MediaType.PLAYLIST:
+            if add:
+                return tidalapi.Favorites(session, user_id).add_playlist(item_id)
+            if not add:
+                return tidalapi.Favorites(session, user_id).remove_playlist(item_id)
         return None
 
-    return await asyncio.to_thread(_add_remove_library_artists)
-
-
-async def add_remove_library_albums(
-    session: tidalapi.Session, user_id: str, album_id: str, add: bool = True
-) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.albums function."""
-
-    def _add_remove_library_albums():
-        if add:
-            return tidalapi.Favorites(session, user_id).add_album(album_id)
-        if not add:
-            return tidalapi.Favorites(session, user_id).remove_album(album_id)
-        return None
-
-    return await asyncio.to_thread(_add_remove_library_albums)
-
-
-async def add_remove_library_tracks(
-    session: tidalapi.Session, user_id: str, track_id: str, add: bool = True
-) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.tracks function."""
-
-    def _add_library_tracks():
-        if add:
-            return tidalapi.Favorites(session, user_id).add_track(track_id)
-        if not add:
-            return tidalapi.Favorites(session, user_id).remove_track(track_id)
-        return None
-
-    return await asyncio.to_thread(_add_library_tracks)
-
-
-async def add_remove_library_playlists(
-    session: tidalapi.Session, user_id: str, playlist_id: str, add: bool = True
-) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.playlists function."""
-
-    def _add_library_playlists():
-        if add:
-            return tidalapi.Favorites(session, user_id).add_playlist(playlist_id)
-        if not add:
-            return tidalapi.Favorites(session, user_id).remove_playlist(playlist_id)
-        return None
-
-    return await asyncio.to_thread(_add_library_playlists)
-
-
-async def remove_library_playlists(
-    session: tidalapi.Session, user_id: str, playlist_id
-) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.playlists function."""
-
-    def _remove_library_playlists():
-        return tidalapi.Favorites(session, user_id).remove_playlist(playlist_id)
-
-    return await asyncio.to_thread(_remove_library_playlists)
+    return await asyncio.to_thread(_library_items_add_remove)
 
 
 async def get_artist(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
