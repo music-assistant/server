@@ -23,6 +23,8 @@ from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from plexapi.server import PlexServer
 
+from music_assistant.server.providers.filesystem_local import FileSystemItem
+
 CONF_AUTH_TOKEN = "token"
 CONF_SERVER_NAME = "server"
 CONF_LIBRARY_NAME = "library"
@@ -79,6 +81,21 @@ class PlexProvider(MusicProvider):
         self._plex_server = await self._run_async(connect)
         self._plex_library = await self._run_async(self._plex_server.library.section,
                                                    self.config.get_value(CONF_LIBRARY_NAME))
+
+    async def resolve(
+        self, file_path: str, require_local: bool = False  # noqa: ARG002
+    ) -> FileSystemItem:
+        url = self._plex_server.url(file_path, True)
+        return FileSystemItem(
+            name=file_path,
+            path=file_path,
+            absolute_path=url,
+            checksum=file_path,
+            is_dir=False,
+            is_file=False,
+            # local filesystem is always local resolvable
+            local_path=url,
+        )
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -154,8 +171,8 @@ class PlexProvider(MusicProvider):
         )
         if plex_album.year:
             album.year = plex_album.year
-        if plex_album.thumbUrl:
-            album.metadata.images = [MediaItemImage(ImageType.THUMB, plex_album.thumbUrl, self.instance_id)]
+        if thumb := plex_album.firstAttr('thumb', 'parentThumb', 'grandparentThumb'):
+            album.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
@@ -179,8 +196,8 @@ class PlexProvider(MusicProvider):
         artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.domain)
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
-        if plex_artist.thumbUrl:
-            artist.metadata.images = [MediaItemImage(ImageType.THUMB, plex_artist.thumbUrl, self.instance_id)]
+        if thumb := plex_artist.firstAttr('thumb', 'parentThumb', 'grandparentThumb'):
+            artist.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_id),
@@ -198,8 +215,8 @@ class PlexProvider(MusicProvider):
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
-        if plex_playlist.thumbUrl:
-            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, plex_playlist.thumbUrl, self.instance_id)]
+        if thumb := plex_playlist.firstAttr('thumb', 'parentThumb', 'grandparentThumb'):
+            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
         playlist.is_editable = True
         playlist.add_provider_mapping(
             ProviderMapping(
@@ -217,10 +234,8 @@ class PlexProvider(MusicProvider):
 
         if plex_track.grandparentKey:
             track.artist = await self._get_data_cached(plex_track.grandparentKey, Artist)
-
-        # guard that track has valid artists
-        if plex_track.thumbUrl:
-            track.metadata.images = [MediaItemImage(ImageType.THUMB, plex_track.thumbUrl, self.instance_id)]
+        if thumb := plex_track.firstAttr('thumb', 'parentThumb', 'grandparentThumb'):
+            track.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
         if plex_track.parentKey:
             track.album = await self._get_data_cached(plex_track.parentKey, Album)
         if plex_track.duration:
