@@ -12,6 +12,8 @@ from copy import copy
 
 import tidalapi
 
+from music_assistant.common.models.enums import MediaType
+
 """Monkey Patching tidalapi.FetchedUser.parse to remove the broken 
 picture_id retrieval. Will be removed once the tidalapi package is updated. """
 
@@ -173,3 +175,28 @@ async def get_playlist_tracks(session: tidalapi.Session, prov_playlist_id: str) 
         return tidalapi.Playlist(session, prov_playlist_id).tracks(limit=9999)
 
     return await asyncio.to_thread(_get_playlist_tracks)
+
+
+async def search(
+    session: tidalapi.Session, query: str, media_types=None, limit=50, offset=0
+) -> dict[str, str]:
+    """Async wrapper around the tidalapi Search function."""
+    search_types = []
+    if MediaType.ARTIST in media_types:
+        search_types.append(tidalapi.artist.Artist)
+    if MediaType.ALBUM in media_types:
+        search_types.append(tidalapi.album.Album)
+    if MediaType.TRACK in media_types:
+        search_types.append(tidalapi.media.Track)
+    if MediaType.PLAYLIST in media_types:
+        search_types.append(tidalapi.playlist.Playlist)
+
+    models = None
+    if search_types:
+        models = search_types
+
+    def _search():
+        foo = session.search(query, models, limit, offset)
+        return foo
+
+    return await asyncio.to_thread(_search)

@@ -11,8 +11,8 @@ from asyncio_throttle import Throttler
 from tidalapi import Session
 
 from music_assistant.common.models.config_entries import ConfigEntry
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.enums import ConfigEntryType, MediaType, ProviderFeature
+from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -21,6 +21,7 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     Playlist,
     ProviderMapping,
+    SearchResults,
     StreamDetails,
     Track,
 )
@@ -49,6 +50,7 @@ from .helpers import (
     get_playlist_tracks,
     get_track,
     get_track_url,
+    search,
     tidal_session,
 )
 
@@ -152,7 +154,35 @@ class TidalProvider(MusicProvider):
             ProviderFeature.LIBRARY_PLAYLISTS,
             ProviderFeature.ARTIST_ALBUMS,
             ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SEARCH,
         )
+
+    async def search(
+        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+    ) -> SearchResults:
+        """Perform search on musicprovider.
+
+        :param search_query: Search query.
+        :param media_types: A list of media_types to include. All types if None.
+        :param limit: Number of items to return in the search (per type).
+        """
+        # result = SearchResults()
+        search_query = search_query.replace("'", "")
+        results = await search(self._tidal_session, search_query, media_types, limit)
+        parsed_results = SearchResults()
+        if results["artists"]:
+            for artist in results["artists"]:
+                parsed_results.artists.append(await self._parse_artist(artist))
+        if results["albums"]:
+            for album in results["albums"]:
+                parsed_results.albums.append(await self._parse_album(album))
+        if results["playlists"]:
+            for playlist in results["playlists"]:
+                parsed_results.playlists.append(await self._parse_playlist(playlist))
+        if results["tracks"]:
+            for track in results["tracks"]:
+                parsed_results.tracks.append(await self._parse_track(track))
+        return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
@@ -374,11 +404,14 @@ class TidalProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj):
         """Parse tidal playlist object to generic layout."""
         playlist_id = playlist_obj.id
+        creator_name = None
+        if playlist_obj.creator:
+            creator_name = playlist_obj.creator.name
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.domain,
             name=playlist_obj.name,
-            owner=playlist_obj.creator.name,
+            owner=creator_name,
         )
         playlist.add_provider_mapping(
             ProviderMapping(
@@ -389,7 +422,7 @@ class TidalProvider(MusicProvider):
             )
         )
         is_editable = False
-        if playlist_obj.creator.name == "me":
+        if creator_name and creator_name == "me":
             is_editable = True
         playlist.is_editable = is_editable
         image_url = None
