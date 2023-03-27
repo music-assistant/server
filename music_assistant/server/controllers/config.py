@@ -263,9 +263,7 @@ class ConfigController:
         """Return single configentry value for a player."""
         conf = self.get(f"{CONF_PLAYERS}/{player_id}")
         if not conf:
-            player = self.mass.players.get(player_id)
-            if not player:
-                raise PlayerUnavailableError(f"Player {player_id} is not available")
+            player = self.mass.players.get(player_id, True)
             conf = {"provider": player.provider, "player_id": player_id, "values": {}}
         prov = self.mass.get_provider(conf["provider"])
         entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(player_id)

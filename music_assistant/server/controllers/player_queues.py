@@ -178,10 +178,14 @@ class PlayerQueuesController:
             ctrl = self.mass.music.get_controller(media_item.media_type)
             if radio_mode:
                 queue.radio_source.append(media_item)
+            elif media_item.media_type == MediaType.PLAYLIST:
+                async for playlist_track in ctrl.tracks(
+                    media_item.item_id, provider_domain=media_item.provider
+                ):
+                    tracks.append(playlist_track)
             elif media_item.media_type in (
                 MediaType.ARTIST,
                 MediaType.ALBUM,
-                MediaType.PLAYLIST,
             ):
                 tracks += await ctrl.tracks(media_item.item_id, provider_domain=media_item.provider)
             else:

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
@@ -82,13 +81,15 @@ class PlayerController:
         self,
         player_id: str,
         raise_unavailable: bool = False,
-    ) -> Player:
+    ) -> Player | None:
         """Return Player by player_id."""
         if player := self._players.get(player_id):
             if (not player.available or not player.enabled) and raise_unavailable:
                 raise PlayerUnavailableError(f"Player {player_id} is not available")
             return player
-        raise PlayerUnavailableError(f"Player {player_id} is not available")
+        if raise_unavailable:
+            raise PlayerUnavailableError(f"Player {player_id} is not available")
+        return None
 
     @api_command("players/get_by_name")
     def get_by_name(self, name: str) -> Player | None:
@@ -255,7 +256,7 @@ class PlayerController:
         await player_provider.cmd_pause(player_id)
 
         async def _watch_pause(_player_id: str) -> None:
-            player = self.get(_player_id)
+            player = self.get(_player_id, True)
             count = 0
             # wait for pause
             while count < 5 and player.state == PlayerState.PLAYING:
@@ -504,16 +505,15 @@ class PlayerController:
             # it is the master in a sync group and thus always present as child player
             child_players.append(player)
         for child_id in player.group_childs:
-            with contextlib.suppress(PlayerUnavailableError):
-                if child_player := self.get(child_id):
-                    if not (not only_powered or child_player.powered):
-                        continue
-                    if not (
-                        not only_playing
-                        or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
-                    ):
-                        continue
-                    child_players.append(child_player)
+            if child_player := self.get(child_id, False):
+                if not (not only_powered or child_player.powered):
+                    continue
+                if not (
+                    not only_playing
+                    or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+                ):
+                    continue
+                child_players.append(child_player)
         return child_players
 
     async def _poll_players(self) -> None:

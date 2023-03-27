@@ -116,10 +116,11 @@ class MusicProvider(Provider):
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
-    ) -> list[Track]:
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
+        yield  # type: ignore
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -223,6 +224,15 @@ class MusicProvider(Provider):
         """Return the audio stream for the provider item."""
         if streamdetails.direct is None:
             raise NotImplementedError
+
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        raise NotImplementedError
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
