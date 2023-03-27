@@ -197,7 +197,7 @@ class MetaDataController:
                     playlist_genres[genre] += 1
 
             playlist_genres_filtered = {
-                genre for genre, count in playlist_genres.items() if count > 2
+                genre for genre, count in playlist_genres.items() if count > 5
             }
             playlist.metadata.genres.update(playlist_genres_filtered)
 
