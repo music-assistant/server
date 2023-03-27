@@ -424,9 +424,8 @@ class FileSystemProviderBase(MusicProvider):
                 result.append(track)
         return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get playlist tracks for given playlist id."""
-        result = []
         if not await self.exists(prov_playlist_id):
             raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
 
@@ -448,12 +447,11 @@ class FileSystemProviderBase(MusicProvider):
                     playlist_line, os.path.dirname(prov_playlist_id)
                 ):
                     # use the linenumber as position for easier deletions
-                    media_item.position = line_no
-                    result.append(media_item)
+                    media_item.position = line_no + 1
+                    yield media_item
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning("Error while parsing playlist %s", prov_playlist_id, exc_info=err)
-        return result
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""

@@ -174,7 +174,8 @@ class MetaDataController:
         playlist.metadata.genres = set()
         image_urls = set()
         try:
-            for track in await self.mass.music.playlists.tracks(
+            playlist_genres: dict[str, int] = {}
+            async for track in self.mass.music.playlists.tracks(
                 playlist.item_id, playlist.provider
             ):
                 if not playlist.image and track.image:
@@ -182,12 +183,24 @@ class MetaDataController:
                 if track.media_type != MediaType.TRACK:
                     # filter out radio items
                     continue
-                assert isinstance(track, Track)
-                assert isinstance(track.album, Album)
+                if not isinstance(track, Track):
+                    continue
                 if track.metadata.genres:
-                    playlist.metadata.genres.update(track.metadata.genres)
-                elif track.album and track.album.metadata.genres:
-                    playlist.metadata.genres.update(track.album.metadata.genres)
+                    genres = track.metadata.genres
+                elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
+                    genres = track.album.metadata.genres
+                else:
+                    genres = set()
+                for genre in genres:
+                    if genre not in playlist_genres:
+                        playlist_genres[genre] = 0
+                    playlist_genres[genre] += 1
+
+            playlist_genres_filtered = {
+                genre for genre, count in playlist_genres.items() if count > 5
+            }
+            playlist.metadata.genres.update(playlist_genres_filtered)
+
             # create collage thumb/fanart from playlist tracks
             if image_urls:
                 if playlist.image and self.mass.storage_path in playlist.image:
