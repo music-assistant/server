@@ -217,7 +217,7 @@ class WebsocketClientHandler:
         try:
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result = handler.target(**args)
-            if inspect.isasyncgenfunction(result):
+            if inspect.isasyncgen(result):
                 # async generator = send chunked response
                 chunk_size = 100
                 batch: list[Any] = []

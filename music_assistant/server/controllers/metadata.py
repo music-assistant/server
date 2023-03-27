@@ -182,11 +182,11 @@ class MetaDataController:
                 if track.media_type != MediaType.TRACK:
                     # filter out radio items
                     continue
-                assert isinstance(track, Track)
-                assert isinstance(track.album, Album)
+                if not isinstance(track, Track):
+                    continue
                 if track.metadata.genres:
                     playlist.metadata.genres.update(track.metadata.genres)
-                elif track.album and track.album.metadata.genres:
+                elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
                     playlist.metadata.genres.update(track.album.metadata.genres)
             # create collage thumb/fanart from playlist tracks
             if image_urls:

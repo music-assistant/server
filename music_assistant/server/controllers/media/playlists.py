@@ -51,7 +51,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(item_id, provider_domain, provider_instance)
         prov = next(x for x in playlist.provider_mappings)
-        async for track in await self._get_provider_playlist_tracks(
+        async for track in self._get_provider_playlist_tracks(
             prov.item_id,
             provider_domain=prov.provider_domain,
             provider_instance=prov.provider_instance,
@@ -251,6 +251,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             for track_dict in cache:
                 yield Track.from_dict(track_dict)
+            return
         # no items in cache - get listing from provider
         all_items = []
         async for item in provider.get_playlist_tracks(item_id):
