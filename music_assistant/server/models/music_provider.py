@@ -224,6 +224,15 @@ class MusicProvider(Provider):
         if streamdetails.direct is None:
             raise NotImplementedError
 
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        raise NotImplementedError
+
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
         if media_type == MediaType.ARTIST:
