@@ -29,6 +29,20 @@ def fetched_user_parse(self, json_obj):
 tidalapi.FetchedUser.parse = fetched_user_parse
 
 
+def get_track_radio(self):
+    """
+    Queries TIDAL for the track radio, which is a mix of tracks that are similar to this track.
+    :return: A list of :class:`Tracks <tidalapi.media.Track>`
+    """
+    params = {"limit": 100}
+    return self.requests.map_request(
+        "tracks/%s/radio" % self.id, params=params, parse=self.session.parse_track
+    )
+
+
+tidalapi.Track.radio = get_track_radio
+
+
 async def tidal_session(
     tidal_session, token_type, access_token, refresh_token=None, expiry_time=None
 ) -> tidalapi.Session:
@@ -61,73 +75,62 @@ async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[s
     return await asyncio.to_thread(_get_library_artists)
 
 
-async def add_library_artists(session: tidalapi.Session, user_id: str, artist_id) -> dict[str, str]:
+async def add_remove_library_artists(
+    session: tidalapi.Session, user_id: str, artist_id: str, add: bool = True
+) -> dict[str, str]:
     """Async wrapper around the tidalapi Favorites.artists function."""
 
-    def _add_library_artists():
-        return tidalapi.Favorites(session, user_id).add_artist(artist_id)
+    def _add_remove_library_artists():
+        if add:
+            return tidalapi.Favorites(session, user_id).add_artist(artist_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_artist(artist_id)
+        return None
 
-    return await asyncio.to_thread(_add_library_artists)
-
-
-async def remove_library_artists(
-    session: tidalapi.Session, user_id: str, artist_id
-) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.alb function."""
-
-    def _remove_library_artists():
-        return tidalapi.Favorites(session, user_id).remove_artist(artist_id)
-
-    return await asyncio.to_thread(_remove_library_artists)
+    return await asyncio.to_thread(_add_remove_library_artists)
 
 
-async def add_library_albums(session: tidalapi.Session, user_id: str, album_id) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.albums function."""
-
-    def _add_library_albums():
-        return tidalapi.Favorites(session, user_id).add_album(album_id)
-
-    return await asyncio.to_thread(_add_library_albums)
-
-
-async def remove_library_albums(
-    session: tidalapi.Session, user_id: str, album_id
+async def add_remove_library_albums(
+    session: tidalapi.Session, user_id: str, album_id: str, add: bool = True
 ) -> dict[str, str]:
     """Async wrapper around the tidalapi Favorites.albums function."""
 
-    def _remove_library_albums():
-        return tidalapi.Favorites(session, user_id).remove_album(album_id)
+    def _add_remove_library_albums():
+        if add:
+            return tidalapi.Favorites(session, user_id).add_album(album_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_album(album_id)
+        return None
 
-    return await asyncio.to_thread(_remove_library_albums)
+    return await asyncio.to_thread(_add_remove_library_albums)
 
 
-async def add_library_tracks(session: tidalapi.Session, user_id: str, track_id) -> dict[str, str]:
+async def add_remove_library_tracks(
+    session: tidalapi.Session, user_id: str, track_id: str, add: bool = True
+) -> dict[str, str]:
     """Async wrapper around the tidalapi Favorites.tracks function."""
 
     def _add_library_tracks():
-        return tidalapi.Favorites(session, user_id).add_track(track_id)
+        if add:
+            return tidalapi.Favorites(session, user_id).add_track(track_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_track(track_id)
+        return None
 
     return await asyncio.to_thread(_add_library_tracks)
 
 
-async def remove_library_tracks(
-    session: tidalapi.Session, user_id: str, track_id
-) -> dict[str, str]:
-    """Async wrapper around the tidalapi Favorites.tracks function."""
-
-    def _remove_library_tracks():
-        return tidalapi.Favorites(session, user_id).remove_track(track_id)
-
-    return await asyncio.to_thread(_remove_library_tracks)
-
-
-async def add_library_playlists(
-    session: tidalapi.Session, user_id: str, playlist_id
+async def add_remove_library_playlists(
+    session: tidalapi.Session, user_id: str, playlist_id: str, add: bool = True
 ) -> dict[str, str]:
     """Async wrapper around the tidalapi Favorites.playlists function."""
 
     def _add_library_playlists():
-        return tidalapi.Favorites(session, user_id).add_playlist(playlist_id)
+        if add:
+            return tidalapi.Favorites(session, user_id).add_playlist(playlist_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_playlist(playlist_id)
+        return None
 
     return await asyncio.to_thread(_add_library_playlists)
 
@@ -258,6 +261,16 @@ async def get_playlist_tracks(session: tidalapi.Session, prov_playlist_id: str) 
         return tidalapi.Playlist(session, prov_playlist_id).tracks(limit=9999)
 
     return await asyncio.to_thread(_get_playlist_tracks)
+
+
+async def get_similar_tracks(session: tidalapi.Session, prov_track_id: str) -> dict[str, str]:
+    """Async wrapper around the tidal Track.get_similar_tracks function."""
+
+    def _get_similar_tracks():
+        mix_id = tidalapi.Track(session, prov_track_id).radio(limit=25)
+        return tidalapi.Mix(session, mix_id).get()
+
+    return await asyncio.to_thread(_get_similar_tracks)
 
 
 async def search(

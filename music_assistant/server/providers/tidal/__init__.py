@@ -11,7 +11,12 @@ from asyncio_throttle import Throttler
 from tidalapi import Session
 
 from music_assistant.common.models.config_entries import ConfigEntry
-from music_assistant.common.models.enums import ConfigEntryType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import (
+    AlbumType,
+    ConfigEntryType,
+    MediaType,
+    ProviderFeature,
+)
 from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -37,10 +42,10 @@ from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
-    add_library_albums,
-    add_library_artists,
-    add_library_playlists,
-    add_library_tracks,
+    add_remove_library_albums,
+    add_remove_library_artists,
+    add_remove_library_playlists,
+    add_remove_library_tracks,
     get_album,
     get_album_tracks,
     get_artist,
@@ -52,12 +57,9 @@ from .helpers import (
     get_library_tracks,
     get_playlist,
     get_playlist_tracks,
+    get_similar_tracks,
     get_track,
     get_track_url,
-    remove_library_albums,
-    remove_library_artists,
-    remove_library_playlists,
-    remove_library_tracks,
     search,
     tidal_session,
 )
@@ -167,6 +169,7 @@ class TidalProvider(MusicProvider):
             ProviderFeature.LIBRARY_ALBUMS_EDIT,
             ProviderFeature.LIBRARY_TRACKS_EDIT,
             ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            ProviderFeature.SIMILAR_TRACKS,
         )
 
     async def search(
@@ -212,7 +215,8 @@ class TidalProvider(MusicProvider):
         """Retrieve library tracks from Tidal."""
         tracks_obj = await get_library_tracks(self._tidal_session, self._tidal_user_id)
         for track in tracks_obj:
-            yield await self._parse_track(track)
+            if track.available:
+                yield await self._parse_track(track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
@@ -281,24 +285,32 @@ class TidalProvider(MusicProvider):
                     track.position = index + 1
                     yield track
 
+    async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
+        tracks = await get_similar_tracks(self._tidal_session, prov_track_id, limit)
+        for track in tracks:
+            if track.available:
+                track = await self._parse_track(track)
+                if track:
+                    yield track
+
     async def library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await add_library_artists(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_artists(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=True
             )
         elif media_type == MediaType.ALBUM:
-            result = await add_library_albums(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_albums(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=True
             )
         elif media_type == MediaType.TRACK:
-            result = await add_library_tracks(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_tracks(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=True
             )
         elif media_type == MediaType.PLAYLIST:
-            result = await add_library_playlists(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_playlists(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=True
             )
         return result
 
@@ -306,20 +318,20 @@ class TidalProvider(MusicProvider):
         """Remove item from library."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await remove_library_artists(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_artists(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=False
             )
         elif media_type == MediaType.ALBUM:
-            result = await remove_library_albums(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_albums(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=False
             )
         elif media_type == MediaType.TRACK:
-            result = await remove_library_tracks(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_tracks(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=False
             )
         elif media_type == MediaType.PLAYLIST:
-            result = await remove_library_playlists(
-                self._tidal_session, self._tidal_user_id, prov_item_id
+            result = await add_remove_library_playlists(
+                self._tidal_session, self._tidal_user_id, prov_item_id, add=False
             )
         return result
 
@@ -340,7 +352,7 @@ class TidalProvider(MusicProvider):
             direct=url,
         )
 
-    async def _parse_artist(self, artist_obj):
+    async def _parse_artist(self, artist_obj) -> Artist:
         """Parse tidal artist object to generic layout."""
         artist_id = None
         artist_id = artist_obj.id
@@ -368,7 +380,7 @@ class TidalProvider(MusicProvider):
         #            break
         return artist
 
-    async def _parse_album(self, album_obj: dict):
+    async def _parse_album(self, album_obj: dict) -> Album:
         """Parse tidal album object to generic layout."""
         name = album_obj.name
         version = None
@@ -378,12 +390,14 @@ class TidalProvider(MusicProvider):
         album = Album(item_id=album_id, provider=self.domain, name=name, version=version)
         for artist_obj in album_obj.artists:
             album.artists.append(await self._parse_artist(artist_obj))
-        """ if album_obj.type == "SINGLE":
+        if album_obj.type == "SINGLE":
             album.album_type = AlbumType.SINGLE
         elif album_obj.type == "COMPILATION":
             album.album_type = AlbumType.COMPILATION
         elif album_obj.type == "ALBUM":
-            album.album_type = AlbumType.ALBUM """
+            album.album_type = AlbumType.ALBUM
+        elif album_obj.type == "EP":
+            album.album_type = AlbumType.EP
         image_url = None
         try:
             image_url = album_obj.image(320)
@@ -411,27 +425,22 @@ class TidalProvider(MusicProvider):
         )
         return album
 
-    async def _parse_track(self, track_obj, artist=None):
+    async def _parse_track(self, track_obj, artist=None) -> Track:
         """Parse tidal track object to generic layout."""
-        name = track_obj.name
         version = None
-        if track_obj.version != "null":
+        if track_obj.version is not None:
             version = track_obj.version
-        track_id = None
-        if hasattr(track_obj, "id"):
-            track_id = track_obj.id
-        elif hasattr(track_obj, "item_id"):
-            track_id = track_obj.item_id
+        track_id = str(track_obj.id)
         track = Track(
             item_id=track_id,
             provider=self.domain,
-            name=name,
+            name=track_obj.name,
             version=version,
             duration=track_obj.duration / 1000,
             disc_number=track_obj.volume_num,
             track_number=track_obj.track_num,
-            isrc=track_obj.isrc,
         )
+        track.isrc.add(track_obj.isrc)
         track.artists = []
         for track_artist in track_obj.artists:
             artist = await self._parse_artist(track_artist)
@@ -454,7 +463,7 @@ class TidalProvider(MusicProvider):
         )
         return track
 
-    async def _parse_playlist(self, playlist_obj):
+    async def _parse_playlist(self, playlist_obj) -> Playlist:
         """Parse tidal playlist object to generic layout."""
         playlist_id = playlist_obj.id
         creator_name = None
