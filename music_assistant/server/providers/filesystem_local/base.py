@@ -565,8 +565,8 @@ class FileSystemProviderBase(MusicProvider):
         """
         Resolve an image from an image path.
 
-        This either returns (a generator to get) raw bytes of the image or a http(s) URL
-        or local path that is accessible from the server.
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
         """
         file_item = await self.resolve(path)
         return file_item.local_path or self.read_file_content(file_item.absolute_path)
