@@ -83,6 +83,4 @@ class QueueItem(DataClassDictMixin):
             return
         if not self.media_item:
             return
-        self.image_url = await mass.metadata.get_image_url_for_item(
-            self.media_item, resolve_local=True
-        )
+        self.image_url = await mass.metadata.get_image_url_for_item(self.media_item, resolve=True)
