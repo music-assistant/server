@@ -37,6 +37,10 @@ from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
+    add_library_albums,
+    add_library_artists,
+    add_library_playlists,
+    add_library_tracks,
     get_album,
     get_album_tracks,
     get_artist,
@@ -50,6 +54,10 @@ from .helpers import (
     get_playlist_tracks,
     get_track,
     get_track_url,
+    remove_library_albums,
+    remove_library_artists,
+    remove_library_playlists,
+    remove_library_tracks,
     search,
     tidal_session,
 )
@@ -155,6 +163,10 @@ class TidalProvider(MusicProvider):
             ProviderFeature.ARTIST_ALBUMS,
             ProviderFeature.ARTIST_TOPTRACKS,
             ProviderFeature.SEARCH,
+            ProviderFeature.LIBRARY_ARTISTS_EDIT,
+            ProviderFeature.LIBRARY_ALBUMS_EDIT,
+            ProviderFeature.LIBRARY_TRACKS_EDIT,
+            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
         )
 
     async def search(
@@ -268,6 +280,48 @@ class TidalProvider(MusicProvider):
                 track = await self._parse_track(track)
                 track.position = index
                 result.append(track)
+        return result
+
+    async def library_add(self, prov_item_id, media_type: MediaType):
+        """Add item to library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await add_library_artists(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
+        elif media_type == MediaType.ALBUM:
+            result = await add_library_albums(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
+        elif media_type == MediaType.TRACK:
+            result = await add_library_tracks(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
+        elif media_type == MediaType.PLAYLIST:
+            result = await add_library_playlists(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
+        return result
+
+    async def library_remove(self, prov_item_id, media_type: MediaType):
+        """Remove item from library."""
+        result = False
+        if media_type == MediaType.ARTIST:
+            result = await remove_library_artists(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
+        elif media_type == MediaType.ALBUM:
+            result = await remove_library_albums(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
+        elif media_type == MediaType.TRACK:
+            result = await remove_library_tracks(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
+        elif media_type == MediaType.PLAYLIST:
+            result = await remove_library_playlists(
+                self._tidal_session, self._tidal_user_id, prov_item_id
+            )
         return result
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:

@@ -61,6 +61,88 @@ async def get_library_artists(session: tidalapi.Session, user_id: str) -> dict[s
     return await asyncio.to_thread(_get_library_artists)
 
 
+async def add_library_artists(session: tidalapi.Session, user_id: str, artist_id) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.artists function."""
+
+    def _add_library_artists():
+        return tidalapi.Favorites(session, user_id).add_artist(artist_id)
+
+    return await asyncio.to_thread(_add_library_artists)
+
+
+async def remove_library_artists(
+    session: tidalapi.Session, user_id: str, artist_id
+) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.alb function."""
+
+    def _remove_library_artists():
+        return tidalapi.Favorites(session, user_id).remove_artist(artist_id)
+
+    return await asyncio.to_thread(_remove_library_artists)
+
+
+async def add_library_albums(session: tidalapi.Session, user_id: str, album_id) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.albums function."""
+
+    def _add_library_albums():
+        return tidalapi.Favorites(session, user_id).add_album(album_id)
+
+    return await asyncio.to_thread(_add_library_albums)
+
+
+async def remove_library_albums(
+    session: tidalapi.Session, user_id: str, album_id
+) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.albums function."""
+
+    def _remove_library_albums():
+        return tidalapi.Favorites(session, user_id).remove_album(album_id)
+
+    return await asyncio.to_thread(_remove_library_albums)
+
+
+async def add_library_tracks(session: tidalapi.Session, user_id: str, track_id) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.tracks function."""
+
+    def _add_library_tracks():
+        return tidalapi.Favorites(session, user_id).add_track(track_id)
+
+    return await asyncio.to_thread(_add_library_tracks)
+
+
+async def remove_library_tracks(
+    session: tidalapi.Session, user_id: str, track_id
+) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.tracks function."""
+
+    def _remove_library_tracks():
+        return tidalapi.Favorites(session, user_id).remove_track(track_id)
+
+    return await asyncio.to_thread(_remove_library_tracks)
+
+
+async def add_library_playlists(
+    session: tidalapi.Session, user_id: str, playlist_id
+) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.playlists function."""
+
+    def _add_library_playlists():
+        return tidalapi.Favorites(session, user_id).add_playlist(playlist_id)
+
+    return await asyncio.to_thread(_add_library_playlists)
+
+
+async def remove_library_playlists(
+    session: tidalapi.Session, user_id: str, playlist_id
+) -> dict[str, str]:
+    """Async wrapper around the tidalapi Favorites.playlists function."""
+
+    def _remove_library_playlists():
+        return tidalapi.Favorites(session, user_id).remove_playlist(playlist_id)
+
+    return await asyncio.to_thread(_remove_library_playlists)
+
+
 async def get_artist(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
     """Async wrapper around the tidalapi Artist function."""
 
@@ -71,7 +153,8 @@ async def get_artist(session: tidalapi.Session, prov_artist_id: str) -> dict[str
 
 
 async def get_artist_albums(session: tidalapi.Session, prov_artist_id: str) -> dict[str, str]:
-    """Async wrapper around 3 tidalapi functions: Artist.get_albums, Artist.get_albums_ep_singles and Artist.get_albums_other"""
+    """Async wrapper around 3 tidalapi functions: Artist.get_albums,
+    Artist.get_albums_ep_singles and Artist.get_albums_other"""
 
     def _get_artist_albums():
         all_albums = []
