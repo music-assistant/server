@@ -83,7 +83,12 @@ class AudioTags:
         """Return version tag (as-is)."""
         if tag := self.tags.get("version"):
             return tag
-        if (tag := self.tags.get("album_type")) and "live" in tag.lower():
+        album_type_tag = (
+            self.tags.get("musicbrainzalbumtype")
+            or self.tags.get("albumtype")
+            or self.tags.get("releasetype")
+        )
+        if album_type_tag and "live" in album_type_tag.lower():
             # yes, this can happen
             return "Live"
         return ""
