@@ -277,9 +277,9 @@ class MetaDataController:
                 if img.provider != "url" and resolve:
                     # return imageproxy url for images that need to be resolved
                     # the original path is double encoded
-                    encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
+                    encoded_url = urllib.parse.quote(urllib.parse.quote(img.path))
                     return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}"
-                return img.url
+                return img.path
 
         # retry with track's album
         if media_item.media_type == MediaType.TRACK and media_item.album:
