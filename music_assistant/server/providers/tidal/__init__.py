@@ -271,16 +271,15 @@ class TidalProvider(MusicProvider):
         playlist_obj = await get_playlist(self._tidal_session, prov_playlist_id)
         return await self._parse_playlist(playlist_obj) if playlist_obj else None
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        result = []
         tracks = await get_playlist_tracks(self._tidal_session, prov_playlist_id=prov_playlist_id)
-        for index, track in enumerate(tracks, 1):
+        for index, track in enumerate(tracks):
             if track.available:
                 track = await self._parse_track(track)
-                track.position = index
-                result.append(track)
-        return result
+                if track:
+                    track.position = index + 1
+                    yield track
 
     async def library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
