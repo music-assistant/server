@@ -261,8 +261,7 @@ class MetaDataController:
         self,
         media_item: MediaItemType,
         img_type: ImageType = ImageType.THUMB,
-        resolve_local: bool = True,
-        allow_local: bool = True,
+        resolve: bool = True,
     ) -> str | None:
         """Get url to image for given media media_item."""
         if not media_item:
@@ -273,10 +272,10 @@ class MetaDataController:
             for img in media_item.metadata.images:
                 if img.type != img_type:
                     continue
-                if img.source != "http" and not allow_local:
+                if img.provider != "url" and not resolve:
                     continue
-                if img.source != "http" and resolve_local:
-                    # return imageproxy url for local filesystem items
+                if img.provider != "url" and resolve:
+                    # return imageproxy url for images that need to be resolved
                     # the original path is double encoded
                     encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
                     return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}"
@@ -284,24 +283,24 @@ class MetaDataController:
 
         # retry with track's album
         if media_item.media_type == MediaType.TRACK and media_item.album:
-            return await self.get_image_url_for_item(media_item.album, img_type, resolve_local)
+            return await self.get_image_url_for_item(media_item.album, img_type, resolve)
 
         # try artist instead for albums
         if media_item.media_type == MediaType.ALBUM and media_item.artist:
-            return await self.get_image_url_for_item(media_item.artist, img_type, resolve_local)
+            return await self.get_image_url_for_item(media_item.artist, img_type, resolve)
 
         # last resort: track artist(s)
         if media_item.media_type == MediaType.TRACK and media_item.artists:
             for artist in media_item.artists:
-                return await self.get_image_url_for_item(artist, img_type, resolve_local)
+                return await self.get_image_url_for_item(artist, img_type, resolve)
 
         return None
 
     async def get_thumbnail(
-        self, path_or_url: str, size: int | None = None, source: str = "http", base64: bool = False
+        self, path: str, size: int | None = None, provider: str = "url", base64: bool = False
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        thumbnail = await get_image_thumb(self.mass, path_or_url, size=size, source=source)
+        thumbnail = await get_image_thumb(self.mass, path, size=size, provider=provider)
         if base64:
             enc_image = b64encode(thumbnail).decode()
             thumbnail = f"data:image/png;base64,{enc_image}"
@@ -310,14 +309,14 @@ class MetaDataController:
     async def _handle_imageproxy(self, request: web.Request) -> web.Response:
         """Handle request for image proxy."""
         path = request.query["path"]
-        source = request.query.get("source", "http")
+        provider = request.query.get("provider", "url")
         size = int(request.query.get("size", "0"))
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote(path)
 
         with suppress(FileNotFoundError):
-            image_data = await self.get_thumbnail(path, size=size, source=source)
+            image_data = await self.get_thumbnail(path, size=size, provider=provider)
             # we set the cache header to 1 year (forever)
             # the client can use the checksum value to refresh when content changes
             return web.Response(

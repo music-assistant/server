@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import random
-from base64 import b64decode, b64encode
+from base64 import b64encode
 from io import BytesIO
 from typing import TYPE_CHECKING
 
@@ -14,31 +14,17 @@ from music_assistant.server.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.providers.filesystem_local.base import FileSystemProviderBase
+    from music_assistant.server.models.music_provider import MusicProvider
 
 
-async def get_image_data(mass: MusicAssistant, path_or_url: str, source: str = "http") -> bytes:
+async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str = "url") -> bytes:
     """Create thumbnail from image url."""
-    if source != "http" and (prov := mass.get_provider(source)):
-        prov: FileSystemProviderBase
-        file_item = await prov.resolve(path_or_url)
-        # store images in cache db if file larger than 5mb and we have no direct access to the file
-        use_cache = not file_item.local_path and (
-            not file_item.file_size or file_item.file_size > 5000000
-        )
-        cache_key = f"embedded_image.{path_or_url}.{source}"
-        if use_cache and (
-            cache_data := await mass.cache.get(cache_key, checksum=file_item.checksum)
-        ):
-            return b64decode(cache_data)
-        # read from file
-        input_file = file_item.local_path or prov.read_file_content(file_item.absolute_path)
-        if img_data := await get_embedded_image(input_file):
-            if use_cache:
-                await mass.cache.set(
-                    cache_key, b64encode(img_data).decode(), checksum=file_item.checksum
-                )
-            return img_data
+    if provider != "url" and (prov := mass.get_provider(provider)):
+        prov: MusicProvider
+        if resolved_data := await prov.resolve_image(path_or_url):
+            if isinstance(resolved_data, bytes):
+                return resolved_data
+            return await get_embedded_image(resolved_data)
     # always use ffmpeg to get the image because it supports
     # both online and offline image files as well as embedded images in media files
     if img_data := await get_embedded_image(path_or_url):
@@ -47,10 +33,10 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, source: str = "
 
 
 async def get_image_thumb(
-    mass: MusicAssistant, path_or_url: str, size: int | None, source: str = "http"
+    mass: MusicAssistant, path_or_url: str, size: int | None, provider: str = "url"
 ) -> bytes:
     """Get (optimized) PNG thumbnail from image url."""
-    img_data = await get_image_data(mass, path_or_url, source)
+    img_data = await get_image_data(mass, path_or_url, provider)
 
     def _create_image():
         data = BytesIO()
