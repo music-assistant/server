@@ -77,12 +77,14 @@ class MediaItemImage(DataClassDictMixin):
     """Model for a image."""
 
     type: ImageType
-    url: str
-    source: str = "http"  # set to instance_id of file provider if path is local
+    path: str
+    # set to instance_id of provider if the path needs to be resolved
+    # if the path is just a plain (remotely accessible) URL, set it to 'url'
+    provider: str = "url"
 
     def __hash__(self):
         """Return custom hash."""
-        return hash(self.url)
+        return hash(self.type.value, self.path)
 
 
 @dataclass(frozen=True)
@@ -96,7 +98,7 @@ class MediaItemChapter(DataClassDictMixin):
 
     def __hash__(self):
         """Return custom hash."""
-        return hash(self.number)
+        return hash(self.chapter_id)
 
 
 @dataclass

@@ -561,6 +561,16 @@ class FileSystemProviderBase(MusicProvider):
         async for chunk in self.read_file_content(streamdetails.item_id, seek_bytes):
             yield chunk
 
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or a http(s) URL
+        or local path that is accessible from the server.
+        """
+        file_item = await self.resolve(path)
+        return file_item.local_path or self.read_file_content(file_item.absolute_path)
+
     async def _parse_track(self, file_item: FileSystemItem) -> Track:
         """Get full track details by id."""
         # ruff: noqa: PLR0915, PLR0912
