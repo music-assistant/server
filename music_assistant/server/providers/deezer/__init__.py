@@ -38,7 +38,6 @@ from .helpers import (
     get_deezer_client,
     get_playlist,
     get_track,
-    get_url,
     get_user_albums,
     get_user_artists,
     get_user_playlists,
@@ -243,13 +242,11 @@ class DeezerProvider(MusicProvider):
             tracks.append(await parse_track(mass=self, track=track))
         return tracks
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
         playlist = await get_playlist(client=self.client, playlist_id=prov_playlist_id)
-        tracks = []
         for track in playlist.tracks:
-            tracks.append(await parse_track(mass=self, track=track))
-        return tracks
+            yield await parse_track(mass=self, track=track)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -320,6 +317,5 @@ class DeezerProvider(MusicProvider):
             stream_title=track.title,
             duration=track.duration,
             expires=time() + 3600,
-            direct=await get_url(mass=self, track_id=item_id, creds=self.creds),
         )
         return details

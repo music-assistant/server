@@ -455,7 +455,7 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
 async def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadata:
     """Parse the playlist metadata."""
     metadata = MediaItemMetadata(
-        images=[MediaItemImage(type=ImageType.THUMB, url=playlist.picture_big)],
+        images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
     )
     return metadata
 
@@ -472,7 +472,7 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
             images=[
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    url=(await get_album_from_track(track=track)).cover_big,
+                    path=(await get_album_from_track(track=track)).cover_big,
                 )
             ],
         )
@@ -486,7 +486,7 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
 async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
     """Parse the album metadata."""
     metadata = MediaItemMetadata(
-        images=[MediaItemImage(type=ImageType.THUMB, url=album.cover_big)],
+        images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
     )
     return metadata
 
@@ -494,7 +494,7 @@ async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
 async def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
     """Parse the artist metadata."""
     metadata = MediaItemMetadata(
-        images=[MediaItemImage(type=ImageType.THUMB, url=artist.picture_big)],
+        images=[MediaItemImage(type=ImageType.THUMB, path=artist.picture_big)],
     )
     return metadata
 
