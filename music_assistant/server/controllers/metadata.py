@@ -84,7 +84,7 @@ class MetaDataController:
             if self.scan_busy:
                 return
 
-            LOGGER.info("Start scan for missing artist metadata")
+            LOGGER.debug("Start scan for missing artist metadata")
             self.scan_busy = True
             async for artist in self.mass.music.artists.iter_db_items():
                 if artist.metadata.last_refresh is not None:
@@ -100,7 +100,7 @@ class MetaDataController:
                 # this is slow on purpose to not cause stress on the metadata providers
                 await asyncio.sleep(30)
             self.scan_busy = False
-            LOGGER.info("Finished scan for missing artist metadata")
+            LOGGER.debug("Finished scan for missing artist metadata")
 
         self.mass.create_task(scan_artist_metadata)
 
@@ -174,7 +174,8 @@ class MetaDataController:
         playlist.metadata.genres = set()
         image_urls = set()
         try:
-            for track in await self.mass.music.playlists.tracks(
+            playlist_genres: dict[str, int] = {}
+            async for track in self.mass.music.playlists.tracks(
                 playlist.item_id, playlist.provider
             ):
                 if not playlist.image and track.image:
@@ -182,12 +183,24 @@ class MetaDataController:
                 if track.media_type != MediaType.TRACK:
                     # filter out radio items
                     continue
-                assert isinstance(track, Track)
-                assert isinstance(track.album, Album)
+                if not isinstance(track, Track):
+                    continue
                 if track.metadata.genres:
-                    playlist.metadata.genres.update(track.metadata.genres)
-                elif track.album and track.album.metadata.genres:
-                    playlist.metadata.genres.update(track.album.metadata.genres)
+                    genres = track.metadata.genres
+                elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
+                    genres = track.album.metadata.genres
+                else:
+                    genres = set()
+                for genre in genres:
+                    if genre not in playlist_genres:
+                        playlist_genres[genre] = 0
+                    playlist_genres[genre] += 1
+
+            playlist_genres_filtered = {
+                genre for genre, count in playlist_genres.items() if count > 5
+            }
+            playlist.metadata.genres.update(playlist_genres_filtered)
+
             # create collage thumb/fanart from playlist tracks
             if image_urls:
                 if playlist.image and self.mass.storage_path in playlist.image:
@@ -261,8 +274,7 @@ class MetaDataController:
         self,
         media_item: MediaItemType,
         img_type: ImageType = ImageType.THUMB,
-        resolve_local: bool = True,
-        allow_local: bool = True,
+        resolve: bool = True,
     ) -> str | None:
         """Get url to image for given media media_item."""
         if not media_item:
@@ -273,35 +285,35 @@ class MetaDataController:
             for img in media_item.metadata.images:
                 if img.type != img_type:
                     continue
-                if img.is_file and not allow_local:
+                if img.provider != "url" and not resolve:
                     continue
-                if img.is_file and resolve_local:
-                    # return imageproxy url for local filesystem items
+                if img.provider != "url" and resolve:
+                    # return imageproxy url for images that need to be resolved
                     # the original path is double encoded
-                    encoded_url = urllib.parse.quote(urllib.parse.quote(img.url))
+                    encoded_url = urllib.parse.quote(urllib.parse.quote(img.path))
                     return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}"
-                return img.url
+                return img.path
 
         # retry with track's album
         if media_item.media_type == MediaType.TRACK and media_item.album:
-            return await self.get_image_url_for_item(media_item.album, img_type, resolve_local)
+            return await self.get_image_url_for_item(media_item.album, img_type, resolve)
 
         # try artist instead for albums
         if media_item.media_type == MediaType.ALBUM and media_item.artist:
-            return await self.get_image_url_for_item(media_item.artist, img_type, resolve_local)
+            return await self.get_image_url_for_item(media_item.artist, img_type, resolve)
 
         # last resort: track artist(s)
         if media_item.media_type == MediaType.TRACK and media_item.artists:
             for artist in media_item.artists:
-                return await self.get_image_url_for_item(artist, img_type, resolve_local)
+                return await self.get_image_url_for_item(artist, img_type, resolve)
 
         return None
 
     async def get_thumbnail(
-        self, path: str, size: int | None = None, base64: bool = False
+        self, path: str, size: int | None = None, provider: str = "url", base64: bool = False
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        thumbnail = await get_image_thumb(self.mass, path, size)
+        thumbnail = await get_image_thumb(self.mass, path, size=size, provider=provider)
         if base64:
             enc_image = b64encode(thumbnail).decode()
             thumbnail = f"data:image/png;base64,{enc_image}"
@@ -310,24 +322,19 @@ class MetaDataController:
     async def _handle_imageproxy(self, request: web.Request) -> web.Response:
         """Handle request for image proxy."""
         path = request.query["path"]
+        provider = request.query.get("provider", "url")
         size = int(request.query.get("size", "0"))
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote(path)
 
-        try:
-            image_data = await self.get_thumbnail(path, size)
-        except Exception as err:
-            LOGGER.exception(str(err), exc_info=err)
-            image_data = None
-
-        if not image_data:
-            return web.Response(status=404)
-
-        # we set the cache header to 1 year (forever)
-        # the client can use the checksum value to refresh when content changes
-        return web.Response(
-            body=image_data,
-            headers={"Cache-Control": "max-age=31536000"},
-            content_type="image/png",
-        )
+        with suppress(FileNotFoundError):
+            image_data = await self.get_thumbnail(path, size=size, provider=provider)
+            # we set the cache header to 1 year (forever)
+            # the client can use the checksum value to refresh when content changes
+            return web.Response(
+                body=image_data,
+                headers={"Cache-Control": "max-age=31536000"},
+                content_type="image/png",
+            )
+        return web.Response(status=404)

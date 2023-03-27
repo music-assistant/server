@@ -5,6 +5,7 @@ import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING, Generic, TypeVar
 
@@ -125,23 +126,25 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         force_refresh: bool = False,
         lazy: bool = True,
         details: ItemCls = None,
-        force_provider_item: bool = False,
+        add_to_db: bool = True,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         assert (
             provider_domain or provider_instance
         ), "provider_domain or provider_instance must be supplied"
-        if force_provider_item:
-            return await self.get_provider_item(item_id, provider_instance)
+        if not add_to_db and "database" in (provider_domain, provider_instance):
+            return await self.get_provider_item(item_id, provider_instance or provider_domain)
+        if details and details.provider == "database":
+            details = None
         db_item = await self.get_db_item_by_prov_id(
             item_id=item_id,
             provider_domain=provider_domain,
             provider_instance=provider_instance,
         )
-        if db_item and (time() - db_item.last_refresh) > REFRESH_INTERVAL:
+        if db_item and (time() - (db_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
             force_refresh = True
-        if db_item and force_refresh:
+        if db_item and force_refresh and add_to_db:
             # get (first) provider item id belonging to this db item
             provider_instance, item_id = await self.get_provider_mapping(db_item)
         elif db_item:
@@ -165,6 +168,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not details:
             # we couldn't get a match from any of the providers, raise error
             raise MediaNotFoundError(f"Item not found: {provider_domain or id}/{item_id}")
+        if not add_to_db:
+            return details
         # create task to add the item to the db, including matching metadata etc. takes some time
         # in 99% of the cases we just return lazy because we want the details as fast as possible
         # only if we really need to wait for the result (e.g. to prevent race conditions), we
@@ -399,10 +404,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def set_db_library(self, item_id: int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""
         match = {"item_id": item_id}
-        timestamp = int(time()) if in_library else 0
-        await self.mass.music.database.update(
-            self.db_table, match, {"in_library": in_library, "timestamp": timestamp}
-        )
+        await self.mass.music.database.update(self.db_table, match, {"in_library": in_library})
         db_item = await self.get_db_item(item_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
@@ -446,17 +448,18 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             x for x in db_item.provider_mappings if x.provider_instance != provider_instance
         }
         match = {"item_id": item_id}
-        await self.mass.music.database.update(
-            self.db_table,
-            match,
-            {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
-        )
-        self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
-
-        # NOTE: If the item has no providers left we leave an orphan item in the db
-        # to easily reinstate when a new provider attaches to it.
-
-        self.logger.debug("removed provider %s from item id %s", provider_instance, item_id)
+        if db_item.provider_mappings:
+            await self.mass.music.database.update(
+                self.db_table,
+                match,
+                {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
+            )
+            self.logger.debug("removed provider %s from item id %s", provider_instance, item_id)
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
+        else:
+            # delete item if it has no more providers
+            with suppress(AssertionError):
+                await self.delete_db_item(item_id)
 
     async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:  # noqa: ARG002
         """Delete record from the database."""

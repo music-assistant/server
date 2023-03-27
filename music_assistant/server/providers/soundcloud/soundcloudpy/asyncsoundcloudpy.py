@@ -13,6 +13,9 @@ BASE_URL = "https://api-v2.soundcloud.com"
 if TYPE_CHECKING:
     from aiohttp.client import ClientSession
 
+# TODO: Fix docstring
+# TODO: Add annotations
+
 
 class SoundcloudAsyncAPI:
     """Soundcloud."""
@@ -31,8 +34,7 @@ class SoundcloudAsyncAPI:
 
     async def get(self, url, headers=None, params=None):
         """Async get."""
-        session = self.http_session
-        async with session.get(url=url, params=params, headers=headers) as response:
+        async with self.http_session.get(url=url, params=params, headers=headers) as response:
             return await response.json()
 
     async def login(self):

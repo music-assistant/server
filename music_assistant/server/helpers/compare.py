@@ -30,7 +30,7 @@ def loose_compare_strings(base: str, alt: str) -> bool:
 
 def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     """Compare strings and return True if we have an (almost) perfect match."""
-    if str1 is None or str2 is None:
+    if not str1 or not str2:
         return False
     # return early if total length mismatch
     if abs(len(str1) - len(str2)) > 4:
@@ -106,6 +106,10 @@ def compare_item_ids(
     left_item: MediaItem | ItemMapping, right_item: MediaItem | ItemMapping
 ) -> bool:
     """Compare item_id(s) of two media items."""
+    if not left_item.provider or not right_item.provider:
+        return False
+    if not left_item.item_id or not right_item.item_id:
+        return False
     if left_item.provider == right_item.provider and left_item.item_id == right_item.item_id:
         return True
 
@@ -147,6 +151,41 @@ def compare_albums(
     return False
 
 
+def compare_barcode(
+    left_barcodes: set[str],
+    right_barcodes: set[str],
+):
+    """Compare two sets of barcodes and return True if a match was found."""
+    for left_barcode in left_barcodes:
+        if not left_barcode.strip():
+            continue
+        for right_barcode in right_barcodes:
+            if not right_barcode.strip():
+                continue
+            # convert EAN-13 to UPC-A by stripping off the leading zero
+            left_upc = left_barcode[1:] if left_barcode.startswith("0") else left_barcode
+            right_upc = right_barcode[1:] if right_barcode.startswith("0") else right_barcode
+            if compare_strings(left_upc, right_upc):
+                return True
+    return False
+
+
+def compare_isrc(
+    left_isrcs: set[str],
+    right_isrcs: set[str],
+):
+    """Compare two sets of isrc codes and return True if a match was found."""
+    for left_isrc in left_isrcs:
+        if not left_isrc.strip():
+            continue
+        for right_isrc in right_isrcs:
+            if not right_isrc.strip():
+                continue
+            if compare_strings(left_isrc, right_isrc):
+                return True
+    return False
+
+
 def compare_album(
     left_album: Album | ItemMapping,
     right_album: Album | ItemMapping,
@@ -157,14 +196,12 @@ def compare_album(
     # return early on exact item_id match
     if compare_item_ids(left_album, right_album):
         return True
-
-    # prefer match on UPC
+    # prefer match on barcode/upc
+    # not present on ItemMapping
     if (
-        isinstance(left_album, Album)
-        and isinstance(right_album, Album)
-        and left_album.upc
-        and right_album.upc
-        and ((left_album.upc in right_album.upc) or (right_album.upc in left_album.upc))
+        getattr(left_album, "barcode", None)
+        and getattr(right_album, "barcode", None)
+        and compare_barcode(left_album.barcode, right_album.barcode)
     ):
         return True
     # prefer match on musicbrainz_id
@@ -176,6 +213,12 @@ def compare_album(
     if not compare_strings(left_album.name, right_album.name, False):
         return False
     if not compare_version(left_album.version, right_album.version):
+        return False
+    if (
+        hasattr(left_album, "metadata")
+        and hasattr(right_album, "metadata")
+        and not compare_explicit(left_album.metadata, right_album.metadata)
+    ):
         return False
     # compare album artist
     # Note: Not present on ItemMapping
@@ -192,20 +235,13 @@ def compare_track(left_track: Track, right_track: Track):
     """Compare two track items and return True if they match."""
     if left_track is None or right_track is None:
         return False
+    assert isinstance(left_track, Track) and isinstance(right_track, Track)
     # return early on exact item_id match
     if compare_item_ids(left_track, right_track):
         return True
-    for left_isrc in left_track.isrcs:
-        for right_isrc in right_track.isrcs:
-            # ISRC is always 100% accurate match
-            if left_isrc == right_isrc:
-                return True
-    if (
-        left_track.musicbrainz_id
-        and right_track.musicbrainz_id
-        and left_track.musicbrainz_id == right_track.musicbrainz_id
-    ):
-        # musicbrainz_id is always 100% accurate match
+    if compare_isrc(left_track.isrc, right_track.isrc):
+        return True
+    if compare_strings(left_track.musicbrainz_id, right_track.musicbrainz_id):
         return True
     # album is required for track linking
     if left_track.album is None or right_track.album is None:
@@ -213,15 +249,6 @@ def compare_track(left_track: Track, right_track: Track):
     # track name must match
     if not compare_strings(left_track.name, right_track.name, False):
         return False
-    # exact albumtrack match = 100% match
-    if (
-        compare_album(left_track.album, right_track.album)
-        and left_track.track_number
-        and right_track.track_number
-        and left_track.disc_number == right_track.disc_number
-        and left_track.track_number == right_track.track_number
-    ):
-        return True
     # track version must match
     if not compare_version(left_track.version, right_track.version):
         return False
@@ -231,6 +258,15 @@ def compare_track(left_track: Track, right_track: Track):
     # track if both tracks are (not) explicit
     if not compare_explicit(left_track.metadata, right_track.metadata):
         return False
+    # exact albumtrack match = 100% match
+    if (
+        compare_album(left_track.album, right_track.album)
+        and left_track.track_number
+        and right_track.track_number
+        and ((left_track.disc_number or 1) == (right_track.disc_number or 1))
+        and left_track.track_number == right_track.track_number
+    ):
+        return True
     # exact album match = 100% match
     if left_track.albums and right_track.albums:
         for left_album in left_track.albums:

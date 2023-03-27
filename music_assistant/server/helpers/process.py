@@ -12,7 +12,7 @@ from collections.abc import AsyncGenerator, Coroutine
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
-DEFAULT_TIMEOUT = 600
+DEFAULT_TIMEOUT = 30 * 60
 
 # pylint: disable=invalid-name
 
@@ -46,6 +46,7 @@ class AsyncProcess:
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
                 close_fds=True,
+                limit=64 * 1024 * 1024,
             )
         else:
             self._proc = await asyncio.create_subprocess_exec(
@@ -54,6 +55,7 @@ class AsyncProcess:
                 stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
                 stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
                 close_fds=True,
+                limit=64 * 1024 * 1024,
             )
 
             # Fix BrokenPipeError due to a race condition

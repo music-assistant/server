@@ -14,30 +14,29 @@ from music_assistant.server.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.models.music_provider import MusicProvider
 
 
-async def get_image_data(mass: MusicAssistant, path: str) -> bytes:
+async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str = "url") -> bytes:
     """Create thumbnail from image url."""
-    # always try ffmpeg first to get the image because it supports
+    if provider != "url" and (prov := mass.get_provider(provider)):
+        prov: MusicProvider
+        if resolved_data := await prov.resolve_image(path_or_url):
+            if isinstance(resolved_data, bytes):
+                return resolved_data
+            return await get_embedded_image(resolved_data)
+    # always use ffmpeg to get the image because it supports
     # both online and offline image files as well as embedded images in media files
-    img_data = await get_embedded_image(path)
-    if img_data:
+    if img_data := await get_embedded_image(path_or_url):
         return img_data
-    # assume file from file provider, we need to fetch it here...
-    for prov in mass.music.providers:
-        if not prov.domain.startswith("filesystem"):
-            continue
-        if not await prov.exists(path):
-            continue
-        img_data = await get_embedded_image(prov.read_file_content(path))
-        if img_data:
-            return img_data
-    raise FileNotFoundError(f"Image not found: {path}")
+    raise FileNotFoundError(f"Image not found: {path_or_url}")
 
 
-async def get_image_thumb(mass: MusicAssistant, path: str, size: int | None) -> bytes:
+async def get_image_thumb(
+    mass: MusicAssistant, path_or_url: str, size: int | None, provider: str = "url"
+) -> bytes:
     """Get (optimized) PNG thumbnail from image url."""
-    img_data = await get_image_data(mass, path)
+    img_data = await get_image_data(mass, path_or_url, provider)
 
     def _create_image():
         data = BytesIO()

@@ -248,7 +248,7 @@ class YoutubeMusicProvider(MusicProvider):
         )
         return await self._parse_playlist(playlist_obj)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
@@ -256,8 +256,7 @@ class YoutubeMusicProvider(MusicProvider):
             username=self.config.get_value(CONF_USERNAME),
         )
         if "tracks" not in playlist_obj:
-            return []
-        tracks = []
+            return
         for index, track in enumerate(playlist_obj["tracks"]):
             if track["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
@@ -265,14 +264,13 @@ class YoutubeMusicProvider(MusicProvider):
                 try:
                     track = await self._parse_track(track)
                     if track:
-                        track.position = index
-                        tracks.append(track)
+                        track.position = index + 1
+                        yield track
                 except InvalidDataError:
                     track = await self.get_track(track["videoId"])
                     if track:
-                        track.position = index
-                        tracks.append(track)
-        return tracks
+                        track.position = index + 1
+                        yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -293,7 +291,9 @@ class YoutubeMusicProvider(MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
-            playlist_tracks = await self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
+            playlist_tracks = [
+                x async for x in self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
+            ]
             return playlist_tracks[:25]
         return []
 
@@ -429,7 +429,7 @@ class YoutubeMusicProvider(MusicProvider):
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         stream_details = StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=ContentType.try_parse(stream_format["mimeType"]),
             direct=url,
@@ -508,6 +508,8 @@ class YoutubeMusicProvider(MusicProvider):
             album.metadata.images = await self._parse_thumbnails(album_obj["thumbnails"])
         if "description" in album_obj:
             album.metadata.description = unquote(album_obj["description"])
+        if "isExplicit" in album_obj:
+            album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
             album.artists = [
                 await self._parse_artist(artist)

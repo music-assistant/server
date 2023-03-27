@@ -188,7 +188,7 @@ class TuneInProvider(MusicProvider):
         if item_id.startswith("http"):
             # custom url
             return StreamDetails(
-                provider=self.domain,
+                provider=self.instance_id,
                 item_id=item_id,
                 content_type=ContentType.UNKNOWN,
                 media_type=MediaType.RADIO,
@@ -201,9 +201,13 @@ class TuneInProvider(MusicProvider):
                 continue
             # check if the radio stream is not a playlist
             url = stream["url"]
-            if url.endswith("m3u8") or url.endswith("m3u") or url.endswith("pls"):
-                playlist = await fetch_playlist(self.mass, url)
-                url = playlist[0]
+            direct = None
+            if url.endswith("m3u8") or url.endswith("m3u") or url.endswith("pls"):  # noqa: SIM102
+                if playlist := await fetch_playlist(self.mass, url):
+                    if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
+                        # this is most likely an mpeg-dash stream, let ffmpeg handle that
+                        direct = playlist[0]
+                    url = playlist[0]
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -211,6 +215,7 @@ class TuneInProvider(MusicProvider):
                 media_type=MediaType.RADIO,
                 data=url,
                 expires=time() + 24 * 3600,
+                direct=direct,
             )
         raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
 

@@ -5,9 +5,9 @@ import asyncio
 import contextlib
 import itertools
 from random import choice, random
-from time import time
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
@@ -79,7 +79,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return top tracks for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_domain, provider_instance)
+            artist = await self.get(item_id, provider_domain, provider_instance, add_to_db=False)
         # get results from all providers
         coros = [
             self.get_provider_artist_toptracks(
@@ -110,7 +110,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return (all/most popular) albums for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_domain or provider_instance)
+            artist = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
         # get results from all providers
         coros = [
             self.get_provider_artist_albums(
@@ -250,10 +250,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         return items
 
-    async def add_db_item(self, item: Artist, overwrite_existing: bool = False) -> Artist:
+    async def add_db_item(self, item: Artist) -> Artist:
         """Add a new item record to the database."""
         assert isinstance(item, Artist), "Not a full Artist object"
-        assert item.provider_mappings, "Artist is missing provider id(s)"
+        assert item.provider_mappings, "Item is missing provider mapping(s)"
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS):
             item.musicbrainz_id = VARIOUS_ARTISTS_ID
@@ -279,13 +279,11 @@ class ArtistsController(MediaControllerBase[Artist]):
                         break
             if cur_item:
                 # update existing
-                return await self.update_db_item(
-                    cur_item.item_id, item, overwrite=overwrite_existing
-                )
+                return await self.update_db_item(cur_item.item_id, item)
 
             # insert item
-            if item.in_library and not item.timestamp:
-                item.timestamp = int(time())
+            item.timestamp_added = int(utc_timestamp())
+            item.timestamp_modified = int(utc_timestamp())
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
@@ -298,17 +296,13 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item_id: int,
         item: Artist,
-        overwrite: bool = False,
     ) -> Artist:
         """Update Artist record in the database."""
+        assert item.provider_mappings, "Item is missing provider mapping(s)"
         cur_item = await self.get_db_item(item_id)
-        if overwrite:
-            metadata = item.metadata
-            provider_mappings = item.provider_mappings
-        else:
-            is_file_provider = item.provider.startswith("filesystem")
-            metadata = cur_item.metadata.update(item.metadata, is_file_provider)
-            provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
+        is_file_provider = item.provider.startswith("filesystem")
+        metadata = cur_item.metadata.update(item.metadata, is_file_provider)
+        provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
 
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS):
@@ -320,11 +314,12 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.db_table,
             {"item_id": item_id},
             {
-                "name": item.name if overwrite else cur_item.name,
-                "sort_name": item.sort_name if overwrite else cur_item.sort_name,
+                "name": item.name if is_file_provider else cur_item.name,
+                "sort_name": item.sort_name if is_file_provider else cur_item.sort_name,
                 "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
+                "timestamp_modified": int(utc_timestamp()),
             },
         )
         # update/set provider_mappings table
@@ -409,7 +404,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
                 ref_track = await self.mass.music.tracks.get(  # noqa: PLW2901
-                    ref_track.item_id, ref_track.provider
+                    ref_track.item_id, ref_track.provider, add_to_db=False
                 )
             for search_str in (
                 f"{db_artist.name} - {ref_track.name}",

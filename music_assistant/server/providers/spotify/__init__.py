@@ -239,10 +239,9 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        count = 0
-        result = []
+        count = 1
         for item in await self._get_all_items(
             f"playlists/{prov_playlist_id}/tracks",
         ):
@@ -251,9 +250,8 @@ class SpotifyProvider(MusicProvider):
             track = await self._parse_track(item["track"])
             # use count as position
             track.position = count
-            result.append(track)
+            yield track
             count += 1
-        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
@@ -319,7 +317,7 @@ class SpotifyProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []
-        for track in await self.get_playlist_tracks(prov_playlist_id):
+        async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
                 track_uris.append({"uri": f"spotify:track:{track.item_id}"})
             if len(track_uris) == positions_to_remove:
@@ -343,7 +341,7 @@ class SpotifyProvider(MusicProvider):
         await self.login()
         return StreamDetails(
             item_id=track.item_id,
-            provider=self.domain,
+            provider=self.instance_id,
             content_type=ContentType.OGG,
             duration=track.duration,
         )
@@ -421,7 +419,9 @@ class SpotifyProvider(MusicProvider):
         if album_obj.get("images"):
             album.metadata.images = [MediaItemImage(ImageType.THUMB, album_obj["images"][0]["url"])]
         if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            album.upc = album_obj["external_ids"]["upc"]
+            album.barcode.add(album_obj["external_ids"]["upc"])
+        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
+            album.barcode.add(album_obj["external_ids"]["ean"])
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]
         if album_obj.get("release_date"):
@@ -466,7 +466,7 @@ class SpotifyProvider(MusicProvider):
         if "preview_url" in track_obj:
             track.metadata.preview = track_obj["preview_url"]
         if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
-            track.isrc = track_obj["external_ids"]["isrc"]
+            track.isrc.add(track_obj["external_ids"]["isrc"])
         if "album" in track_obj:
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):

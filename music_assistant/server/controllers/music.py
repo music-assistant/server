@@ -11,12 +11,7 @@ from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature, ProviderType
 from music_assistant.common.models.errors import MusicAssistantError
-from music_assistant.common.models.media_items import (
-    BrowseFolder,
-    MediaItem,
-    MediaItemType,
-    SearchResults,
-)
+from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     CONF_DB_LIBRARY,
@@ -128,17 +123,17 @@ class MusicController:
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
-        # include results from all music providers
-        provider_instances = (item.instance_id for item in self.providers)
+        # include results from all (unique) music providers
+        provider_domains = {item.domain for item in self.providers}
         results_per_provider: list[SearchResults] = await asyncio.gather(
             *[
                 self.search_provider(
                     search_query,
                     media_types,
-                    provider_instance=provider_instance,
+                    provider_domain=provider_domain,
                     limit=limit,
                 )
-                for provider_instance in provider_instances
+                for provider_domain in provider_domains
             ]
         )
         # return result from all providers while keeping index
@@ -282,6 +277,7 @@ class MusicController:
         provider_instance: str | None = None,
         force_refresh: bool = False,
         lazy: bool = True,
+        add_to_db: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         assert (
@@ -297,6 +293,7 @@ class MusicController:
             provider_instance=provider_instance,
             force_refresh=force_refresh,
             lazy=lazy,
+            add_to_db=add_to_db,
         )
 
     @api_command("music/library/add")
@@ -308,11 +305,19 @@ class MusicController:
         provider_instance: str | None = None,
     ) -> None:
         """Add an item to the library."""
-        ctrl = self.get_controller(media_type)
-        await ctrl.add_to_library(
+        # make sure we have a full db item
+        full_item = await self.get_item(
+            media_type,
             item_id,
             provider_domain=provider_domain,
             provider_instance=provider_instance,
+            lazy=False,
+            add_to_db=True,
+        )
+        ctrl = self.get_controller(media_type)
+        await ctrl.add_to_library(
+            full_item.item_id,
+            provider_domain=full_item.provider,
         )
 
     @api_command("music/library/add_items")
@@ -375,7 +380,7 @@ class MusicController:
         ctrl = self.get_controller(media_type)
         await ctrl.delete_db_item(db_item_id, recursive)
 
-    async def refresh_items(self, items: list[MediaItem]) -> None:
+    async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
@@ -383,9 +388,10 @@ class MusicController:
         for media_item in items:
             self.mass.create_task(self.refresh_item(media_item))
 
+    @api_command("music/refresh_item")
     async def refresh_item(
         self,
-        media_item: MediaItem,
+        media_item: MediaItemType,
     ):
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
         try:
@@ -395,6 +401,7 @@ class MusicController:
                 provider_domain=media_item.provider,
                 force_refresh=True,
                 lazy=False,
+                add_to_db=True,
             )
         except MusicAssistantError:
             pass
@@ -465,7 +472,7 @@ class MusicController:
             allow_replace=True,
         )
 
-    async def library_add_items(self, items: list[MediaItem]) -> None:
+    async def library_add_items(self, items: list[MediaItemType]) -> None:
         """Add media item(s) to the library.
 
         Creates background tasks to process the action.
@@ -475,7 +482,7 @@ class MusicController:
                 self.add_to_library(media_item.media_type, media_item.item_id, media_item.provider)
             )
 
-    async def library_remove_items(self, items: list[MediaItem]) -> None:
+    async def library_remove_items(self, items: list[MediaItemType]) -> None:
         """Remove media item(s) from the library.
 
         Creates background tasks to process the action.
@@ -508,6 +515,21 @@ class MusicController:
         if media_type == MediaType.PLAYLIST:
             return self.playlists
         return None
+
+    def get_unique_providers(self) -> set[str]:
+        """
+        Return all unique MusicProvider instance ids.
+
+        This will return all filebased instances but only one instance
+        for streaming providers.
+        """
+        instances = set()
+        domains = set()
+        for provider in self.providers:
+            if provider.domain not in domains or provider.is_file():
+                instances.add(provider.instance_id)
+                domains.add(provider.domain)
+        return instances
 
     def _start_provider_sync(self, provider_instance: str, media_types: tuple[MediaType, ...]):
         """Start sync task on provider and track progress."""
@@ -599,6 +621,8 @@ class MusicController:
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
         )
+        # create indexes if needed
+        await self.__create_database_indexes()
         # compact db
         await self.database.execute("VACUUM")
 
@@ -635,12 +659,13 @@ class MusicController:
                     year INTEGER,
                     version TEXT,
                     in_library BOOLEAN DEFAULT 0,
-                    upc TEXT,
+                    barcode TEXT,
                     musicbrainz_id TEXT,
                     artists json,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -652,7 +677,8 @@ class MusicController:
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                     );"""
         )
         await self.database.execute(
@@ -671,7 +697,8 @@ class MusicController:
                     albums json,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -684,8 +711,8 @@ class MusicController:
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0,
-                    UNIQUE(name, owner)
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -696,7 +723,8 @@ class MusicController:
                     in_library BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
-                    timestamp INTEGER DEFAULT 0
+                    timestamp_added INTEGER NOT NULL,
+                    timestamp_modified INTEGER NOT NULL
                 );"""
         )
         await self.database.execute(
@@ -711,7 +739,8 @@ class MusicController:
                 );"""
         )
 
-        # create indexes
+    async def __create_database_indexes(self) -> None:
+        """Create database indexes."""
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
         )
@@ -752,4 +781,6 @@ class MusicController:
             "CREATE INDEX IF NOT EXISTS tracks_musicbrainz_id_idx on tracks(musicbrainz_id);"
         )
         await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);")
-        await self.database.execute("CREATE INDEX IF NOT EXISTS albums_upc_idx on albums(upc);")
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS albums_barcode_idx on albums(barcode);"
+        )
