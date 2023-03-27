@@ -8,6 +8,9 @@ from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Track as PlexTrack
 from plexapi.audio import Playlist as PlexPlaylist
 from plexapi.audio import Artist as PlexArtist
+from plexapi.media import Media as PlexMedia
+from plexapi.media import MediaPart as PlexMediaPart
+from plexapi.media import AudioStream as PlexAudioStream
 
 from music_assistant.common.models.config_entries import ProviderConfig, ConfigEntry
 from music_assistant.common.models.enums import ProviderFeature, MediaType, ImageType, ContentType, ConfigEntryType
@@ -82,20 +85,8 @@ class PlexProvider(MusicProvider):
         self._plex_library = await self._run_async(self._plex_server.library.section,
                                                    self.config.get_value(CONF_LIBRARY_NAME))
 
-    async def resolve(
-        self, file_path: str, require_local: bool = False  # noqa: ARG002
-    ) -> FileSystemItem:
-        url = self._plex_server.url(file_path, True)
-        return FileSystemItem(
-            name=file_path,
-            path=file_path,
-            absolute_path=url,
-            checksum=file_path,
-            is_dir=False,
-            is_file=False,
-            # local filesystem is always local resolvable
-            local_path=url,
-        )
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        return self._plex_server.url(path, True)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -408,32 +399,37 @@ class PlexProvider(MusicProvider):
         if not plex_track or not plex_track.media:
             raise MediaNotFoundError(f"track {item_id} not found")
 
-        media = plex_track.media[0]
+        media: PlexMedia = plex_track.media[0]
+        media_part: PlexMediaPart = media.parts[0]
+        audio_stream: PlexAudioStream = media_part.audioStreams()[0]
 
         media_type = ContentType.try_parse(media.container)
 
-        if media_type != ContentType.M4A:
-            return StreamDetails(
+        stream_details = StreamDetails(
                 item_id=plex_track.key,
                 provider=self.domain,
                 content_type=ContentType.try_parse(media.container),
                 duration=plex_track.duration,
                 channels=media.audioChannels,
-                direct=self._plex_server.url(media.parts[0].key, True),
                 data=plex_track,
+                loudness=audio_stream.loudness,
+                sample_rate=audio_stream.samplingRate,
+                bit_depth=audio_stream.bitDepth
             )
 
-        url = plex_track.getStreamURL()
-        media_info = await parse_tags(url)
+        if media_type != ContentType.M4A:
+            stream_details.direct = self._plex_server.url(media_part.key, True),
 
-        return StreamDetails(
-            item_id=plex_track.key,
-            provider=self.domain,
-            content_type=ContentType.try_parse(media_info.format),
-            sample_rate=media_info.sample_rate,
-            bit_depth=media_info.bits_per_sample,
-            data=plex_track,
-        )
+        else:
+            url = plex_track.getStreamURL()
+            media_info = await parse_tags(url)
+
+            stream_details.channels = media_info.channels
+            stream_details.content_type = ContentType.try_parse(media_info.format)
+            stream_details.sample_rate = media_info.sample_rate
+            stream_details.bit_depth = media_info.bits_per_sample
+
+        return stream_details
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
