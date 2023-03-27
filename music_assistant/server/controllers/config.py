@@ -189,6 +189,7 @@ class ConfigController:
         else:
             await self.mass.unload_provider(config.instance_id)
         # load succeeded, save new config
+        config.last_error = None
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
         self.set(conf_key, config.to_raw())
 
