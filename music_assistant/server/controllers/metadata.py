@@ -174,7 +174,7 @@ class MetaDataController:
         playlist.metadata.genres = set()
         image_urls = set()
         try:
-            for track in await self.mass.music.playlists.tracks(
+            async for track in self.mass.music.playlists.tracks(
                 playlist.item_id, playlist.provider
             ):
                 if not playlist.image and track.image:

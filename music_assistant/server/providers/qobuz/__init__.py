@@ -215,10 +215,9 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         count = 0
-        result = []
         for item in await self._get_all_items(
             "playlist/get",
             key="tracks",
@@ -230,9 +229,8 @@ class QobuzProvider(MusicProvider):
             track = await self._parse_track(item)
             # use count as position
             track.position = count
-            result.append(track)
+            yield track
             count += 1
-        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""

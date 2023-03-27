@@ -196,23 +196,21 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
-            return []
-        tracks = []
+            return
         for index, item in enumerate(playlist_obj["tracks"]):
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
                 if track:
                     track.position = index
-                    tracks.append(track)
+                    yield track
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
-        return tracks
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
