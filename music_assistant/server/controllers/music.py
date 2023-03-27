@@ -123,17 +123,17 @@ class MusicController:
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
-        # include results from all music providers
-        provider_instances = (item.instance_id for item in self.providers)
+        # include results from all (unique) music providers
+        provider_domains = {item.domain for item in self.providers}
         results_per_provider: list[SearchResults] = await asyncio.gather(
             *[
                 self.search_provider(
                     search_query,
                     media_types,
-                    provider_instance=provider_instance,
+                    provider_domain=provider_domain,
                     limit=limit,
                 )
-                for provider_instance in provider_instances
+                for provider_domain in provider_domains
             ]
         )
         # return result from all providers while keeping index
@@ -305,11 +305,19 @@ class MusicController:
         provider_instance: str | None = None,
     ) -> None:
         """Add an item to the library."""
-        ctrl = self.get_controller(media_type)
-        await ctrl.add_to_library(
+        # make sure we have a full db item
+        full_item = await self.get_item(
+            media_type,
             item_id,
             provider_domain=provider_domain,
             provider_instance=provider_instance,
+            lazy=False,
+            add_to_db=True,
+        )
+        ctrl = self.get_controller(media_type)
+        await ctrl.add_to_library(
+            full_item.item_id,
+            provider_domain=full_item.provider,
         )
 
     @api_command("music/library/add_items")
@@ -507,6 +515,21 @@ class MusicController:
         if media_type == MediaType.PLAYLIST:
             return self.playlists
         return None
+
+    def get_unique_providers(self) -> set[str]:
+        """
+        Return all unique MusicProvider instance ids.
+
+        This will return all filebased instances but only one instance
+        for streaming providers.
+        """
+        instances = set()
+        domains = set()
+        for provider in self.providers:
+            if provider.domain not in domains or provider.is_file():
+                instances.add(provider.instance_id)
+                domains.add(provider.domain)
+        return instances
 
     def _start_provider_sync(self, provider_instance: str, media_types: tuple[MediaType, ...]):
         """Start sync task on provider and track progress."""
