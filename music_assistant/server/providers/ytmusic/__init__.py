@@ -264,12 +264,12 @@ class YoutubeMusicProvider(MusicProvider):
                 try:
                     track = await self._parse_track(track)
                     if track:
-                        track.position = index
+                        track.position = index + 1
                         yield track
                 except InvalidDataError:
                     track = await self.get_track(track["videoId"])
                     if track:
-                        track.position = index
+                        track.position = index + 1
                         yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:

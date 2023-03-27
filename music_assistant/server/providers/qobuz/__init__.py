@@ -217,7 +217,7 @@ class QobuzProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        count = 0
+        count = 1
         for item in await self._get_all_items(
             "playlist/get",
             key="tracks",
@@ -322,7 +322,7 @@ class QobuzProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
-        for track in await self.get_playlist_tracks(prov_playlist_id):
+        async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
                 playlist_track_ids.add(str(track["playlist_track_id"]))
             if len(playlist_track_ids) == positions_to_remove:

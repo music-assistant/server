@@ -241,7 +241,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        count = 0
+        count = 1
         for item in await self._get_all_items(
             f"playlists/{prov_playlist_id}/tracks",
         ):

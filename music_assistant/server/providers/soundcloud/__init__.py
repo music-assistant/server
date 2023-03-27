@@ -206,7 +206,7 @@ class SoundcloudMusicProvider(MusicProvider):
             try:
                 track = await self._parse_track(song[0])
                 if track:
-                    track.position = index
+                    track.position = index + 1
                     yield track
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", song, exc_info=error)

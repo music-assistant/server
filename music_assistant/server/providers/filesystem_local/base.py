@@ -447,7 +447,7 @@ class FileSystemProviderBase(MusicProvider):
                     playlist_line, os.path.dirname(prov_playlist_id)
                 ):
                     # use the linenumber as position for easier deletions
-                    media_item.position = line_no
+                    media_item.position = line_no + 1
                     yield media_item
 
         except Exception as err:  # pylint: disable=broad-except
