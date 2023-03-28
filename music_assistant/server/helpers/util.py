@@ -5,6 +5,7 @@ import asyncio
 import importlib
 import logging
 from collections.abc import AsyncGenerator, Iterator
+from contextlib import suppress
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
@@ -45,16 +46,15 @@ async def async_iter(sync_iterator: Iterator, *args, **kwargs) -> AsyncGenerator
     # inspired by: https://stackoverflow.com/questions/62294385/synchronous-generator-in-asyncio
     loop = asyncio.get_running_loop()
     queue = asyncio.Queue(1)
+    _exit = asyncio.Event()
     _end_ = object()
 
     def iter_to_queue():
-        try:
-            for item in sync_iterator(*args, **kwargs):
-                if queue is None:
-                    break
-                asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
-        finally:
-            asyncio.run_coroutine_threadsafe(queue.put(_end_), loop).result()
+        for item in sync_iterator(*args, **kwargs):
+            if _exit.is_set():
+                return
+            asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
+        asyncio.run_coroutine_threadsafe(queue.put(_end_), loop).result()
 
     iter_fut = loop.run_in_executor(None, iter_to_queue)
     try:
@@ -64,6 +64,10 @@ async def async_iter(sync_iterator: Iterator, *args, **kwargs) -> AsyncGenerator
                 break
             yield next_item
     finally:
-        queue = None
+        # cleanup
+        _exit.set()
         if not iter_fut.done():
             iter_fut.cancel()
+            await iter_fut
+        with suppress(asyncio.QueueEmpty):
+            queue.get_nowait()
