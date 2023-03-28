@@ -426,8 +426,6 @@ class PlexProvider(MusicProvider):
             raise MediaNotFoundError(f"track {item_id} not found")
 
         media: PlexMedia = plex_track.media[0]
-        media_part: PlexMediaPart = media.parts[0]
-        audio_stream: PlexAudioStream = media_part.audioStreams()[0]
 
         media_type = ContentType.try_parse(media.container)
 
@@ -441,6 +439,9 @@ class PlexProvider(MusicProvider):
         )
 
         if media_type != ContentType.M4A:
+            media_part: PlexMediaPart = media.parts[0]
+            audio_stream: PlexAudioStream = media_part.audioStreams()[0]
+
             stream_details.direct = self._plex_server.url(media_part.key, True)
             if audio_stream.samplingRate:
                 stream_details.sample_rate = audio_stream.samplingRate
