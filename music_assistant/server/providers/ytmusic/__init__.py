@@ -454,7 +454,7 @@ class YoutubeMusicProvider(MusicProvider):
             url,
             headers=self._headers,
             json=data,
-            verify_ssl=False,
+            ssl=False,
             cookies=self._cookies,
         ) as response:
             return await response.json()

@@ -670,7 +670,7 @@ class SpotifyProvider(MusicProvider):
             time_start = time.time()
             try:
                 async with self.mass.http_session.get(
-                    url, headers=headers, params=kwargs, verify_ssl=False, timeout=120
+                    url, headers=headers, params=kwargs, ssl=False, timeout=120
                 ) as response:
                     result = await response.json()
                     if "error" in result or ("status" in result and "error" in result["status"]):
@@ -698,7 +698,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.delete(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 
@@ -710,7 +710,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.put(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 
@@ -722,7 +722,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.post(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 

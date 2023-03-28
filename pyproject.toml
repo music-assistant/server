@@ -40,19 +40,19 @@ server = [
   "xmltodict==0.13.0",
   "orjson==3.8.7",
   "shortuuid==1.0.11",
-  "zeroconf==0.47.3",
+  "zeroconf==0.47.4",
   "cryptography==39.0.2"
 ]
 test = [
   "black==23.1.0",
   "codespell==2.2.4",
   "mypy==1.1.1",
-  "ruff==0.0.257",
+  "ruff==0.0.259",
   "pytest==7.2.2",
   "pytest-asyncio==0.21.0",
   "pytest-aiohttp==1.0.4",
   "pytest-cov==4.0.0",
-  "pre-commit==3.2.0"
+  "pre-commit==3.2.1"
 ]
 
 [project.scripts]
