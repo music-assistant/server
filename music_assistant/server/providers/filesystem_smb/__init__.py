@@ -16,6 +16,8 @@ from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.server.controllers.cache import use_cache
+from music_assistant.server.helpers.util import async_iter
 from music_assistant.server.providers.filesystem_local.base import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     IGNORE_DIRS,
@@ -104,17 +106,6 @@ async def get_config_entries(
             "E.g. 'collections' or 'albums/A-K'.",
         ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
-        ConfigEntry(
-            key=CONF_CONN_LIMIT,
-            type=ConfigEntryType.INTEGER,
-            label="Connection limit",
-            required=False,
-            default_value=5,
-            advanced=True,
-            description="[optional] Limit the number of concurrent connections. "
-            "Set the value high(er) for more performance but some (Windows) servers "
-            "may deny requests in that case",
-        ),
     )
 
 
@@ -147,12 +138,11 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         server: str = self.config.get_value(CONF_HOST)
         share: str = self.config.get_value(CONF_SHARE)
         subfolder: str = self.config.get_value(CONF_SUBFOLDER)
-        connection_limit: int = self.config.get_value(CONF_CONN_LIMIT)
-        self.semaphore = asyncio.Semaphore(connection_limit)
 
         # create windows like path (\\server\share\subfolder)
         if subfolder.endswith(os.sep):
             subfolder = subfolder[:-1]
+        subfolder = subfolder.replace("\\", os.sep).replace("/", os.sep)
         self._root_path = f"{os.sep}{os.sep}{server}{os.sep}{share}{os.sep}{subfolder}"
         self.logger.debug("Using root path: %s", self._root_path)
 
@@ -198,19 +188,14 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self._root_path, path)
-        async with self.semaphore:
-            entries = await asyncio.to_thread(smbclient.scandir, abs_path)
-        for entry in entries:
+        async for entry in async_iter(smbclient.scandir, abs_path):
             if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
                 # skip invalid/system files and dirs
                 continue
             item = await create_item(self._root_path, entry)
             if recursive and item.is_dir:
-                try:
-                    async for subitem in self.listdir(item.absolute_path, True):
-                        yield subitem
-                except (OSError, PermissionError) as err:
-                    self.logger.warning("Skip folder %s: %s", item.path, str(err))
+                async for subitem in self.listdir(item.absolute_path, True):
+                    yield subitem
             else:
                 yield item
 
@@ -238,51 +223,52 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             )
 
         # run in thread because strictly taken this may be blocking IO
-        async with self.semaphore:
-            return await asyncio.to_thread(_create_item)
+        return await asyncio.to_thread(_create_item)
 
+    @use_cache(120)
     async def exists(self, file_path: str) -> bool:
         """Return bool is this FileSystem musicprovider has given file/dir."""
         if not file_path:
             return False  # guard
         file_path = file_path.replace("\\", os.sep)
         abs_path = get_absolute_path(self._root_path, file_path)
-        async with self.semaphore:
-            try:
-                return await asyncio.to_thread(smbpath.exists, abs_path)
-            except Exception as err:
-                if "STATUS_OBJECT_NAME_INVALID" in str(err):
-                    return False
-                raise err
+        try:
+            return await asyncio.to_thread(smbpath.exists, abs_path)
+        except Exception as err:
+            if "STATUS_OBJECT_NAME_INVALID" in str(err):
+                return False
+            raise err
 
     async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         file_path = file_path.replace("\\", os.sep)
-        abs_path = get_absolute_path(self._root_path, file_path)
-        chunk_size = 64000
-        queue = asyncio.Queue()
-        self.logger.debug("Reading file contents for %s", abs_path)
+        absolute_path = get_absolute_path(self._root_path, file_path)
 
-        async with self.semaphore:
-
-            def _reader():
-                with smbclient.open_file(abs_path, "rb", share_access="r") as _file:
+        def _reader():
+            self.logger.debug("Reading file contents for %s", absolute_path)
+            try:
+                chunk_size = 64000
+                bytes_sent = 0
+                with smbclient.open_file(
+                    absolute_path, "rb", buffering=chunk_size, share_access="r"
+                ) as _file:
                     if seek:
                         _file.seek(seek)
-                    # yield chunks of data from file
                     while True:
-                        data = _file.read(chunk_size)
-                        if not data:
+                        chunk = _file.read(chunk_size)
+                        if not chunk:
                             break
-                        self.mass.loop.call_soon_threadsafe(queue.put_nowait, data)
-                self.mass.loop.call_soon_threadsafe(queue.put_nowait, b"")
+                        yield chunk
+                        bytes_sent += len(chunk)
+            finally:
+                self.logger.debug(
+                    "Finished Reading file contents for %s - bytes transferred: %s",
+                    absolute_path,
+                    bytes_sent,
+                )
 
-            self.mass.create_task(_reader)
-            while True:
-                chunk = await queue.get()
-                if chunk == b"":
-                    break
-                yield chunk
+        async for chunk in async_iter(_reader):
+            yield chunk
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
@@ -293,5 +279,4 @@ class SMBFileSystemProvider(FileSystemProviderBase):
             with smbclient.open_file(abs_path, "wb") as _file:
                 _file.write(data)
 
-        async with self.semaphore:
-            await asyncio.to_thread(_writer)
+        await asyncio.to_thread(_writer)

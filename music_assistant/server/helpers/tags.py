@@ -317,10 +317,13 @@ async def parse_tags(
             async def chunk_feeder():
                 bytes_read = 0
                 async for chunk in input_file:
+                    if proc.closed:
+                        break
                     await proc.write(chunk)
                     bytes_read += len(chunk)
+                    del chunk
 
-                if bytes_read > 25 * 1000000:
+                if bytes_read > 5 * 1000000:
                     # this is possibly a m4a file with 'moove atom' metadata at the end of the file
                     # we'll have to read the entire file to do something with it
                     # for now we just ignore/deny these files
@@ -335,7 +338,11 @@ async def parse_tags(
             data = json.loads(res)
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
+            if not data.get("streams") or data["streams"][0].get("codec_type") == "video":
+                raise InvalidDataError("Not an audio file")
             tags = AudioTags.parse(data)
+            del res
+            del data
             if not tags.duration and file_size and tags.bit_rate:
                 # estimate duration from filesize/bitrate
                 tags.duration = int((file_size * 8) / tags.bit_rate)

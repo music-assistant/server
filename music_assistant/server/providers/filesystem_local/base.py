@@ -38,6 +38,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.constants import SCHEMA_VERSION, VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
+from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
@@ -659,7 +660,7 @@ class FileSystemProviderBase(MusicProvider):
             track.metadata.images = [
                 MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
             ]
-        elif track.album.image:
+        elif track.album and track.album.image:
             track.metadata.images = [track.album.image]
 
         if track.album and not track.album.metadata.images:
@@ -822,6 +823,7 @@ class FileSystemProviderBase(MusicProvider):
 
         return album
 
+    @use_cache(120)
     async def _get_local_images(self, folder: str) -> list[MediaItemImage]:
         """Return local images found in a given folderpath."""
         images = []
