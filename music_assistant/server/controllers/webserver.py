@@ -35,8 +35,8 @@ class WebserverController:
 
     @property
     def base_url(self) -> str:
-        """Return the (web)server's base url."""
-        return f"http://{self.mass.base_ip}:{self.port}"
+        """Return the (web)server's base url, use the one from env var if set"""
+        return os.getenv("MASS_BASE_URL", f"http://{self.mass.base_ip}:{self.port}")
 
     async def setup(self) -> None:
         """Async initialize of module."""
