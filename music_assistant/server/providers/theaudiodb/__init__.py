@@ -301,7 +301,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
         async with self.throttler:
-            async with self.mass.http_session.get(url, params=kwargs, verify_ssl=False) as response:
+            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
                 try:
                     result = await response.json()
                 except (
