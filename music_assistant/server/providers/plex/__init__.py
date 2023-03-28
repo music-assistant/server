@@ -438,7 +438,6 @@ class PlexProvider(MusicProvider):
             duration=plex_track.duration,
             channels=media.audioChannels,
             data=plex_track,
-            loudness=audio_stream.loudness,
         )
 
         if media_type != ContentType.M4A:
