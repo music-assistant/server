@@ -3,7 +3,6 @@ from asyncio import TaskGroup
 from collections.abc import AsyncGenerator, Callable, Coroutine
 
 from aiohttp import ClientTimeout
-from async_lru import alru_cache
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
 from plexapi.audio import Playlist as PlexPlaylist
@@ -15,6 +14,8 @@ from plexapi.media import MediaPart as PlexMediaPart
 from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
+from music_assistant.common.helpers.uri import create_uri
+from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -27,6 +28,7 @@ from music_assistant.common.models.errors import InvalidDataError, LoginFailed, 
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    ItemMapping,
     MediaItem,
     MediaItemImage,
     Playlist,
@@ -116,12 +118,15 @@ class PlexProvider(MusicProvider):
     async def _get_data(self, key, cls=None):
         return await self._run_async(self._plex_library.fetchItem, key, cls)
 
-    @alru_cache(maxsize=128, ttl=300)
-    async def _get_data_cached(self, key, ma_cls):
-        if ma_cls == Artist:
-            return await self._parse_artist(await self._get_data(key, PlexArtist))
-        if ma_cls == Album:
-            return await self._parse_album(await self._get_data(key, PlexAlbum))
+    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+        return ItemMapping(
+            media_type,
+            key,
+            self.domain,
+            name,
+            create_uri(media_type, self.domain, key),
+            create_sort_name(self.name),
+        )
 
     async def _parse(self, plex_media) -> MediaItem | None:
         if plex_media.type == "artist":
@@ -193,7 +198,9 @@ class PlexProvider(MusicProvider):
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
-        album.artist = await self._get_data_cached(plex_album.parentKey, Artist)
+        album.artist = self._get_item_mapping(
+            MediaType.ARTIST, plex_album.parentKey, plex_album.parentTitle
+        )
 
         album.add_provider_mapping(
             ProviderMapping(
@@ -250,11 +257,15 @@ class PlexProvider(MusicProvider):
         track = Track(item_id=plex_track.key, provider=self.domain, name=plex_track.title)
 
         if plex_track.grandparentKey:
-            track.artist = await self._get_data_cached(plex_track.grandparentKey, Artist)
+            track.artist = self._get_item_mapping(
+                MediaType.ARTIST, plex_track.grandparentKey, plex_track.grandparentTitle
+            )
         if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             track.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
         if plex_track.parentKey:
-            track.album = await self._get_data_cached(plex_track.parentKey, Album)
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM, plex_track.parentKey, plex_track.parentKey
+            )
         if plex_track.duration:
             track.duration = int(plex_track.duration / 1000)
         if plex_track.trackNumber:
