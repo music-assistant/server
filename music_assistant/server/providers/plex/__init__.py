@@ -135,9 +135,9 @@ class PlexProvider(MusicProvider):
         return ItemMapping(
             media_type,
             key,
-            self.domain,
+            self.instance_id,
             name,
-            create_uri(media_type, self.domain, key),
+            create_uri(media_type, self.instance_id, key),
             create_sort_name(self.name),
         )
 
@@ -201,7 +201,7 @@ class PlexProvider(MusicProvider):
         album_id = plex_album.key
         album = Album(
             item_id=album_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=plex_album.title,
         )
         if plex_album.year:
@@ -230,7 +230,7 @@ class PlexProvider(MusicProvider):
         artist_id = plex_artist.key
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.domain)
+        artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.instance_id)
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
         if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
@@ -248,7 +248,7 @@ class PlexProvider(MusicProvider):
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
         """Parse a Plex Playlist response to a Playlist object."""
         playlist = Playlist(
-            item_id=plex_playlist.key, provider=self.domain, name=plex_playlist.title
+            item_id=plex_playlist.key, provider=self.instance_id, name=plex_playlist.title
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
@@ -267,7 +267,7 @@ class PlexProvider(MusicProvider):
 
     async def _parse_track(self, plex_track: PlexTrack) -> Track:
         """Parse a Plex Track response to a Track model object."""
-        track = Track(item_id=plex_track.key, provider=self.domain, name=plex_track.title)
+        track = Track(item_id=plex_track.key, provider=self.instance_id, name=plex_track.title)
 
         if plex_track.grandparentKey:
             track.artist = self._get_item_mapping(
@@ -457,7 +457,7 @@ class PlexProvider(MusicProvider):
 
         stream_details = StreamDetails(
             item_id=plex_track.key,
-            provider=self.domain,
+            provider=self.instance_id,
             content_type=ContentType.try_parse(media.container),
             duration=plex_track.duration,
             channels=media.audioChannels,
