@@ -521,40 +521,41 @@ class PlayerController:
         count = 0
         while True:
             count += 1
-            for player in list(self._players.values()):
-                player_id = player.player_id
-                # if the player is playing, update elapsed time every tick
-                # to ensure the queue has accurate details
-                player_playing = (
-                    player.active_queue == player.player_id and player.state == PlayerState.PLAYING
-                )
-                if player_playing:
-                    self.mass.loop.call_soon(self.update, player_id)
-                # Poll player;
-                # - every 360 seconds if the player if not powered
-                # - every 30 seconds if the player is powered
-                # - every 10 seconds if the player is playing
-                if (
-                    (player.available and player.powered and count % 30 == 0)
-                    or (player.available and player_playing and count % 10 == 0)
-                    or count == 360
-                ):
-                    if player_prov := self.get_player_provider(player_id):
-                        try:
-                            await player_prov.poll_player(player_id)
-                        except PlayerUnavailableError:
-                            player.available = False
-                            player.state = PlayerState.IDLE
-                            player.powered = False
-                            self.mass.loop.call_soon(self.update, player_id)
-                        except Exception as err:  # pylint: disable=broad-except
-                            LOGGER.warning(
-                                "Error while requesting latest state from player %s: %s",
-                                player.display_name,
-                                str(err),
-                                exc_info=err,
-                            )
-                    if count >= 360:
-                        count = 0
-                    await asyncio.sleep(0)
+            async with asyncio.TaskGroup() as tg:
+                for player in list(self._players.values()):
+                    player_id = player.player_id
+                    # if the player is playing, update elapsed time every tick
+                    # to ensure the queue has accurate details
+                    player_playing = (
+                        player.active_queue == player.player_id
+                        and player.state == PlayerState.PLAYING
+                    )
+                    if player_playing:
+                        self.mass.loop.call_soon(self.update, player_id)
+                    # Poll player;
+                    # - every 360 seconds if the player if not powered
+                    # - every 30 seconds if the player is powered
+                    # - every 10 seconds if the player is playing
+                    if (
+                        (player.available and player.powered and count % 30 == 0)
+                        or (player.available and player_playing and count % 10 == 0)
+                        or count == 360
+                    ):
+                        if player_prov := self.get_player_provider(player_id):
+                            try:
+                                tg.create_task(player_prov.poll_player(player_id))
+                            except PlayerUnavailableError:
+                                player.available = False
+                                player.state = PlayerState.IDLE
+                                player.powered = False
+                                self.mass.loop.call_soon(self.update, player_id)
+                            except Exception as err:  # pylint: disable=broad-except
+                                LOGGER.warning(
+                                    "Error while requesting latest state from player %s: %s",
+                                    player.display_name,
+                                    str(err),
+                                    exc_info=err,
+                                )
+                        if count >= 360:
+                            count = 0
             await asyncio.sleep(1)
