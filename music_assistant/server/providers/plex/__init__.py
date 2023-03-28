@@ -66,13 +66,26 @@ async def get_config_entries(
     """Return Config entries to setup this provider."""
     return (
         ConfigEntry(
-            key=CONF_SERVER_NAME, type=ConfigEntryType.STRING, label="Server", required=True
+            key=CONF_SERVER_NAME,
+            type=ConfigEntryType.STRING,
+            label="Server",
+            required=True,
+            description="The name of the server (as shown in the interface)",
         ),
         ConfigEntry(
-            key=CONF_LIBRARY_NAME, type=ConfigEntryType.STRING, label="Library", required=True
+            key=CONF_LIBRARY_NAME,
+            type=ConfigEntryType.STRING,
+            label="Library",
+            required=True,
+            description="The name of the library to connect to (e.g. Music)",
         ),
         ConfigEntry(
-            key=CONF_AUTH_TOKEN, type=ConfigEntryType.SECURE_STRING, label="Token", required=True
+            key=CONF_AUTH_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Token",
+            required=True,
+            description="A token to connect to your plex.tv account.",
+            help_link="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/",
         ),
     )
 
@@ -88,7 +101,7 @@ class PlexProvider(MusicProvider):
 
         def connect():
             plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
-            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect()
+            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect(None)
 
         self._plex_server = await self._run_async(connect)
         self._plex_library = await self._run_async(
