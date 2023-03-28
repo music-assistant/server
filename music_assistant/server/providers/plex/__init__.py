@@ -26,7 +26,6 @@ from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from plexapi.server import PlexServer
 
-from music_assistant.server.providers.filesystem_local import FileSystemItem
 
 CONF_AUTH_TOKEN = "token"
 CONF_SERVER_NAME = "server"
@@ -364,7 +363,9 @@ class PlexProvider(MusicProvider):
         plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
         return await self._parse_playlist(plex_playlist)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(  # type: ignore[return]
+        self, prov_playlist_id: str
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
 
@@ -373,14 +374,12 @@ class PlexProvider(MusicProvider):
         )
 
         if not playlist_items:
-            return []
-        tracks = []
+            yield None
         for index, track in enumerate(playlist_items):
             track = await self._parse_track(track)
             if track:
-                track.position = index
-                tracks.append(track)
-        return tracks
+                track.position = index+1
+                yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -412,13 +411,15 @@ class PlexProvider(MusicProvider):
                 duration=plex_track.duration,
                 channels=media.audioChannels,
                 data=plex_track,
-                loudness=audio_stream.loudness,
-                sample_rate=audio_stream.samplingRate,
-                bit_depth=audio_stream.bitDepth
+                loudness=audio_stream.loudness
             )
 
         if media_type != ContentType.M4A:
-            stream_details.direct = self._plex_server.url(media_part.key, True),
+            stream_details.direct = self._plex_server.url(media_part.key, True)
+            if audio_stream.samplingRate:
+                stream_details.sample_rate = audio_stream.samplingRate
+            if audio_stream.bitDepth:
+                stream_details.bit_depth = audio_stream.bitDepth
 
         else:
             url = plex_track.getStreamURL()
