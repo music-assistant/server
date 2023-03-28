@@ -651,7 +651,7 @@ class PlayerQueuesController:
 
         # if keep_remaining, append the old previous items
         if keep_remaining:
-            next_items += prev_items[insert_at_index:]
+            next_items += self._queue_items[queue_id][insert_at_index:]
 
         # we set the original insert order as attribute so we can un-shuffle
         for index, item in enumerate(next_items):
