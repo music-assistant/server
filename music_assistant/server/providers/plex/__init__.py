@@ -27,6 +27,7 @@ from music_assistant.common.models.errors import InvalidDataError, LoginFailed, 
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    MediaItem,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -49,6 +50,9 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
+    if not config.get_value(CONF_AUTH_TOKEN):
+        raise LoginFailed("Invalid login credentials")
+
     prov = PlexProvider(mass, manifest, config)
     await prov.handle_setup()
     return prov
@@ -79,8 +83,6 @@ class PlexProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the music provider by connecting to the server."""
-        if not self.config.get_value(CONF_AUTH_TOKEN):
-            raise LoginFailed("Invalid login credentials")
 
         def connect():
             plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
@@ -121,7 +123,7 @@ class PlexProvider(MusicProvider):
         if ma_cls == Album:
             return await self._parse_album(await self._get_data(key, PlexAlbum))
 
-    async def _parse(self, plex_media):
+    async def _parse(self, plex_media) -> MediaItem | None:
         if plex_media.type == "artist":
             return await self._parse_artist(plex_media)
         elif plex_media.type == "album":
@@ -162,14 +164,16 @@ class PlexProvider(MusicProvider):
     async def _search_playlist_advanced(self, limit, **kwargs) -> list[PlexPlaylist]:
         return await self._run_async(self._plex_library.playlists, filters=kwargs, limit=limit)
 
-    async def _search_and_parse(self, search_coro: Coroutine, parse_coro: Callable):
-        tasks = []
+    async def _search_and_parse(
+        self, search_coro: Coroutine, parse_coro: Callable
+    ) -> list[MediaItem]:
+        task_results = []
         async with TaskGroup() as tg:
             for item in await search_coro:
-                tasks.append(tg.create_task(parse_coro(item)))
+                task_results.append(tg.create_task(parse_coro(item)))
 
         results = []
-        for task in tasks:
+        for task in task_results:
             results.append(task.result())
 
         return results
@@ -179,8 +183,8 @@ class PlexProvider(MusicProvider):
         album_id = plex_album.key
         album = Album(
             item_id=album_id,
-            name=plex_album.title,
             provider=self.domain,
+            name=plex_album.title,
         )
         if plex_album.year:
             album.year = plex_album.year
