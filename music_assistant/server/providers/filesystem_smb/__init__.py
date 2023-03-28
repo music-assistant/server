@@ -259,7 +259,7 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         """Yield (binary) contents of file in chunks of bytes."""
         file_path = file_path.replace("\\", os.sep)
         abs_path = get_absolute_path(self._root_path, file_path)
-        chunk_size = 512000
+        chunk_size = 64000
         queue = asyncio.Queue()
         self.logger.debug("Reading file contents for %s", abs_path)
 
