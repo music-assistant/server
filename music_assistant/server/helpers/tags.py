@@ -385,10 +385,13 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         if file_path == "-":
             # feed the file contents to the process
             async def chunk_feeder():
-                async for chunk in input_file:
-                    await proc.write(chunk)
-
-                proc.write_eof()
+                try:
+                    async for chunk in input_file:
+                        if proc.closed:
+                            break
+                        await proc.write(chunk)
+                finally:
+                    proc.write_eof()
 
             proc.attach_task(chunk_feeder())
 
