@@ -460,7 +460,7 @@ class PlexProvider(MusicProvider):
         stream_details = StreamDetails(
             item_id=plex_track.key,
             provider=self.instance_id,
-            content_type=ContentType.try_parse(media_type),
+            content_type=media_type,
             duration=plex_track.duration,
             channels=media.audioChannels,
             data=plex_track,
