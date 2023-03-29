@@ -285,12 +285,14 @@ class TidalProvider(MusicProvider):
                     yield track
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
-        tracks = await get_similar_tracks(self._tidal_session, prov_track_id, limit)
-        for track in tracks:
+        tracks_obj = await get_similar_tracks(self._tidal_session, prov_track_id, limit)
+        tracks = []
+        for track in tracks_obj:
             if track.available:
                 track = await self._parse_track(track)
                 if track:
-                    yield track
+                    tracks.append(track)
+        return tracks
 
     async def library_add(self, prov_item_id, media_type: MediaType):
         """Add item to library."""
@@ -314,9 +316,12 @@ class TidalProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        foo = positions_to_remove
         prov_track_ids = []
-
+        async for track in self.get_playlist_tracks(prov_playlist_id):
+            if track.position in positions_to_remove:
+                prov_track_ids.append(track.item_id)
+            if len(prov_track_ids) == len(positions_to_remove):
+                break
         return await add_remove_playlist_tracks(
             self._tidal_session, prov_playlist_id, prov_track_ids, add=False
         )

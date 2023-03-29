@@ -223,25 +223,27 @@ async def get_playlist_tracks(session: tidalapi.Session, prov_playlist_id: str) 
 
 
 async def add_remove_playlist_tracks(
-    session: tidalapi.Session, prov_playlist_id: str, tracks: list[str], add: bool = True
+    session: tidalapi.Session, prov_playlist_id: str, track_ids: list[str], add: bool = True
 ) -> dict[str, str]:
     """Async wrapper around the tidal Playlist.add and Playlist.remove function."""
 
     def _add_remove_playlist_tracks():
         if add:
-            return tidalapi.UserPlaylist(session, prov_playlist_id).add(tracks)
+            return tidalapi.UserPlaylist(session, prov_playlist_id).add(track_ids)
         if not add:
-            return tidalapi.UserPlaylist(session, prov_playlist_id).remove(tracks)
+            for item in track_ids:
+                tidalapi.UserPlaylist(session, prov_playlist_id).remove_by_id(int(item))
 
     return await asyncio.to_thread(_add_remove_playlist_tracks)
 
 
-async def get_similar_tracks(session: tidalapi.Session, prov_track_id: str) -> dict[str, str]:
+async def get_similar_tracks(
+    session: tidalapi.Session, prov_track_id, limit: int
+) -> dict[str, str]:
     """Async wrapper around the tidal Track.get_similar_tracks function."""
 
     def _get_similar_tracks():
-        mix_id = tidalapi.Track(session, prov_track_id).radio(limit=25)
-        return tidalapi.Mix(session, mix_id).get()
+        return tidalapi.Track(session, media_id=prov_track_id).get_track_radio(limit)
 
     return await asyncio.to_thread(_get_similar_tracks)
 
