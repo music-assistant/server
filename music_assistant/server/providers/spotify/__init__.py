@@ -239,10 +239,9 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        count = 0
-        result = []
+        count = 1
         for item in await self._get_all_items(
             f"playlists/{prov_playlist_id}/tracks",
         ):
@@ -251,9 +250,8 @@ class SpotifyProvider(MusicProvider):
             track = await self._parse_track(item["track"])
             # use count as position
             track.position = count
-            result.append(track)
+            yield track
             count += 1
-        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
@@ -319,7 +317,7 @@ class SpotifyProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []
-        for track in await self.get_playlist_tracks(prov_playlist_id):
+        async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
                 track_uris.append({"uri": f"spotify:track:{track.item_id}"})
             if len(track_uris) == positions_to_remove:
@@ -343,7 +341,7 @@ class SpotifyProvider(MusicProvider):
         await self.login()
         return StreamDetails(
             item_id=track.item_id,
-            provider=self.domain,
+            provider=self.instance_id,
             content_type=ContentType.OGG,
             duration=track.duration,
         )
@@ -672,7 +670,7 @@ class SpotifyProvider(MusicProvider):
             time_start = time.time()
             try:
                 async with self.mass.http_session.get(
-                    url, headers=headers, params=kwargs, verify_ssl=False, timeout=120
+                    url, headers=headers, params=kwargs, ssl=False, timeout=120
                 ) as response:
                     result = await response.json()
                     if "error" in result or ("status" in result and "error" in result["status"]):
@@ -700,7 +698,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.delete(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 
@@ -712,7 +710,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.put(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 
@@ -724,7 +722,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.post(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 

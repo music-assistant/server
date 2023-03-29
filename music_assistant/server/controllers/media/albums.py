@@ -53,7 +53,7 @@ class AlbumsController(MediaControllerBase[Album]):
         force_refresh: bool = False,
         lazy: bool = True,
         details: Album = None,
-        force_provider_item: bool = False,
+        add_to_db: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
@@ -63,7 +63,7 @@ class AlbumsController(MediaControllerBase[Album]):
             force_refresh=force_refresh,
             lazy=lazy,
             details=details,
-            force_provider_item=force_provider_item,
+            add_to_db=add_to_db,
         )
         # append full artist details to full album item
         if album.artist:
@@ -72,6 +72,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 album.artist.provider,
                 lazy=True,
                 details=album.artist,
+                add_to_db=add_to_db,
             )
         return album
 
@@ -82,14 +83,21 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance: str | None = None,
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
-        if "database" not in (provider_domain, provider_instance):
-            # return provider album tracks
-            return await self._get_provider_album_tracks(
-                item_id, provider_domain or provider_instance
-            )
+        if "database" in (provider_domain, provider_instance):
+            if db_result := await self._get_db_album_tracks(item_id):
+                return db_result
+            # no results in db (yet), grab provider details
+            if db_album := await self.get_db_item(item_id):
+                for prov_mapping in db_album.provider_mappings:
+                    # returns the first provider that is available
+                    if not prov_mapping.available:
+                        continue
+                    return await self._get_provider_album_tracks(
+                        prov_mapping.item_id, provider_instance=prov_mapping.provider_instance
+                    )
 
-        # db_album requested: get results from first (non-file) provider
-        return await self._get_db_album_tracks(item_id)
+        # return provider album tracks
+        return await self._get_provider_album_tracks(item_id, provider_domain or provider_instance)
 
     async def versions(
         self,
@@ -99,7 +107,7 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> list[Album]:
         """Return all versions of an album we can find on all providers."""
         assert provider_domain or provider_instance, "Provider type or ID must be specified"
-        album = await self.get(item_id, provider_domain or provider_instance)
+        album = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {item.domain for item in self.mass.music.providers}
         search_query = f"{album.artist.name} - {album.name}"
@@ -134,12 +142,14 @@ class AlbumsController(MediaControllerBase[Album]):
         await self._match(db_item)
         # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
-        # dump album tracks in db
+        # preload album tracks in db
         for prov_mapping in db_item.provider_mappings:
             for track in await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
             ):
-                await self.mass.music.tracks.add_db_item(track)
+                await self.mass.music.tracks.get(
+                    track.item_id, track.provider, details=track, add_to_db=True
+                )
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
             db_item.uri,
@@ -342,7 +352,7 @@ class AlbumsController(MediaControllerBase[Album]):
         db_album = await self.get_db_item(item_id)
         # simply grab all tracks in the db that are linked to this album
         # TODO: adjust to json query instead of text search?
-        query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{item_id}\"%'"
+        query = f'SELECT * FROM {DB_TABLE_TRACKS} WHERE albums LIKE \'%"item_id":"{item_id}","provider":"database"%\''  # noqa: E501
         result = []
         for track in await self.mass.music.tracks.get_db_items_by_query(query):
             if album_mapping := next(

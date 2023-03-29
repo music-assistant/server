@@ -215,10 +215,9 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        count = 0
-        result = []
+        count = 1
         for item in await self._get_all_items(
             "playlist/get",
             key="tracks",
@@ -230,9 +229,8 @@ class QobuzProvider(MusicProvider):
             track = await self._parse_track(item)
             # use count as position
             track.position = count
-            result.append(track)
+            yield track
             count += 1
-        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -324,7 +322,7 @@ class QobuzProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
-        for track in await self.get_playlist_tracks(prov_playlist_id):
+        async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
                 playlist_track_ids.add(str(track["playlist_track_id"]))
             if len(playlist_track_ids) == positions_to_remove:
@@ -363,7 +361,7 @@ class QobuzProvider(MusicProvider):
         self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
-            provider=self.domain,
+            provider=self.instance_id,
             content_type=content_type,
             duration=streamdata["duration"],
             sample_rate=int(streamdata["sampling_rate"] * 1000),
@@ -645,7 +643,7 @@ class QobuzProvider(MusicProvider):
             kwargs["user_auth_token"] = await self._auth_token()
         async with self._throttler:
             async with self.mass.http_session.get(
-                url, headers=headers, params=kwargs, verify_ssl=False
+                url, headers=headers, params=kwargs, ssl=False
             ) as response:
                 try:
                     # make sure status is 200
@@ -679,7 +677,7 @@ class QobuzProvider(MusicProvider):
         params["app_id"] = app_var(0)
         params["user_auth_token"] = await self._auth_token()
         async with self.mass.http_session.post(
-            url, params=params, json=data, verify_ssl=False
+            url, params=params, json=data, ssl=False
         ) as response:
             try:
                 result = await response.json()

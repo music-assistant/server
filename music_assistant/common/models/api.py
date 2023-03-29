@@ -35,6 +35,14 @@ class SuccessResultMessage(ResultMessageBase):
 
 
 @dataclass
+class ChunkedResultMessage(ResultMessageBase):
+    """Message sent when the result of a command is sent in multiple chunks."""
+
+    result: Any = field(default=None, metadata={"serialize": lambda v: get_serializable_value(v)})
+    is_last_chunk: bool = False
+
+
+@dataclass
 class ErrorResultMessage(ResultMessageBase):
     """Message sent when a command did not execute successfully."""
 

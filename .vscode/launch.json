@@ -11,8 +11,9 @@
             "module": "music_assistant",
             "justMyCode": false,
             "args":[
-                "--log-level", "debug"
-            ]
+                 "--log-level", "debug"
+            ],
+            "env": {"PYTHONDEVMODE": "1"}
         }
     ]
 }

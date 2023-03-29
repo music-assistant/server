@@ -22,7 +22,7 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
 )
-from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
+from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_PLAYERS
@@ -352,9 +352,8 @@ class SlimprotoProvider(PlayerProvider):
         """Process SlimClient update/add to Player controller."""
         player_id = client.player_id
         virtual_provider_info = self._virtual_providers.get(client.device_model)
-        try:
-            player = self.mass.players.get(player_id, raise_unavailable=False)
-        except PlayerUnavailableError:
+        player = self.mass.players.get(player_id, raise_unavailable=False)
+        if not player:
             # player does not yet exist, create it
             player = Player(
                 player_id=player_id,

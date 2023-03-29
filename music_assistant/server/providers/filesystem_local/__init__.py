@@ -15,7 +15,12 @@ from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.constants import CONF_PATH
 
-from .base import CONF_ENTRY_MISSING_ALBUM_ARTIST, FileSystemItem, FileSystemProviderBase
+from .base import (
+    CONF_ENTRY_MISSING_ALBUM_ARTIST,
+    IGNORE_DIRS,
+    FileSystemItem,
+    FileSystemProviderBase,
+)
 from .helpers import get_absolute_path, get_relative_path
 
 if TYPE_CHECKING:
@@ -98,8 +103,10 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self.config.get_value(CONF_PATH), path)
-        for entry in await asyncio.to_thread(os.scandir, abs_path):
-            if entry.name.startswith("."):
+        self.logger.debug("Processing: %s", abs_path)
+        entries = await asyncio.to_thread(os.scandir, abs_path)
+        for entry in entries:
+            if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
                 # skip invalid/system files and dirs
                 continue
             item = await create_item(self.config.get_value(CONF_PATH), entry)

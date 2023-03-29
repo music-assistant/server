@@ -39,6 +39,7 @@ class TracksController(MediaControllerBase[Track]):
         self.mass.register_api_command("music/tracks", self.db_items)
         self.mass.register_api_command("music/track", self.get)
         self.mass.register_api_command("music/track/versions", self.versions)
+        self.mass.register_api_command("music/track/albums", self.albums)
         self.mass.register_api_command("music/track/update", self.update_db_item)
         self.mass.register_api_command("music/track/delete", self.delete_db_item)
         self.mass.register_api_command("music/track/preview", self.get_preview_url)
@@ -51,7 +52,8 @@ class TracksController(MediaControllerBase[Track]):
         force_refresh: bool = False,
         lazy: bool = True,
         details: Track = None,
-        force_provider_item: bool = False,
+        album_uri: str | None = None,
+        add_to_db: bool = True,
     ) -> Track:
         """Return (full) details for a single media item."""
         track = await super().get(
@@ -61,26 +63,30 @@ class TracksController(MediaControllerBase[Track]):
             force_refresh=force_refresh,
             lazy=lazy,
             details=details,
-            force_provider_item=force_provider_item,
+            add_to_db=add_to_db,
         )
         # append full album details to full track item
-        if track.album:
-            try:
+        try:
+            if album_uri and (album := await self.mass.music.get_item_by_uri(album_uri)):
+                track.album = album
+                track.metadata.images = [album.image] + track.metadata.images
+            elif track.album:
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
                     track.album.provider,
                     lazy=True,
                     details=track.album,
+                    add_to_db=add_to_db,
                 )
-            except MediaNotFoundError:
-                # edge case where playlist track has invalid albumdetails
-                self.logger.warning("Unable to fetch album details %s", track.album.uri)
+        except MediaNotFoundError:
+            # edge case where playlist track has invalid albumdetails
+            self.logger.warning("Unable to fetch album details %s", track.album.uri)
         # append full artist details to full track item
         full_artists = []
         for artist in track.artists:
             full_artists.append(
                 await self.mass.music.artists.get(
-                    artist.item_id, artist.provider, lazy=True, details=artist
+                    artist.item_id, artist.provider, lazy=True, details=artist, add_to_db=add_to_db
                 )
             )
         track.artists = full_artists
@@ -116,7 +122,7 @@ class TracksController(MediaControllerBase[Track]):
     ) -> list[Track]:
         """Return all versions of a track we can find on all providers."""
         assert provider_domain or provider_instance, "Provider type or ID must be specified"
-        track = await self.get(item_id, provider_domain or provider_instance)
+        track = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
         # perform a search on all provider(types) to collect all versions/variants
         provider_domains = {prov.domain for prov in self.mass.music.providers}
         search_query = f"{track.artist.name} - {track.name}"
@@ -138,6 +144,22 @@ class TracksController(MediaControllerBase[Track]):
 
         # return the aggregated result
         return all_versions.values()
+
+    async def albums(
+        self,
+        item_id: str,
+        provider_domain: str | None = None,
+        provider_instance: str | None = None,
+    ) -> list[Album]:
+        """Return all albums the track appears on."""
+        assert provider_domain or provider_instance, "Provider type or ID must be specified"
+        track = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
+        return await asyncio.gather(
+            *[
+                self.mass.music.albums.get(album.item_id, album.provider, add_to_db=False)
+                for album in track.albums
+            ]
+        )
 
     async def get_preview_url(self, provider_domain: str, item_id: str) -> str:
         """Return url to short preview sample."""
@@ -173,7 +195,14 @@ class TracksController(MediaControllerBase[Track]):
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
-                    if compare_track(search_result_item, db_track):
+                    # do a basic compare first
+                    if not compare_track(search_result_item, db_track):
+                        continue
+                    # we must fetch the full album version, search results are simplified objects
+                    prov_track = await self.get_provider_item(
+                        search_result_item.item_id, search_result_item.provider
+                    )
+                    if compare_track(prov_track, db_track):
                         # 100% match, we can simply update the db with additional provider ids
                         match_found = True
                         await self.update_db_item(db_track.item_id, search_result_item)
@@ -276,13 +305,11 @@ class TracksController(MediaControllerBase[Track]):
         metadata = cur_item.metadata.update(item.metadata, is_file_provider)
         provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
         cur_item.isrc.update(item.isrc)
-        # ID3 tags from file providers are leading for core metadata
         if is_file_provider:
             track_artists = await self._get_track_artists(item)
-            track_albums = await self._get_track_albums(item)
         else:
             track_artists = await self._get_track_artists(cur_item, item)
-            track_albums = await self._get_track_albums(cur_item, item)
+        track_albums = await self._get_track_albums(cur_item, item)
 
         await self.mass.music.database.update(
             self.db_table,

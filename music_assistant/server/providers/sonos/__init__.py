@@ -109,24 +109,18 @@ class SonosPlayer:
             self.track_info_updated = time.time()
             self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
 
+            current_item_id = None
             if track_metadata := self.track_info.get("metadata"):
                 # extract queue_item_id from metadata xml
                 try:
                     xml_root = ET.XML(track_metadata)
                     for match in xml_root.iter("{http://purl.org/dc/elements/1.1/}queueItemId"):
                         item_id = match.text
-                        self.current_item_id = item_id
+                        current_item_id = item_id
                         break
                 except (ET.ParseError, AttributeError):
-                    self.current_item_id = None
-
-            if (
-                self.current_item_id is None
-                and "/stream/" in self.track_info["uri"]
-                and self.player_id in self.track_info["uri"]
-            ):
-                # try to extract the item id from the uri
-                self.current_item_id = self.track_info["uri"].rsplit("/")[-2]
+                    pass
+            self.current_item_id = current_item_id
 
         # speaker info
         if update_speaker_info:
@@ -174,8 +168,10 @@ class SonosPlayer:
             # this player is the sync leader
             self.player.synced_to = None
             self.player.group_childs = {
-                x.uid for x in self.group_info.members if x.uid != self.player_id
+                x.uid for x in self.group_info.members if x.uid != self.player_id and x.is_visible
             }
+            if not self.player.group_childs:
+                self.player.type = PlayerType.STEREO_PAIR
         elif self.group_info and self.group_info.coordinator:
             # player is synced to
             self.player.synced_to = self.group_info.coordinator.uid
@@ -282,7 +278,9 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        radio_mode = flow_mode or not queue_item.duration
+        radio_mode = (
+            flow_mode or not queue_item.duration or queue_item.media_type == MediaType.RADIO
+        )
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=sonos_player.player_id,
@@ -428,6 +426,9 @@ class SonosPlayerProvider(PlayerProvider):
 
         speaker_info = await asyncio.to_thread(soco_device.get_speaker_info, True)
         assert player_id not in self.sonosplayers
+
+        if soco_device not in soco_device.visible_zones:
+            return
 
         sonos_player = SonosPlayer(
             player_id=player_id,

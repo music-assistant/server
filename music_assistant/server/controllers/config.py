@@ -189,6 +189,7 @@ class ConfigController:
         else:
             await self.mass.unload_provider(config.instance_id)
         # load succeeded, save new config
+        config.last_error = None
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
         self.set(conf_key, config.to_raw())
 
@@ -199,6 +200,10 @@ class ConfigController:
         """Add new Provider (instance) Config Flow."""
         if not config:
             return await self._get_default_provider_config(provider_domain)
+        for key, conf_entry_value in config.values.items():
+            # parse entry to do type validation
+            parsed_val = ConfigEntryValue.parse(conf_entry_value, conf_entry_value.value)
+            conf_entry_value.value = parsed_val.value
         # if provider config is provided, the frontend wants to submit a new provider instance
         # based on the earlier created template config.
         # try to load the provider first to catch errors before we save it.
@@ -242,12 +247,13 @@ class ConfigController:
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
                 prov_entries = prov.get_player_config_entries(player_id)
+                if player := self.mass.players.get(player_id, False):
+                    raw_conf["default_name"] = player.display_name
             else:
                 prov_entries = tuple()
                 raw_conf["available"] = False
-                raw_conf["name"] = (
-                    raw_conf.get("name") or raw_conf.get("default_name") or raw_conf["player_id"]
-                )
+                raw_conf["name"] = raw_conf.get("name")
+                raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
             entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
             return PlayerConfig.parse(entries, raw_conf)
         raise KeyError(f"No config found for player id {player_id}")
@@ -257,9 +263,7 @@ class ConfigController:
         """Return single configentry value for a player."""
         conf = self.get(f"{CONF_PLAYERS}/{player_id}")
         if not conf:
-            player = self.mass.players.get(player_id)
-            if not player:
-                raise PlayerUnavailableError(f"Player {player_id} is not available")
+            player = self.mass.players.get(player_id, True)
             conf = {"provider": player.provider, "player_id": player_id, "values": {}}
         prov = self.mass.get_provider(conf["provider"])
         entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(player_id)
@@ -457,6 +461,8 @@ class ConfigController:
 
     def decrypt_string(self, encrypted_str: str) -> str:
         """Decrypt a (password)string with Fernet."""
+        if not encrypted_str:
+            return encrypted_str
         if not encrypted_str.startswith(ENCRYPT_SUFFIX):
             return encrypted_str
         encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
