@@ -4,12 +4,8 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
-from collections.abc import AsyncGenerator, Iterator
-from contextlib import suppress
 from functools import lru_cache
-from typing import TYPE_CHECKING, Any
-
-from music_assistant.common.helpers.util import empty_queue
+from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from music_assistant.server.models import ProviderModuleType

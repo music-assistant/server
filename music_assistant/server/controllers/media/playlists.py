@@ -120,7 +120,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         count = 0
-        for item in await self.tracks(playlist_prov.item_id, playlist_prov.provider_domain):
+        async for item in self.tracks(playlist_prov.item_id, playlist_prov.provider_domain):
             count += 1
             cur_playlist_track_ids.update(
                 {
