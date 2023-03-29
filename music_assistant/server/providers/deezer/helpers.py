@@ -12,10 +12,12 @@ dzr: (inspired the track-url gatherer) https://github.com/yne/dzr by @yne.
 
 import asyncio
 import json
+from http.cookies import SimpleCookie
 from time import time
 
 import aiohttp
 import deezer
+from requests.cookies import RequestsCookieJar
 
 from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
 from music_assistant.common.models.errors import LoginFailed
@@ -238,13 +240,29 @@ async def search_artist(client: deezer.Client, query: str, limit: int = 5) -> li
     return await asyncio.to_thread(_search)
 
 
-async def _get_sid(mass):
+async def _parse_cookies(cookies: RequestsCookieJar) -> dict[str, SimpleCookie]:
+    result = {}
+    for cookie in cookies:
+        new_cookie = SimpleCookie()
+        new_cookie[cookie.name] = str(cookie.value)
+        new_cookie[cookie.name]["Path"] = str(cookie.path)
+        new_cookie[cookie.name]["Domain"] = str(cookie.domain)
+        new_cookie[cookie.name]["Expires"] = str(cookie.expires)
+        result[cookie.name] = new_cookie
+    return result
+
+
+async def _get_sid(mass, client: deezer.Client):
     """Get a session id."""
-    result = await _get_http(
-        mass=mass,
-        url="http://www.deezer.com/ajax/gw-light.php",
-        params={"method": "deezer.ping", "api_version": "1.0", "api_token": ""},
-        headers=None,
+    cookies = await _parse_cookies(cookies=client.session.cookies)
+    result = (
+        await _get_http(
+            mass=mass,
+            url="https://www.deezer.com/ajax/gw-light.php",
+            params={"method": "deezer.ping", "api_version": "1.0", "api_token": ""},
+            headers=None,
+            cookies=cookies,
+        )
     )[  # type: ignore
         "results"
     ][
@@ -255,16 +273,18 @@ async def _get_sid(mass):
 
 async def _get_user_data(mass, tok, sid):
     """Get user data."""
-    result = await _get_http(
-        mass=mass,
-        url="https://www.deezer.com/ajax/gw-light.php",
-        params={
-            "method": "deezer.getUserData",
-            "input": "3",
-            "api_version": "1.0",
-            "api_token": tok,
-        },
-        headers={"Cookie": f"sid={sid}"},
+    result = (
+        await _get_http(
+            mass=mass,
+            url="https://www.deezer.com/ajax/gw-light.php",
+            params={
+                "method": "deezer.getUserData",
+                "input": "3",
+                "api_version": "1.0",
+                "api_token": tok,
+            },
+            headers={"Cookie": f"sid={sid}"},
+        )
     )[  # type: ignore
         "results"
     ]
@@ -273,17 +293,19 @@ async def _get_user_data(mass, tok, sid):
 
 async def _get_song_info(mass, tok, sid, track_id):
     """Get info for song. Can't use that of deezer-python because we need the track token."""
-    return await _post_http(
-        mass=mass,
-        url="https://www.deezer.com/ajax/gw-light.php",
-        params={
-            "method": "song.getListData",
-            "input": "3",
-            "api_version": "1.0",
-            "api_token": tok,
-        },
-        headers={"Cookie": f"sid={sid}"},
-        data=json.dumps({"sng_ids": track_id}),
+    return (
+        await _post_http(
+            mass=mass,
+            url="https://www.deezer.com/ajax/gw-light.php",
+            params={
+                "method": "song.getListData",
+                "input": "3",
+                "api_version": "1.0",
+                "api_token": tok,
+            },
+            headers={"Cookie": f"sid={sid}"},
+            data=json.dumps({"sng_ids": track_id}),
+        )
     )[  # type: ignore
         "results"
     ][
@@ -307,13 +329,16 @@ async def _generate_url(mass, usr_lic, track_tok):
     return response
 
 
-async def _get_http(mass, url, params, headers):
+async def _get_http(mass, url, params, headers, cookies):
     async with mass._throttler:
-        time_start = time.time()
+        time_start = time()
         try:
-            async with mass.mass.http_session.get(
-                url, headers=headers, params=params, verify_ssl=False, timeout=120
-            ) as response:
+            async with mass.mass.http_session as session:
+                jar = session.cookie_jar
+                jar.update_cookies(cookies=cookies)
+                response = await session.get(
+                    url, headers=headers, params=params, ssl=False, timeout=120, cookies=cookies
+                )
                 result = await response.json()
                 if "error" in result or ("status" in result and "error" in result["status"]):
                     mass.logger.error("%s - %s", url, result)
@@ -328,7 +353,7 @@ async def _get_http(mass, url, params, headers):
             mass.logger.debug(
                 "Processing GET/%s took %s seconds",
                 url,
-                round(time.time() - time_start, 2),
+                round(time() - time_start, 2),
             )
         return result
 
@@ -359,7 +384,7 @@ async def update_access_token(mass, creds: Credential, code) -> Credential:
 
 async def _post_http(mass, url, data, params=None, headers=None) -> str:
     async with mass.mass.http_session.post(
-        url, headers=headers, params=params, json=data, verify_ssl=False
+        url, headers=headers, params=params, json=data, ssl=False
     ) as response:
         if response.status != 200:
             raise Exception(f"HTTP Error {response.status}: {response.reason}")
@@ -367,9 +392,9 @@ async def _post_http(mass, url, data, params=None, headers=None) -> str:
         return response_text
 
 
-async def get_url(mass, track_id, creds: Credential) -> str:
+async def get_url(mass, track_id, creds: Credential, client: deezer.Client) -> str:
     """Get the url of the track."""
-    sid = await _get_sid(mass=mass)
+    sid = await _get_sid(mass=mass, client=client)
     user_data = await _get_user_data(mass=mass, tok=creds.access_token, sid=sid)
     licence_token = user_data["USER"]["OPTIONS"]["license_token"]
     check_form = user_data["checkForm"]

@@ -319,3 +319,13 @@ class DeezerProvider(MusicProvider):
             expires=time() + 3600,
         )
         return details
+
+
+#    async def get_audio_stream(
+#        self, streamdetails: StreamDetails, seek_position: int = 0
+#        """Return the audio stream for the provider item."""
+#        yup = seek_position
+#        url = await get_url(
+#            mass=self, track_id=streamdetails.item_id, creds=self.creds, client=self.client
+#        )
+#        yield b""
