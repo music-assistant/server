@@ -250,6 +250,17 @@ async def add_remove_playlist_tracks(
     return await asyncio.to_thread(_add_remove_playlist_tracks)
 
 
+async def create_playlist(
+    session: tidalapi.Session, user_id: str, title: str, description: str = None
+) -> dict[str, str]:
+    """Async wrapper around the tidal LoggedInUser.create_playlist function."""
+
+    def _create_playlist():
+        return tidalapi.LoggedInUser(session, user_id).create_playlist(title, description)
+
+    return await asyncio.to_thread(_create_playlist)
+
+
 async def get_similar_tracks(
     session: tidalapi.Session, prov_track_id, limit: int
 ) -> dict[str, str]:

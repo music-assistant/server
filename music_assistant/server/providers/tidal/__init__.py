@@ -58,6 +58,7 @@ from .helpers import (
     library_items_add_remove,
     add_remove_playlist_tracks,
     search,
+    create_playlist,
     tidal_session,
 )
 
@@ -166,6 +167,7 @@ class TidalProvider(MusicProvider):
             ProviderFeature.LIBRARY_ALBUMS_EDIT,
             ProviderFeature.LIBRARY_TRACKS_EDIT,
             ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+            ProviderFeature.PLAYLIST_CREATE,
             ProviderFeature.SIMILAR_TRACKS,
             ProviderFeature.BROWSE,
             ProviderFeature.PLAYLIST_TRACKS_EDIT,
@@ -324,6 +326,13 @@ class TidalProvider(MusicProvider):
         return await add_remove_playlist_tracks(
             self._tidal_session, prov_playlist_id, prov_track_ids, add=False
         )
+
+    async def create_playlist(self, name: str) -> Playlist:  # type: ignore[return]
+        """Create a new playlist on provider with given name."""
+        playlist_obj = await create_playlist(self._tidal_session, self._tidal_user_id, name)
+        playlist = await self._parse_playlist(playlist_obj)
+        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
+        return db_playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
