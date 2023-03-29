@@ -298,7 +298,7 @@ class PlexProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=available,
-                content_type=ContentType.try_parse(content) if content else None,
+                content_type=ContentType.try_parse(content) if content else ContentType.UNKNOWN,
                 url=plex_track.getWebURL(),
             )
         )
@@ -451,14 +451,16 @@ class PlexProvider(MusicProvider):
 
         media: PlexMedia = plex_track.media[0]
 
-        media_type = ContentType.try_parse(media.container)
+        media_type = (
+            ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
+        )
         media_part: PlexMediaPart = media.parts[0]
         audio_stream: PlexAudioStream = media_part.audioStreams()[0]
 
         stream_details = StreamDetails(
             item_id=plex_track.key,
             provider=self.instance_id,
-            content_type=ContentType.try_parse(media.container),
+            content_type=media_type,
             duration=plex_track.duration,
             channels=media.audioChannels,
             data=plex_track,
