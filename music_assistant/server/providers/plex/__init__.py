@@ -101,7 +101,7 @@ class PlexProvider(MusicProvider):
 
         def connect():
             plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
-            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect(None)
+            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect(None, 10)
 
         self._plex_server = await self._run_async(connect)
         self._plex_library = await self._run_async(
