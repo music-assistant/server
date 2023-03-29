@@ -38,7 +38,6 @@ from music_assistant.constants import (
     CONF_USERNAME,
 )
 from music_assistant.server import MusicAssistant
-from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -57,6 +56,7 @@ from .helpers import (
     get_track,
     get_track_url,
     library_items_add_remove,
+    add_remove_playlist_tracks,
     search,
     tidal_session,
 )
@@ -167,6 +167,8 @@ class TidalProvider(MusicProvider):
             ProviderFeature.LIBRARY_TRACKS_EDIT,
             ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
             ProviderFeature.SIMILAR_TRACKS,
+            ProviderFeature.BROWSE,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
         )
 
     async def search(
@@ -302,6 +304,23 @@ class TidalProvider(MusicProvider):
             self._tidal_session, self._tidal_user_id, prov_item_id, media_type, add=False
         )
 
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
+        """Add track(s) to playlist."""
+        return await add_remove_playlist_tracks(
+            self._tidal_session, prov_playlist_id, prov_track_ids, add=True
+        )
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
+        """Remove track(s) from playlist."""
+        foo = positions_to_remove
+        prov_track_ids = []
+
+        return await add_remove_playlist_tracks(
+            self._tidal_session, prov_playlist_id, prov_track_ids, add=False
+        )
+
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         # make sure a valid track is requested.
@@ -433,14 +452,14 @@ class TidalProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj) -> Playlist:
         """Parse tidal playlist object to generic layout."""
         playlist_id = playlist_obj.id
-        creator_name = None
+        creator_id = None
         if playlist_obj.creator:
-            creator_name = playlist_obj.creator.name
+            creator_id = playlist_obj.creator.id
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.domain,
             name=playlist_obj.name,
-            owner=creator_name,
+            owner=creator_id,
         )
         playlist.add_provider_mapping(
             ProviderMapping(
@@ -451,7 +470,7 @@ class TidalProvider(MusicProvider):
             )
         )
         is_editable = False
-        if creator_name and creator_name == "me":
+        if creator_id and creator_id == self._tidal_user_id:
             is_editable = True
         playlist.is_editable = is_editable
         image_url = None

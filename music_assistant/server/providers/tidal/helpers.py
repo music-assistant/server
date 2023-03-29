@@ -199,7 +199,6 @@ async def get_library_playlists(session: tidalapi.Session, user_id: str) -> dict
     """Async wrapper around the tidalapi LoggedInUser.playlist_and_favorite_playlists function."""
 
     def _get_library_playlists():
-
         return tidalapi.LoggedInUser(session, user_id).playlist_and_favorite_playlists()
 
     return await asyncio.to_thread(_get_library_playlists)
@@ -221,6 +220,20 @@ async def get_playlist_tracks(session: tidalapi.Session, prov_playlist_id: str) 
         return tidalapi.Playlist(session, prov_playlist_id).tracks(limit=9999)
 
     return await asyncio.to_thread(_get_playlist_tracks)
+
+
+async def add_remove_playlist_tracks(
+    session: tidalapi.Session, prov_playlist_id: str, tracks: list[str], add: bool = True
+) -> dict[str, str]:
+    """Async wrapper around the tidal Playlist.add and Playlist.remove function."""
+
+    def _add_remove_playlist_tracks():
+        if add:
+            return tidalapi.UserPlaylist(session, prov_playlist_id).add(tracks)
+        if not add:
+            return tidalapi.UserPlaylist(session, prov_playlist_id).remove(tracks)
+
+    return await asyncio.to_thread(_add_remove_playlist_tracks)
 
 
 async def get_similar_tracks(session: tidalapi.Session, prov_track_id: str) -> dict[str, str]:
