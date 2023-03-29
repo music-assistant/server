@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Coroutine
+from contextlib import suppress
 
 LOGGER = logging.getLogger(__name__)
 
@@ -68,6 +69,9 @@ class AsyncProcess:
                 await self._proc.communicate()
         if self._proc.returncode is None:
             self._proc.kill()
+        if self._attached_task and not self._attached_task.done():
+            with suppress(asyncio.CancelledError):
+                self._attached_task.cancel()
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""

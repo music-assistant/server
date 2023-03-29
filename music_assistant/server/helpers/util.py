@@ -9,6 +9,8 @@ from contextlib import suppress
 from functools import lru_cache
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.common.helpers.util import empty_queue
+
 if TYPE_CHECKING:
     from music_assistant.server.models import ProviderModuleType
 
@@ -39,35 +41,3 @@ async def get_provider_module(domain: str) -> ProviderModuleType:
         return importlib.import_module(f".{domain}", "music_assistant.server.providers")
 
     return await asyncio.to_thread(_get_provider_module, domain)
-
-
-async def async_iter(sync_iterator: Iterator, *args, **kwargs) -> AsyncGenerator[Any, None]:
-    """Wrap blocking iterator into an asynchronous one."""
-    # inspired by: https://stackoverflow.com/questions/62294385/synchronous-generator-in-asyncio
-    loop = asyncio.get_running_loop()
-    queue = asyncio.Queue(1)
-    _exit = asyncio.Event()
-    _end_ = object()
-
-    def iter_to_queue():
-        for item in sync_iterator(*args, **kwargs):
-            if _exit.is_set():
-                return
-            asyncio.run_coroutine_threadsafe(queue.put(item), loop).result()
-        asyncio.run_coroutine_threadsafe(queue.put(_end_), loop).result()
-
-    iter_fut = loop.run_in_executor(None, iter_to_queue)
-    try:
-        while True:
-            next_item = await queue.get()
-            if next_item is _end_:
-                break
-            yield next_item
-    finally:
-        # cleanup
-        _exit.set()
-        if not iter_fut.done():
-            iter_fut.cancel()
-            await iter_fut
-        with suppress(asyncio.QueueEmpty):
-            queue.get_nowait()
