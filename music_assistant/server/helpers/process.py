@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Coroutine
+from contextlib import suppress
 
 LOGGER = logging.getLogger(__name__)
 
@@ -45,6 +46,13 @@ class AsyncProcess:
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
             close_fds=True,
         )
+
+        # Fix BrokenPipeError due to a race condition
+        # by attaching a default done callback
+        def _done_cb(fut: asyncio.Future):
+            fut.exception()
+
+        self._proc._transport._protocol._stdin_closed.add_done_callback(_done_cb)
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
@@ -61,6 +69,9 @@ class AsyncProcess:
                 await self._proc.communicate()
         if self._proc.returncode is None:
             self._proc.kill()
+        if self._attached_task and not self._attached_task.done():
+            with suppress(asyncio.CancelledError):
+                self._attached_task.cancel()
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""

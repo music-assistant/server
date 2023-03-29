@@ -5,19 +5,19 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from os.path import basename
 from typing import TYPE_CHECKING
 
 import smbclient
 from smbclient import path as smbpath
 
-from music_assistant.common.helpers.util import get_ip_from_host
+from music_assistant.common.helpers.util import empty_queue, get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.controllers.cache import use_cache
-from music_assistant.server.helpers.util import async_iter
 from music_assistant.server.providers.filesystem_local.base import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     IGNORE_DIRS,
@@ -188,7 +188,9 @@ class SMBFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self._root_path, path)
-        async for entry in async_iter(smbclient.scandir, abs_path):
+        self.logger.debug("Processing: %s", abs_path)
+        entries = await asyncio.to_thread(smbclient.scandir, abs_path)
+        for entry in entries:
             if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
                 # skip invalid/system files and dirs
                 continue
@@ -244,6 +246,8 @@ class SMBFileSystemProvider(FileSystemProviderBase):
         file_path = file_path.replace("\\", os.sep)
         absolute_path = get_absolute_path(self._root_path, file_path)
 
+        queue = asyncio.Queue(1)
+
         def _reader():
             self.logger.debug("Reading file contents for %s", absolute_path)
             try:
@@ -257,18 +261,32 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                     while True:
                         chunk = _file.read(chunk_size)
                         if not chunk:
-                            break
-                        yield chunk
+                            return
+                        asyncio.run_coroutine_threadsafe(queue.put(chunk), self.mass.loop).result()
                         bytes_sent += len(chunk)
             finally:
+                asyncio.run_coroutine_threadsafe(queue.put(b""), self.mass.loop).result()
                 self.logger.debug(
                     "Finished Reading file contents for %s - bytes transferred: %s",
                     absolute_path,
                     bytes_sent,
                 )
 
-        async for chunk in async_iter(_reader):
-            yield chunk
+        try:
+            task = self.mass.create_task(_reader)
+
+            while True:
+                chunk = await queue.get()
+                if not chunk:
+                    break
+                yield chunk
+        finally:
+            empty_queue(queue)
+            if task and not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+            del queue
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""

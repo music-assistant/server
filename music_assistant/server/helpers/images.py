@@ -42,7 +42,7 @@ async def get_image_thumb(
         data = BytesIO()
         img = Image.open(BytesIO(img_data))
         if size:
-            img.thumbnail((size, size), Image.ANTIALIAS)
+            img.thumbnail((size, size), Image.LANCZOS)
         img.convert("RGB").save(data, "PNG", optimize=True)
         return data.getvalue()
 
