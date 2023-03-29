@@ -180,7 +180,6 @@ class TidalProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        # result = SearchResults()
         search_query = search_query.replace("'", "")
         results = await search(self._tidal_session, search_query, media_types, limit)
         parsed_results = SearchResults()
@@ -416,7 +415,7 @@ class TidalProvider(MusicProvider):
         )
         return album
 
-    async def _parse_track(self, track_obj, artist=None) -> Track:
+    async def _parse_track(self, track_obj) -> Track:
         """Parse tidal track object to generic layout."""
         version = None
         if track_obj.version is not None:
@@ -489,7 +488,7 @@ class TidalProvider(MusicProvider):
                 image_url,
             )
         ]
-        playlist.metadata.checksum = str(playlist_obj._etag)
+        playlist.metadata.checksum = str(playlist_obj.last_updated)
         return playlist
 
     async def login(self) -> dict:
@@ -519,4 +518,4 @@ class TidalProvider(MusicProvider):
         self._expiry_time = session.expiry_time
         self._tidal_user_id = session.user.id
         self._tidal_session = session
-        return None
+        return self._tidal_session

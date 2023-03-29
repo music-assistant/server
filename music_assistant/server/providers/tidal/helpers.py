@@ -53,7 +53,7 @@ async def tidal_session(
             session = tidalapi.Session()
             login, future = session.login_oauth()
             webbrowser.open(f"https://{login.verification_uri_complete}")
-            result = future.result()
+            future.result()
             return session
         elif access_token is not None and tidal_session is None:
             session = tidalapi.Session()
@@ -82,26 +82,39 @@ async def library_items_add_remove(
 
     def _library_items_add_remove():
         if media_type == MediaType.ARTIST:
-            if add:
-                return tidalapi.Favorites(session, user_id).add_artist(item_id)
-            if not add:
-                return tidalapi.Favorites(session, user_id).remove_artist(item_id)
+            _artists_add_remove()
         if media_type == MediaType.ALBUM:
-            if add:
-                return tidalapi.Favorites(session, user_id).add_album(item_id)
-            if not add:
-                return tidalapi.Favorites(session, user_id).remove_album(item_id)
+            _albums_add_remove()
         if media_type == MediaType.TRACK:
-            if add:
-                return tidalapi.Favorites(session, user_id).add_track(item_id)
-            if not add:
-                return tidalapi.Favorites(session, user_id).remove_track(item_id)
+            _tracks_add_remove()
         if media_type == MediaType.PLAYLIST:
-            if add:
-                return tidalapi.Favorites(session, user_id).add_playlist(item_id)
-            if not add:
-                return tidalapi.Favorites(session, user_id).remove_playlist(item_id)
-        return None
+            _playlists_add_remove()
+        if media_type == MediaType.UNKNOWN:
+            return
+
+    def _artists_add_remove():
+        if add:
+            return tidalapi.Favorites(session, user_id).add_artist(item_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_artist(item_id)
+
+    def _albums_add_remove():
+        if add:
+            return tidalapi.Favorites(session, user_id).add_album(item_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_album(item_id)
+
+    def _tracks_add_remove():
+        if add:
+            return tidalapi.Favorites(session, user_id).add_track(item_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_track(item_id)
+
+    def _playlists_add_remove():
+        if add:
+            return tidalapi.Favorites(session, user_id).add_playlist(item_id)
+        if not add:
+            return tidalapi.Favorites(session, user_id).remove_playlist(item_id)
 
     return await asyncio.to_thread(_library_items_add_remove)
 
