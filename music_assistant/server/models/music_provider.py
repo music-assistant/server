@@ -424,10 +424,15 @@ class MusicProvider(Provider):
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)
 
-    def is_file(self) -> bool:
-        """Return if this is a FileSystem based provider."""
-        # override this is needed
-        return self.domain.startswith("filesystem")
+    def is_unique(self) -> bool:
+        """
+        Return if the (non user related) data in this providerinstance is unique.
+
+        For example on a streaming provider (like Spotify) the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to True will only query one instance of the provider for search and lookups.
+        """
+        return False
 
     # DO NOT OVERRIDE BELOW
 

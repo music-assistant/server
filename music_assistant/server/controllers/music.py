@@ -11,7 +11,11 @@ from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature, ProviderType
 from music_assistant.common.models.errors import MusicAssistantError
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    MediaItemType,
+    SearchResults,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     CONF_DB_LIBRARY,
@@ -124,16 +128,15 @@ class MusicController:
         :param limit: number of items to return in the search (per type).
         """
         # include results from all (unique) music providers
-        provider_domains = {item.domain for item in self.providers}
         results_per_provider: list[SearchResults] = await asyncio.gather(
             *[
                 self.search_provider(
                     search_query,
                     media_types,
-                    provider_domain=provider_domain,
+                    provider_instance=provider_instance,
                     limit=limit,
                 )
-                for provider_domain in provider_domains
+                for provider_instance in self.get_unique_providers()
             ]
         )
         # return result from all providers while keeping index
@@ -253,7 +256,7 @@ class MusicController:
         for prov in self.providers:
             if prov.instance_id == provider_domain_or_instance_id:
                 provider_instance = prov.instance_id
-                provider_domain = None
+                provider_domain = prov.domain
                 break
         else:
             provider_instance = None
@@ -332,7 +335,7 @@ class MusicController:
                     self.add_to_library(
                         media_type=item.media_type,
                         item_id=item.item_id,
-                        provider_domain=item.provider,
+                        provider_instance=item.provider,
                     )
                 )
             )
@@ -367,6 +370,7 @@ class MusicController:
                         media_type=item.media_type,
                         item_id=item.item_id,
                         provider_domain=item.provider,
+                        provider_instance=item.provider,
                     )
                 )
             )
@@ -398,7 +402,7 @@ class MusicController:
             return await self.get_item(
                 media_item.media_type,
                 media_item.item_id,
-                provider_domain=media_item.provider,
+                provider_instance=media_item.provider,
                 force_refresh=True,
                 lazy=False,
                 add_to_db=True,
@@ -479,7 +483,11 @@ class MusicController:
         """
         for media_item in items:
             self.mass.create_task(
-                self.add_to_library(media_item.media_type, media_item.item_id, media_item.provider)
+                self.add_to_library(
+                    media_item.media_type,
+                    media_item.item_id,
+                    provider_instance=media_item.provider,
+                )
             )
 
     async def library_remove_items(self, items: list[MediaItemType]) -> None:
@@ -490,7 +498,9 @@ class MusicController:
         for media_item in items:
             self.mass.create_task(
                 self.remove_from_library(
-                    media_item.media_type, media_item.item_id, media_item.provider
+                    media_item.media_type,
+                    media_item.item_id,
+                    provider_instance=media_item.provider,
                 )
             )
 
@@ -526,7 +536,7 @@ class MusicController:
         instances = set()
         domains = set()
         for provider in self.providers:
-            if provider.domain not in domains or provider.is_file():
+            if provider.domain not in domains or provider.is_unique():
                 instances.add(provider.instance_id)
                 domains.add(provider.domain)
         return instances
