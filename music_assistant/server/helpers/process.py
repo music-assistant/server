@@ -8,11 +8,12 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import AsyncGenerator, Coroutine
+from contextlib import suppress
 
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
-DEFAULT_TIMEOUT = 30 * 60
+DEFAULT_TIMEOUT = 60
 
 # pylint: disable=invalid-name
 
@@ -22,7 +23,7 @@ class AsyncProcess:
 
     def __init__(
         self,
-        args: list | str,
+        args: list,
         enable_stdin: bool = False,
         enable_stdout: bool = True,
         enable_stderr: bool = False,
@@ -38,55 +39,39 @@ class AsyncProcess:
 
     async def __aenter__(self) -> AsyncProcess:
         """Enter context manager."""
-        args = " ".join(self._args) if "|" in self._args else self._args
-        if isinstance(args, str):
-            self._proc = await asyncio.create_subprocess_shell(
-                args,
-                stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
-                stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
-                stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                close_fds=True,
-                limit=64 * 1024 * 1024,
-            )
-        else:
-            self._proc = await asyncio.create_subprocess_exec(
-                *args,
-                stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
-                stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
-                stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-                close_fds=True,
-                limit=64 * 1024 * 1024,
-            )
+        self._proc = await asyncio.create_subprocess_exec(
+            *self._args,
+            stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
+            stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
+            stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
+            close_fds=True,
+        )
 
-            # Fix BrokenPipeError due to a race condition
-            # by attaching a default done callback
-            def _done_cb(fut: asyncio.Future):
-                fut.exception()
+        # Fix BrokenPipeError due to a race condition
+        # by attaching a default done callback
+        def _done_cb(fut: asyncio.Future):
+            fut.exception()
 
-            self._proc._transport._protocol._stdin_closed.add_done_callback(_done_cb)
-
+        self._proc._transport._protocol._stdin_closed.add_done_callback(_done_cb)
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
         """Exit context manager."""
         self.closed = True
-        if self._attached_task:
-            # cancel the attached reader/writer task
-            try:
-                self._attached_task.cancel()
-                await self._attached_task
-            except asyncio.CancelledError:
-                pass
+        # make sure the process is cleaned up
+        self.write_eof()
         if self._proc.returncode is None:
-            # prevent subprocess deadlocking, read remaining bytes
-            await self._proc.communicate()
-            if self._enable_stdout and not self._proc.stdout.at_eof():
-                await self._proc.stdout.read()
-            if self._enable_stderr and not self._proc.stderr.at_eof():
-                await self._proc.stderr.read()
-            if self._proc.returncode is None:
-                # just in case?
+            try:
+                async with asyncio.timeout(10):
+                    await self._proc.communicate()
+            except TimeoutError:
                 self._proc.kill()
+                await self._proc.communicate()
+        if self._proc.returncode is None:
+            self._proc.kill()
+        if self._attached_task and not self._attached_task.done():
+            with suppress(asyncio.CancelledError):
+                self._attached_task.cancel()
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
@@ -127,15 +112,17 @@ class AsyncProcess:
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
         if self.closed or self._proc.stdin.is_closing():
-            raise asyncio.CancelledError()
+            return
         self._proc.stdin.write(data)
         try:
             await self._proc.stdin.drain()
         except BrokenPipeError:
-            raise asyncio.CancelledError()
+            LOGGER.warning("Attempted write to an already closed process")
 
     def write_eof(self) -> None:
         """Write end of file to to process stdin."""
+        if self.closed or self._proc.stdin.is_closing():
+            return
         try:
             if self._proc.stdin.can_write_eof():
                 self._proc.stdin.write_eof()
@@ -147,7 +134,7 @@ class AsyncProcess:
             ConnectionResetError,
         ):
             # already exited, race condition
-            return
+            LOGGER.warning("Attempted write to an already closed process")
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""

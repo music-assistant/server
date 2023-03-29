@@ -110,7 +110,7 @@ class FanartTvMetadataProvider(MetadataProvider):
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         kwargs["api_key"] = app_var(4)
         async with self.throttler:
-            async with self.mass.http_session.get(url, params=kwargs, verify_ssl=False) as response:
+            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
                 try:
                     result = await response.json()
                 except (

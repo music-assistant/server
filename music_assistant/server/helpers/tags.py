@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
@@ -12,8 +13,10 @@ from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
 from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import MediaItemChapter
-from music_assistant.constants import UNKNOWN_ARTIST
+from music_assistant.constants import ROOT_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
+
+LOGGER = logging.getLogger(ROOT_LOGGER_NAME).getChild("tags")
 
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.
@@ -316,17 +319,22 @@ async def parse_tags(
 
             async def chunk_feeder():
                 bytes_read = 0
-                async for chunk in input_file:
-                    await proc.write(chunk)
-                    bytes_read += len(chunk)
-
-                if bytes_read > 25 * 1000000:
-                    # this is possibly a m4a file with 'moove atom' metadata at the end of the file
-                    # we'll have to read the entire file to do something with it
-                    # for now we just ignore/deny these files
-                    raise RuntimeError("Tags not present at beginning of file")
-
-                proc.write_eof()
+                try:
+                    async for chunk in input_file:
+                        if proc.closed:
+                            break
+                        await proc.write(chunk)
+                        bytes_read += len(chunk)
+                        del chunk
+                        if bytes_read > 25 * 1000000:
+                            # this is possibly a m4a file with 'moove atom' metadata at the
+                            # end of the file
+                            # we'll have to read the entire file to do something with it
+                            # for now we just ignore/deny these files
+                            LOGGER.error("Found file with tags not present at beginning of file")
+                            break
+                finally:
+                    proc.write_eof()
 
             proc.attach_task(chunk_feeder())
 
@@ -335,7 +343,11 @@ async def parse_tags(
             data = json.loads(res)
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
+            if not data.get("streams") or data["streams"][0].get("codec_type") == "video":
+                raise InvalidDataError("Not an audio file")
             tags = AudioTags.parse(data)
+            del res
+            del data
             if not tags.duration and file_size and tags.bit_rate:
                 # estimate duration from filesize/bitrate
                 tags.duration = int((file_size * 8) / tags.bit_rate)
@@ -373,10 +385,13 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         if file_path == "-":
             # feed the file contents to the process
             async def chunk_feeder():
-                async for chunk in input_file:
-                    await proc.write(chunk)
-
-                proc.write_eof()
+                try:
+                    async for chunk in input_file:
+                        if proc.closed:
+                            break
+                        await proc.write(chunk)
+                finally:
+                    proc.write_eof()
 
             proc.attach_task(chunk_feeder())
 
