@@ -286,7 +286,6 @@ class SMBFileSystemProvider(FileSystemProviderBase):
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
-            del queue
 
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
