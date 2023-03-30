@@ -69,9 +69,9 @@ class AlbumsController(MediaControllerBase[Album]):
         if album.artist:
             album.artist = await self.mass.music.artists.get(
                 album.artist.item_id,
-                album.artist.provider,
+                provider_instance=album.artist.provider,
                 lazy=True,
-                details=album.artist,
+                details=None if isinstance(album.artist, ItemMapping) else album.artist,
                 add_to_db=add_to_db,
             )
         return album
@@ -133,7 +133,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Add album to local db and return the database item."""
         # grab additional metadata
         await self.mass.metadata.get_album_metadata(item)
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        existing = await self.get_db_item_by_prov_id(item.item_id, provider_instance=item.provider)
         if existing:
             db_item = await self.update_db_item(existing.item_id, item)
         else:
@@ -148,7 +148,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 prov_mapping.item_id, prov_mapping.provider_instance
             ):
                 await self.mass.music.tracks.get(
-                    track.item_id, track.provider, details=track, add_to_db=True
+                    track.item_id, provider_instance=track.provider, details=track, add_to_db=True
                 )
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
@@ -446,7 +446,7 @@ class AlbumsController(MediaControllerBase[Album]):
             return ItemMapping.from_item(artist)
 
         if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-            artist.item_id, provider_domain=artist.provider
+            artist.item_id, provider_instance=artist.provider
         ):
             return ItemMapping.from_item(db_artist)
 

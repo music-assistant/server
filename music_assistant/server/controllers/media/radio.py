@@ -61,7 +61,7 @@ class RadioController(MediaControllerBase[Radio]):
         """Add radio to local db and return the new database item."""
         item.metadata.last_refresh = int(time())
         await self.mass.metadata.get_radio_metadata(item)
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        existing = await self.get_db_item_by_prov_id(item.item_id, provider_instance=item.provider)
         if existing:
             db_item = await self.update_db_item(existing.item_id, item)
         else:

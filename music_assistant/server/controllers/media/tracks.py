@@ -73,9 +73,9 @@ class TracksController(MediaControllerBase[Track]):
             elif track.album:
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
-                    track.album.provider,
+                    provider_instance=track.album.provider,
                     lazy=True,
-                    details=track.album,
+                    details=None if isinstance(track.album, ItemMapping) else track.album,
                     add_to_db=add_to_db,
                 )
         except MediaNotFoundError:
@@ -86,7 +86,11 @@ class TracksController(MediaControllerBase[Track]):
         for artist in track.artists:
             full_artists.append(
                 await self.mass.music.artists.get(
-                    artist.item_id, artist.provider, lazy=True, details=artist, add_to_db=add_to_db
+                    artist.item_id,
+                    provider_instance=artist.provider,
+                    lazy=True,
+                    details=None if isinstance(artist, ItemMapping) else artist,
+                    add_to_db=add_to_db,
                 )
             )
         track.artists = full_artists
@@ -98,7 +102,7 @@ class TracksController(MediaControllerBase[Track]):
         assert item.artists
         # grab additional metadata
         await self.mass.metadata.get_track_metadata(item)
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        existing = await self.get_db_item_by_prov_id(item.item_id, provider_instance=item.provider)
         if existing:
             db_item = await self.update_db_item(existing.item_id, item)
         else:
@@ -156,7 +160,9 @@ class TracksController(MediaControllerBase[Track]):
         track = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
         return await asyncio.gather(
             *[
-                self.mass.music.albums.get(album.item_id, album.provider, add_to_db=False)
+                self.mass.music.albums.get(
+                    album.item_id, provider_instance=album.provider, add_to_db=False
+                )
                 for album in track.albums
             ]
         )
