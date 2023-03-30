@@ -409,17 +409,33 @@ class MusicProvider(Provider):
                 )
                 if not db_item:
                     # dump the item in the db, rich metadata is lazy loaded later
-                    db_item = await controller.add_db_item(prov_item)
+                    db_item = await controller.get(prov_item)
 
                 elif (
                     db_item.metadata.checksum and prov_item.metadata.checksum
                 ) and db_item.metadata.checksum != prov_item.metadata.checksum:
                     # item checksum changed
                     db_item = await controller.update_db_item(db_item.item_id, prov_item)
-                    # preload album/playlist tracks
-                    if prov_item.media_type == (MediaType.ALBUM, MediaType.PLAYLIST):
+                    # add album tracks to the db too
+                    if prov_item.media_type == MediaType.ALBUM:
+                        prov_item: Album  # noqa: PLW2901
                         for track in controller.tracks(prov_item.item_id, prov_item.provider):
-                            await self.mass.music.tracks.add_db_item(track)
+                            track: Track  # noqa: PLW2901
+                            track.album = db_item
+                            await self.mass.music.tracks.get(
+                                track.item_id,
+                                provider_instance=self.instance_id,
+                                lazy=False,
+                                details=track,
+                                add_to_db=True,
+                            )
+                    # preload playlist tracks listing, do not load them in the db
+                    # because that would make the sync very slow and has not much benefit
+                    if prov_item.media_type == MediaType.PLAYLIST:
+                        async for track in controller.tracks(
+                            prov_item.item_id, instance_id=self.instance_id
+                        ):
+                            pass
                 cur_db_ids.add(db_item.item_id)
                 if not db_item.in_library:
                     await controller.set_db_library(db_item.item_id, True)
