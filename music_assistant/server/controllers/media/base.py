@@ -133,7 +133,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             provider_domain or provider_instance
         ), "provider_domain or provider_instance must be supplied"
         if not add_to_db and "database" in (provider_domain, provider_instance):
-            return await self.get_provider_item(item_id, provider_instance or provider_domain)
+            return await self.get_db_item(item_id)
         if details and details.provider == "database":
             details = None
         db_item = await self.get_db_item_by_prov_id(
@@ -152,7 +152,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return db_item
         if not details and provider_instance:
             # no details provider nor in db, fetch them from the provider
-            details = await self.get_provider_item(item_id, provider_instance)
+            details = await self.get_provider_item(
+                item_id, provider_instance, force_refresh=force_refresh
+            )
         if not details and provider_domain:
             # check providers for given provider domain one by one
             for prov in self.mass.music.providers:
@@ -160,7 +162,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     continue
                 if prov.domain == provider_domain:
                     try:
-                        details = await self.get_provider_item(item_id, prov.domain)
+                        details = await self.get_provider_item(
+                            item_id, prov.domain, orce_refresh=force_refresh
+                        )
                     except MediaNotFoundError:
                         pass
                     else:
