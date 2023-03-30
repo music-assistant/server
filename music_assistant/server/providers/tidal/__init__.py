@@ -367,7 +367,7 @@ class TidalProvider(MusicProvider):
         image_url = None
         if artist_obj.name != "Various Artists":
             try:
-                image_url = artist_obj.image(320)
+                image_url = artist_obj.image(750)
             except Exception:
                 print(f"Error: Artist {artist_id} has no available picture")
         artist.metadata.images = [
@@ -399,7 +399,7 @@ class TidalProvider(MusicProvider):
             album.album_type = AlbumType.EP
         image_url = None
         try:
-            image_url = album_obj.image(320)
+            image_url = album_obj.image(1280)
         except Exception:
             print(f"Error: Album {album_id} has no available picture")
         album.metadata.images = [
@@ -435,7 +435,7 @@ class TidalProvider(MusicProvider):
             provider=self.domain,
             name=track_obj.name,
             version=version,
-            duration=track_obj.duration / 1000,
+            duration=track_obj.duration,
             disc_number=track_obj.volume_num,
             track_number=track_obj.track_num,
         )
@@ -488,7 +488,7 @@ class TidalProvider(MusicProvider):
         playlist.is_editable = is_editable
         image_url = None
         try:
-            image_url = playlist_obj.image(320)
+            image_url = playlist_obj.image(1080)
         except Exception:
             print(f"Error: Playlist {playlist_id} has no available picture")
         playlist.metadata.images = [
