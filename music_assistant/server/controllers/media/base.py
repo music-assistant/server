@@ -163,7 +163,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 if prov.domain == provider_domain:
                     try:
                         details = await self.get_provider_item(
-                            item_id, prov.domain, orce_refresh=force_refresh
+                            item_id, prov.domain, force_refresh=force_refresh
                         )
                     except MediaNotFoundError:
                         pass

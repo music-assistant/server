@@ -433,7 +433,7 @@ class MusicProvider(Provider):
                     # because that would make the sync very slow and has not much benefit
                     if prov_item.media_type == MediaType.PLAYLIST:
                         async for track in controller.tracks(
-                            prov_item.item_id, instance_id=self.instance_id
+                            prov_item.item_id, provider_instance=self.instance_id
                         ):
                             pass
                 cur_db_ids.add(db_item.item_id)
