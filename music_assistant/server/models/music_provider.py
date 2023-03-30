@@ -27,6 +27,19 @@ class MusicProvider(Provider):
     Music Provider implementations should inherit from this base model.
     """
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return False
+
     async def search(
         self,
         search_query: str,
@@ -423,16 +436,6 @@ class MusicProvider(Provider):
                         continue
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)
-
-    def is_unique(self) -> bool:
-        """
-        Return if the (non user related) data in this providerinstance is unique.
-
-        For example on a streaming provider (like Spotify) the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to True will only query one instance of the provider for search and lookups.
-        """
-        return False
 
     # DO NOT OVERRIDE BELOW
 

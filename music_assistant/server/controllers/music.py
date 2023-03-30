@@ -11,11 +11,7 @@ from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature, ProviderType
 from music_assistant.common.models.errors import MusicAssistantError
-from music_assistant.common.models.media_items import (
-    BrowseFolder,
-    MediaItemType,
-    SearchResults,
-)
+from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     CONF_DB_LIBRARY,
@@ -536,7 +532,7 @@ class MusicController:
         instances = set()
         domains = set()
         for provider in self.providers:
-            if provider.domain not in domains or provider.is_unique():
+            if provider.domain not in domains or provider.is_unique:
                 instances.add(provider.instance_id)
                 domains.add(provider.domain)
         return instances
