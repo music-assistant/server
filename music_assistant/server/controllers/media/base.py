@@ -426,6 +426,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider := self.mass.get_provider(provider_domain_or_instance_id):
             item = await provider.get_item(self.media_type, item_id)
             await self.mass.cache.set(cache_key, item.to_dict(), 3600)
+            return item
         raise MediaNotFoundError(
             f"{self.media_type.value}://{item_id} not found on provider {provider_domain_or_instance_id}"  # noqa: E501
         )
