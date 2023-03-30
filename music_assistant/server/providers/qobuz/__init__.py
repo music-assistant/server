@@ -480,6 +480,8 @@ class QobuzProvider(MusicProvider):
             album.metadata.copyright = album_obj["copyright"]
         if album_obj.get("description"):
             album.metadata.description = album_obj["description"]
+        if album_obj.get("parental_warning"):
+            album.metadata.explicit = True
         return album
 
     async def _parse_track(self, track_obj: dict):

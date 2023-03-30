@@ -13,6 +13,7 @@ from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
+    ItemMapping,
     MediaItemType,
     PagedItems,
     ProviderMapping,
@@ -134,7 +135,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         ), "provider_domain or provider_instance must be supplied"
         if not add_to_db and "database" in (provider_domain, provider_instance):
             return await self.get_db_item(item_id)
-        if details and details.provider == "database":
+        if details and (details.provider == "database" or isinstance(details, ItemMapping)):
+            # invalidate details if not (full) provider details for this item
             details = None
         db_item = await self.get_db_item_by_prov_id(
             item_id=item_id,
