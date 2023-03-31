@@ -129,7 +129,7 @@ class MusicController:
                 self.search_provider(
                     search_query,
                     media_types,
-                    provider_instance=provider_instance,
+                    provider_instance,
                     limit=limit,
                 )
                 for provider_instance in self.get_unique_providers()
@@ -173,21 +173,20 @@ class MusicController:
     async def search_provider(
         self,
         search_query: str,
+        provider_instance_id_or_domain: str,
         media_types: list[MediaType] = MediaType.ALL,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
         limit: int = 10,
     ) -> SearchResults:
         """Perform search on given provider.
 
         :param search_query: Search query
-        :param provider_domain: domain of the provider to perform the search on.
+        :param provider_instance_id_or_domain: instance_id or domain of the provider
+                                               to perform the search on.
         :param provider_instance: instance id of the provider to perform the search on.
         :param media_types: A list of media_types to include. All types if None.
         :param limit: number of items to return in the search (per type).
         """
-        assert provider_domain or provider_instance, "Provider needs to be supplied"
-        prov = self.mass.get_provider(provider_instance or provider_domain)
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
         if not prov:
             return SearchResults()
         if ProviderFeature.SEARCH not in prov.supported_features:
@@ -248,21 +247,11 @@ class MusicController:
         self, uri: str, force_refresh: bool = False, lazy: bool = True
     ) -> MediaItemType:
         """Fetch MediaItem by uri."""
-        media_type, provider_domain_or_instance_id, item_id = parse_uri(uri)
-        for prov in self.providers:
-            if prov.instance_id == provider_domain_or_instance_id:
-                provider_instance = prov.instance_id
-                provider_domain = prov.domain
-                break
-        else:
-            provider_instance = None
-            provider_domain = provider_domain_or_instance_id
-
+        media_type, provider_instance_id_or_domain, item_id = parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
-            provider_domain=provider_domain,
-            provider_instance=provider_instance,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
             force_refresh=force_refresh,
             lazy=lazy,
         )
@@ -272,24 +261,19 @@ class MusicController:
         self,
         media_type: MediaType,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         lazy: bool = True,
         add_to_db: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
-        assert (
-            provider_domain or provider_instance
-        ), "provider_domain or provider_instance must be supplied"
-        if "url" in (provider_domain, provider_instance):
+        if provider_instance_id_or_domain == "url":
             # handle special case of 'URL' MusicProvider which allows us to play regular url's
             return await self.mass.get_provider("url").parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
-            provider_domain=provider_domain,
-            provider_instance=provider_instance,
+            provider_instance_id_or_domain=provider_instance_id_or_domain,
             force_refresh=force_refresh,
             lazy=lazy,
             add_to_db=add_to_db,
@@ -300,23 +284,21 @@ class MusicController:
         self,
         media_type: MediaType,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str,
     ) -> None:
         """Add an item to the library."""
         # make sure we have a full db item
         full_item = await self.get_item(
             media_type,
             item_id,
-            provider_domain=provider_domain,
-            provider_instance=provider_instance,
+            provider_instance_id_or_domain,
             lazy=False,
             add_to_db=True,
         )
         ctrl = self.get_controller(media_type)
         await ctrl.add_to_library(
             full_item.item_id,
-            provider_domain=full_item.provider,
+            full_item.provider,
         )
 
     @api_command("music/library/add_items")
@@ -331,7 +313,7 @@ class MusicController:
                     self.add_to_library(
                         media_type=item.media_type,
                         item_id=item.item_id,
-                        provider_instance=item.provider,
+                        provider_instance_id_or_domain=item.provider,
                     )
                 )
             )
@@ -342,15 +324,13 @@ class MusicController:
         self,
         media_type: MediaType,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str,
     ) -> None:
         """Remove item from the library."""
         ctrl = self.get_controller(media_type)
         await ctrl.remove_from_library(
             item_id,
-            provider_domain=provider_domain,
-            provider_instance=provider_instance,
+            provider_instance_id_or_domain,
         )
 
     @api_command("music/library/remove_items")
@@ -365,20 +345,19 @@ class MusicController:
                     self.remove_from_library(
                         media_type=item.media_type,
                         item_id=item.item_id,
-                        provider_domain=item.provider,
-                        provider_instance=item.provider,
+                        provider_instance_id_or_domain=item.provider,
                     )
                 )
             )
         await asyncio.gather(*tasks)
 
-    @api_command("music/delete_db_item")
-    async def delete_db_item(
+    @api_command("music/delete")
+    async def delete(
         self, media_type: MediaType, db_item_id: str | int, recursive: bool = False
     ) -> None:
         """Remove item from the database."""
         ctrl = self.get_controller(media_type)
-        await ctrl.delete_db_item(db_item_id, recursive)
+        await ctrl.delete(db_item_id, recursive)
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
@@ -398,7 +377,7 @@ class MusicController:
             return await self.get_item(
                 media_item.media_type,
                 media_item.item_id,
-                provider_instance=media_item.provider,
+                media_item.provider,
                 force_refresh=True,
                 lazy=False,
                 add_to_db=True,
@@ -422,36 +401,40 @@ class MusicController:
                 await self.get_item(item.media_type, item.item_id, item.provider, lazy=False)
         return None
 
-    async def set_track_loudness(self, item_id: str, provider_domain: str, loudness: int):
+    async def set_track_loudness(
+        self, item_id: str, provider_instance_id_or_domain: str, loudness: int
+    ):
         """List integrated loudness for a track in db."""
         await self.database.insert(
             DB_TABLE_TRACK_LOUDNESS,
-            {"item_id": item_id, "provider": provider_domain, "loudness": loudness},
+            {"item_id": item_id, "provider": provider_instance_id_or_domain, "loudness": loudness},
             allow_replace=True,
         )
 
-    async def get_track_loudness(self, item_id: str, provider_domain: str) -> float | None:
+    async def get_track_loudness(
+        self, item_id: str, provider_instance_id_or_domain: str
+    ) -> float | None:
         """Get integrated loudness for a track in db."""
         if result := await self.database.get_row(
             DB_TABLE_TRACK_LOUDNESS,
             {
                 "item_id": item_id,
-                "provider": provider_domain,
+                "provider": provider_instance_id_or_domain,
             },
         ):
             return result["loudness"]
         return None
 
-    async def get_provider_loudness(self, provider_domain: str) -> float | None:
+    async def get_provider_loudness(self, provider_instance_id_or_domain: str) -> float | None:
         """Get average integrated loudness for tracks of given provider."""
         all_items = []
-        if provider_domain == "url":
+        if provider_instance_id_or_domain == "url":
             # this is not a very good idea for random urls
             return None
         for db_row in await self.database.get_rows(
             DB_TABLE_TRACK_LOUDNESS,
             {
-                "provider": provider_domain,
+                "provider": provider_instance_id_or_domain,
             },
         ):
             all_items.append(db_row["loudness"])
@@ -459,14 +442,14 @@ class MusicController:
             return statistics.fmean(all_items)
         return None
 
-    async def mark_item_played(self, item_id: str, provider_domain: str):
+    async def mark_item_played(self, item_id: str, provider_instance_id_or_domain: str):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
         await self.database.insert(
             DB_TABLE_PLAYLOG,
             {
                 "item_id": item_id,
-                "provider": provider_domain,
+                "provider": provider_instance_id_or_domain,
                 "timestamp": timestamp,
             },
             allow_replace=True,
@@ -482,7 +465,7 @@ class MusicController:
                 self.add_to_library(
                     media_item.media_type,
                     media_item.item_id,
-                    provider_instance=media_item.provider,
+                    media_item.provider,
                 )
             )
 
@@ -496,7 +479,7 @@ class MusicController:
                 self.remove_from_library(
                     media_item.media_type,
                     media_item.item_id,
-                    provider_instance=media_item.provider,
+                    media_item.provider,
                 )
             )
 
@@ -584,7 +567,7 @@ class MusicController:
             self.mass.music.albums,
             self.mass.music.artists,
         ):
-            prov_items = await ctrl.get_db_items_by_prov_id(provider_instance=provider_instance)
+            prov_items = await ctrl.get_db_items_by_prov_id(provider_instance)
             for item in prov_items:
                 await ctrl.remove_prov_mapping(item.item_id, provider_instance)
 

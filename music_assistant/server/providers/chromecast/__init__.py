@@ -584,7 +584,9 @@ class ChromecastProvider(PlayerProvider):
                 if queue_item.media_item.album
                 else "",
                 "songName": queue_item.media_item.name,
-                "artist": queue_item.media_item.artist.name if queue_item.media_item.artist else "",
+                "artist": queue_item.media_item.artists[0].name
+                if queue_item.media_item.artists
+                else "",
                 "title": queue_item.name,
                 "images": [{"url": queue_item.image_url}] if queue_item.image_url else None,
             }

@@ -158,7 +158,7 @@ class MediaItem(DataClassDictMixin):
     """Base representation of a media item."""
 
     item_id: str
-    provider: str
+    provider: str  # provider instance id or provider domain
     name: str
     provider_mappings: set[ProviderMapping] = field(default_factory=set)
 
@@ -258,16 +258,16 @@ class MediaItem(DataClassDictMixin):
         return hash((self.media_type, self.provider, self.item_id))
 
 
-@dataclass(frozen=True)
+@dataclass
 class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
     media_type: MediaType
     item_id: str
-    provider: str
+    provider: str  # provider instance id or provider domain
     name: str
-    sort_name: str
-    uri: str
+    sort_name: str | None = None
+    uri: str | None = None
     version: str = ""
 
     @classmethod
@@ -278,6 +278,13 @@ class ItemMapping(DataClassDictMixin):
     def __hash__(self):
         """Return custom hash."""
         return hash((self.media_type, self.provider, self.item_id))
+
+    def __post_init__(self):
+        """Call after init."""
+        if not self.uri:
+            self.uri = create_uri(self.media_type, self.provider, self.item_id)
+        if not self.sort_name:
+            self.sort_name = create_sort_name(self.name)
 
 
 @dataclass
@@ -304,18 +311,6 @@ class Album(MediaItem):
     barcode: set[str] = field(default_factory=set)
     musicbrainz_id: str | None = None  # release group id
 
-    @property
-    def artist(self) -> Artist | ItemMapping | None:
-        """Return (first) artist of album."""
-        if self.artists:
-            return self.artists[0]
-        return None
-
-    @artist.setter
-    def artist(self, artist: Artist | ItemMapping) -> None:
-        """Set (first/only) artist of album."""
-        self.artists = [artist]
-
     def __hash__(self):
         """Return custom hash."""
         return hash((self.provider, self.item_id))
@@ -328,7 +323,7 @@ class DbAlbum(Album):
     artists: list[ItemMapping] = field(default_factory=list)
 
 
-@dataclass(frozen=True)
+@dataclass
 class TrackAlbumMapping(ItemMapping):
     """Model for a track that is mapped to an album."""
 
@@ -367,18 +362,6 @@ class Track(MediaItem):
         if self.album:
             return getattr(self.album, "image", None)
         return None
-
-    @property
-    def artist(self) -> Artist | ItemMapping | None:
-        """Return (first) artist of track."""
-        if self.artists:
-            return self.artists[0]
-        return None
-
-    @artist.setter
-    def artist(self, artist: Artist | ItemMapping) -> None:
-        """Set (first/only) artist of track."""
-        self.artists = [artist]
 
     @property
     def has_chapters(self) -> bool:
