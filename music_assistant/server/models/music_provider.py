@@ -390,12 +390,9 @@ class MusicProvider(Provider):
 
     async def sync_library(self, media_types: tuple[MediaType, ...] | None = None) -> None:
         """Run library sync for this provider."""
-        # this reference implementation can be overridden with provider specific approach
-        # this logic is aimed at streaming/online providers,
-        # which all have more or less the same structure.
-        # filesystem implementation(s) just override this.
-        if media_types is None:
-            media_types = tuple(x for x in MediaType)
+        # this reference implementation can be overridden
+        # with a provider specific approach if needed
+        media_types = tuple(x for x in MediaType)
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue

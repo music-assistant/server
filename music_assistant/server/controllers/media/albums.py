@@ -78,6 +78,13 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def add(self, item: Album, skip_metadata_lookup: bool = False) -> Album:
         """Add album to local db and return the database item."""
+        # resolve any ItemMapping artists
+        item.artists = [
+            await self.mass.music.artists.get_provider_item(artist.item_id, artist.provider)
+            if isinstance(artist, ItemMapping)
+            else artist
+            for artist in item.artists
+        ]
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
@@ -173,13 +180,6 @@ class AlbumsController(MediaControllerBase[Album]):
         """Add a new record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
         assert item.artists, f"Album {item.name} is missing artists"
-        # resolve any ItemMapping artists
-        item.artists = [
-            await self.mass.music.artists.get_provider_item(artist.item_id, artist.provider)
-            if isinstance(artist, ItemMapping)
-            else artist
-            for artist in item.artists
-        ]
         async with self._db_add_lock:
             cur_item = None
             # always try to grab existing item by musicbrainz_id

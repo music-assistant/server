@@ -96,7 +96,6 @@ class TracksController(MediaControllerBase[Track]):
 
     async def add(self, item: Track, skip_metadata_lookup: bool = False) -> Track:
         """Add track to local db and return the new database item."""
-        # make sure we have artists
         assert item.artists
         # resolve any ItemMapping artists
         item.artists = [
