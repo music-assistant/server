@@ -103,7 +103,9 @@ class AlbumsController(MediaControllerBase[Album]):
             for track in await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
             ):
-                if not await self.get_db_item_by_prov_id(track.item_id, track.provider):
+                if not await self.mass.music.tracks.get_db_item_by_prov_id(
+                    track.item_id, track.provider
+                ):
                     await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
