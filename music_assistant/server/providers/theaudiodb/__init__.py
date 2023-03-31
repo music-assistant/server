@@ -119,16 +119,17 @@ class AudioDbMetadataProvider(MetadataProvider):
             result = await self._get_data("album-mb.php", i=album.musicbrainz_id)
             if result and result.get("album"):
                 adb_album = result["album"][0]
-        elif album.artist:
+        elif album.artists:
             # lookup by name
-            result = await self._get_data("searchalbum.php", s=album.artist.name, a=album.name)
+            artist = album.artists[0]
+            result = await self._get_data("searchalbum.php", s=artist.name, a=album.name)
             if result and result.get("album"):
                 for item in result["album"]:
-                    assert isinstance(album.artist, Artist)
-                    if album.artist.musicbrainz_id:
-                        if album.artist.musicbrainz_id != item["strMusicBrainzArtistID"]:
+                    assert isinstance(artist, Artist)
+                    if artist.musicbrainz_id:
+                        if artist.musicbrainz_id != item["strMusicBrainzArtistID"]:
                             continue
-                    elif not compare_strings(album.artist.name, item["strArtistStripped"]):
+                    elif not compare_strings(artist.name, item["strArtistStripped"]):
                         continue
                     if compare_strings(album.name, item["strAlbumStripped"]):
                         adb_album = item
@@ -138,9 +139,9 @@ class AudioDbMetadataProvider(MetadataProvider):
                 album.year = int(adb_album.get("intYearReleased", "0"))
             if not album.musicbrainz_id:
                 album.musicbrainz_id = adb_album["strMusicBrainzID"]
-            assert isinstance(album.artist, Artist)
-            if album.artist and not album.artist.musicbrainz_id:
-                album.artist.musicbrainz_id = adb_album["strMusicBrainzArtistID"]
+            assert isinstance(album.artists[0], Artist)
+            if album.artists and not album.artists[0].musicbrainz_id:
+                album.artists[0].musicbrainz_id = adb_album["strMusicBrainzArtistID"]
             if album.album_type == AlbumType.UNKNOWN:
                 album.album_type = ALBUMTYPE_MAPPING.get(
                     adb_album.get("strReleaseFormat"), AlbumType.UNKNOWN
@@ -202,7 +203,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                     # found match - update album metadata too while we're here
                     if not ref_album.musicbrainz_id:
                         ref_album.metadata = self.__parse_album(item)
-                        await self.mass.music.albums.add_db_item(ref_album)
+                        await self.mass.music.albums.add(ref_album, skip_metadata_lookup=True)
                     musicbrainz_id = item["strMusicBrainzArtistID"]
 
         return musicbrainz_id

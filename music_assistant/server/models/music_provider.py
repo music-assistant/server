@@ -390,12 +390,9 @@ class MusicProvider(Provider):
 
     async def sync_library(self, media_types: tuple[MediaType, ...] | None = None) -> None:
         """Run library sync for this provider."""
-        # this reference implementation can be overridden with provider specific approach
-        # this logic is aimed at streaming/online providers,
-        # which all have more or less the same structure.
-        # filesystem implementation(s) just override this.
-        if media_types is None:
-            media_types = tuple(x for x in MediaType)
+        # this reference implementation can be overridden
+        # with a provider specific approach if needed
+        media_types = tuple(x for x in MediaType)
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue
@@ -404,38 +401,18 @@ class MusicProvider(Provider):
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type):
                 db_item: MediaItemType = await controller.get_db_item_by_prov_id(
-                    item_id=prov_item.item_id,
-                    provider_domain=prov_item.provider,
+                    prov_item.item_id,
+                    prov_item.provider,
                 )
-                if not db_item:
-                    # dump the item in the db, rich metadata is lazy loaded later
-                    db_item = await controller.get(prov_item)
+                if not db_item:  # noqa: SIM114
+                    # create full db item
+                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
 
                 elif (
                     db_item.metadata.checksum and prov_item.metadata.checksum
                 ) and db_item.metadata.checksum != prov_item.metadata.checksum:
                     # item checksum changed
-                    db_item = await controller.update_db_item(db_item.item_id, prov_item)
-                    # add album tracks to the db too
-                    if prov_item.media_type == MediaType.ALBUM:
-                        prov_item: Album  # noqa: PLW2901
-                        for track in controller.tracks(prov_item.item_id, prov_item.provider):
-                            track: Track  # noqa: PLW2901
-                            track.album = db_item
-                            await self.mass.music.tracks.get(
-                                track.item_id,
-                                provider_instance=self.instance_id,
-                                lazy=False,
-                                details=track,
-                                add_to_db=True,
-                            )
-                    # preload playlist tracks listing, do not load them in the db
-                    # because that would make the sync very slow and has not much benefit
-                    if prov_item.media_type == MediaType.PLAYLIST:
-                        async for track in controller.tracks(
-                            prov_item.item_id, provider_instance=self.instance_id
-                        ):
-                            pass
+                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
                 cur_db_ids.add(db_item.item_id)
                 if not db_item.in_library:
                     await controller.set_db_library(db_item.item_id, True)

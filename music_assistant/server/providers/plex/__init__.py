@@ -1,4 +1,5 @@
 """Plex musicprovider support for MusicAssistant."""
+import logging
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator, Callable, Coroutine
 
@@ -14,8 +15,6 @@ from plexapi.media import MediaPart as PlexMediaPart
 from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
-from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -98,6 +97,8 @@ class PlexProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the music provider by connecting to the server."""
+        # silence urllib logger
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
 
         def connect():
             plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
@@ -150,8 +151,6 @@ class PlexProvider(MusicProvider):
             key,
             self.instance_id,
             name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
         )
 
     async def _parse(self, plex_media) -> MediaItem | None:
@@ -224,8 +223,8 @@ class PlexProvider(MusicProvider):
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
-        album.artist = self._get_item_mapping(
-            MediaType.ARTIST, plex_album.parentKey, plex_album.parentTitle
+        album.artists.append(
+            self._get_item_mapping(MediaType.ARTIST, plex_album.parentKey, plex_album.parentTitle)
         )
 
         album.add_provider_mapping(
@@ -283,8 +282,10 @@ class PlexProvider(MusicProvider):
         track = Track(item_id=plex_track.key, provider=self.instance_id, name=plex_track.title)
 
         if plex_track.grandparentKey:
-            track.artist = self._get_item_mapping(
-                MediaType.ARTIST, plex_track.grandparentKey, plex_track.grandparentTitle
+            track.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST, plex_track.grandparentKey, plex_track.grandparentTitle
+                )
             )
         if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             track.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
