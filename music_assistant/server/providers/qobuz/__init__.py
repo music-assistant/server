@@ -454,13 +454,15 @@ class QobuzProvider(MusicProvider):
             )
         )
 
-        album.artist = await self._parse_artist(artist_obj or album_obj["artist"])
+        album.artists.append(await self._parse_artist(artist_obj or album_obj["artist"]))
         if (
             album_obj.get("product_type", "") == "single"
             or album_obj.get("release_type", "") == "single"
         ):
             album.album_type = AlbumType.SINGLE
-        elif album_obj.get("product_type", "") == "compilation" or "Various" in album.artist.name:
+        elif (
+            album_obj.get("product_type", "") == "compilation" or "Various" in album.artists[0].name
+        ):
             album.album_type = AlbumType.COMPILATION
         elif (
             album_obj.get("product_type", "") == "album"
@@ -480,6 +482,8 @@ class QobuzProvider(MusicProvider):
             album.metadata.copyright = album_obj["copyright"]
         if album_obj.get("description"):
             album.metadata.description = album_obj["description"]
+        if album_obj.get("parental_warning"):
+            album.metadata.explicit = True
         return album
 
     async def _parse_track(self, track_obj: dict):

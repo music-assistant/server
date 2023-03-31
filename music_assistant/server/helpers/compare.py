@@ -223,9 +223,9 @@ def compare_album(
     # compare album artist
     # Note: Not present on ItemMapping
     if (
-        hasattr(left_album, "artist")
-        and hasattr(right_album, "artist")
-        and not compare_artist(left_album.artist, right_album.artist)
+        isinstance(left_album, Album)
+        and isinstance(right_album, Album)
+        and not compare_artists(left_album.artists, right_album.artists, True)
     ):
         return False
     return left_album.sort_name == right_album.sort_name

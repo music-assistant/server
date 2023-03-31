@@ -132,7 +132,7 @@ class MetaDataController:
         # set timestamp, used to determine when this function was last called
         album.metadata.last_refresh = int(time())
         # ensure the album has a musicbrainz id or artist
-        if not (album.musicbrainz_id or album.artist):
+        if not (album.musicbrainz_id or album.artists):
             return
         # collect metadata from all providers
         for provider in self.providers:
@@ -299,8 +299,8 @@ class MetaDataController:
             return await self.get_image_url_for_item(media_item.album, img_type, resolve)
 
         # try artist instead for albums
-        if media_item.media_type == MediaType.ALBUM and media_item.artist:
-            return await self.get_image_url_for_item(media_item.artist, img_type, resolve)
+        if media_item.media_type == MediaType.ALBUM and media_item.artists:
+            return await self.get_image_url_for_item(media_item.artists[0], img_type, resolve)
 
         # last resort: track artist(s)
         if media_item.media_type == MediaType.TRACK and media_item.artists:
