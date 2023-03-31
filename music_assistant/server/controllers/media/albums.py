@@ -94,7 +94,8 @@ class AlbumsController(MediaControllerBase[Album]):
         else:
             db_item = await self._add_db_item(item)
         # also fetch the same album on all providers
-        await self._match(db_item)
+        if not skip_metadata_lookup:
+            await self._match(db_item)
         # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
         # preload album tracks in db
@@ -102,9 +103,7 @@ class AlbumsController(MediaControllerBase[Album]):
             for track in await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
             ):
-                await self.mass.music.tracks.get(
-                    track.item_id, track.provider, details=track, add_to_db=True
-                )
+                await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
             db_item.uri,

@@ -118,7 +118,8 @@ class TracksController(MediaControllerBase[Track]):
         else:
             db_item = await self._add_db_item(item)
         # also fetch same track on all providers (will also get other quality versions)
-        await self._match(db_item)
+        if not skip_metadata_lookup:
+            await self._match(db_item)
         # return final db_item after all match/metadata actions
         db_item = await self.get_db_item(db_item.item_id)
         self.mass.signal_event(

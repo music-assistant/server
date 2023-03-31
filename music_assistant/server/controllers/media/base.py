@@ -337,8 +337,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # from provider id's to database id's because this is faster
         # (and more compatible) than querying the provider_mappings json column
         subquery = f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-        subquery += f"WHERE provider_instance = '{provider_instance_id_or_domain}'"
-        subquery += f" OR provider_domain = '{provider_instance_id_or_domain}'"
+        subquery += f"WHERE (provider_instance = '{provider_instance_id_or_domain}'"
+        subquery += f" OR provider_domain = '{provider_instance_id_or_domain}')"
         if provider_item_ids is not None:
             prov_ids = str(tuple(provider_item_ids))
             if prov_ids.endswith(",)"):

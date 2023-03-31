@@ -128,8 +128,8 @@ class MusicController:
             *[
                 self.search_provider(
                     search_query,
-                    media_types,
                     provider_instance,
+                    media_types,
                     limit=limit,
                 )
                 for provider_instance in self.get_unique_providers()
