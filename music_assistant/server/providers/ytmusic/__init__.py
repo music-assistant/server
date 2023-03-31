@@ -11,6 +11,8 @@ from urllib.parse import unquote
 import pytube
 import ytmusicapi
 
+from music_assistant.common.helpers.uri import create_uri
+from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import (
@@ -25,6 +27,7 @@ from music_assistant.common.models.media_items import (
     Artist,
     ContentType,
     ImageType,
+    ItemMapping,
     MediaItemImage,
     MediaType,
     Playlist,
@@ -512,7 +515,7 @@ class YoutubeMusicProvider(MusicProvider):
             album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
             album.artists = [
-                await self._parse_artist(artist)
+                self._get_item_mapping(MediaType.ARTIST, artist.get("id"), artist.get("name"))
                 for artist in album_obj["artists"]
                 # artist object may be missing an id
                 # in that case its either a performer (like the composer) OR this
@@ -601,7 +604,11 @@ class YoutubeMusicProvider(MusicProvider):
         track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
         if "artists" in track_obj:
             track.artists = [
-                await self._parse_artist(artist)
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    artist.get("id") or artist.get("channelId"),
+                    artist.get("name"),
+                )
                 for artist in track_obj["artists"]
                 if artist.get("id")
                 or artist.get("channelId")
@@ -614,13 +621,11 @@ class YoutubeMusicProvider(MusicProvider):
             track.metadata.images = await self._parse_thumbnails(track_obj["thumbnails"])
         if (
             track_obj.get("album")
-            and track_obj.get("artists")
             and isinstance(track_obj.get("album"), dict)
             and track_obj["album"].get("id")
         ):
             album = track_obj["album"]
-            album["artists"] = track_obj["artists"]
-            track.album = await self._parse_album(album, album["id"])
+            track.album = self._get_item_mapping(MediaType.ALBUM, album["id"], album["name"])
         if "isExplicit" in track_obj:
             track.metadata.explicit = track_obj["isExplicit"]
         if "duration" in track_obj and str(track_obj["duration"]).isdigit():
@@ -706,6 +711,16 @@ class YoutubeMusicProvider(MusicProvider):
         """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
             return response.status == 200
+
+    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+        return ItemMapping(
+            media_type,
+            key,
+            self.instance_id,
+            name,
+            create_uri(media_type, self.instance_id, key),
+            create_sort_name(self.name),
+        )
 
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
