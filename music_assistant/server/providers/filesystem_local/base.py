@@ -173,6 +173,19 @@ class FileSystemProviderBase(MusicProvider):
     # DEFAULT/GENERIC IMPLEMENTATION BELOW
     # should normally not be needed to override
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return True
+
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5  # noqa: ARG002
     ) -> SearchResults:
@@ -213,7 +226,7 @@ class FileSystemProviderBase(MusicProvider):
                 subitems.append(
                     BrowseFolder(
                         item_id=item.path,
-                        provider=self.domain,
+                        provider=self.instance_id,
                         path=f"{self.instance_id}://{item.path}",
                         name=item.name,
                     )
@@ -249,7 +262,7 @@ class FileSystemProviderBase(MusicProvider):
 
         return BrowseFolder(
             item_id=item_path,
-            provider=self.domain,
+            provider=self.instance_id,
             path=path,
             name=item_path or self.name,
             # make sure to sort the resulting listing
@@ -386,7 +399,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(prov_playlist_id)
         playlist = Playlist(
             file_item.path,
-            provider=self.domain,
+            provider=self.instance_id,
             name=file_item.name.replace(f".{file_item.ext}", ""),
         )
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
@@ -581,7 +594,7 @@ class FileSystemProviderBase(MusicProvider):
         name, version = parse_title_and_version(tags.title, tags.version)
         track = Track(
             item_id=file_item.path,
-            provider=self.domain,
+            provider=self.instance_id,
             name=name,
             version=version,
         )
@@ -724,10 +737,10 @@ class FileSystemProviderBase(MusicProvider):
 
         artist = Artist(
             artist_path,
-            self.domain,
+            self.instance_id,
             name,
             provider_mappings={
-                ProviderMapping(artist_path, self.domain, self.instance_id, url=artist_path)
+                ProviderMapping(artist_path, self.instance_id, self.instance_id, url=artist_path)
             },
             musicbrainz_id=VARIOUS_ARTISTS_ID if compare_strings(name, VARIOUS_ARTISTS) else None,
         )
@@ -774,11 +787,11 @@ class FileSystemProviderBase(MusicProvider):
 
         album = Album(
             album_path,
-            self.domain,
+            self.instance_id,
             name,
             artists=artists,
             provider_mappings={
-                ProviderMapping(album_path, self.domain, self.instance_id, url=album_path)
+                ProviderMapping(album_path, self.instance_id, self.instance_id, url=album_path)
             },
         )
 

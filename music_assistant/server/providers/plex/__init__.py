@@ -108,10 +108,6 @@ class PlexProvider(MusicProvider):
             self._plex_server.library.section, self.config.get_value(CONF_LIBRARY_NAME)
         )
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
-        """Return the full image URL including the auth token."""
-        return self._plex_server.url(path, True)
-
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return a list of supported features."""
@@ -124,6 +120,23 @@ class PlexProvider(MusicProvider):
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
         )
+
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return True
+
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """Return the full image URL including the auth token."""
+        return self._plex_server.url(path, True)
 
     async def _run_async(self, call: Callable, *args, **kwargs):
         return await self.mass.create_task(call, *args, **kwargs)
@@ -201,7 +214,7 @@ class PlexProvider(MusicProvider):
         album_id = plex_album.key
         album = Album(
             item_id=album_id,
-            provider=self.instance_id,
+            provider=self.domain,
             name=plex_album.title,
         )
         if plex_album.year:
@@ -230,7 +243,7 @@ class PlexProvider(MusicProvider):
         artist_id = plex_artist.key
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.instance_id)
+        artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.domain)
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
         if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
@@ -248,7 +261,7 @@ class PlexProvider(MusicProvider):
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
         """Parse a Plex Playlist response to a Playlist object."""
         playlist = Playlist(
-            item_id=plex_playlist.key, provider=self.instance_id, name=plex_playlist.title
+            item_id=plex_playlist.key, provider=self.domain, name=plex_playlist.title
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
