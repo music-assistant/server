@@ -10,6 +10,7 @@ asyncio-throttle==1.0.2
 coloredlogs==15.0.1
 cryptography==39.0.2
 databases==0.7.0
+git+https://github.com/jozefKruszynski/python-tidal.git
 git+https://github.com/pytube/pytube.git@refs/pull/1501/head
 mashumaro==3.5.0
 memory-tempfile==2.2.3

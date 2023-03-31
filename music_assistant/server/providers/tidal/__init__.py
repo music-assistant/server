@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
-from datetime import datetime
+from datetime import datetime, timedelta
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
-from asyncio_throttle import Throttler
-from tidalapi import Session
+from tidalapi import Session as TidalSession
 
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
@@ -17,7 +16,7 @@ from music_assistant.common.models.enums import (
     MediaType,
     ProviderFeature,
 )
-from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -30,17 +29,17 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
     CONF_ACCESS_TOKEN,
     CONF_EXPIRY_TIME,
     CONF_REFRESH_TOKEN,
     CONF_USERNAME,
 )
-from music_assistant.server import MusicAssistant
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
+    add_remove_playlist_tracks,
+    create_playlist,
     get_album,
     get_album_tracks,
     get_artist,
@@ -56,9 +55,7 @@ from .helpers import (
     get_track,
     get_track_url,
     library_items_add_remove,
-    add_remove_playlist_tracks,
     search,
-    create_playlist,
     tidal_session,
 )
 
@@ -125,13 +122,11 @@ class TidalProvider(MusicProvider):
     _refresh_token: str | None = None
     _expiry_time: datetime | None = None
     _tidal_user_id: str | None = None
-    _tidal_session: Session | None = None
+    _tidal_session: TidalSession | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-        self._throttler = Throttler(rate_limit=1, period=0.1)
         self._cache_dir = CACHE_DIR
-        self._ap_workaround = False
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
         # try login which will raise if it fails
@@ -233,9 +228,9 @@ class TidalProvider(MusicProvider):
         """Get album tracks for given album id."""
         result = []
         tracks = await get_album_tracks(self._tidal_session, prov_album_id)
-        for index, track in enumerate(tracks, 1):
-            if track.available:
-                track = await self._parse_track(track)
+        for index, track_obj in enumerate(tracks, 1):
+            if track_obj.available:
+                track = await self._parse_track(track_obj=track_obj)
                 track.position = index
                 result.append(track)
         return result
@@ -249,8 +244,8 @@ class TidalProvider(MusicProvider):
         """Get a list of all albums for the given artist."""
         result = []
         albums = await get_artist_albums(self._tidal_session, prov_artist_id)
-        for album in albums:
-            album = await self._parse_album(album)
+        for album_obj in albums:
+            album = await self._parse_album(album_obj=album_obj)
             result.append(album)
         return result
 
@@ -258,9 +253,9 @@ class TidalProvider(MusicProvider):
         """Get a list of 10 most popular tracks for the given artist."""
         result = []
         tracks = await get_artist_toptracks(self._tidal_session, prov_artist_id)
-        for index, track in enumerate(tracks, 1):
-            if track.available:
-                track = await self._parse_track(track)
+        for index, track_obj in enumerate(tracks, 1):
+            if track_obj.available:
+                track = await self._parse_track(track_obj=track_obj)
                 track.position = index
                 result.append(track)
         return result
@@ -278,19 +273,20 @@ class TidalProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         tracks = await get_playlist_tracks(self._tidal_session, prov_playlist_id=prov_playlist_id)
-        for index, track in enumerate(tracks):
-            if track.available:
-                track = await self._parse_track(track)
+        for index, track_obj in enumerate(tracks):
+            if track_obj.available:
+                track = await self._parse_track(track_obj=track_obj)
                 if track:
                     track.position = index + 1
                     yield track
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
-        tracks_obj = await get_similar_tracks(self._tidal_session, prov_track_id, limit)
+        """Get similar tracks for given track id."""
+        similar_tracks_obj = await get_similar_tracks(self._tidal_session, prov_track_id, limit)
         tracks = []
-        for track in tracks_obj:
-            if track.available:
-                track = await self._parse_track(track)
+        for track_obj in similar_tracks_obj:
+            if track_obj.available:
+                track = await self._parse_track(track_obj=track_obj)
                 if track:
                     tracks.append(track)
         return tracks
@@ -345,7 +341,7 @@ class TidalProvider(MusicProvider):
         await self.login()
         return StreamDetails(
             item_id=track.id,
-            provider=self.domain,
+            provider=self.instance_id,
             content_type=ContentType.FLAC,
             duration=track.duration,
             direct=url,
@@ -355,7 +351,7 @@ class TidalProvider(MusicProvider):
         """Parse tidal artist object to generic layout."""
         artist_id = None
         artist_id = artist_obj.id
-        artist = Artist(item_id=artist_id, provider=self.domain, name=artist_obj.name)
+        artist = Artist(item_id=artist_id, provider=self.instance_id, name=artist_obj.name)
         artist.add_provider_mapping(
             ProviderMapping(
                 item_id=str(artist_id),
@@ -386,7 +382,7 @@ class TidalProvider(MusicProvider):
         if album_obj.version != "null":
             version = album_obj.version
         album_id = album_obj.id
-        album = Album(item_id=album_id, provider=self.domain, name=name, version=version)
+        album = Album(item_id=album_id, provider=self.instance_id, name=name, version=version)
         for artist_obj in album_obj.artists:
             album.artists.append(await self._parse_artist(artist_obj))
         if album_obj.type == "SINGLE":
@@ -432,7 +428,7 @@ class TidalProvider(MusicProvider):
         track_id = str(track_obj.id)
         track = Track(
             item_id=track_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=track_obj.name,
             version=version,
             duration=track_obj.duration,
@@ -470,7 +466,7 @@ class TidalProvider(MusicProvider):
             creator_id = playlist_obj.creator.id
         playlist = Playlist(
             item_id=playlist_id,
-            provider=self.domain,
+            provider=self.instance_id,
             name=playlist_obj.name,
             owner=creator_id,
         )
@@ -500,28 +496,35 @@ class TidalProvider(MusicProvider):
         playlist.metadata.checksum = str(playlist_obj.last_updated)
         return playlist
 
-    async def login(self) -> dict:
+    async def login(self) -> TidalSession:
         """Log-in Tidal and return tokeninfo."""
-        session = await tidal_session(
-            self._tidal_session,
-            TOKEN_TYPE,
-            self._access_token,
-            self._refresh_token,
-            self._expiry_time,
-        )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_USERNAME}", str(session.user.id)
-        )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}", session.access_token
-        )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}", session.refresh_token
-        )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}",
-            session.expiry_time.isoformat(),
-        )
+        # return existing session if we have one in memory
+        if (
+            self._tidal_session
+            and self._tidal_session.access_token == self._access_token
+            and (self._expiry_time > datetime.utcnow() + timedelta(minutes=2))
+        ):
+            return self._tidal_session
+        else:
+            session = await tidal_session(
+                TOKEN_TYPE,
+                self._access_token,
+                self._refresh_token,
+                self._expiry_time,
+            )
+            self.mass.config.set(
+                f"providers/{self.instance_id}/values/{CONF_USERNAME}", str(session.user.id)
+            )
+            self.mass.config.set(
+                f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}", session.access_token
+            )
+            self.mass.config.set(
+                f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}", session.refresh_token
+            )
+            self.mass.config.set(
+                f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}",
+                session.expiry_time.isoformat(),
+            )
         self._access_token = session.access_token
         self._refresh_token = session.refresh_token
         self._expiry_time = session.expiry_time
