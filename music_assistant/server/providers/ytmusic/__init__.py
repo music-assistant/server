@@ -68,6 +68,7 @@ CONF_COOKIE = "cookie"
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
+VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -515,12 +516,11 @@ class YoutubeMusicProvider(MusicProvider):
             album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
             album.artists = [
-                self._get_item_mapping(MediaType.ARTIST, artist.get("id"), artist.get("name"))
+                self._get_artist_item_mapping(artist)
                 for artist in album_obj["artists"]
-                # artist object may be missing an id
-                # in that case its either a performer (like the composer) OR this
-                # is a Various artists compilation album...
-                if (artist.get("id") or artist["name"] == "Various Artists")
+                if artist.get("id")
+                or artist.get("channelId")
+                or artist.get("name") == "Various Artists"
             ]
         if "type" in album_obj:
             if album_obj["type"] == "Single":
@@ -549,7 +549,7 @@ class YoutubeMusicProvider(MusicProvider):
         elif "id" in artist_obj and artist_obj["id"]:
             artist_id = artist_obj["id"]
         elif artist_obj["name"] == "Various Artists":
-            artist_id = "UCUTXlgdcKU5vfzFqHOWIvkA"
+            artist_id = VARIOUS_ARTISTS_YTM_ID
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
         artist = Artist(item_id=artist_id, name=artist_obj["name"], provider=self.domain)
@@ -604,11 +604,7 @@ class YoutubeMusicProvider(MusicProvider):
         track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
         if "artists" in track_obj:
             track.artists = [
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    artist.get("id") or artist.get("channelId"),
-                    artist.get("name"),
-                )
+                self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
                 if artist.get("id")
                 or artist.get("channelId")
@@ -721,6 +717,12 @@ class YoutubeMusicProvider(MusicProvider):
             create_uri(media_type, self.instance_id, key),
             create_sort_name(self.name),
         )
+
+    def _get_artist_item_mapping(self, artist_obj: dict) -> ItemMapping:
+        artist_id = artist_obj.get("id") or artist_obj.get("channelId")
+        if not artist_id and artist_obj["name"] == "Various Artists":
+            artist_id = VARIOUS_ARTISTS_YTM_ID
+        return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
 
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
