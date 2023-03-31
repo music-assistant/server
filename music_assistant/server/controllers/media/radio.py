@@ -38,11 +38,13 @@ class RadioController(MediaControllerBase[Radio]):
         """Return all versions of a radio station we can find on all providers."""
         radio = await self.get(item_id, provider_instance_id_or_domain)
         # perform a search on all provider(types) to collect all versions/variants
-        provider_domains = {prov.domain for prov in self.mass.music.providers}
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
-                *[self.search(radio.name, provider_domain) for provider_domain in provider_domains]
+                *[
+                    self.search(radio.name, provider_domain)
+                    for provider_domain in self.mass.music.get_unique_providers()
+                ]
             )
             for prov_item in prov_items
             if loose_compare_strings(radio.name, prov_item.name)

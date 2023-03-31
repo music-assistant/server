@@ -74,7 +74,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         prov = next(x for x in playlist.provider_mappings)
         async for track in self._get_provider_playlist_tracks(
             prov.item_id,
-            provider_instance_id_or_domain,
+            prov.provider_instance,
             cache_checksum=playlist.metadata.checksum,
         ):
             yield track
@@ -246,6 +246,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cache_checksum: Any = None,
     ) -> AsyncGenerator[Track, None]:
         """Return album tracks for the given provider album id."""
+        assert provider_instance_id_or_domain != "database"
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not provider:
             return
@@ -276,6 +277,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the playlist content."""
+        assert provider_instance_id_or_domain != "database"
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not provider or ProviderFeature.SIMILAR_TRACKS not in provider.supported_features:
             return []

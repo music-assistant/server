@@ -137,14 +137,13 @@ class TracksController(MediaControllerBase[Track]):
         """Return all versions of a track we can find on all providers."""
         track = await self.get(item_id, provider_instance_id_or_domain, add_to_db=False)
         # perform a search on all provider(types) to collect all versions/variants
-        provider_domains = {prov.domain for prov in self.mass.music.providers}
         search_query = f"{track.artists[0].name} - {track.name}"
         all_versions = {
             prov_item.item_id: prov_item
             for prov_items in await asyncio.gather(
                 *[
                     self.search(search_query, provider_domain)
-                    for provider_domain in provider_domains
+                    for provider_domain in self.mass.music.get_unique_providers()
                 ]
             )
             for prov_item in prov_items
@@ -232,6 +231,7 @@ class TracksController(MediaControllerBase[Track]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the track."""
+        assert provider_instance_id_or_domain != "database"
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []

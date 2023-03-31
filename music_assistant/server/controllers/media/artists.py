@@ -52,6 +52,28 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.mass.register_api_command("music/artist/update", self._update_db_item)
         self.mass.register_api_command("music/artist/delete", self.delete)
 
+    async def add(self, item: Artist, skip_metadata_lookup: bool = False) -> Artist:
+        """Add artist to local db and return the database item."""
+        # grab musicbrainz id and additional metadata
+        if not skip_metadata_lookup:
+            await self.mass.metadata.get_artist_metadata(item)
+        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        if existing:
+            db_item = await self._update_db_item(existing.item_id, item)
+        else:
+            db_item = await self._add_db_item(item)
+        # also fetch same artist on all providers
+        if not skip_metadata_lookup:
+            await self.match_artist(db_item)
+        # return final db_item after all match/metadata actions
+        db_item = await self.get_db_item(db_item.item_id)
+        self.mass.signal_event(
+            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
+            db_item.uri,
+            db_item,
+        )
+        return db_item
+
     async def album_artists(
         self,
         in_library: bool | None = None,
@@ -83,7 +105,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         coros = [
             self.get_provider_artist_toptracks(
                 prov_mapping.item_id,
-                provider_instance_id_or_domain,
+                prov_mapping.provider_instance,
                 cache_checksum=artist.metadata.checksum,
             )
             for prov_mapping in artist.provider_mappings
@@ -117,11 +139,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             for item in artist.provider_mappings
         ]
-        albums = itertools.chain.from_iterable(await asyncio.gather(*coros))
+        albums: list[Album] = itertools.chain.from_iterable(await asyncio.gather(*coros))
         # merge duplicates using a dict
         final_items: dict[str, Album] = {}
         for album in albums:
-            key = f".{album.name}.{album.version}"
+            key = f".{album.name}.{album.version}.{album.metadata.explicit}"
             if key in final_items:
                 final_items[key].provider_mappings.update(album.provider_mappings)
             else:
@@ -129,28 +151,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             if album.in_library:
                 final_items[key].in_library = True
         return list(final_items.values())
-
-    async def add(self, item: Artist, skip_metadata_lookup: bool = False) -> Artist:
-        """Add artist to local db and return the database item."""
-        # grab musicbrainz id and additional metadata
-        if not skip_metadata_lookup:
-            await self.mass.metadata.get_artist_metadata(item)
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        if existing:
-            db_item = await self._update_db_item(existing.item_id, item)
-        else:
-            db_item = await self._add_db_item(item)
-        # also fetch same artist on all providers
-        if not skip_metadata_lookup:
-            await self.match_artist(db_item)
-        # return final db_item after all match/metadata actions
-        db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
-            db_item.uri,
-            db_item,
-        )
-        return db_item
 
     async def delete(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
@@ -205,6 +205,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         cache_checksum: Any = None,
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
+        assert provider_instance_id_or_domain != "database"
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
@@ -239,6 +240,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         cache_checksum: Any = None,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
+        assert provider_instance_id_or_domain != "database"
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
@@ -352,6 +354,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
+        assert provider_instance_id_or_domain != "database"
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []

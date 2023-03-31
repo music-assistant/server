@@ -103,7 +103,8 @@ class AlbumsController(MediaControllerBase[Album]):
             for track in await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
             ):
-                await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
+                if not await self.get_db_item_by_prov_id(track.item_id, track.provider):
+                    await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
             db_item.uri,
@@ -275,6 +276,7 @@ class AlbumsController(MediaControllerBase[Album]):
         self, item_id: str, provider_instance_id_or_domain: str
     ) -> list[Track]:
         """Return album tracks for the given provider album id."""
+        assert provider_instance_id_or_domain != "database"
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
@@ -306,6 +308,7 @@ class AlbumsController(MediaControllerBase[Album]):
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the album content."""
+        assert provider_instance_id_or_domain != "database"
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []

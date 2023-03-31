@@ -388,12 +388,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return await self.get_db_item(item_id)
         if not force_refresh and (cache := await self.mass.cache.get(cache_key)):
             return self.item_cls.from_dict(cache)
-        if provider := self.mass.get_provider(provider_instance_id_or_domain):
-            item = await provider.get_item(self.media_type, item_id)
-            await self.mass.cache.set(cache_key, item.to_dict(), 3600)
-            return item
+        if provider := self.mass.get_provider(provider_instance_id_or_domain):  # noqa: SIM102
+            if item := await provider.get_item(self.media_type, item_id):
+                await self.mass.cache.set(cache_key, item.to_dict())
+                return item
         raise MediaNotFoundError(
-            f"{self.media_type.value}://{item_id} not found on provider {provider_instance_id_or_domain}"  # noqa: E501
+            f"{self.media_type.value}://{item_id} not "
+            "found on provider {provider_instance_id_or_domain}"
         )
 
     async def remove_prov_mapping(self, item_id: int, provider_instance_id: str) -> None:
