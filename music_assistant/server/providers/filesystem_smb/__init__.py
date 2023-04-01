@@ -155,8 +155,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 subfolder = subfolder[:-1]
 
         if platform.system() == "Darwin":
-            password = f":{password}" if password else ""
-            mount_cmd = f"mount -t smbfs //{username}{password}@{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
+            password_str = f":{password}" if password else ""
+            mount_cmd = f"mount -t smbfs //{username}{password_str}@{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
 
         elif platform.system() == "Linux":
             options = [
@@ -180,7 +180,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise LoginFailed("SMB mount failed with error: %s", stderr.decode())
+            raise LoginFailed(f"SMB mount failed with error: {stderr.decode()}")
 
     async def unmount(self) -> None:
         """Unmount the remote share."""
@@ -191,4 +191,4 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise LoginFailed("SMB unmount failed with error: %s", stderr.decode())
+            self.logger.warning("SMB unmount failed with error: %s", stderr.decode())
