@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 CONF_HOST = "host"
 CONF_SHARE = "share"
 CONF_SUBFOLDER = "subfolder"
+CONF_MOUNT_OPTIONS = "mount_options"
 
 
 async def setup(
@@ -93,6 +94,16 @@ async def get_config_entries(
             description="[optional] Use if your music is stored in a sublevel of the share. "
             "E.g. 'collections' or 'albums/A-K'.",
         ),
+        ConfigEntry(
+            key=CONF_MOUNT_OPTIONS,
+            type=ConfigEntryType.STRING,
+            label="Mount options",
+            required=False,
+            advanced=True,
+            default_value="file_mode=0775,dir_mode=0775,uid=0,gid=0",
+            description="[optional] Any additional mount options you "
+            "want to pass to the mount command if needed for your particular setup.",
+        ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
     )
 
@@ -133,6 +144,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         username: str = self.config.get_value(CONF_USERNAME)
         password: str = self.config.get_value(CONF_PASSWORD)
         share: str = self.config.get_value(CONF_SHARE)
+
         # handle optional subfolder
         subfolder: str = self.config.get_value(CONF_SUBFOLDER)
         if subfolder:
@@ -147,16 +159,21 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             mount_cmd = f"mount -t smbfs //{username}{password}@{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
 
         elif platform.system() == "Linux":
-            options = ["rw", f'username="{username}"', "uid=$(id -u)", "gid=$(id -g)"]
+            options = [
+                "rw",
+                f'username="{username}"',
+            ]
             if password:
                 options.append(f'password="{password}"')
+            if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
+                options += mount_options.split(",")
             mount_cmd = f"mount -t cifs -o {','.join(options)} //{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
 
         else:
             raise LoginFailed(f"SMB provider is not supported on {platform.system()}")
 
-        self.logger.info("Mounting \\\\%s\\%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.debug("Using mount command: %s", mount_cmd)
+        self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
+        self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
 
         proc = await asyncio.create_subprocess_shell(
             mount_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
