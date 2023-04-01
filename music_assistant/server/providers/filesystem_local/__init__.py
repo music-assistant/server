@@ -103,11 +103,12 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self.config.get_value(CONF_PATH), path)
-        for entry in await asyncio.to_thread(os.scandir, abs_path):
+        self.logger.debug("Processing: %s", abs_path)
+        entries = await asyncio.to_thread(os.scandir, abs_path)
+        for entry in entries:
             if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
                 # skip invalid/system files and dirs
                 continue
-
             item = await create_item(self.config.get_value(CONF_PATH), entry)
             if recursive and item.is_dir:
                 try:

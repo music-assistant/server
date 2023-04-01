@@ -233,10 +233,10 @@ class MusicAssistant:
             return existing
         if asyncio.iscoroutinefunction(target):
             task = self.loop.create_task(target(*args, **kwargs))
-        elif isinstance(target, asyncio.Future):
-            task = target
         elif asyncio.iscoroutine(target):
             task = self.loop.create_task(target)
+        elif isinstance(target, asyncio.Future):
+            task = target
         else:
             # assume normal callable (non coroutine or awaitable)
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))

@@ -108,7 +108,7 @@ def main():
         start_mass(),
         use_uvloop=False,
         shutdown_callback=on_shutdown,
-        executor_workers=64,
+        executor_workers=32,
     )
 
 

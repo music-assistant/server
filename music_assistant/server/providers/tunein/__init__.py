@@ -237,7 +237,7 @@ class TuneInProvider(MusicProvider):
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
         async with self._throttler:
-            async with self.mass.http_session.get(url, params=kwargs, verify_ssl=False) as response:
+            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
                 result = await response.json()
                 if not result or "error" in result:
                     self.logger.error(url)

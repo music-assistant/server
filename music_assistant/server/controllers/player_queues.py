@@ -179,15 +179,13 @@ class PlayerQueuesController:
             if radio_mode:
                 queue.radio_source.append(media_item)
             elif media_item.media_type == MediaType.PLAYLIST:
-                async for playlist_track in ctrl.tracks(
-                    media_item.item_id, provider_domain=media_item.provider
-                ):
+                async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
                     tracks.append(playlist_track)
             elif media_item.media_type in (
                 MediaType.ARTIST,
                 MediaType.ALBUM,
             ):
-                tracks += await ctrl.tracks(media_item.item_id, provider_domain=media_item.provider)
+                tracks += await ctrl.tracks(media_item.item_id, media_item.provider)
             else:
                 # single track or radio item
                 tracks += [media_item]
@@ -651,7 +649,7 @@ class PlayerQueuesController:
 
         # if keep_remaining, append the old previous items
         if keep_remaining:
-            next_items += prev_items[insert_at_index:]
+            next_items += self._queue_items[queue_id][insert_at_index:]
 
         # we set the original insert order as attribute so we can un-shuffle
         for index, item in enumerate(next_items):
@@ -759,9 +757,7 @@ class PlayerQueuesController:
         # shuffle the source items, just in case
         for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
             ctrl = self.mass.music.get_controller(radio_item.media_type)
-            tracks += await ctrl.dynamic_tracks(
-                item_id=radio_item.item_id, provider_domain=radio_item.provider
-            )
+            tracks += await ctrl.dynamic_tracks(radio_item.item_id, radio_item.provider)
             # make sure we do not grab too much items
             if len(tracks) >= 50:
                 break

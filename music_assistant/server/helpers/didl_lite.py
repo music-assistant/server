@@ -48,8 +48,8 @@ def create_didl_metadata(url: str, queue_item: QueueItem, flow_mode: bool = Fals
             "</DIDL-Lite>"
         )
     title = _escape_str(queue_item.media_item.name)
-    if queue_item.media_item.artist and queue_item.media_item.artist.name:
-        artist = _escape_str(queue_item.media_item.artist.name)
+    if queue_item.media_item.artists and queue_item.media_item.artists[0].name:
+        artist = _escape_str(queue_item.media_item.artists[0].name)
     else:
         artist = ""
     if queue_item.media_item.album and queue_item.media_item.album.name:
