@@ -239,24 +239,26 @@ class FileSystemProviderBase(MusicProvider):
 
             if item.ext in TRACK_EXTENSIONS:
                 if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    item.path, provider_instance=self.instance_id
+                    item.path, self.instance_id
                 ):
                     subitems.append(db_item)
                 elif track := await self.get_track(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.tracks.add_db_item(track)
+                    db_item = await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
                     subitems.append(db_item)
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
-                    item.path, provider_instance=self.instance_id
+                    item.path, self.instance_id
                 ):
                     subitems.append(db_item)
                 elif playlist := await self.get_playlist(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.playlists.add_db_item(playlist)
+                    db_item = await self.mass.music.playlists.add(
+                        playlist, skip_metadata_lookup=True
+                    )
                     subitems.append(db_item)
                 continue
 
@@ -315,14 +317,14 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)
-                    await self.mass.music.tracks.add_db_item(track)
+                    await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
                     playlist.metadata.checksum = item.checksum
                     # playlist is always in-library
                     playlist.in_library = True
-                    await self.mass.music.playlists.add_db_item(playlist)
+                    await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
@@ -355,15 +357,13 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 controller = self.mass.music.get_controller(MediaType.TRACK)
 
-            if db_item := await controller.get_db_item_by_prov_id(
-                file_path, provider_instance=self.instance_id
-            ):
-                await controller.delete_db_item(db_item.item_id, True)
+            if db_item := await controller.get_db_item_by_prov_id(file_path, self.instance_id):
+                await controller.delete(db_item.item_id, True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            item_id=prov_artist_id, provider_instance=self.instance_id
+            prov_artist_id, self.instance_id
         )
         if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
@@ -420,7 +420,7 @@ class FileSystemProviderBase(MusicProvider):
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            prov_album_id, provider_instance=self.instance_id
+            prov_album_id, self.instance_id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -532,14 +532,12 @@ class FileSystemProviderBase(MusicProvider):
         filename = f"{name}.m3u"
         await self.write_file_content(filename, b"")
         playlist = await self.get_playlist(filename)
-        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
+        db_playlist = await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
         return db_playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(
-            item_id=item_id, provider_instance=self.instance_id
-        )
+        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(item_id, self.instance_id)
         if db_item is None:
             raise MediaNotFoundError(f"Item not found: {item_id}")
 
@@ -817,8 +815,8 @@ class FileSystemProviderBase(MusicProvider):
                 if musicbrainz_id := info.get("musicbrainzreleasegroupid"):
                     album.musicbrainz_id = musicbrainz_id
                 if mb_artist_id := info.get("musicbrainzalbumartistid"):  # noqa: SIM102
-                    if album.artist and not album.artist.musicbrainz_id:
-                        album.artist.musicbrainz_id = mb_artist_id
+                    if album.artists and not album.artists[0].musicbrainz_id:
+                        album.artists[0].musicbrainz_id = mb_artist_id
                 if description := info.get("review"):
                     album.metadata.description = description
                 if year := info.get("year"):

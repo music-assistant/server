@@ -620,11 +620,11 @@ async def check_audio_support() -> tuple[bool, bool, str]:
 
 async def get_preview_stream(
     mass: MusicAssistant,
-    provider_domain_or_instance_id: str,
+    provider_instance_id_or_domain: str,
     track_id: str,
 ) -> AsyncGenerator[bytes, None]:
     """Create a 30 seconds preview audioclip for the given streamdetails."""
-    music_prov = mass.get_provider(provider_domain_or_instance_id)
+    music_prov = mass.get_provider(provider_instance_id_or_domain)
 
     streamdetails = await music_prov.get_stream_details(track_id)
 
