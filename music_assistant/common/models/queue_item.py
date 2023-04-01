@@ -8,10 +8,10 @@ from uuid import uuid4
 from mashumaro import DataClassDictMixin
 
 from .enums import MediaType
-from .media_items import ItemMapping, Radio, StreamDetails, Track
+from .media_items import ItemMapping, MediaItemImage, Radio, StreamDetails, Track
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
+    pass
 
 
 @dataclass
@@ -26,7 +26,7 @@ class QueueItem(DataClassDictMixin):
     sort_index: int = 0
     streamdetails: StreamDetails | None = None
     media_item: Track | Radio | None = None
-    image_url: str | None = None
+    image: MediaItemImage | None = None
 
     def __post_init__(self):
         """Set default values."""
@@ -56,7 +56,7 @@ class QueueItem(DataClassDictMixin):
         return MediaType.UNKNOWN
 
     @classmethod
-    def from_media_item(cls, queue_id: str, media_item: Track | Radio):
+    def from_media_item(cls, queue_id: str, media_item: Track | Radio) -> QueueItem:
         """Construct QueueItem from track/radio item."""
         if media_item.media_type == MediaType.TRACK:
             artists = "/".join(x.name for x in media_item.artists)
@@ -74,13 +74,16 @@ class QueueItem(DataClassDictMixin):
             name=name,
             duration=media_item.duration,
             media_item=media_item,
-            image_url=media_item.image.path if media_item.image else None,
+            image=get_image(media_item),
         )
 
-    async def resolve_image_url(self, mass: MusicAssistant) -> None:
-        """Resolve Image URL for the MediaItem."""
-        if self.image_url and self.image_url.startswith("http"):
-            return
-        if not self.media_item:
-            return
-        self.image_url = await mass.metadata.get_image_url_for_item(self.media_item, resolve=True)
+
+def get_image(media_item: Track | Radio | None) -> MediaItemImage | None:
+    """Find the Image for the MediaItem."""
+    if not media_item:
+        return None
+    if media_item.image:
+        return media_item.image
+    if isinstance(media_item, Track) and media_item.album and getattr(media_item.album, "image"):
+        return media_item.album.image
+    return None

@@ -9,6 +9,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.player import Player
     from music_assistant.common.models.player_queue import PlayerQueue
     from music_assistant.common.models.queue_item import QueueItem
+    from music_assistant.server import MusicAssistant
 
 # ruff: noqa: UP013
 
@@ -121,7 +122,9 @@ PlaylistItem = TypedDict(
 )
 
 
-def playlist_item_from_mass(queue_item: QueueItem, index: int = 0) -> PlaylistItem:
+def playlist_item_from_mass(
+    mass: MusicAssistant, queue_item: QueueItem, index: int = 0
+) -> PlaylistItem:
     """Parse PlaylistItem for the Json RPC interface from MA QueueItem."""
     if queue_item.media_item and queue_item.media_type == MediaType.TRACK:
         artist = queue_item.media_item.artists[0].name if queue_item.media_item.artists else ""
@@ -138,6 +141,7 @@ def playlist_item_from_mass(queue_item: QueueItem, index: int = 0) -> PlaylistIt
         artist = ""
         album = ""
         title = queue_item.name
+    image_url = mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
     return {
         "playlist index": index,
         "id": queue_item.queue_item_id,
@@ -147,7 +151,7 @@ def playlist_item_from_mass(queue_item: QueueItem, index: int = 0) -> PlaylistIt
         "genre": "",
         "remote": 0,
         "remote_title": queue_item.streamdetails.stream_title if queue_item.streamdetails else "",
-        "artwork_url": queue_item.image_url or "",
+        "artwork_url": image_url,
         "bitrate": "",
         "duration": queue_item.duration or 0,
         "coverid": "-94099753136392",
@@ -187,7 +191,7 @@ PlayerStatusResponse = TypedDict(
 
 
 def player_status_from_mass(
-    player: Player, queue: PlayerQueue, queue_items: list[QueueItem]
+    mass: MusicAssistant, player: Player, queue: PlayerQueue, queue_items: list[QueueItem]
 ) -> PlayerStatusResponse:
     """Parse PlayerStatusResponse for the Json RPC interface from MA info."""
     return {
@@ -217,7 +221,7 @@ def player_status_from_mass(
         "rate": 1,
         "playlist_tracks": queue.items,
         "playlist_loop": [
-            playlist_item_from_mass(item, queue.current_index + index)
+            playlist_item_from_mass(mass, item, queue.current_index + index)
             for index, item in enumerate(queue_items)
         ],
     }

@@ -572,10 +572,10 @@ class ChromecastProvider(PlayerProvider):
         castplayer.status_listener = None
         self.castplayers.pop(castplayer.player_id, None)
 
-    @staticmethod
-    def _create_queue_item(queue_item: QueueItem, stream_url: str):
+    def _create_queue_item(self, queue_item: QueueItem, stream_url: str):
         """Create CC queue item from MA QueueItem."""
         duration = int(queue_item.duration) if queue_item.duration else None
+        image_url = self.mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
         if queue_item.media_type == MediaType.TRACK and queue_item.media_item:
             stream_type = STREAM_TYPE_BUFFERED
             metadata = {
@@ -588,14 +588,14 @@ class ChromecastProvider(PlayerProvider):
                 if queue_item.media_item.artists
                 else "",
                 "title": queue_item.name,
-                "images": [{"url": queue_item.image_url}] if queue_item.image_url else None,
+                "images": [{"url": image_url}] if image_url else None,
             }
         else:
             stream_type = STREAM_TYPE_LIVE
             metadata = {
                 "metadataType": 0,
                 "title": queue_item.name,
-                "images": [{"url": queue_item.image_url}] if queue_item.image_url else None,
+                "images": [{"url": image_url}] if image_url else None,
             }
         return {
             "autoplay": True,

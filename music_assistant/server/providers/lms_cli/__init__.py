@@ -254,7 +254,9 @@ class LmsCli(PluginProvider):
             start_index : start_index + limit
         ]
         # we ignore the tags, just always send all info
-        return player_status_from_mass(player=player, queue=queue, queue_items=queue_items)
+        return player_status_from_mass(
+            self.mass, player=player, queue=queue, queue_items=queue_items
+        )
 
     def _handle_mixer(
         self,
