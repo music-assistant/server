@@ -747,7 +747,7 @@ async def _get_ffmpeg_args(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "verbose" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
+        "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
     ]
     # collect input args
