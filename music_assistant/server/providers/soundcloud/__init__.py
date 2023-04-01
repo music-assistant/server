@@ -168,11 +168,10 @@ class SoundcloudMusicProvider(MusicProvider):
             round(time.time() - time_start, 2),
         )
         for item in playlists["collection"]:
-            if "playlist" in item and "id" in item["playlist"]:
+            try:
                 playlist_obj = await self._soundcloud.get_playlist_details(
                     playlist_id=item["playlist"]["id"]
                 )
-            try:
                 yield await self._parse_playlist(playlist_obj)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
