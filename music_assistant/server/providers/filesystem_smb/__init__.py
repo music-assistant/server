@@ -147,8 +147,10 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             mount_cmd = f"mount -t smbfs //{username}{password}@{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
 
         elif platform.system() == "Linux":
-            password = f",password={password}" if password else ""
-            mount_cmd = f"mount -t cifs //{server}/{share}{subfolder} -o user={username}{password} {self.base_path}"  # noqa: E501
+            options = ["rw", f'username="{username}"', "uid=$(id -u)", "gid=$(id -g)"]
+            if password:
+                options.append(f'password="{password}"')
+            mount_cmd = f"mount -t cifs -o {','.join(options)} //{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
 
         else:
             raise LoginFailed(f"SMB provider is not supported on {platform.system()}")
