@@ -298,6 +298,7 @@ class StreamsController:
         )
         player_id = request.match_info["player_id"]
         player = self.mass.players.get(player_id)
+        queue = self.mass.players.queues.get_active_queue(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown player_id: {player_id}")
         stream_id = request.match_info["stream_id"]
@@ -434,11 +435,15 @@ class StreamsController:
                     continue
 
                 # if icy metadata is enabled, send the icy metadata after the chunk
-                item_in_buf = stream_job.queue_item
-                if item_in_buf and item_in_buf.streamdetails.stream_title:
-                    title = item_in_buf.streamdetails.stream_title
-                elif item_in_buf and item_in_buf.name:
-                    title = item_in_buf.name
+                if (
+                    queue
+                    and queue.current_item
+                    and queue.current_item.streamdetails
+                    and queue.current_item.streamdetails.stream_title
+                ):
+                    title = queue.current_item.streamdetails.stream_title
+                elif queue.current_item and queue.current_item.name:
+                    title = queue.current_item.name
                 else:
                     title = "Music Assistant"
                 metadata = f"StreamTitle='{title}';".encode()
