@@ -119,6 +119,14 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         except Exception as err:
             raise LoginFailed(f"Connection failed for the given details: {err}") from err
 
+    async def unload(self) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+        await self.unmount()
+
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
         server: str = self.config.get_value(CONF_HOST)
@@ -164,4 +172,4 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise LoginFailed("SMB mount failed with error: %s", stderr.decode())
+            raise LoginFailed("SMB unmount failed with error: %s", stderr.decode())
