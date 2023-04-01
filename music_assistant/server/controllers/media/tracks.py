@@ -109,6 +109,13 @@ class TracksController(MediaControllerBase[Track]):
             item.album = await self.mass.music.albums.get_provider_item(
                 item.album.item_id, item.album.provider
             )
+        if item.album:
+            item.album.artists = [
+                await self.mass.music.artists.get_provider_item(artist.item_id, artist.provider)
+                if isinstance(artist, ItemMapping)
+                else artist
+                for artist in item.album.artists
+            ]
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
