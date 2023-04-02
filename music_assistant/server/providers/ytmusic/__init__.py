@@ -680,7 +680,7 @@ class YoutubeMusicProvider(MusicProvider):
                     )
                 self.logger.debug("Cipher expired. Obtaining new Cipher.")
                 self._cipher = None
-                return self._parse_stream_url(
+                return await self._parse_stream_url(
                     stream_format=stream_format, item_id=item_id, retry=False
                 )
         elif stream_format.get("url"):
