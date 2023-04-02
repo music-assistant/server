@@ -449,7 +449,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 continue
             return await self._get_provider_dynamic_tracks(
                 prov_mapping.item_id,
-                provider_instance_id_or_domain,
+                prov_mapping.provider_instance,
                 limit=limit,
             )
         # Fallback to the default implementation
