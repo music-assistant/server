@@ -25,7 +25,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_PLAYERS
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -282,6 +282,7 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
+        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC).value
         radio_mode = (
             flow_mode or not queue_item.duration or queue_item.media_type == MediaType.RADIO
         )
@@ -290,7 +291,7 @@ class SonosPlayerProvider(PlayerProvider):
             player_id=sonos_player.player_id,
             seek_position=seek_position,
             fade_in=fade_in,
-            content_type=ContentType.MP3 if radio_mode else ContentType.FLAC,
+            content_type=ContentType.MP3 if radio_mode else ContentType(output_codec),
             flow_mode=flow_mode,
         )
         if radio_mode:
@@ -549,11 +550,14 @@ class SonosPlayerProvider(PlayerProvider):
             await asyncio.to_thread(set_crossfade)
 
         # send queue item to sonos queue
+        output_codec = self.mass.config.get_player_config_value(
+            sonos_player.player_id, CONF_OUTPUT_CODEC
+        ).value
         is_radio = next_item.media_type != MediaType.TRACK
         url = await self.mass.streams.resolve_stream_url(
             queue_item=next_item,
             player_id=sonos_player.player_id,
-            content_type=ContentType.MP3 if is_radio else ContentType.FLAC,
+            content_type=ContentType.MP3 if is_radio else ContentType(output_codec),
             # Sonos pre-caches pretty aggressively so do not yet start the runner
             auto_start_runner=False,
         )
