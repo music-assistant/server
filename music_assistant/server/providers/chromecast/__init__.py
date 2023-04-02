@@ -120,6 +120,7 @@ class ChromecastProvider(PlayerProvider):
         # silence the cast logger a bit
         logging.getLogger("pychromecast.socket_client").setLevel(logging.INFO)
         logging.getLogger("pychromecast.controllers").setLevel(logging.INFO)
+        logging.getLogger("pychromecast.dial").setLevel(logging.INFO)
         self.mz_mgr = MultizoneManager()
         self.browser = CastBrowser(
             SimpleCastListener(
