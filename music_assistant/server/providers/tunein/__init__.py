@@ -202,7 +202,7 @@ class TuneInProvider(MusicProvider):
             # check if the radio stream is not a playlist
             url = stream["url"]
             direct = None
-            if url.endswith("m3u8") or url.endswith("m3u") or url.endswith("pls"):  # noqa: SIM102
+            if stream.get("playlist_type"):  # noqa: SIM102
                 if playlist := await fetch_playlist(self.mass, url):
                     if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
                         # this is most likely an mpeg-dash stream, let ffmpeg handle that
