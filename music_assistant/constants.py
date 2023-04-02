@@ -3,9 +3,9 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b14"
+__version__: Final[str] = "2.0.0b24"
 
-SCHEMA_VERSION: Final[int] = 20
+SCHEMA_VERSION: Final[int] = 22
 
 ROOT_LOGGER_NAME: Final[str] = "music_assistant"
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING
 
@@ -122,7 +123,14 @@ class SoundcloudMusicProvider(MusicProvider):
         if MediaType.PLAYLIST in media_types:
             searchtypes.append("playlist")
 
+        time_start = time.time()
+
         searchresult = await self._soundcloud.search(search_query, limit)
+
+        self.logger.debug(
+            "Processing Soundcloud search took %s seconds",
+            round(time.time() - time_start, 2),
+        )
 
         for item in searchresult["collection"]:
             media_type = item["kind"]
@@ -132,11 +140,18 @@ class SoundcloudMusicProvider(MusicProvider):
                 result.tracks.append(await self._parse_track(item))
             elif media_type == "playlist":
                 result.playlists.append(await self._parse_playlist(item))
+
         return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Soundcloud."""
+        time_start = time.time()
+
         following = await self._soundcloud.get_following(self._user_id)
+        self.logger.debug(
+            "Processing Soundcloud library artists took %s seconds",
+            round(time.time() - time_start, 2),
+        )
         for artist in following["collection"]:
             try:
                 yield await self._parse_artist(artist)
@@ -146,11 +161,17 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Soundcloud."""
+        time_start = time.time()
         playlists = await self._soundcloud.get_account_playlists()
+        self.logger.debug(
+            "Processing Soundcloud library playlists took %s seconds",
+            round(time.time() - time_start, 2),
+        )
         for item in playlists["collection"]:
-            playlist_id = item["playlist"]["id"]
-            playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=playlist_id)
             try:
+                playlist_obj = await self._soundcloud.get_playlist_details(
+                    playlist_id=item["playlist"]["id"]
+                )
                 yield await self._parse_playlist(playlist_obj)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
@@ -158,7 +179,12 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Soundcloud."""
+        time_start = time.time()
         tracks = await self._soundcloud.get_tracks_liked()
+        self.logger.debug(
+            "Processing Soundcloud library tracks took %s seconds",
+            round(time.time() - time_start, 2),
+        )
         for item in tracks["collection"]:
             track = await self._soundcloud.get_track_details(item)
             try:
@@ -196,23 +222,21 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
-            return []
-        tracks = []
+            return
         for index, item in enumerate(playlist_obj["tracks"]):
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 track = await self._parse_track(song[0])
                 if track:
-                    track.position = index
-                    tracks.append(track)
+                    track.position = index + 1
+                    yield track
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
-        return tracks
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
@@ -251,7 +275,7 @@ class SoundcloudMusicProvider(MusicProvider):
         stream_format = track_details[0]["media"]["transcodings"][0]["format"]["mime_type"]
         url = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=ContentType.try_parse(stream_format),
             direct=url,

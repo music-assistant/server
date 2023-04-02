@@ -1,11 +1,11 @@
 {
-  "type": "music",
-  "domain": "filesystem_smb",
-  "name": "SMB Filesystem",
-  "description": "Support for music files that are present on remote SMB/CIFS share.",
-  "codeowners": ["@MarvinSchenkel"],
-  "requirements": ["pysmb==1.2.9.1"],
-  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
-  "multi_instance": true,
-  "icon": "mdi:mdi-network"
-}
+    "type": "music",
+    "domain": "filesystem_smb",
+    "name": "Filesystem (remote share)",
+    "description": "Support for music files that are present on remote SMB/CIFS.",
+    "codeowners": ["@music-assistant"],
+    "requirements": [],
+    "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
+    "multi_instance": true,
+    "icon": "mdi:mdi-network"
+  }

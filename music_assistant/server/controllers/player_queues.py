@@ -125,7 +125,7 @@ class PlayerQueuesController:
         self.signal_update(queue_id)
 
     @api_command("players/queue/play_media")
-    async def play_media(
+    async def play_media(  # noqa: PLR0915
         self,
         queue_id: str,
         media: MediaItemType | list[MediaItemType] | str | list[str],
@@ -138,11 +138,14 @@ class PlayerQueuesController:
         - queue_opt: Which enqueue mode to use.
         - radio_mode: Enable radio mode for the given item(s).
         """
-        # pylint: disable=too-many-branches
+        # ruff: noqa: PLR0915
         queue = self._queues[queue_id]
         if queue.announcement_in_progress:
             LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
+
+        if option in QueueOption.REPLACE:
+            self.clear(queue_id)
 
         # a single item or list of items may be provided
         if not isinstance(media, list):
@@ -175,19 +178,21 @@ class PlayerQueuesController:
             ctrl = self.mass.music.get_controller(media_item.media_type)
             if radio_mode:
                 queue.radio_source.append(media_item)
-                # if radio mode enabled, grab the first batch of tracks here
-                tracks += await ctrl.dynamic_tracks(
-                    item_id=media_item.item_id, provider_domain=media_item.provider
-                )
+            elif media_item.media_type == MediaType.PLAYLIST:
+                async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
+                    tracks.append(playlist_track)
             elif media_item.media_type in (
                 MediaType.ARTIST,
                 MediaType.ALBUM,
-                MediaType.PLAYLIST,
             ):
-                tracks += await ctrl.tracks(media_item.item_id, provider_domain=media_item.provider)
+                tracks += await ctrl.tracks(media_item.item_id, media_item.provider)
             else:
                 # single track or radio item
                 tracks += [media_item]
+
+        # Use collected media items to calculate the radio if radio mode is on
+        if radio_mode:
+            tracks = await self._get_radio_tracks(queue_id)
 
         # only add valid/available items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
@@ -198,12 +203,11 @@ class PlayerQueuesController:
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            self.clear(queue_id)
             self.load(queue_id, queue_items=queue_items, shuffle=shuffle)
             await self.play_index(queue_id, 0)
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
         elif option == QueueOption.NEXT:
-            await self.load(
+            self.load(
                 queue_id,
                 queue_items=queue_items,
                 insert_at_index=cur_index + 1,
@@ -219,6 +223,8 @@ class PlayerQueuesController:
             )
         # handle play: replace current loaded/playing index with new item(s)
         elif option == QueueOption.PLAY:
+            if cur_index <= len(self._queue_items[queue_id]) - 1:
+                cur_index = 0
             self.load(
                 queue_id,
                 queue_items=queue_items,
@@ -461,8 +467,6 @@ class PlayerQueuesController:
         player_prov = self.mass.players.get_player_provider(queue_id)
         flow_mode = self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
         queue.flow_mode = flow_mode.value
-        # make sure that the queue item image is resolved
-        await queue_item.resolve_image_url(self.mass)
         await player_prov.cmd_play_media(
             queue_id,
             queue_item=queue_item,
@@ -518,15 +522,16 @@ class PlayerQueuesController:
         if queue.active:
             # update current item from player report
             player_item_index = self.index_by_id(queue_id, player.current_item_id)
-            if player_item_index is not None:
-                if queue.flow_mode:
-                    # flow mode active, calculate current item
-                    (
-                        queue.current_index,
-                        queue.elapsed_time,
-                    ) = self.__get_queue_stream_index(queue, player, player_item_index)
-                else:
-                    queue.current_index = player_item_index
+            if player_item_index is None:
+                player_item_index = self._get_player_item_index(queue_id, player.current_url)
+            if queue.flow_mode and player_item_index is not None:
+                # flow mode active, calculate current item
+                (
+                    queue.current_index,
+                    queue.elapsed_time,
+                ) = self.__get_queue_stream_index(queue, player, player_item_index)
+            else:
+                queue.current_index = player_item_index
 
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self.get_next_item(queue_id)
@@ -571,7 +576,7 @@ class PlayerQueuesController:
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
             fill_index = len(self._queue_items[queue_id]) - 5
-            if queue.radio_source and (queue.current_index >= fill_index):
+            if queue.radio_source and queue.current_index and (queue.current_index >= fill_index):
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
@@ -603,8 +608,6 @@ class PlayerQueuesController:
         next_item = self.get_item(queue.queue_id, next_index)
         if not next_item:
             raise QueueEmpty("No more tracks left in the queue.")
-        # make sure that the queue item image is resolved
-        await next_item.resolve_image_url(self.mass)
         queue.index_in_buffer = next_index
         # work out crossfade
         crossfade = queue.crossfade_enabled
@@ -642,7 +645,7 @@ class PlayerQueuesController:
 
         # if keep_remaining, append the old previous items
         if keep_remaining:
-            next_items += prev_items[insert_at_index:]
+            next_items += self._queue_items[queue_id][insert_at_index:]
 
         # we set the original insert order as attribute so we can un-shuffle
         for index, item in enumerate(next_items):
@@ -732,19 +735,7 @@ class PlayerQueuesController:
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
         """Fill a Queue with (additional) Radio tracks."""
-        queue = self._queues[queue_id]
-        assert queue.radio_source, "No Radio item(s) loaded/active!"
-        tracks: list[MediaItemType] = []
-        # grab dynamic tracks for (all) source items
-        # shuffle the source items, just in case
-        for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
-            ctrl = self.mass.music.get_controller(radio_item.media_type)
-            tracks += await ctrl.dynamic_tracks(
-                item_id=radio_item.item_id, provider_domain=radio_item.provider
-            )
-            # make sure we do not grab too much items
-            if len(tracks) >= 50:
-                break
+        tracks = await self._get_radio_tracks(queue_id)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
         self.load(
@@ -752,6 +743,21 @@ class PlayerQueuesController:
             queue_items,
             insert_at_index=len(self._queue_items[queue_id]) - 1,
         )
+
+    async def _get_radio_tracks(self, queue_id: str) -> list[MediaItemType]:
+        """Call the registered music providers for dynamic tracks."""
+        queue = self._queues[queue_id]
+        assert queue.radio_source, "No Radio item(s) loaded/active!"
+        tracks: list[MediaItemType] = []
+        # grab dynamic tracks for (all) source items
+        # shuffle the source items, just in case
+        for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
+            ctrl = self.mass.music.get_controller(radio_item.media_type)
+            tracks += await ctrl.dynamic_tracks(radio_item.item_id, radio_item.provider)
+            # make sure we do not grab too much items
+            if len(tracks) >= 50:
+                break
+        return tracks
 
     def __get_queue_stream_index(
         self, queue: PlayerQueue, player: Player, start_index: int
@@ -790,3 +796,11 @@ class PlayerQueuesController:
                     track_time = elapsed_time_queue + track_sec_skipped - total_time
                     break
         return queue_index, track_time
+
+    def _get_player_item_index(self, queue_id: str, url: str) -> str | None:
+        """Parse QueueItem ID from Player's current url."""
+        if url and self.mass.webserver.base_url in url and "/stream/" in url:
+            # try to extract the item id from the uri
+            current_item_id = url.rsplit("/")[-2]
+            return self.index_by_id(queue_id, current_item_id)
+        return None

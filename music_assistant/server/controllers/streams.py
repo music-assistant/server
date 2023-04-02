@@ -128,7 +128,7 @@ class StreamJob:
             if len(self.subscribers) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
 
-    async def _put_data(self, data: Any, timeout: float = 600) -> None:
+    async def _put_data(self, data: Any, timeout: float = 1200) -> None:
         """Put chunk of data to all subscribers."""
         async with asyncio.timeout(timeout):
             async with asyncio.TaskGroup() as tg:
@@ -279,12 +279,12 @@ class StreamsController:
         url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 
-    def get_preview_url(self, provider_domain_or_instance_id: str, track_id: str) -> str:
+    def get_preview_url(self, provider_instance_id_or_domain: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
         return (
             f"{self.mass.webserver.base_url}/stream/preview?"
-            f"provider={provider_domain_or_instance_id}&item_id={enc_track_id}"
+            f"provider={provider_instance_id_or_domain}&item_id={enc_track_id}"
         )
 
     async def serve_queue_stream(self, request: web.Request) -> web.Response:
@@ -298,6 +298,7 @@ class StreamsController:
         )
         player_id = request.match_info["player_id"]
         player = self.mass.players.get(player_id)
+        queue = self.mass.players.queues.get_active_queue(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown player_id: {player_id}")
         stream_id = request.match_info["stream_id"]
@@ -378,6 +379,7 @@ class StreamsController:
                 " please create an issue report on the Music Assistant issue tracker.",
                 player.display_name,
             )
+            self.mass.create_task(self.mass.players.queues.next(player_id))
             raise web.HTTPBadRequest(reason="Stream is already running.")
 
         # all checks passed, start streaming!
@@ -396,7 +398,10 @@ class StreamsController:
             # feed stdin with pcm audio chunks from origin
             async def read_audio():
                 async for chunk in stream_job.subscribe(player_id):
-                    await ffmpeg_proc.write(chunk)
+                    try:
+                        await ffmpeg_proc.write(chunk)
+                    except BrokenPipeError:
+                        break
                 ffmpeg_proc.write_eof()
 
             ffmpeg_proc.attach_task(read_audio())
@@ -405,7 +410,7 @@ class StreamsController:
             iterator = (
                 ffmpeg_proc.iter_chunked(icy_meta_interval)
                 if enable_icy
-                else ffmpeg_proc.iter_any()
+                else ffmpeg_proc.iter_chunked(128000)
             )
 
             bytes_streamed = 0
@@ -413,38 +418,40 @@ class StreamsController:
             async for chunk in iterator:
                 try:
                     await resp.write(chunk)
-                    bytes_streamed += len(chunk)
-
-                    # DISABLE FOR NOW TO AVOID ISSUES WITH SONOS ICW YOUTUBE MUSIC
-                    # do not allow the player to prebuffer more than 30 seconds
-                    # seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
-                    # if (
-                    #     seconds_streamed > 30
-                    #     and (seconds_streamed - player.corrected_elapsed_time) > 30
-                    # ):
-                    #     await asyncio.sleep(1)
-
-                    if not enable_icy:
-                        continue
-
-                    # if icy metadata is enabled, send the icy metadata after the chunk
-                    item_in_buf = stream_job.queue_item
-                    if item_in_buf and item_in_buf.streamdetails.stream_title:
-                        title = item_in_buf.streamdetails.stream_title
-                    elif item_in_buf and item_in_buf.name:
-                        title = item_in_buf.name
-                    else:
-                        title = "Music Assistant"
-                    metadata = f"StreamTitle='{title}';".encode()
-                    while len(metadata) % 16 != 0:
-                        metadata += b"\x00"
-                    length = len(metadata)
-                    length_b = chr(int(length / 16)).encode()
-                    await resp.write(length_b + metadata)
-
                 except (BrokenPipeError, ConnectionResetError):
-                    # connection lost
+                    # race condition
                     break
+                bytes_streamed += len(chunk)
+
+                # do not allow the player to prebuffer more than 60 seconds
+                seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
+                if (
+                    seconds_streamed > 120
+                    and (seconds_streamed - player.corrected_elapsed_time) > 30
+                ):
+                    await asyncio.sleep(1)
+
+                if not enable_icy:
+                    continue
+
+                # if icy metadata is enabled, send the icy metadata after the chunk
+                if (
+                    queue
+                    and queue.current_item
+                    and queue.current_item.streamdetails
+                    and queue.current_item.streamdetails.stream_title
+                ):
+                    title = queue.current_item.streamdetails.stream_title
+                elif queue.current_item and queue.current_item.name:
+                    title = queue.current_item.name
+                else:
+                    title = "Music Assistant"
+                metadata = f"StreamTitle='{title}';".encode()
+                while len(metadata) % 16 != 0:
+                    metadata += b"\x00"
+                length = len(metadata)
+                length_b = chr(int(length / 16)).encode()
+                await resp.write(length_b + metadata)
 
         return resp
 
@@ -598,11 +605,11 @@ class StreamsController:
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
-        provider_domain_or_instance_id = request.query["provider"]
+        provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_domain_or_instance_id, item_id):
+        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
             await resp.write(chunk)
         return resp
 
@@ -622,7 +629,7 @@ class StreamsController:
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
-            "quiet",
+            "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
             "-ignore_unknown",
         ]
         # input args

@@ -30,7 +30,7 @@ def loose_compare_strings(base: str, alt: str) -> bool:
 
 def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     """Compare strings and return True if we have an (almost) perfect match."""
-    if str1 is None or str2 is None:
+    if not str1 or not str2:
         return False
     # return early if total length mismatch
     if abs(len(str1) - len(str2)) > 4:
@@ -106,6 +106,10 @@ def compare_item_ids(
     left_item: MediaItem | ItemMapping, right_item: MediaItem | ItemMapping
 ) -> bool:
     """Compare item_id(s) of two media items."""
+    if not left_item.provider or not right_item.provider:
+        return False
+    if not left_item.item_id or not right_item.item_id:
+        return False
     if left_item.provider == right_item.provider and left_item.item_id == right_item.item_id:
         return True
 
@@ -153,7 +157,11 @@ def compare_barcode(
 ):
     """Compare two sets of barcodes and return True if a match was found."""
     for left_barcode in left_barcodes:
+        if not left_barcode.strip():
+            continue
         for right_barcode in right_barcodes:
+            if not right_barcode.strip():
+                continue
             # convert EAN-13 to UPC-A by stripping off the leading zero
             left_upc = left_barcode[1:] if left_barcode.startswith("0") else left_barcode
             right_upc = right_barcode[1:] if right_barcode.startswith("0") else right_barcode
@@ -168,7 +176,11 @@ def compare_isrc(
 ):
     """Compare two sets of isrc codes and return True if a match was found."""
     for left_isrc in left_isrcs:
+        if not left_isrc.strip():
+            continue
         for right_isrc in right_isrcs:
+            if not right_isrc.strip():
+                continue
             if compare_strings(left_isrc, right_isrc):
                 return True
     return False
@@ -211,9 +223,9 @@ def compare_album(
     # compare album artist
     # Note: Not present on ItemMapping
     if (
-        hasattr(left_album, "artist")
-        and hasattr(right_album, "artist")
-        and not compare_artist(left_album.artist, right_album.artist)
+        isinstance(left_album, Album)
+        and isinstance(right_album, Album)
+        and not compare_artists(left_album.artists, right_album.artists, True)
     ):
         return False
     return left_album.sort_name == right_album.sort_name
@@ -237,15 +249,6 @@ def compare_track(left_track: Track, right_track: Track):
     # track name must match
     if not compare_strings(left_track.name, right_track.name, False):
         return False
-    # exact albumtrack match = 100% match
-    if (
-        compare_album(left_track.album, right_track.album)
-        and left_track.track_number
-        and right_track.track_number
-        and ((left_track.disc_number or 1) == (right_track.disc_number or 1))
-        and left_track.track_number == right_track.track_number
-    ):
-        return True
     # track version must match
     if not compare_version(left_track.version, right_track.version):
         return False
@@ -255,6 +258,15 @@ def compare_track(left_track: Track, right_track: Track):
     # track if both tracks are (not) explicit
     if not compare_explicit(left_track.metadata, right_track.metadata):
         return False
+    # exact albumtrack match = 100% match
+    if (
+        compare_album(left_track.album, right_track.album)
+        and left_track.track_number
+        and right_track.track_number
+        and ((left_track.disc_number or 1) == (right_track.disc_number or 1))
+        and left_track.track_number == right_track.track_number
+    ):
+        return True
     # exact album match = 100% match
     if left_track.albums and right_track.albums:
         for left_album in left_track.albums:

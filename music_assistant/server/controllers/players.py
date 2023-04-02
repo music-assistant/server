@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
@@ -82,13 +81,15 @@ class PlayerController:
         self,
         player_id: str,
         raise_unavailable: bool = False,
-    ) -> Player:
+    ) -> Player | None:
         """Return Player by player_id."""
         if player := self._players.get(player_id):
             if (not player.available or not player.enabled) and raise_unavailable:
                 raise PlayerUnavailableError(f"Player {player_id} is not available")
             return player
-        raise PlayerUnavailableError(f"Player {player_id} is not available")
+        if raise_unavailable:
+            raise PlayerUnavailableError(f"Player {player_id} is not available")
+        return None
 
     @api_command("players/get_by_name")
     def get_by_name(self, name: str) -> Player | None:
@@ -255,7 +256,7 @@ class PlayerController:
         await player_provider.cmd_pause(player_id)
 
         async def _watch_pause(_player_id: str) -> None:
-            player = self.get(_player_id)
+            player = self.get(_player_id, True)
             count = 0
             # wait for pause
             while count < 5 and player.state == PlayerState.PLAYING:
@@ -504,16 +505,15 @@ class PlayerController:
             # it is the master in a sync group and thus always present as child player
             child_players.append(player)
         for child_id in player.group_childs:
-            with contextlib.suppress(PlayerUnavailableError):
-                if child_player := self.get(child_id):
-                    if not (not only_powered or child_player.powered):
-                        continue
-                    if not (
-                        not only_playing
-                        or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
-                    ):
-                        continue
-                    child_players.append(child_player)
+            if child_player := self.get(child_id, False):
+                if not (not only_powered or child_player.powered):
+                    continue
+                if not (
+                    not only_playing
+                    or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+                ):
+                    continue
+                child_players.append(child_player)
         return child_players
 
     async def _poll_players(self) -> None:
@@ -521,39 +521,41 @@ class PlayerController:
         count = 0
         while True:
             count += 1
-            for player in list(self._players.values()):
-                player_id = player.player_id
-                # if the player is playing, update elapsed time every tick
-                # to ensure the queue has accurate details
-                player_playing = (
-                    player.active_queue == player.player_id and player.state == PlayerState.PLAYING
-                )
-                if player_playing:
-                    self.update(player_id)
-                # Poll player;
-                # - every 360 seconds if the player if not powered
-                # - every 30 seconds if the player is powered
-                # - every 10 seconds if the player is playing
-                if (
-                    (player.available and player.powered and count % 30 == 0)
-                    or (player.available and player_playing and count % 10 == 0)
-                    or count == 360
-                ):
-                    if player_prov := self.get_player_provider(player_id):
-                        try:
-                            await player_prov.poll_player(player_id)
-                        except PlayerUnavailableError:
-                            player.available = False
-                            player.state = PlayerState.IDLE
-                            player.powered = False
-                            self.update(player_id)
-                        except Exception as err:  # pylint: disable=broad-except
-                            LOGGER.warning(
-                                "Error while requesting latest state from player %s: %s",
-                                player.display_name,
-                                str(err),
-                                exc_info=err,
-                            )
-                    if count >= 360:
-                        count = 0
+            async with asyncio.TaskGroup() as tg:
+                for player in list(self._players.values()):
+                    player_id = player.player_id
+                    # if the player is playing, update elapsed time every tick
+                    # to ensure the queue has accurate details
+                    player_playing = (
+                        player.active_queue == player.player_id
+                        and player.state == PlayerState.PLAYING
+                    )
+                    if player_playing:
+                        self.mass.loop.call_soon(self.update, player_id)
+                    # Poll player;
+                    # - every 360 seconds if the player if not powered
+                    # - every 30 seconds if the player is powered
+                    # - every 10 seconds if the player is playing
+                    if (
+                        (player.available and player.powered and count % 30 == 0)
+                        or (player.available and player_playing and count % 10 == 0)
+                        or count == 360
+                    ):
+                        if player_prov := self.get_player_provider(player_id):
+                            try:
+                                tg.create_task(player_prov.poll_player(player_id))
+                            except PlayerUnavailableError:
+                                player.available = False
+                                player.state = PlayerState.IDLE
+                                player.powered = False
+                                self.mass.loop.call_soon(self.update, player_id)
+                            except Exception as err:  # pylint: disable=broad-except
+                                LOGGER.warning(
+                                    "Error while requesting latest state from player %s: %s",
+                                    player.display_name,
+                                    str(err),
+                                    exc_info=err,
+                                )
+                        if count >= 360:
+                            count = 0
             await asyncio.sleep(1)

@@ -27,6 +27,19 @@ class MusicProvider(Provider):
     Music Provider implementations should inherit from this base model.
     """
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return False
+
     async def search(
         self,
         search_query: str,
@@ -116,10 +129,11 @@ class MusicProvider(Provider):
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
-    ) -> list[Track]:
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
+        yield  # type: ignore
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -223,6 +237,15 @@ class MusicProvider(Provider):
         """Return the audio stream for the provider item."""
         if streamdetails.direct is None:
             raise NotImplementedError
+
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        raise NotImplementedError
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
@@ -367,12 +390,9 @@ class MusicProvider(Provider):
 
     async def sync_library(self, media_types: tuple[MediaType, ...] | None = None) -> None:
         """Run library sync for this provider."""
-        # this reference implementation can be overridden with provider specific approach
-        # this logic is aimed at streaming/online providers,
-        # which all have more or less the same structure.
-        # filesystem implementation(s) just override this.
-        if media_types is None:
-            media_types = tuple(x for x in MediaType)
+        # this reference implementation can be overridden
+        # with a provider specific approach if needed
+        media_types = tuple(x for x in MediaType)
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue
@@ -381,22 +401,18 @@ class MusicProvider(Provider):
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type):
                 db_item: MediaItemType = await controller.get_db_item_by_prov_id(
-                    item_id=prov_item.item_id,
-                    provider_domain=prov_item.provider,
+                    prov_item.item_id,
+                    prov_item.provider,
                 )
-                if not db_item:
-                    # dump the item in the db, rich metadata is lazy loaded later
-                    db_item = await controller.add_db_item(prov_item)
+                if not db_item:  # noqa: SIM114
+                    # create full db item
+                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
 
                 elif (
                     db_item.metadata.checksum and prov_item.metadata.checksum
                 ) and db_item.metadata.checksum != prov_item.metadata.checksum:
                     # item checksum changed
-                    db_item = await controller.update_db_item(db_item.item_id, prov_item)
-                    # preload album/playlist tracks
-                    if prov_item.media_type == (MediaType.ALBUM, MediaType.PLAYLIST):
-                        for track in controller.tracks(prov_item.item_id, prov_item.provider):
-                            await self.mass.music.tracks.add_db_item(track)
+                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
                 cur_db_ids.add(db_item.item_id)
                 if not db_item.in_library:
                     await controller.set_db_library(db_item.item_id, True)
@@ -413,11 +429,6 @@ class MusicProvider(Provider):
                         continue
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)
-
-    def is_file(self) -> bool:
-        """Return if this is a FileSystem based provider."""
-        # override this is needed
-        return self.domain.startswith("filesystem")
 
     # DO NOT OVERRIDE BELOW
 

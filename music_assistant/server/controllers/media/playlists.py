@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import random
-from time import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from music_assistant.common.helpers.datetime import utc_timestamp
@@ -37,41 +37,43 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.mass.register_api_command("music/playlist/tracks", self.tracks)
         self.mass.register_api_command("music/playlist/tracks/add", self.add_playlist_tracks)
         self.mass.register_api_command("music/playlist/tracks/remove", self.remove_playlist_tracks)
-        self.mass.register_api_command("music/playlist/update", self.update_db_item)
-        self.mass.register_api_command("music/playlist/delete", self.delete_db_item)
+        self.mass.register_api_command("music/playlist/update", self._update_db_item)
+        self.mass.register_api_command("music/playlist/delete", self.delete)
         self.mass.register_api_command("music/playlist/create", self.create)
 
-    async def tracks(
-        self,
-        item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
-    ) -> list[Track]:
-        """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(item_id, provider_domain, provider_instance)
-        prov = next(x for x in playlist.provider_mappings)
-        return await self._get_provider_playlist_tracks(
-            prov.item_id,
-            provider_domain=prov.provider_domain,
-            provider_instance=prov.provider_instance,
-            cache_checksum=playlist.metadata.checksum,
-        )
-
-    async def add(self, item: Playlist) -> Playlist:
+    async def add(self, item: Playlist, skip_metadata_lookup: bool = False) -> Playlist:
         """Add playlist to local db and return the new database item."""
-        item.metadata.last_refresh = int(time())
-        await self.mass.metadata.get_playlist_metadata(item)
+        if not skip_metadata_lookup:
+            await self.mass.metadata.get_playlist_metadata(item)
+        # preload playlist tracks listing (do not load them in the db)
+        async for track in self.tracks(item.item_id, item.provider):
+            pass
         existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
         if existing:
-            db_item = await self.update_db_item(existing.item_id, item)
+            db_item = await self._update_db_item(existing.item_id, item)
         else:
-            db_item = await self.add_db_item(item)
+            db_item = await self._add_db_item(item)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
             db_item.uri,
             db_item,
         )
         return db_item
+
+    async def tracks(
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+    ) -> AsyncGenerator[Track, None]:
+        """Return playlist tracks for the given provider playlist id."""
+        playlist = await self.get(item_id, provider_instance_id_or_domain)
+        prov = next(x for x in playlist.provider_mappings)
+        async for track in self._get_provider_playlist_tracks(
+            prov.item_id,
+            prov.provider_instance,
+            cache_checksum=playlist.metadata.checksum,
+        ):
+            yield track
 
     async def create(self, name: str, provider_instance_or_domain: str | None = None) -> Playlist:
         """Create new playlist."""
@@ -118,7 +120,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # grab all existing track ids in the playlist so we can check for duplicates
         cur_playlist_track_ids = set()
         count = 0
-        for item in await self.tracks(playlist_prov.item_id, playlist_prov.provider_domain):
+        async for item in self.tracks(playlist_prov.item_id, playlist_prov.provider_instance):
             count += 1
             cur_playlist_track_ids.update(
                 {
@@ -161,7 +163,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider = self.mass.get_provider(playlist_prov.provider_instance)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # invalidate cache by updating the checksum
-        await self.get(db_playlist_id, provider_domain="database", force_refresh=True)
+        await self.get(db_playlist_id, "database", force_refresh=True)
 
     async def remove_playlist_tracks(
         self, db_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -184,14 +186,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # invalidate cache by updating the checksum
         await self.get(db_playlist_id, "database", force_refresh=True)
 
-    async def add_db_item(self, item: Playlist) -> Playlist:
+    async def _add_db_item(self, item: Playlist) -> Playlist:
         """Add a new record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
         async with self._db_add_lock:
             match = {"name": item.name, "owner": item.owner}
             if cur_item := await self.mass.music.database.get_row(self.db_table, match):
                 # update existing
-                return await self.update_db_item(cur_item["item_id"], item)
+                return await self._update_db_item(cur_item["item_id"], item)
 
             # insert new item
             item.timestamp_added = int(utc_timestamp())
@@ -204,7 +206,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # return created object
             return await self.get_db_item(item_id)
 
-    async def update_db_item(
+    async def _update_db_item(
         self,
         item_id: int,
         item: Playlist,
@@ -236,47 +238,53 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _get_provider_playlist_tracks(
         self,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str,
         cache_checksum: Any = None,
-    ) -> list[Track]:
+    ) -> AsyncGenerator[Track, None]:
         """Return album tracks for the given provider album id."""
-        provider = self.mass.get_provider(provider_instance or provider_domain)
+        assert provider_instance_id_or_domain != "database"
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not provider:
-            return []
+            return
         # prefer cache items (if any)
         cache_key = f"{provider.instance_id}.playlist.{item_id}.tracks"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
-            return [Track.from_dict(x) for x in cache]
+            for track_dict in cache:
+                yield Track.from_dict(track_dict)
+            return
         # no items in cache - get listing from provider
-        items = await provider.get_playlist_tracks(item_id)
-        # double check if position set
-        if items:
-            assert items[0].position is not None, "Playlist items require position to be set"
+        all_items = []
+        async for item in provider.get_playlist_tracks(item_id):
+            # double check if position set
+            assert item.position is not None, "Playlist items require position to be set"
+            yield item
+            all_items.append(item)
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
+            self.mass.cache.set(
+                cache_key, [x.to_dict() for x in all_items], checksum=cache_checksum
+            )
         )
-        return items
 
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the playlist content."""
-        provider = self.mass.get_provider(provider_instance or provider_domain)
+        assert provider_instance_id_or_domain != "database"
+        provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not provider or ProviderFeature.SIMILAR_TRACKS not in provider.supported_features:
             return []
-        playlist_tracks = await self._get_provider_playlist_tracks(
-            item_id=item_id,
-            provider_domain=provider_domain,
-            provider_instance=provider_instance,
-        )
-        # filter out unavailable tracks
-        playlist_tracks = [x for x in playlist_tracks if x.available]
+        playlist_tracks = [
+            x
+            async for x in self._get_provider_playlist_tracks(
+                item_id, provider_instance_id_or_domain
+            )
+            # filter out unavailable tracks
+            if x.available
+        ]
         limit = min(limit, len(playlist_tracks))
         # use set to prevent duplicates
         final_items = set()

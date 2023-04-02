@@ -38,6 +38,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.constants import SCHEMA_VERSION, VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
+from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
@@ -69,6 +70,7 @@ PLAYLIST_EXTENSIONS = ("m3u", "pls")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
+IGNORE_DIRS = ("recycle", "Recently-Snaphot")
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -171,6 +173,19 @@ class FileSystemProviderBase(MusicProvider):
     # DEFAULT/GENERIC IMPLEMENTATION BELOW
     # should normally not be needed to override
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return True
+
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5  # noqa: ARG002
     ) -> SearchResults:
@@ -211,7 +226,7 @@ class FileSystemProviderBase(MusicProvider):
                 subitems.append(
                     BrowseFolder(
                         item_id=item.path,
-                        provider=self.domain,
+                        provider=self.instance_id,
                         path=f"{self.instance_id}://{item.path}",
                         name=item.name,
                     )
@@ -224,30 +239,32 @@ class FileSystemProviderBase(MusicProvider):
 
             if item.ext in TRACK_EXTENSIONS:
                 if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    item.path, provider_instance=self.instance_id
+                    item.path, self.instance_id
                 ):
                     subitems.append(db_item)
                 elif track := await self.get_track(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.tracks.add_db_item(track)
+                    db_item = await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
                     subitems.append(db_item)
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
-                    item.path, provider_instance=self.instance_id
+                    item.path, self.instance_id
                 ):
                     subitems.append(db_item)
                 elif playlist := await self.get_playlist(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.playlists.add_db_item(playlist)
+                    db_item = await self.mass.music.playlists.add(
+                        playlist, skip_metadata_lookup=True
+                    )
                     subitems.append(db_item)
                 continue
 
         return BrowseFolder(
             item_id=item_path,
-            provider=self.domain,
+            provider=self.instance_id,
             path=path,
             name=item_path or self.name,
             # make sure to sort the resulting listing
@@ -300,14 +317,14 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)
-                    await self.mass.music.tracks.add_db_item(track)
+                    await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
                     playlist.metadata.checksum = item.checksum
                     # playlist is always in-library
                     playlist.in_library = True
-                    await self.mass.music.playlists.add_db_item(playlist)
+                    await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
@@ -340,15 +357,13 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 controller = self.mass.music.get_controller(MediaType.TRACK)
 
-            if db_item := await controller.get_db_item_by_prov_id(
-                file_path, provider_instance=self.instance_id
-            ):
-                await controller.delete_db_item(db_item.item_id, True)
+            if db_item := await controller.get_db_item_by_prov_id(file_path, self.instance_id):
+                await controller.delete(db_item.item_id, True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            item_id=prov_artist_id, provider_instance=self.instance_id
+            prov_artist_id, self.instance_id
         )
         if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
@@ -382,7 +397,11 @@ class FileSystemProviderBase(MusicProvider):
             raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
 
         file_item = await self.resolve(prov_playlist_id)
-        playlist = Playlist(file_item.path, provider=self.domain, name=file_item.name)
+        playlist = Playlist(
+            file_item.path,
+            provider=self.instance_id,
+            name=file_item.name.replace(f".{file_item.ext}", ""),
+        )
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
 
         playlist.add_provider_mapping(
@@ -401,7 +420,7 @@ class FileSystemProviderBase(MusicProvider):
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            prov_album_id, provider_instance=self.instance_id
+            prov_album_id, self.instance_id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -419,9 +438,8 @@ class FileSystemProviderBase(MusicProvider):
                 result.append(track)
         return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get playlist tracks for given playlist id."""
-        result = []
         if not await self.exists(prov_playlist_id):
             raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
 
@@ -443,12 +461,11 @@ class FileSystemProviderBase(MusicProvider):
                     playlist_line, os.path.dirname(prov_playlist_id)
                 ):
                     # use the linenumber as position for easier deletions
-                    media_item.position = line_no
-                    result.append(media_item)
+                    media_item.position = line_no + 1
+                    yield media_item
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning("Error while parsing playlist %s", prov_playlist_id, exc_info=err)
-        return result
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""
@@ -515,14 +532,12 @@ class FileSystemProviderBase(MusicProvider):
         filename = f"{name}.m3u"
         await self.write_file_content(filename, b"")
         playlist = await self.get_playlist(filename)
-        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
+        db_playlist = await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
         return db_playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(
-            item_id=item_id, provider_instance=self.instance_id
-        )
+        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(item_id, self.instance_id)
         if db_item is None:
             raise MediaNotFoundError(f"Item not found: {item_id}")
 
@@ -530,7 +545,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(item_id)
 
         return StreamDetails(
-            provider=self.domain,
+            provider=self.instance_id,
             item_id=item_id,
             content_type=prov_mapping.content_type,
             media_type=MediaType.TRACK,
@@ -556,46 +571,40 @@ class FileSystemProviderBase(MusicProvider):
         async for chunk in self.read_file_content(streamdetails.item_id, seek_bytes):
             yield chunk
 
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        file_item = await self.resolve(path)
+        return file_item.local_path or self.read_file_content(file_item.absolute_path)
+
     async def _parse_track(self, file_item: FileSystemItem) -> Track:
         """Get full track details by id."""
         # ruff: noqa: PLR0915, PLR0912
 
-        # m4a files are nasty because in 99% of the cases the metadata is
-        # at the end of the file (moov atom) so in order to read tags
-        # we need to read the entire file, which is not practically do-able with
-        # remote connections, so we ignore those files
-        large_m4a_file = (
-            file_item.ext in ("m4a", "m4b")
-            and not file_item.local_path
-            and file_item.file_size > 100000000
-        )
-        if large_m4a_file:
-            self.logger.warning(
-                "Large m4a file detected which is unsuitable for remote storage: %s"
-                " - consider converting this file to another file format or make sure "
-                "that `moov atom` metadata is at the beginning of the file. - "
-                "loading info for this file is going to take a long time!",
-                file_item.path,
-            )
-
         # parse tags
         input_file = file_item.local_path or self.read_file_content(file_item.absolute_path)
         tags = await parse_tags(input_file, file_item.file_size)
-        if large_m4a_file:
-            tags.has_cover_image = False
 
         name, version = parse_title_and_version(tags.title, tags.version)
         track = Track(
             item_id=file_item.path,
-            provider=self.domain,
+            provider=self.instance_id,
             name=name,
             version=version,
         )
 
         # album
         if tags.album:
-            # work out if we have an album folder
-            album_dir = get_parentdir(file_item.path, tags.album)
+            # work out if we have an album and/or disc folder
+            # disc_dir is the folder level where the tracks are located
+            # this may be a separate disc folder (Disc 1, Disc 2 etc) underneath the album folder
+            # or this is an album folder with the disc attached
+            disc_dir = get_parentdir(file_item.path, f"disc {tags.disc or ''}")
+            album_dir = get_parentdir(disc_dir or file_item.path, tags.album)
 
             # album artist(s)
             if tags.album_artists:
@@ -634,6 +643,7 @@ class FileSystemProviderBase(MusicProvider):
             track.album = await self._parse_album(
                 tags.album,
                 album_dir,
+                disc_dir,
                 artists=album_artists,
             )
         else:
@@ -653,19 +663,20 @@ class FileSystemProviderBase(MusicProvider):
                     artist.musicbrainz_id = tags.musicbrainz_artistids[index]
             track.artists.append(artist)
 
-        # cover image - prefer album image, fallback to embedded
-        if track.album and track.album.image:
-            track.metadata.images = [track.album.image]
-        elif tags.has_cover_image:
+        # cover image - prefer embedded image, fallback to album cover
+        if tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
                 MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
             ]
-            if track.album:
-                # set embedded cover on album
-                track.album.metadata.images = track.metadata.images
+        elif track.album and track.album.image:
+            track.metadata.images = [track.album.image]
+
+        if track.album and not track.album.metadata.images:
+            # set embedded cover on album if it does not have one yet
+            track.album.metadata.images = track.metadata.images
 
         # parse other info
         track.duration = tags.duration or 0
@@ -724,10 +735,10 @@ class FileSystemProviderBase(MusicProvider):
 
         artist = Artist(
             artist_path,
-            self.domain,
+            self.instance_id,
             name,
             provider_mappings={
-                ProviderMapping(artist_path, self.domain, self.instance_id, url=artist_path)
+                ProviderMapping(artist_path, self.instance_id, self.instance_id, url=artist_path)
             },
             musicbrainz_id=VARIOUS_ARTISTS_ID if compare_strings(name, VARIOUS_ARTISTS) else None,
         )
@@ -755,12 +766,13 @@ class FileSystemProviderBase(MusicProvider):
             if genre := info.get("genre"):
                 artist.metadata.genres = set(split_items(genre))
         # find local images
-        artist.metadata.images = await self._get_local_images(artist_path) or None
+        if images := await self._get_local_images(artist_path):
+            artist.metadata.images = images
 
         return artist
 
     async def _parse_album(
-        self, name: str | None, album_path: str | None, artists: list[Artist]
+        self, name: str | None, album_path: str | None, disc_path: str | None, artists: list[Artist]
     ) -> Album | None:
         """Lookup metadata in Album folder."""
         assert (name or album_path) and artists
@@ -773,11 +785,11 @@ class FileSystemProviderBase(MusicProvider):
 
         album = Album(
             album_path,
-            self.domain,
+            self.instance_id,
             name,
             artists=artists,
             provider_mappings={
-                ProviderMapping(album_path, self.domain, self.instance_id, url=album_path)
+                ProviderMapping(album_path, self.instance_id, self.instance_id, url=album_path)
             },
         )
 
@@ -785,37 +797,44 @@ class FileSystemProviderBase(MusicProvider):
             # return basic object if there is no dedicated album folder
             return album
 
-        nfo_file = os.path.join(album_path, "album.nfo")
-        if await self.exists(nfo_file):
-            # found NFO file with metadata
-            # https://kodi.wiki/view/NFO_files/Artists
-            data = b""
-            async for chunk in self.read_file_content(nfo_file):
-                data += chunk
-            info = await asyncio.to_thread(xmltodict.parse, data)
-            info = info["album"]
-            album.name = info.get("title", info.get("name", name))
-            if sort_name := info.get("sortname"):
-                album.sort_name = sort_name
-            if musicbrainz_id := info.get("musicbrainzreleasegroupid"):
-                album.musicbrainz_id = musicbrainz_id
-            if mb_artist_id := info.get("musicbrainzalbumartistid"):  # noqa: SIM102
-                if album.artist and not album.artist.musicbrainz_id:
-                    album.artist.musicbrainz_id = mb_artist_id
-            if description := info.get("review"):
-                album.metadata.description = description
-            if year := info.get("year"):
-                album.year = int(year)
-            if genre := info.get("genre"):
-                album.metadata.genres = set(split_items(genre))
-        # parse name/version
-        album.name, album.version = parse_title_and_version(album.name)
-
-        # find local images
-        album.metadata.images = await self._get_local_images(album_path) or None
+        for folder_path in (disc_path, album_path):
+            if not folder_path:
+                continue
+            nfo_file = os.path.join(folder_path, "album.nfo")
+            if await self.exists(nfo_file):
+                # found NFO file with metadata
+                # https://kodi.wiki/view/NFO_files/Artists
+                data = b""
+                async for chunk in self.read_file_content(nfo_file):
+                    data += chunk
+                info = await asyncio.to_thread(xmltodict.parse, data)
+                info = info["album"]
+                album.name = info.get("title", info.get("name", name))
+                if sort_name := info.get("sortname"):
+                    album.sort_name = sort_name
+                if musicbrainz_id := info.get("musicbrainzreleasegroupid"):
+                    album.musicbrainz_id = musicbrainz_id
+                if mb_artist_id := info.get("musicbrainzalbumartistid"):  # noqa: SIM102
+                    if album.artists and not album.artists[0].musicbrainz_id:
+                        album.artists[0].musicbrainz_id = mb_artist_id
+                if description := info.get("review"):
+                    album.metadata.description = description
+                if year := info.get("year"):
+                    album.year = int(year)
+                if genre := info.get("genre"):
+                    album.metadata.genres = set(split_items(genre))
+            # parse name/version
+            album.name, album.version = parse_title_and_version(album.name)
+            # find local images
+            if images := await self._get_local_images(folder_path):
+                if album.metadata.images is None:
+                    album.metadata.images = images
+                else:
+                    album.metadata.images += images
 
         return album
 
+    @use_cache(120)
     async def _get_local_images(self, folder: str) -> list[MediaItemImage]:
         """Return local images found in a given folderpath."""
         images = []
