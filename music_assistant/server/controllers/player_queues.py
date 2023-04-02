@@ -467,8 +467,6 @@ class PlayerQueuesController:
         player_prov = self.mass.players.get_player_provider(queue_id)
         flow_mode = self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
         queue.flow_mode = flow_mode.value
-        # make sure that the queue item image is resolved
-        await queue_item.resolve_image_url(self.mass)
         await player_prov.cmd_play_media(
             queue_id,
             queue_item=queue_item,
@@ -610,8 +608,6 @@ class PlayerQueuesController:
         next_item = self.get_item(queue.queue_id, next_index)
         if not next_item:
             raise QueueEmpty("No more tracks left in the queue.")
-        # make sure that the queue item image is resolved
-        await next_item.resolve_image_url(self.mass)
         queue.index_in_buffer = next_index
         # work out crossfade
         crossfade = queue.crossfade_enabled

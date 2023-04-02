@@ -629,7 +629,7 @@ class StreamsController:
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
-            "verbose" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
+            "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
             "-ignore_unknown",
         ]
         # input args

@@ -47,13 +47,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             await self.mass.metadata.get_playlist_metadata(item)
         # preload playlist tracks listing (do not load them in the db)
         async for track in self.tracks(item.item_id, item.provider):
-            if not item.is_editable:
-                continue
-            # only add tracks from owned (editable) playlists to the db to avoid too much clutter
-            if not await self.mass.music.tracks.get_db_item_by_prov_id(
-                track.item_id, track.provider
-            ):
-                await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
+            pass
         existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
         if existing:
             db_item = await self._update_db_item(existing.item_id, item)

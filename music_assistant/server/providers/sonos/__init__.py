@@ -292,7 +292,7 @@ class SonosPlayerProvider(PlayerProvider):
         if radio_mode:
             sonos_player.radio_mode_started = time.time()
             url = url.replace("http", "x-rincon-mp3radio")
-            metadata = create_didl_metadata(url, queue_item, flow_mode)
+            metadata = create_didl_metadata(self.mass, url, queue_item, flow_mode)
             # sonos does multiple get requests if no duration is known
             # our stream engine does not like that, hence the workaround
             self.mass.streams.workaround_players.add(sonos_player.player_id)
@@ -563,7 +563,7 @@ class SonosPlayerProvider(PlayerProvider):
         flow_mode: bool = False,
     ) -> None:
         """Enqueue a queue item to the Sonos player Queue."""
-        metadata = create_didl_metadata(url, queue_item, flow_mode)
+        metadata = create_didl_metadata(self.mass, url, queue_item, flow_mode)
         await asyncio.to_thread(
             sonos_player.soco.avTransport.AddURIToQueue,
             [
