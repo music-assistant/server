@@ -6,6 +6,8 @@ https://www.red-gate.com/simple-talk/development/python/memory-profiling-in-pyth
 import asyncio
 import tracemalloc
 
+# ruff: noqa: D103,E501,E741
+
 # list to store memory snapshots
 snaps = []
 
