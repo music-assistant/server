@@ -14,7 +14,7 @@ from soco.events_base import Event as SonosEvent
 from soco.events_base import SubscriptionBase
 from soco.groups import ZoneGroup
 
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import CONF_ENTRY_OUTPUT_CODEC, ConfigEntry
 from music_assistant.common.models.enums import (
     ContentType,
     MediaType,
@@ -42,7 +42,7 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
 )
-PLAYER_CONFIG_ENTRIES = tuple()  # we don't have any player config entries (for now)
+PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC,)
 
 
 async def setup(
@@ -226,6 +226,10 @@ class SonosPlayerProvider(PlayerProvider):
         if hasattr(self, "sonosplayers"):
             for player in self.sonosplayers.values():
                 player.soco.end_direct_control_session
+
+    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:  # noqa: ARG002
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        return PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
