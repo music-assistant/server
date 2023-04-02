@@ -389,7 +389,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not force_refresh and (cache := await self.mass.cache.get(cache_key)):
             return self.item_cls.from_dict(cache)
         if provider := self.mass.get_provider(provider_instance_id_or_domain):  # noqa: SIM102
-            if item := await provider.get_item(self.media_type, item_id):
+            item: MediaItemType = None
+            try:
+                item = await provider.get_item(self.media_type, item_id)
+            except MediaNotFoundError:
+                # fallback to domain matching
+                for provider in self.mass.music.providers:
+                    if not provider.available:
+                        continue
+                    if provider_instance_id_or_domain != provider.domain:
+                        continue
+                    with suppress(MediaNotFoundError):
+                        if item := await provider.get_item(self.media_type, item_id):
+                            break
+            if item:
                 await self.mass.cache.set(cache_key, item.to_dict())
                 return item
         raise MediaNotFoundError(
