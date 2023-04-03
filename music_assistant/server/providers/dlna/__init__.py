@@ -268,7 +268,7 @@ class DLNAPlayerProvider(PlayerProvider):
             flow_mode=flow_mode,
         )
 
-        didl_metadata = create_didl_metadata(url, queue_item, flow_mode)
+        didl_metadata = create_didl_metadata(self.mass, url, queue_item, flow_mode)
         await dlna_player.device.async_set_transport_uri(url, queue_item.name, didl_metadata)
         # Play it
         await dlna_player.device.async_wait_for_can_play(10)
@@ -555,7 +555,7 @@ class DLNAPlayerProvider(PlayerProvider):
             # DLNA pre-caches pretty aggressively so do not yet start the runner
             auto_start_runner=False,
         )
-        didl_metadata = create_didl_metadata(url, next_item)
+        didl_metadata = create_didl_metadata(self.mass, url, next_item)
         try:
             await dlna_player.device.async_set_next_transport_uri(
                 url, next_item.name, didl_metadata

@@ -288,10 +288,7 @@ class MetaDataController:
                 if img.provider != "url" and not resolve:
                     continue
                 if img.provider != "url" and resolve:
-                    # return imageproxy url for images that need to be resolved
-                    # the original path is double encoded
-                    encoded_url = urllib.parse.quote(urllib.parse.quote(img.path))
-                    return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}"
+                    return self.get_image_url(img)
                 return img.path
 
         # retry with track's album
@@ -308,6 +305,15 @@ class MetaDataController:
                 return await self.get_image_url_for_item(artist, img_type, resolve)
 
         return None
+
+    def get_image_url(self, image: MediaItemImage) -> str:
+        """Get (proxied) URL for MediaItemImage."""
+        if image.provider != "url":
+            # return imageproxy url for images that need to be resolved
+            # the original path is double encoded
+            encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
+            return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}"
+        return image.path
 
     async def get_thumbnail(
         self, path: str, size: int | None = None, provider: str = "url", base64: bool = False
