@@ -284,18 +284,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not getattr(item, "provider_mappings", None):
             # make sure we have a full object
             item = await self.get_db_item(item.item_id)
-        for prefer_available in (True, False):
-            for prefer_unique in (True, False):
-                for prov_mapping in item.provider_mappings:
-                    # returns the first provider that is available
-                    if prefer_available and not prov_mapping.available:
+        for prefer_unique in (True, False):
+            for prov_mapping in item.provider_mappings:
+                # returns the first provider that is available
+                if not prov_mapping.available:
+                    continue
+                if provider := self.mass.get_provider(prov_mapping.provider_instance):
+                    if prefer_unique and not provider.is_unique:
                         continue
-                    if provider := self.mass.get_provider(
-                        prov_mapping.provider_instance, return_unavailable=not prefer_available
-                    ):
-                        if prefer_unique and not provider.is_unique:
-                            continue
-                        return (prov_mapping.provider_instance, prov_mapping.item_id)
+                    return (prov_mapping.provider_instance, prov_mapping.item_id)
         return (None, None)
 
     async def get_db_items_by_query(
