@@ -135,9 +135,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Return (full) details for a single media item."""
         if not add_to_db and provider_instance_id_or_domain == "database":
             return await self.get_db_item(item_id)
-        if details and (details.provider == "database" or isinstance(details, ItemMapping)):
-            # invalidate details if not (full) provider details for this item
-            details = None
+        if details and not add_to_db and details.provider == "database":
+            return details
         db_item = await self.get_db_item_by_prov_id(
             item_id,
             provider_instance_id_or_domain,
@@ -151,10 +150,21 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         elif db_item:
             # we have a db item and no refreshing is needed, return the results!
             return db_item
-        if not details:
-            # no details provider nor in db, fetch them from the provider
+        if (
+            provider_instance_id_or_domain
+            and item_id
+            and (
+                not details
+                or isinstance(details, ItemMapping)
+                or (add_to_db and details.provider == "database")
+            )
+        ):
+            # grab full details from the provider
             details = await self.get_provider_item(
-                item_id, provider_instance_id_or_domain, force_refresh=force_refresh
+                item_id,
+                provider_instance_id_or_domain,
+                force_refresh=force_refresh,
+                fallback=details,
             )
         if not details:
             # we couldn't get a match from any of the providers, raise error
@@ -271,19 +281,22 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def get_provider_mapping(self, item: ItemCls) -> tuple[str, str]:
         """Return (first) provider and item id."""
-        if item.provider == "database":
+        if not getattr(item, "provider_mappings", None):
             # make sure we have a full object
             item = await self.get_db_item(item.item_id)
-        for prefer_file in (True, False):
-            for prov_mapping in item.provider_mappings:
-                # returns the first provider that is available
-                if not prov_mapping.available:
-                    continue
-                if prefer_file and not prov_mapping.provider_domain.startswith("filesystem"):
-                    continue
-                if self.mass.get_provider(prov_mapping.provider_instance):
-                    return (prov_mapping.provider_instance, prov_mapping.item_id)
-        return None, None
+        for prefer_available in (True, False):
+            for prefer_unique in (True, False):
+                for prov_mapping in item.provider_mappings:
+                    # returns the first provider that is available
+                    if prefer_available and not prov_mapping.available:
+                        continue
+                    if provider := self.mass.get_provider(
+                        prov_mapping.provider_instance, return_unavailable=not prefer_available
+                    ):
+                        if prefer_unique and not provider.is_unique:
+                            continue
+                        return (prov_mapping.provider_instance, prov_mapping.item_id)
+        return (None, None)
 
     async def get_db_items_by_query(
         self,
