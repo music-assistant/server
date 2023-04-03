@@ -402,8 +402,9 @@ class PlexProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        plex_album = await self._get_data(prov_album_id, PlexAlbum)
-        return await self._parse_album(plex_album) if plex_album else None
+        if plex_album := await self._get_data(prov_album_id, PlexAlbum):
+            return await self._parse_album(plex_album)
+        raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -417,18 +418,21 @@ class PlexProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-        return await self._parse_artist(plex_artist) if plex_artist else None
+        if plex_artist := await self._get_data(prov_artist_id, PlexArtist):
+            return await self._parse_artist(plex_artist)
+        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        plex_track = await self._get_data(prov_track_id, PlexTrack)
-        return await self._parse_track(plex_track)
+        if plex_track := await self._get_data(prov_track_id, PlexTrack):
+            return await self._parse_track(plex_track)
+        raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
-        return await self._parse_playlist(plex_playlist)
+        if plex_playlist := await self._get_data(prov_playlist_id, PlexPlaylist):
+            return await self._parse_playlist(plex_playlist)
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str

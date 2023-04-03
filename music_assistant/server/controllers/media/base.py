@@ -378,7 +378,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
     async def get_provider_item(
-        self, item_id: str, provider_instance_id_or_domain: str, force_refresh: bool = False
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        force_refresh: bool = False,
+        fallback: ItemMapping | ItemCls = None,
     ) -> ItemCls:
         """Return item details for the given provider item id."""
         cache_key = (
@@ -388,10 +392,34 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return await self.get_db_item(item_id)
         if not force_refresh and (cache := await self.mass.cache.get(cache_key)):
             return self.item_cls.from_dict(cache)
-        if provider := self.mass.get_provider(provider_instance_id_or_domain):  # noqa: SIM102
-            if item := await provider.get_item(self.media_type, item_id):
-                await self.mass.cache.set(cache_key, item.to_dict())
-                return item
+        if provider := self.mass.get_provider(provider_instance_id_or_domain):
+            with suppress(MediaNotFoundError):
+                if item := await provider.get_item(self.media_type, item_id):
+                    await self.mass.cache.set(cache_key, item.to_dict())
+                    return item
+        # if we reach this point all possibilities failed and the item could not be found.
+        # There is a possibility that the (streaming) provider changed the id of the item
+        # so we return the previous details (if we have any) marked as unavailable, so
+        # at least we have the possibility to sort out the new id through matching logic.
+        if not fallback:
+            fallback = await self.get_db_item_by_prov_id(item_id, provider_instance_id_or_domain)
+        if fallback:
+            fallback_result = ItemCls(
+                item_id=item_id,
+                provider=provider.instance_id,
+                name=fallback.name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=item_id,
+                        provider_domain=provider.domain,
+                        provider_instance=provider.instance_id,
+                        available=False,
+                    )
+                },
+            )
+            if hasattr(fallback, "version") and hasattr(fallback_result, "version"):
+                fallback_result.version = fallback.version
+            return fallback_result
         raise MediaNotFoundError(
             f"{self.media_type.value}://{item_id} not "
             "found on provider {provider_instance_id_or_domain}"
@@ -449,7 +477,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 continue
             return await self._get_provider_dynamic_tracks(
                 prov_mapping.item_id,
-                provider_instance_id_or_domain,
+                prov_mapping.provider_instance,
                 limit=limit,
             )
         # Fallback to the default implementation

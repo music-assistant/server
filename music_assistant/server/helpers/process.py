@@ -114,7 +114,8 @@ class AsyncProcess:
         if self.closed or self._proc.stdin.is_closing():
             return
         self._proc.stdin.write(data)
-        await self._proc.stdin.drain()
+        with suppress(BrokenPipeError):
+            await self._proc.stdin.drain()
 
     def write_eof(self) -> None:
         """Write end of file to to process stdin."""

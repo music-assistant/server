@@ -17,6 +17,7 @@ from music_assistant.constants import (
     CONF_FLOW_MODE,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
+    CONF_OUTPUT_CODEC,
     CONF_VOLUME_NORMALISATION,
     CONF_VOLUME_NORMALISATION_TARGET,
     SECURE_STRING_SUBSTITUTE,
@@ -366,4 +367,22 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         "for example to a create a stereo pair with 2 players.",
         advanced=True,
     ),
+)
+
+CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
+    key=CONF_OUTPUT_CODEC,
+    type=ConfigEntryType.STRING,
+    label="Output codec",
+    options=[
+        ConfigValueOption("FLAC (lossless, compact file size)", "flac"),
+        ConfigValueOption("M4A AAC (lossy, superior quality)", "aac"),
+        ConfigValueOption("MP3 (lossy, average quality)", "mp3"),
+        ConfigValueOption("WAV (lossless, huge file size)", "wav"),
+    ],
+    default_value="flac",
+    description="Define the codec that is sent to the player when streaming audio. "
+    "By default Music Assistant prefers FLAC because it is lossless, has a "
+    "respectable filesize and is supported by most player devices. "
+    "Change this setting only if needed for your device/environment.",
+    advanced=True,
 )

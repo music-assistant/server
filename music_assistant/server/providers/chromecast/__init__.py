@@ -19,7 +19,11 @@ from pychromecast.discovery import CastBrowser, SimpleCastListener
 from pychromecast.models import CastInfo
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_OUTPUT_CODEC,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -31,7 +35,12 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_HIDE_GROUP_CHILDS, CONF_PLAYERS, MASS_LOGO_ONLINE
+from music_assistant.constants import (
+    CONF_HIDE_GROUP_CHILDS,
+    CONF_OUTPUT_CODEC,
+    CONF_PLAYERS,
+    MASS_LOGO_ONLINE,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -49,6 +58,7 @@ if TYPE_CHECKING:
 
 CONF_ALT_APP = "alt_app"
 
+
 BASE_PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
         key=CONF_ALT_APP,
@@ -59,6 +69,7 @@ BASE_PLAYER_CONFIG_ENTRIES = (
         "the playback experience but may not work on non-Google hardware.",
         advanced=True,
     ),
+    CONF_ENTRY_OUTPUT_CODEC,
 )
 
 
@@ -109,6 +120,7 @@ class ChromecastProvider(PlayerProvider):
         # silence the cast logger a bit
         logging.getLogger("pychromecast.socket_client").setLevel(logging.INFO)
         logging.getLogger("pychromecast.controllers").setLevel(logging.INFO)
+        logging.getLogger("pychromecast.dial").setLevel(logging.INFO)
         self.mz_mgr = MultizoneManager()
         self.browser = CastBrowser(
             SimpleCastListener(
@@ -188,13 +200,13 @@ class ChromecastProvider(PlayerProvider):
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         castplayer = self.castplayers[player_id]
+        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC).value
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=player_id,
             seek_position=seek_position,
             fade_in=fade_in,
-            # prefer FLAC as it seems to work on all CC players
-            content_type=ContentType.FLAC,
+            content_type=ContentType(output_codec),
             flow_mode=flow_mode,
         )
         castplayer.flow_mode_active = flow_mode

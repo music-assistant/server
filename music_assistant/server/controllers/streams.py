@@ -643,17 +643,25 @@ class StreamsController:
             "-i",
             "-",
         ]
-        # output args
-        output_args = [
-            # output args
-            "-f",
-            output_format.value,
+        input_args += ["-metadata", 'title="Music Assistant"']
+        # select output args
+        if output_format == ContentType.FLAC:
+            output_args = ["-f", "flac", "-compression_level", "3"]
+        elif output_format == ContentType.AAC:
+            output_args = ["-f", "adts", "-c:a", output_format.value, "-b:a", "320k"]
+        elif output_format == ContentType.MP3:
+            output_args = ["-f", "mp3", "-c:a", output_format.value, "-b:a", "320k"]
+        else:
+            output_args = ["-f", output_format.value]
+
+        output_args += [
+            # append channels
             "-ac",
             "1" if conf_channels != "stereo" else "2",
+            # append sample rate
             "-ar",
             str(output_sample_rate),
-            "-compression_level",
-            "0",
+            # output = pipe
             "-",
         ]
         # collect extra and filter args

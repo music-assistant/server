@@ -416,7 +416,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                         # 100% album match
                         # get full artist details so we have all metadata
                         prov_artist = await self.get_provider_item(
-                            search_item_artist.item_id, search_item_artist.provider
+                            search_item_artist.item_id,
+                            search_item_artist.provider,
+                            fallback=search_result_item,
                         )
                         await self._update_db_item(db_artist.item_id, prov_artist)
                         return True
@@ -446,6 +448,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     prov_artist = await self.get_provider_item(
                         search_result_item.artists[0].item_id,
                         search_result_item.artists[0].provider,
+                        fallback=search_result_item,
                     )
                     await self._update_db_item(db_artist.item_id, prov_artist)
                     return True
