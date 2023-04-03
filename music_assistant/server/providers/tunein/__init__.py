@@ -128,7 +128,7 @@ class TuneInProvider(MusicProvider):
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
                 return radio
-        return None
+        raise MediaNotFoundError(f"Item {prov_radio_id} not found")
 
     async def _parse_radio(
         self, details: dict, stream: dict | None = None, folder: str | None = None
