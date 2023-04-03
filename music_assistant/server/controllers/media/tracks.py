@@ -110,7 +110,7 @@ class TracksController(MediaControllerBase[Track]):
             item.album = await self.mass.music.albums.get_provider_item(
                 item.album.item_id, item.album.provider, fallback=item.album
             )
-        if item.album:
+        if item.album and not isinstance(item.album, ItemMapping):
             item.album.artists = [
                 await self.mass.music.artists.get_provider_item(
                     artist.item_id, artist.provider, fallback=artist
@@ -222,7 +222,7 @@ class TracksController(MediaControllerBase[Track]):
                     # do a basic compare first
                     if not compare_track(search_result_item, db_track):
                         continue
-                    # we must fetch the full album version, search results are simplified objects
+                    # we must fetch the full version, search results are simplified objects
                     prov_track = await self.get_provider_item(
                         search_result_item.item_id,
                         search_result_item.provider,
