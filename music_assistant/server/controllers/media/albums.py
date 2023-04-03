@@ -80,7 +80,9 @@ class AlbumsController(MediaControllerBase[Album]):
         """Add album to local db and return the database item."""
         # resolve any ItemMapping artists
         item.artists = [
-            await self.mass.music.artists.get_provider_item(artist.item_id, artist.provider)
+            await self.mass.music.artists.get_provider_item(
+                artist.item_id, artist.provider, fallback=artist
+            )
             if isinstance(artist, ItemMapping)
             else artist
             for artist in item.artists
@@ -398,7 +400,9 @@ class AlbumsController(MediaControllerBase[Album]):
                         continue
                     # we must fetch the full album version, search results are simplified objects
                     prov_album = await self.get_provider_item(
-                        search_result_item.item_id, search_result_item.provider
+                        search_result_item.item_id,
+                        search_result_item.provider,
+                        fallback=search_result_item,
                     )
                     if compare_album(prov_album, db_album):
                         # 100% match, we can simply update the db with additional provider ids

@@ -99,7 +99,9 @@ class TracksController(MediaControllerBase[Track]):
         assert item.artists
         # resolve any ItemMapping artists
         item.artists = [
-            await self.mass.music.artists.get_provider_item(artist.item_id, artist.provider)
+            await self.mass.music.artists.get_provider_item(
+                artist.item_id, artist.provider, fallback=artist
+            )
             if isinstance(artist, ItemMapping)
             else artist
             for artist in item.artists
@@ -107,11 +109,13 @@ class TracksController(MediaControllerBase[Track]):
         # resolve ItemMapping album
         if isinstance(item.album, ItemMapping):
             item.album = await self.mass.music.albums.get_provider_item(
-                item.album.item_id, item.album.provider
+                item.album.item_id, item.album.provider, fallback=item.album
             )
         if item.album:
             item.album.artists = [
-                await self.mass.music.artists.get_provider_item(artist.item_id, artist.provider)
+                await self.mass.music.artists.get_provider_item(
+                    artist.item_id, artist.provider, fallback=artist
+                )
                 if isinstance(artist, ItemMapping)
                 else artist
                 for artist in item.album.artists
@@ -217,7 +221,9 @@ class TracksController(MediaControllerBase[Track]):
                         continue
                     # we must fetch the full album version, search results are simplified objects
                     prov_track = await self.get_provider_item(
-                        search_result_item.item_id, search_result_item.provider
+                        search_result_item.item_id,
+                        search_result_item.provider,
+                        fallback=search_result_item,
                     )
                     if compare_track(prov_track, db_track):
                         # 100% match, we can simply update the db with additional provider ids
