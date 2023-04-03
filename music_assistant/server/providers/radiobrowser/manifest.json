@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "radiobrowser",
+  "name": "RadioBrowser",
+  "description": "Play your favorite radio stations from RadioBrowser in Music Assistant.",
+  "codeowners": ["@gieljnssns"],
+  "requirements": ["aioradios==0.2.6"],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/categories/music-providers",
+  "multi_instance": true
+}
