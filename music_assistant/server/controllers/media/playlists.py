@@ -60,6 +60,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         )
         return db_item
 
+    async def update(self, item_id: int, update: Playlist, overwrite: bool = False) -> Playlist:
+        """Update existing record in the database."""
+        return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
+
     async def tracks(
         self,
         item_id: str,
@@ -194,7 +198,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
             if cur_item := await self.mass.music.database.get_row(self.db_table, match):
                 # update existing
                 return await self._update_db_item(cur_item["item_id"], item)
-
             # insert new item
             item.timestamp_added = int(utc_timestamp())
             item.timestamp_modified = int(utc_timestamp())
@@ -207,15 +210,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return await self.get_db_item(item_id)
 
     async def _update_db_item(
-        self,
-        item_id: int,
-        item: Playlist,
+        self, item_id: int, item: Playlist, overwrite: bool = True
     ) -> Playlist:
         """Update Playlist record in the database."""
-        assert item.provider_mappings, "Item is missing provider mapping(s)"
         cur_item = await self.get_db_item(item_id)
-        metadata = cur_item.metadata.update(item.metadata)
-        provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
+        metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": item_id},
