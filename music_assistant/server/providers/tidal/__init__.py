@@ -1,14 +1,17 @@
 """Tidal musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
 from tidalapi import Session as TidalSession
 
+from music_assistant.common.helpers.uri import create_uri
+from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
     AlbumType,
@@ -22,6 +25,7 @@ from music_assistant.common.models.media_items import (
     Artist,
     ContentType,
     ImageType,
+    ItemMapping,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -365,7 +369,7 @@ class TidalProvider(MusicProvider):
             try:
                 image_url = artist_obj.image(750)
             except Exception:
-                print(f"Error: Artist {artist_id} has no available picture")
+                self.logger.info(f"Artist {artist_id} has no available picture")
         artist.metadata.images = [
             MediaItemImage(
                 ImageType.THUMB,
@@ -379,7 +383,7 @@ class TidalProvider(MusicProvider):
         """Parse tidal album object to generic layout."""
         name = album_obj.name
         version = None
-        if album_obj.version != "null":
+        if album_obj.version is not None:
             version = album_obj.version
         album_id = album_obj.id
         album = Album(item_id=album_id, provider=self.instance_id, name=name, version=version)
@@ -397,7 +401,7 @@ class TidalProvider(MusicProvider):
         try:
             image_url = album_obj.image(1280)
         except Exception:
-            print(f"Error: Album {album_id} has no available picture")
+            self.logger.info(f"Album {album_id} has no available picture")
         album.metadata.images = [
             MediaItemImage(
                 ImageType.THUMB,
@@ -420,6 +424,16 @@ class TidalProvider(MusicProvider):
         )
         return album
 
+    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+        return ItemMapping(
+            media_type,
+            key,
+            self.instance_id,
+            name,
+            create_uri(media_type, self.instance_id, key),
+            create_sort_name(self.name),
+        )
+
     async def _parse_track(self, track_obj) -> Track:
         """Parse tidal track object to generic layout."""
         version = None
@@ -436,6 +450,9 @@ class TidalProvider(MusicProvider):
             track_number=track_obj.track_num,
         )
         track.isrc.add(track_obj.isrc)
+        """ track.album = self._get_item_mapping(
+            MediaType.ALBUM, track_obj.album.id, track_obj.album.name
+        ) """
         track.artists = []
         for track_artist in track_obj.artists:
             artist = await self._parse_artist(track_artist)
@@ -468,7 +485,7 @@ class TidalProvider(MusicProvider):
             item_id=playlist_id,
             provider=self.instance_id,
             name=playlist_obj.name,
-            owner=creator_id,
+            owner=playlist_obj.creator.name,
         )
         playlist.add_provider_mapping(
             ProviderMapping(
@@ -486,7 +503,7 @@ class TidalProvider(MusicProvider):
         try:
             image_url = playlist_obj.image(1080)
         except Exception:
-            print(f"Error: Playlist {playlist_id} has no available picture")
+            self.logger.info(f"Playlist {playlist_id} has no available picture")
         playlist.metadata.images = [
             MediaItemImage(
                 ImageType.THUMB,
@@ -498,33 +515,31 @@ class TidalProvider(MusicProvider):
 
     async def login(self) -> TidalSession:
         """Log-in Tidal and return tokeninfo."""
-        # return existing session if we have one in memory
         if (
             self._tidal_session
             and self._tidal_session.access_token == self._access_token
-            and (self._expiry_time > datetime.utcnow() + timedelta(minutes=2))
+            and self._expiry_time > datetime.now(UTC) + timedelta(minutes=30)
         ):
             return self._tidal_session
-        else:
-            session = await tidal_session(
-                TOKEN_TYPE,
-                self._access_token,
-                self._refresh_token,
-                self._expiry_time,
-            )
-            self.mass.config.set(
-                f"providers/{self.instance_id}/values/{CONF_USERNAME}", str(session.user.id)
-            )
-            self.mass.config.set(
-                f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}", session.access_token
-            )
-            self.mass.config.set(
-                f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}", session.refresh_token
-            )
-            self.mass.config.set(
-                f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}",
-                session.expiry_time.isoformat(),
-            )
+        session = await tidal_session(
+            TOKEN_TYPE,
+            self._access_token,
+            self._refresh_token,
+            self._expiry_time,
+        )
+        self.mass.config.set(
+            f"providers/{self.instance_id}/values/{CONF_USERNAME}", str(session.user.id)
+        )
+        self.mass.config.set(
+            f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}", session.access_token
+        )
+        self.mass.config.set(
+            f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}", session.refresh_token
+        )
+        self.mass.config.set(
+            f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}",
+            session.expiry_time.isoformat(),
+        )
         self._access_token = session.access_token
         self._refresh_token = session.refresh_token
         self._expiry_time = session.expiry_time

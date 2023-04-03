@@ -9,17 +9,20 @@ This also nicely separates the parsing logic from the Tidal provider logic.
 import asyncio
 import webbrowser
 
+from requests import HTTPError
 from tidalapi import Album as TidalAlbum
 from tidalapi import Artist as TidalArtist
 from tidalapi import Config as TidalConfig
 from tidalapi import Favorites as TidalFavorites
-from tidalapi import LoggedInUser, UserPlaylist
+from tidalapi import LoggedInUser
 from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Quality as TidalQuality
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
+from tidalapi import UserPlaylist as TidalUserPlaylist
 
 from music_assistant.common.models.enums import MediaType
+from music_assistant.common.models.errors import MediaNotFoundError
 
 
 async def tidal_session(
@@ -57,40 +60,25 @@ async def library_items_add_remove(
     """Async wrapper around the tidalapi Favorites.items add/remove function."""
 
     def _library_items_add_remove():
-        if media_type == MediaType.ARTIST:
-            _artists_add_remove()
-        if media_type == MediaType.ALBUM:
-            _albums_add_remove()
-        if media_type == MediaType.TRACK:
-            _tracks_add_remove()
-        if media_type == MediaType.PLAYLIST:
-            _playlists_add_remove()
-        if media_type == MediaType.UNKNOWN:
-            return
-
-    def _artists_add_remove():
-        if add:
-            return TidalFavorites(session, user_id).add_artist(item_id)
-        if not add:
-            return TidalFavorites(session, user_id).remove_artist(item_id)
-
-    def _albums_add_remove():
-        if add:
-            return TidalFavorites(session, user_id).add_album(item_id)
-        if not add:
-            return TidalFavorites(session, user_id).remove_album(item_id)
-
-    def _tracks_add_remove():
-        if add:
-            return TidalFavorites(session, user_id).add_track(item_id)
-        if not add:
-            return TidalFavorites(session, user_id).remove_track(item_id)
-
-    def _playlists_add_remove():
-        if add:
-            return TidalFavorites(session, user_id).add_playlist(item_id)
-        if not add:
-            return TidalFavorites(session, user_id).remove_playlist(item_id)
+        match media_type:
+            case MediaType.ARTIST:
+                TidalFavorites(session, user_id).add_artist(item_id) if add else TidalFavorites(
+                    session, user_id
+                ).remove_artist(item_id)
+            case MediaType.ALBUM:
+                TidalFavorites(session, user_id).add_album(item_id) if add else TidalFavorites(
+                    session, user_id
+                ).remove_album(item_id)
+            case MediaType.TRACK:
+                TidalFavorites(session, user_id).add_track(item_id) if add else TidalFavorites(
+                    session, user_id
+                ).remove_track(item_id)
+            case MediaType.PLAYLIST:
+                TidalFavorites(session, user_id).add_playlist(item_id) if add else TidalFavorites(
+                    session, user_id
+                ).remove_playlist(item_id)
+            case MediaType.UNKNOWN:
+                return
 
     return await asyncio.to_thread(_library_items_add_remove)
 
@@ -142,7 +130,12 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
     """Async wrapper around the tidalapi Album function."""
 
     def _get_album():
-        return TidalAlbum(session, prov_album_id)
+        album_obj = None
+        try:
+            album_obj = TidalAlbum(session, prov_album_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
+        return album_obj
 
     return await asyncio.to_thread(_get_album)
 
@@ -151,7 +144,12 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     """Async wrapper around the tidalapi Track function."""
 
     def _get_track():
-        return TidalTrack(session, prov_track_id)
+        track_obj = None
+        try:
+            track_obj = TidalTrack(session, prov_track_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+        return track_obj
 
     return await asyncio.to_thread(_get_track)
 
@@ -196,7 +194,12 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
     """Async wrapper around the tidal Playlist function."""
 
     def _get_playlist():
-        return TidalPlaylist(session, prov_playlist_id)
+        playlist_obj = None
+        try:
+            playlist_obj = TidalPlaylist(session, prov_playlist_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
+        return playlist_obj
 
     return await asyncio.to_thread(_get_playlist)
 
@@ -217,10 +220,10 @@ async def add_remove_playlist_tracks(
 
     def _add_remove_playlist_tracks():
         if add:
-            return UserPlaylist(session, prov_playlist_id).add(track_ids)
+            return TidalUserPlaylist(session, prov_playlist_id).add(track_ids)
         if not add:
             for item in track_ids:
-                UserPlaylist(session, prov_playlist_id).remove_by_id(int(item))
+                TidalUserPlaylist(session, prov_playlist_id).remove_by_id(int(item))
 
     return await asyncio.to_thread(_add_remove_playlist_tracks)
 
