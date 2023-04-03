@@ -414,7 +414,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not fallback:
             fallback = await self.get_db_item_by_prov_id(item_id, provider_instance_id_or_domain)
         if fallback:
-            fallback_result = ItemCls(
+            fallback_result = self.item_cls(
                 item_id=item_id,
                 provider=provider.instance_id,
                 name=fallback.name,
@@ -429,6 +429,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
             if hasattr(fallback, "version") and hasattr(fallback_result, "version"):
                 fallback_result.version = fallback.version
+            if hasattr(fallback, "artists") and hasattr(fallback_result, "artists"):
+                fallback_result.artists = fallback.artists
+            if hasattr(fallback, "album") and hasattr(fallback_result, "album"):
+                fallback_result.album = fallback.album
             return fallback_result
         raise MediaNotFoundError(
             f"{self.media_type.value}://{item_id} not "
