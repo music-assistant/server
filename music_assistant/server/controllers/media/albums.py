@@ -286,7 +286,10 @@ class AlbumsController(MediaControllerBase[Album]):
         full_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.albumtracks.{item_id}"
-        cache_checksum = full_album.metadata.checksum
+        if isinstance(full_album, ItemMapping):
+            cache_checksum = None
+        else:
+            cache_checksum = full_album.metadata.checksum
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -294,7 +297,7 @@ class AlbumsController(MediaControllerBase[Album]):
         for track in await prov.get_album_tracks(item_id):
             # make sure that the (full) album is stored on the tracks
             track.album = full_album
-            if full_album.metadata.images:
+            if not isinstance(full_album, ItemMapping) and full_album.metadata.images:
                 track.metadata.images = full_album.metadata.images
             items.append(track)
         # store (serializable items) in cache
