@@ -327,6 +327,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider_instance_id_or_domain: str,
     ) -> ItemCls | None:
         """Get the database item for the given provider_instance."""
+        assert item_id
+        assert provider_instance_id_or_domain
         if provider_instance_id_or_domain == "database":
             return await self.get_db_item(item_id)
         for item in await self.get_db_items_by_prov_id(
