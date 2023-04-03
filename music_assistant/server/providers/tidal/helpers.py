@@ -87,7 +87,12 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     """Async wrapper around the tidalapi Artist function."""
 
     def _get_artist():
-        return TidalArtist(session, prov_artist_id)
+        artist_obj = None
+        try:
+            artist_obj = TidalArtist(session, prov_artist_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+        return artist_obj
 
     return await asyncio.to_thread(_get_artist)
 
