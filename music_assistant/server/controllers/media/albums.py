@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -50,7 +54,7 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         lazy: bool = True,
-        details: Album = None,
+        details: Album | ItemMapping = None,
         add_to_db: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
@@ -77,6 +81,8 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def add(self, item: Album, skip_metadata_lookup: bool = False) -> Album:
         """Add album to local db and return the database item."""
+        if not isinstance(item, Album):
+            raise InvalidDataError("Not a valid Album object (ItemMapping can not be added to db)")
         # resolve any ItemMapping artists
         item.artists = [
             await self.mass.music.artists.get_provider_item(
