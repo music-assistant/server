@@ -6,7 +6,11 @@ import asyncio
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.common.models.media_items import (
     Album,
     DbTrack,
@@ -95,7 +99,10 @@ class TracksController(MediaControllerBase[Track]):
 
     async def add(self, item: Track, skip_metadata_lookup: bool = False) -> Track:
         """Add track to local db and return the new database item."""
-        assert item.artists, "Artist(s) missing on Track"
+        if not isinstance(item, Track):
+            raise InvalidDataError("Not a valid Track object (ItemMapping can not be added to db)")
+        if not item.artists:
+            raise InvalidDataError("Track is missing artist(s)")
         # resolve any ItemMapping artists
         item.artists = [
             await self.mass.music.artists.get_provider_item(
@@ -403,6 +410,14 @@ class TracksController(MediaControllerBase[Track]):
             album.item_id, album.provider
         ):
             return ItemMapping.from_item(db_album)
+
+        # try to request the full item
+        album = await self.mass.music.albums.get_provider_item(
+            album.item_id, album.provider, fallback=album
+        )
+        if isinstance(album, ItemMapping):
+            # this can happen for unavailable items
+            return album
 
         db_album = await self.mass.music.albums.add(album, skip_metadata_lookup=True)
         return ItemMapping.from_item(db_album)

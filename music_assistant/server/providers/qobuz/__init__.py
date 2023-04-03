@@ -647,11 +647,9 @@ class QobuzProvider(MusicProvider):
             kwargs["user_auth_token"] = await self._auth_token()
         async with self._throttler:
             async with self.mass.http_session.get(
-                url, headers=headers, params=kwargs, ssl=False
+                url, headers=headers, params=kwargs, ssl=False, raise_for_status=True
             ) as response:
                 try:
-                    # make sure status is 200
-                    assert response.status == 200
                     result = await response.json()
                     # check for error in json
                     if error := result.get("error"):

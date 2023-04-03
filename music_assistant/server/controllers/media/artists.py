@@ -52,8 +52,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.mass.register_api_command("music/artist/update", self._update_db_item)
         self.mass.register_api_command("music/artist/delete", self.delete)
 
-    async def add(self, item: Artist, skip_metadata_lookup: bool = False) -> Artist:
+    async def add(self, item: Artist | ItemMapping, skip_metadata_lookup: bool = False) -> Artist:
         """Add artist to local db and return the database item."""
+        if isinstance(item, ItemMapping):
+            skip_metadata_lookup = True
         # grab musicbrainz id and additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_artist_metadata(item)

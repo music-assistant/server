@@ -567,5 +567,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         ):
             return ItemMapping.from_item(db_artist)
 
+        # try to request the full item
+        artist = await self.mass.music.artists.get_provider_item(
+            artist.item_id, artist.provider, fallback=artist
+        )
+        if isinstance(artist, ItemMapping):
+            # this can happen for unavailable items
+            return artist
+
         db_artist = await self.mass.music.artists.add(artist, skip_metadata_lookup=True)
         return ItemMapping.from_item(db_artist)
