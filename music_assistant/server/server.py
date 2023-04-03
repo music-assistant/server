@@ -182,6 +182,17 @@ class MusicAssistant:
         """Signal event to subscribers."""
         if self.closing:
             return
+        if (
+            event
+            in (
+                EventType.MEDIA_ITEM_ADDED,
+                EventType.MEDIA_ITEM_DELETED,
+                EventType.MEDIA_ITEM_UPDATED,
+            )
+            and self.music.in_progress_syncs
+        ):
+            # ignore media item events while sync is running because it clutters too much
+            return
 
         if LOGGER.isEnabledFor(logging.DEBUG) and event != EventType.QUEUE_TIME_UPDATED:
             # do not log queue time updated events because that is too chatty

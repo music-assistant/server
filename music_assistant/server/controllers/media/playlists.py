@@ -210,7 +210,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return await self.get_db_item(item_id)
 
     async def _update_db_item(
-        self, item_id: int, item: Playlist, overwrite: bool = True
+        self, item_id: int, item: Playlist, overwrite: bool = False
     ) -> Playlist:
         """Update Playlist record in the database."""
         cur_item = await self.get_db_item(item_id)
@@ -221,9 +221,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             {"item_id": item_id},
             {
                 # always prefer name/owner from updated item here
-                "name": item.name,
-                "sort_name": item.sort_name,
-                "owner": item.owner,
+                "name": item.name or cur_item.name,
+                "sort_name": item.sort_name or cur_item.sort_name,
+                "owner": item.owner or cur_item.sort_name,
                 "is_editable": item.is_editable,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),

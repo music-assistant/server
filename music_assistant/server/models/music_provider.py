@@ -388,11 +388,10 @@ class MusicProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def sync_library(self, media_types: tuple[MediaType, ...] | None = None) -> None:
+    async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
         # this reference implementation can be overridden
         # with a provider specific approach if needed
-        media_types = tuple(x for x in MediaType)
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue
