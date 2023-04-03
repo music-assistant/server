@@ -179,15 +179,13 @@ class PlayerQueuesController:
             if radio_mode:
                 queue.radio_source.append(media_item)
             elif media_item.media_type == MediaType.PLAYLIST:
-                async for playlist_track in ctrl.tracks(
-                    media_item.item_id, provider_domain=media_item.provider
-                ):
+                async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
                     tracks.append(playlist_track)
             elif media_item.media_type in (
                 MediaType.ARTIST,
                 MediaType.ALBUM,
             ):
-                tracks += await ctrl.tracks(media_item.item_id, provider_domain=media_item.provider)
+                tracks += await ctrl.tracks(media_item.item_id, media_item.provider)
             else:
                 # single track or radio item
                 tracks += [media_item]
@@ -469,8 +467,6 @@ class PlayerQueuesController:
         player_prov = self.mass.players.get_player_provider(queue_id)
         flow_mode = self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
         queue.flow_mode = flow_mode.value
-        # make sure that the queue item image is resolved
-        await queue_item.resolve_image_url(self.mass)
         await player_prov.cmd_play_media(
             queue_id,
             queue_item=queue_item,
@@ -612,8 +608,6 @@ class PlayerQueuesController:
         next_item = self.get_item(queue.queue_id, next_index)
         if not next_item:
             raise QueueEmpty("No more tracks left in the queue.")
-        # make sure that the queue item image is resolved
-        await next_item.resolve_image_url(self.mass)
         queue.index_in_buffer = next_index
         # work out crossfade
         crossfade = queue.crossfade_enabled
@@ -759,9 +753,7 @@ class PlayerQueuesController:
         # shuffle the source items, just in case
         for radio_item in random.sample(queue.radio_source, len(queue.radio_source)):
             ctrl = self.mass.music.get_controller(radio_item.media_type)
-            tracks += await ctrl.dynamic_tracks(
-                item_id=radio_item.item_id, provider_domain=radio_item.provider
-            )
+            tracks += await ctrl.dynamic_tracks(radio_item.item_id, radio_item.provider)
             # make sure we do not grab too much items
             if len(tracks) >= 50:
                 break

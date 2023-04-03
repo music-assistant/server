@@ -1,4 +1,5 @@
 """Plex musicprovider support for MusicAssistant."""
+import logging
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator, Callable, Coroutine
 
@@ -14,8 +15,6 @@ from plexapi.media import MediaPart as PlexMediaPart
 from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
-from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ProviderConfig
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -98,19 +97,17 @@ class PlexProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the music provider by connecting to the server."""
+        # silence urllib logger
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
 
         def connect():
             plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
-            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect(None)
+            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect(None, 10)
 
         self._plex_server = await self._run_async(connect)
         self._plex_library = await self._run_async(
             self._plex_server.library.section, self.config.get_value(CONF_LIBRARY_NAME)
         )
-
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
-        """Return the full image URL including the auth token."""
-        return self._plex_server.url(path, True)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -125,6 +122,23 @@ class PlexProvider(MusicProvider):
             ProviderFeature.ARTIST_ALBUMS,
         )
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return True
+
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """Return the full image URL including the auth token."""
+        return self._plex_server.url(path, True)
+
     async def _run_async(self, call: Callable, *args, **kwargs):
         return await self.mass.create_task(call, *args, **kwargs)
 
@@ -137,8 +151,6 @@ class PlexProvider(MusicProvider):
             key,
             self.instance_id,
             name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
         )
 
     async def _parse(self, plex_media) -> MediaItem | None:
@@ -201,7 +213,7 @@ class PlexProvider(MusicProvider):
         album_id = plex_album.key
         album = Album(
             item_id=album_id,
-            provider=self.instance_id,
+            provider=self.domain,
             name=plex_album.title,
         )
         if plex_album.year:
@@ -211,8 +223,8 @@ class PlexProvider(MusicProvider):
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
-        album.artist = self._get_item_mapping(
-            MediaType.ARTIST, plex_album.parentKey, plex_album.parentTitle
+        album.artists.append(
+            self._get_item_mapping(MediaType.ARTIST, plex_album.parentKey, plex_album.parentTitle)
         )
 
         album.add_provider_mapping(
@@ -230,7 +242,7 @@ class PlexProvider(MusicProvider):
         artist_id = plex_artist.key
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.instance_id)
+        artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.domain)
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
         if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
@@ -248,7 +260,7 @@ class PlexProvider(MusicProvider):
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
         """Parse a Plex Playlist response to a Playlist object."""
         playlist = Playlist(
-            item_id=plex_playlist.key, provider=self.instance_id, name=plex_playlist.title
+            item_id=plex_playlist.key, provider=self.domain, name=plex_playlist.title
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
@@ -270,8 +282,10 @@ class PlexProvider(MusicProvider):
         track = Track(item_id=plex_track.key, provider=self.instance_id, name=plex_track.title)
 
         if plex_track.grandparentKey:
-            track.artist = self._get_item_mapping(
-                MediaType.ARTIST, plex_track.grandparentKey, plex_track.grandparentTitle
+            track.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST, plex_track.grandparentKey, plex_track.grandparentTitle
+                )
             )
         if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             track.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
@@ -298,7 +312,7 @@ class PlexProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=available,
-                content_type=ContentType.try_parse(content) if content else None,
+                content_type=ContentType.try_parse(content) if content else ContentType.UNKNOWN,
                 url=plex_track.getWebURL(),
             )
         )
@@ -388,8 +402,9 @@ class PlexProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        plex_album = await self._get_data(prov_album_id, PlexAlbum)
-        return await self._parse_album(plex_album) if plex_album else None
+        if plex_album := await self._get_data(prov_album_id, PlexAlbum):
+            return await self._parse_album(plex_album)
+        raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -403,18 +418,21 @@ class PlexProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        plex_artist = await self._get_data(prov_artist_id, PlexArtist)
-        return await self._parse_artist(plex_artist) if plex_artist else None
+        if plex_artist := await self._get_data(prov_artist_id, PlexArtist):
+            return await self._parse_artist(plex_artist)
+        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        plex_track = await self._get_data(prov_track_id, PlexTrack)
-        return await self._parse_track(plex_track)
+        if plex_track := await self._get_data(prov_track_id, PlexTrack):
+            return await self._parse_track(plex_track)
+        raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
-        return await self._parse_playlist(plex_playlist)
+        if plex_playlist := await self._get_data(prov_playlist_id, PlexPlaylist):
+            return await self._parse_playlist(plex_playlist)
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
@@ -451,14 +469,16 @@ class PlexProvider(MusicProvider):
 
         media: PlexMedia = plex_track.media[0]
 
-        media_type = ContentType.try_parse(media.container)
+        media_type = (
+            ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
+        )
         media_part: PlexMediaPart = media.parts[0]
         audio_stream: PlexAudioStream = media_part.audioStreams()[0]
 
         stream_details = StreamDetails(
             item_id=plex_track.key,
             provider=self.instance_id,
-            content_type=ContentType.try_parse(media.container),
+            content_type=media_type,
             duration=plex_track.duration,
             channels=media.audioChannels,
             data=plex_track,

@@ -93,12 +93,12 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
     if value is None and value_type is NoneType:
         return None
     origin = get_origin(value_type)
-    if origin is list:
-        return [
+    if origin in (tuple, list):
+        return origin(
             parse_value(name, subvalue, get_args(value_type)[0])
             for subvalue in value
             if subvalue is not None
-        ]
+        )
     elif origin is dict:
         subkey_type = get_args(value_type)[0]
         subvalue_type = get_args(value_type)[1]

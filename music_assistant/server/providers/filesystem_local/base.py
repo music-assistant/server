@@ -173,6 +173,19 @@ class FileSystemProviderBase(MusicProvider):
     # DEFAULT/GENERIC IMPLEMENTATION BELOW
     # should normally not be needed to override
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return True
+
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5  # noqa: ARG002
     ) -> SearchResults:
@@ -213,7 +226,7 @@ class FileSystemProviderBase(MusicProvider):
                 subitems.append(
                     BrowseFolder(
                         item_id=item.path,
-                        provider=self.domain,
+                        provider=self.instance_id,
                         path=f"{self.instance_id}://{item.path}",
                         name=item.name,
                     )
@@ -226,30 +239,32 @@ class FileSystemProviderBase(MusicProvider):
 
             if item.ext in TRACK_EXTENSIONS:
                 if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
-                    item.path, provider_instance=self.instance_id
+                    item.path, self.instance_id
                 ):
                     subitems.append(db_item)
                 elif track := await self.get_track(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.tracks.add_db_item(track)
+                    db_item = await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
                     subitems.append(db_item)
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
                 if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
-                    item.path, provider_instance=self.instance_id
+                    item.path, self.instance_id
                 ):
                     subitems.append(db_item)
                 elif playlist := await self.get_playlist(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.playlists.add_db_item(playlist)
+                    db_item = await self.mass.music.playlists.add(
+                        playlist, skip_metadata_lookup=True
+                    )
                     subitems.append(db_item)
                 continue
 
         return BrowseFolder(
             item_id=item_path,
-            provider=self.domain,
+            provider=self.instance_id,
             path=path,
             name=item_path or self.name,
             # make sure to sort the resulting listing
@@ -302,14 +317,14 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)
-                    await self.mass.music.tracks.add_db_item(track)
+                    await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
                     playlist.metadata.checksum = item.checksum
                     # playlist is always in-library
                     playlist.in_library = True
-                    await self.mass.music.playlists.add_db_item(playlist)
+                    await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
@@ -342,15 +357,13 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 controller = self.mass.music.get_controller(MediaType.TRACK)
 
-            if db_item := await controller.get_db_item_by_prov_id(
-                file_path, provider_instance=self.instance_id
-            ):
-                await controller.delete_db_item(db_item.item_id, True)
+            if db_item := await controller.get_db_item_by_prov_id(file_path, self.instance_id):
+                await controller.delete(db_item.item_id, True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
-            item_id=prov_artist_id, provider_instance=self.instance_id
+            prov_artist_id, self.instance_id
         )
         if db_artist is None:
             raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
@@ -386,7 +399,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(prov_playlist_id)
         playlist = Playlist(
             file_item.path,
-            provider=self.domain,
+            provider=self.instance_id,
             name=file_item.name.replace(f".{file_item.ext}", ""),
         )
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
@@ -407,7 +420,7 @@ class FileSystemProviderBase(MusicProvider):
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_db_item_by_prov_id(
-            prov_album_id, provider_instance=self.instance_id
+            prov_album_id, self.instance_id
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
@@ -519,14 +532,12 @@ class FileSystemProviderBase(MusicProvider):
         filename = f"{name}.m3u"
         await self.write_file_content(filename, b"")
         playlist = await self.get_playlist(filename)
-        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
+        db_playlist = await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
         return db_playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(
-            item_id=item_id, provider_instance=self.instance_id
-        )
+        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(item_id, self.instance_id)
         if db_item is None:
             raise MediaNotFoundError(f"Item not found: {item_id}")
 
@@ -581,7 +592,7 @@ class FileSystemProviderBase(MusicProvider):
         name, version = parse_title_and_version(tags.title, tags.version)
         track = Track(
             item_id=file_item.path,
-            provider=self.domain,
+            provider=self.instance_id,
             name=name,
             version=version,
         )
@@ -724,10 +735,10 @@ class FileSystemProviderBase(MusicProvider):
 
         artist = Artist(
             artist_path,
-            self.domain,
+            self.instance_id,
             name,
             provider_mappings={
-                ProviderMapping(artist_path, self.domain, self.instance_id, url=artist_path)
+                ProviderMapping(artist_path, self.instance_id, self.instance_id, url=artist_path)
             },
             musicbrainz_id=VARIOUS_ARTISTS_ID if compare_strings(name, VARIOUS_ARTISTS) else None,
         )
@@ -774,11 +785,11 @@ class FileSystemProviderBase(MusicProvider):
 
         album = Album(
             album_path,
-            self.domain,
+            self.instance_id,
             name,
             artists=artists,
             provider_mappings={
-                ProviderMapping(album_path, self.domain, self.instance_id, url=album_path)
+                ProviderMapping(album_path, self.instance_id, self.instance_id, url=album_path)
             },
         )
 
@@ -804,8 +815,8 @@ class FileSystemProviderBase(MusicProvider):
                 if musicbrainz_id := info.get("musicbrainzreleasegroupid"):
                     album.musicbrainz_id = musicbrainz_id
                 if mb_artist_id := info.get("musicbrainzalbumartistid"):  # noqa: SIM102
-                    if album.artist and not album.artist.musicbrainz_id:
-                        album.artist.musicbrainz_id = mb_artist_id
+                    if album.artists and not album.artists[0].musicbrainz_id:
+                        album.artists[0].musicbrainz_id = mb_artist_id
                 if description := info.get("review"):
                     album.metadata.description = description
                 if year := info.get("year"):

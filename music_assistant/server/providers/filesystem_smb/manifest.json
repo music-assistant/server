@@ -1,11 +1,11 @@
 {
-  "type": "music",
-  "domain": "filesystem_smb",
-  "name": "Filesystem (remote share)",
-  "description": "Support for music files that are present on remote SMB/CIFS or DFS share.",
-  "codeowners": ["@music-assistant"],
-  "requirements": ["smbprotocol==1.10.1"],
-  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
-  "multi_instance": true,
-  "icon": "mdi:mdi-network"
-}
+    "type": "music",
+    "domain": "filesystem_smb",
+    "name": "Filesystem (remote share)",
+    "description": "Support for music files that are present on remote SMB/CIFS.",
+    "codeowners": ["@music-assistant"],
+    "requirements": [],
+    "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
+    "multi_instance": true,
+    "icon": "mdi:mdi-network"
+  }
