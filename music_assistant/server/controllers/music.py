@@ -594,8 +594,8 @@ class MusicController:
                 SCHEMA_VERSION,
             )
 
-            if prev_version < SCHEMA_VERSION:
-                # for now just keep it simple and just recreate the tables
+            if prev_version < 22:
+                # for now just keep it simple and just recreate the tables if the schema is too old
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
@@ -604,6 +604,8 @@ class MusicController:
 
                 # recreate missing tables
                 await self.__create_database_tables()
+            else:
+                raise RuntimeError("db schema migration missing")
 
         # store current schema version
         await self.database.insert_or_replace(
