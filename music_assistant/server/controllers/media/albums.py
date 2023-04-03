@@ -113,6 +113,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 if not await self.mass.music.tracks.get_db_item_by_prov_id(
                     track.item_id, track.provider
                 ):
+                    track.album = db_item
                     await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,

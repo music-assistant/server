@@ -227,7 +227,7 @@ class TracksController(MediaControllerBase[Track]):
                     if not search_result_item.available:
                         continue
                     # do a basic compare first
-                    if not compare_track(search_result_item, db_track):
+                    if not compare_track(search_result_item, db_track, False):
                         continue
                     # we must fetch the full version, search results are simplified objects
                     prov_track = await self.get_provider_item(
