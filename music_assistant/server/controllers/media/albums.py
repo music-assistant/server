@@ -13,13 +13,12 @@ from music_assistant.common.models.errors import MediaNotFoundError, Unsupported
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
-    Artist,
     DbAlbum,
     ItemMapping,
     MediaType,
     Track,
 )
-from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_TRACKS, VARIOUS_ARTISTS
+from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_TRACKS
 from music_assistant.server.controllers.media.base import MediaControllerBase
 from music_assistant.server.helpers.compare import compare_album, loose_compare_strings
 
@@ -116,6 +115,10 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         return db_item
 
+    async def update(self, item_id: int, update: Album, overwrite: bool = False) -> Album:
+        """Update existing record in the database."""
+        return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
+
     async def delete(self, item_id: int, recursive: bool = False) -> None:
         """Delete record from the database."""
         # check album tracks
@@ -171,7 +174,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 ]
             )
             for prov_item in prov_items
+            # title must (partially) match
             if loose_compare_strings(album.name, prov_item.name)
+            # artist must match
+            and album.artists[0].sort_name in {x.sort_name for x in prov_item.artists}
         }
         # make sure that the 'base' version is NOT included
         for prov_version in album.provider_mappings:
@@ -210,7 +216,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 return await self._update_db_item(cur_item.item_id, item)
 
             # insert new item
-            album_artists = await self._get_album_artists(item, cur_item)
+            album_artists = await self._get_artist_mappings(item, cur_item)
             sort_artist = album_artists[0].sort_name if album_artists else ""
             new_item = await self.mass.music.database.insert(
                 self.db_table,
@@ -230,38 +236,30 @@ class AlbumsController(MediaControllerBase[Album]):
             return await self.get_db_item(item_id)
 
     async def _update_db_item(
-        self,
-        item_id: int,
-        item: Album,
+        self, item_id: int, item: Album | ItemMapping, overwrite: bool = False
     ) -> Album:
         """Update Album record in the database."""
-        assert item.provider_mappings, "Item is missing provider mapping(s)"
-        assert item.artists, f"Album {item.name} is missing artist"
         cur_item = await self.get_db_item(item_id)
-        is_file_provider = item.provider.startswith("filesystem")
-        metadata = cur_item.metadata.update(item.metadata, is_file_provider)
-        provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
-        if is_file_provider:
-            album_artists = await self._get_album_artists(cur_item)
-        else:
-            album_artists = await self._get_album_artists(cur_item, item)
-        cur_item.barcode.update(item.barcode)
-        if item.album_type != AlbumType.UNKNOWN:
+        metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
+        album_artists = await self._get_artist_mappings(cur_item, item, overwrite)
+        if getattr(item, "barcode", None):
+            cur_item.barcode.update(item.barcode)
+        if getattr(item, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = item.album_type
         else:
             album_type = cur_item.album_type
-
         sort_artist = album_artists[0].sort_name if album_artists else ""
 
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": item_id},
             {
-                "name": item.name if is_file_provider else cur_item.name,
-                "sort_name": item.sort_name if is_file_provider else cur_item.sort_name,
+                "name": item.name if overwrite else cur_item.name,
+                "sort_name": item.sort_name if overwrite else cur_item.sort_name,
                 "sort_artist": sort_artist,
-                "version": item.version if is_file_provider else cur_item.version,
-                "year": item.year or cur_item.year,
+                "version": item.version if overwrite else cur_item.version,
+                "year": item.year if overwrite else cur_item.year or item.year,
                 "barcode": ";".join(cur_item.barcode),
                 "album_type": album_type.value,
                 "artists": serialize_to_json(album_artists) or None,
@@ -425,36 +423,3 @@ class AlbumsController(MediaControllerBase[Album]):
                     db_album.name,
                     provider.name,
                 )
-
-    async def _get_album_artists(
-        self,
-        db_album: Album,
-        updated_album: Album | None = None,
-    ) -> list[ItemMapping]:
-        """Extract (database) album artist(s) as ItemMapping."""
-        album_artists = set()
-        for album in (updated_album, db_album):
-            if not album:
-                continue
-            for artist in album.artists:
-                album_artists.add(await self._get_artist_mapping(artist))
-        # use intermediate set to prevent duplicates
-        # filter various artists if multiple artists
-        if len(album_artists) > 1:
-            album_artists = {x for x in album_artists if (x.name != VARIOUS_ARTISTS)}
-        return list(album_artists)
-
-    async def _get_artist_mapping(self, artist: Artist | ItemMapping) -> ItemMapping:
-        """Extract (database) track artist as ItemMapping."""
-        if artist.provider == "database":
-            if isinstance(artist, ItemMapping):
-                return artist
-            return ItemMapping.from_item(artist)
-
-        if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
-            artist.item_id, artist.provider
-        ):
-            return ItemMapping.from_item(db_artist)
-
-        db_artist = await self.mass.music.artists._add_db_item(artist)
-        return ItemMapping.from_item(db_artist)

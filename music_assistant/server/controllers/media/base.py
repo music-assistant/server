@@ -17,12 +17,12 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     PagedItems,
     ProviderMapping,
-    Track,
     media_from_dict,
 )
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, ROOT_LOGGER_NAME
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, ROOT_LOGGER_NAME, VARIOUS_ARTISTS
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.media_items import Album, Artist, Track
     from music_assistant.server import MusicAssistant
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -47,6 +47,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def add(self, item: ItemCls, skip_metadata_lookup: bool = False) -> ItemCls:
         """Add item to local db and return the database item."""
         raise NotImplementedError
+
+    @abstractmethod
+    async def update(self, item_id: int, update: ItemCls, overwrite: bool = False) -> ItemCls:
+        """Update existing record in the database."""
 
     async def delete(self, item_id: int, recursive: bool = False) -> None:  # noqa: ARG002
         """Delete record from the database."""
@@ -414,26 +418,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if not fallback:
             fallback = await self.get_db_item_by_prov_id(item_id, provider_instance_id_or_domain)
         if fallback:
-            fallback_result = self.item_cls(
-                item_id=item_id,
-                provider=provider.instance_id,
-                name=fallback.name,
-                provider_mappings={
-                    ProviderMapping(
-                        item_id=item_id,
-                        provider_domain=provider.domain,
-                        provider_instance=provider.instance_id,
-                        available=False,
-                    )
-                },
-            )
-            if hasattr(fallback, "version") and hasattr(fallback_result, "version"):
-                fallback_result.version = fallback.version
-            if hasattr(fallback, "artists") and hasattr(fallback_result, "artists"):
-                fallback_result.artists = fallback.artists
-            if hasattr(fallback, "album") and hasattr(fallback_result, "album"):
-                fallback_result.album = fallback.album
-            return fallback_result
+            fallback_item = ItemMapping.from_item(fallback)
+            fallback_item.available = False
+            return fallback_item
         raise MediaNotFoundError(
             f"{self.media_type.value}://{item_id} not "
             "found on provider {provider_instance_id_or_domain}"
@@ -531,3 +518,52 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     "provider_item_id": provider_mapping.item_id,
                 },
             )
+
+    def _get_provider_mappings(
+        self,
+        org_item: ItemCls,
+        update_item: ItemCls | ItemMapping | None = None,
+        overwrite: bool = False,
+    ) -> set[ProviderMapping]:
+        """Get/merge provider mappings for an item."""
+        if not update_item or isinstance(update_item, ItemMapping):
+            return org_item.provider_mappings
+        if overwrite and update_item.provider_mappings:
+            return update_item.provider_mappings
+        return {*org_item.provider_mappings, *update_item.provider_mappings}
+
+    async def _get_artist_mappings(
+        self,
+        org_item: Album | Track,
+        update_item: Album | Track | ItemMapping | None = None,
+        overwrite: bool = False,
+    ) -> list[ItemMapping]:
+        """Extract (database) album/track artist(s) as ItemMapping."""
+        if not update_item or isinstance(update_item, ItemMapping):
+            return org_item.artists
+        if overwrite and update_item.provider_mappings:
+            return update_item.artists
+        item_artists: set[ItemMapping] = set()
+        for item in (org_item, update_item):
+            for artist in item.artists:
+                item_artists.add(await self._get_artist_mapping(artist))
+        # use intermediate set to prevent duplicates
+        # filter various artists if multiple artists
+        if len(item_artists) > 1:
+            item_artists = {x for x in item_artists if (x.name != VARIOUS_ARTISTS)}
+        return list(item_artists)
+
+    async def _get_artist_mapping(self, artist: Artist | ItemMapping) -> ItemMapping:
+        """Extract (database) track artist as ItemMapping."""
+        if artist.provider == "database":
+            if isinstance(artist, ItemMapping):
+                return artist
+            return ItemMapping.from_item(artist)
+
+        if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+            artist.item_id, artist.provider
+        ):
+            return ItemMapping.from_item(db_artist)
+
+        db_artist = await self.mass.music.artists.add(artist, skip_metadata_lookup=True)
+        return ItemMapping.from_item(db_artist)
