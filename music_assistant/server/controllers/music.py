@@ -398,7 +398,9 @@ class MusicController:
             result = searchresult.radio
         for item in result:
             if item.available:
-                await self.get_item(item.media_type, item.item_id, item.provider, lazy=False)
+                await self.get_item(
+                    item.media_type, item.item_id, item.provider, lazy=False, add_to_db=True
+                )
         return None
 
     async def set_track_loudness(

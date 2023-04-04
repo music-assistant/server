@@ -224,7 +224,10 @@ class YoutubeMusicProvider(MusicProvider):
             return []
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
-            track = await self._parse_track(track_obj=track_obj)
+            try:
+                track = await self._parse_track(track_obj=track_obj)
+            except InvalidDataError:
+                continue
             track.disc_number = 0
             track.track_number = idx
             tracks.append(track)
@@ -601,6 +604,8 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parse a YT Track response to a Track model object."""
+        if not track_obj["videoId"]:
+            raise InvalidDataError("Track is missing videoId")
         track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
         if "artists" in track_obj:
             track.artists = [

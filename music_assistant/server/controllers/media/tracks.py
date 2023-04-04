@@ -227,7 +227,7 @@ class TracksController(MediaControllerBase[Track]):
                     if not search_result_item.available:
                         continue
                     # do a basic compare first
-                    if not compare_track(search_result_item, db_track):
+                    if not compare_track(search_result_item, db_track, False):
                         continue
                     # we must fetch the full version, search results are simplified objects
                     prov_track = await self.get_provider_item(
@@ -319,10 +319,10 @@ class TracksController(MediaControllerBase[Track]):
                 },
             )
             item_id = new_item["item_id"]
-        # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, item.provider_mappings)
-        # return created object
-        self.logger.debug("added %s to database: %s", item.name, item_id)
+            # update/set provider_mappings table
+            await self._set_provider_mappings(item_id, item.provider_mappings)
+            # return created object
+            self.logger.debug("added %s to database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 
     async def _update_db_item(
@@ -336,25 +336,26 @@ class TracksController(MediaControllerBase[Track]):
             cur_item.isrc.update(item.isrc)
         track_artists = await self._get_artist_mappings(cur_item, item)
         track_albums = await self._get_track_albums(cur_item, item)
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": item_id},
-            {
-                "name": item.name or cur_item.name,
-                "sort_name": item.sort_name or cur_item.sort_name,
-                "version": item.version or cur_item.version,
-                "duration": getattr(item, "duration", None) or cur_item.duration,
-                "artists": serialize_to_json(track_artists),
-                "albums": serialize_to_json(track_albums),
-                "metadata": serialize_to_json(metadata),
-                "provider_mappings": serialize_to_json(provider_mappings),
-                "isrc": ";".join(cur_item.isrc),
-                "timestamp_modified": int(utc_timestamp()),
-            },
-        )
-        # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, provider_mappings)
-        self.logger.debug("updated %s in database: %s", item.name, item_id)
+        async with self._db_add_lock:
+            await self.mass.music.database.update(
+                self.db_table,
+                {"item_id": item_id},
+                {
+                    "name": item.name or cur_item.name,
+                    "sort_name": item.sort_name or cur_item.sort_name,
+                    "version": item.version or cur_item.version,
+                    "duration": getattr(item, "duration", None) or cur_item.duration,
+                    "artists": serialize_to_json(track_artists),
+                    "albums": serialize_to_json(track_albums),
+                    "metadata": serialize_to_json(metadata),
+                    "provider_mappings": serialize_to_json(provider_mappings),
+                    "isrc": ";".join(cur_item.isrc),
+                    "timestamp_modified": int(utc_timestamp()),
+                },
+            )
+            # update/set provider_mappings table
+            await self._set_provider_mappings(item_id, provider_mappings)
+            self.logger.debug("updated %s in database: %s", item.name, item_id)
         return await self.get_db_item(item_id)
 
     async def _get_track_albums(
