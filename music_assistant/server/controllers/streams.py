@@ -540,7 +540,7 @@ class StreamsController:
                 if (
                     seconds_streamed > 10
                     and queue_player.corrected_elapsed_time > 10
-                    and (seconds_streamed - queue_player.corrected_elapsed_time) > 20
+                    and (seconds_streamed - queue_player.corrected_elapsed_time) > 10
                 ):
                     await asyncio.sleep(1)
 
