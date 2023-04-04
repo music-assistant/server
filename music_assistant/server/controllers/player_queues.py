@@ -131,7 +131,7 @@ class PlayerQueuesController:
         self.signal_update(queue_id)
 
     @api_command("players/queue/play_media")
-    async def play_media(  # noqa: PLR0915
+    async def play_media(
         self,
         queue_id: str,
         media: MediaItemType | list[MediaItemType] | str | list[str],
@@ -144,7 +144,7 @@ class PlayerQueuesController:
         - queue_opt: Which enqueue mode to use.
         - radio_mode: Enable radio mode for the given item(s).
         """
-        # ruff: noqa: PLR0915
+        # ruff: noqa: PLR0915,PLR0912
         queue = self._queues[queue_id]
         if queue.announcement_in_progress:
             LOGGER.warning("Ignore queue command: An announcement is in progress")
@@ -252,6 +252,12 @@ class PlayerQueuesController:
                 insert_at_index=insert_at_index,
                 shuffle=queue.shuffle_enabled,
             )
+            # handle edgecase, queue is empty and items are only added (not played)
+            # mark first item as new index
+            if queue.current_index is None:
+                queue.current_index = 0
+                queue.current_item = self.get_item(queue_id, 0)
+                self.signal_update(queue_id)
 
     @api_command("players/queue/move_item")
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
