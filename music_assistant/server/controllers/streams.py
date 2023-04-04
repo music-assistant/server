@@ -364,7 +364,7 @@ class StreamsController:
         if request.method == "HEAD":
             return resp
 
-        # handler workaround for players that do 2 multiple GET requests
+        # handle workaround for players that do 2 multiple GET requests
         # for the same audio stream (because of the missing duration/length)
         if player_id in self.workaround_players and player_id not in stream_job.seen_players:
             stream_job.seen_players.add(player_id)
@@ -421,39 +421,28 @@ class StreamsController:
                 if enable_icy
                 else ffmpeg_proc.iter_chunked(128000)
             )
-
-            bytes_streamed = 0
-
             async for chunk in iterator:
                 try:
                     await resp.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
                     # race condition
                     break
-                bytes_streamed += len(chunk)
-
-                # slow down player that buffers too aggressively
-                seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
-                if (
-                    seconds_streamed > 10
-                    and player.corrected_elapsed_time > 20
-                    and (seconds_streamed - player.corrected_elapsed_time) > 20
-                ):
-                    await asyncio.sleep(0.5)
 
                 if not enable_icy:
                     continue
 
                 # if icy metadata is enabled, send the icy metadata after the chunk
+                current_item = self.mass.players.queues.get_item(
+                    queue.queue_id, queue.index_in_buffer
+                )
                 if (
-                    queue
-                    and queue.current_item
-                    and queue.current_item.streamdetails
-                    and queue.current_item.streamdetails.stream_title
+                    current_item
+                    and current_item.streamdetails
+                    and current_item.streamdetails.stream_title
                 ):
-                    title = queue.current_item.streamdetails.stream_title
-                elif queue and queue.current_item and queue.current_item.name:
-                    title = queue.current_item.name
+                    title = current_item.streamdetails.stream_title
+                elif queue and current_item and current_item.name:
+                    title = current_item.name
                 else:
                     title = "Music Assistant"
                 metadata = f"StreamTitle='{title}';".encode()
@@ -475,6 +464,7 @@ class StreamsController:
         # ruff: noqa: PLR0915
         queue_id = stream_job.queue_item.queue_id
         queue = self.mass.players.queues.get(queue_id)
+        queue_player = self.mass.players.get(queue_id)
         queue_track = None
         last_fadeout_part = b""
 
@@ -544,6 +534,15 @@ class StreamsController:
                 strip_silence_begin=last_fadeout_part != b"",
             ):
                 chunk_num += 1
+
+                # slow down if the player buffers too aggressively
+                seconds_streamed = int(bytes_written / stream_job.pcm_sample_size)
+                if (
+                    seconds_streamed > 10
+                    and queue_player.corrected_elapsed_time > 10
+                    and (seconds_streamed - queue_player.corrected_elapsed_time) > 20
+                ):
+                    await asyncio.sleep(1)
 
                 ####  HANDLE FIRST PART OF TRACK
 
