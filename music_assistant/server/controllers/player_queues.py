@@ -518,8 +518,6 @@ class PlayerQueuesController:
         queue.available = player.available
         queue.items = len(self._queue_items[queue_id])
         queue.state = player.state
-        queue.elapsed_time = int(player.corrected_elapsed_time)
-        queue.elapsed_time_last_updated = time.time()
 
         # determine if this queue is currently active for this player
         queue.active = player.active_source == queue.queue_id
@@ -527,50 +525,68 @@ class PlayerQueuesController:
             # update current item from player report
             player_item_index = self.index_by_id(queue_id, player.current_item_id)
             if player_item_index is None:
+                # try grabbing the item id from the url
                 player_item_index = self._get_player_item_index(queue_id, player.current_url)
-            if queue.flow_mode and player_item_index is not None:
-                # flow mode active, calculate current item
-                (
-                    queue.current_index,
-                    queue.elapsed_time,
-                ) = self.__get_queue_stream_index(queue, player, player_item_index)
-            else:
-                queue.current_index = player_item_index
-
-        queue.current_item = self.get_item(queue_id, queue.current_index)
-        queue.next_item = self.get_next_item(queue_id)
-
-        # correct elapsed time when seeking
-        if (
-            queue.current_item
-            and queue.current_item.streamdetails
-            and queue.current_item.streamdetails.seconds_skipped
-            and not queue.flow_mode
-        ):
-            queue.elapsed_time += queue.current_item.streamdetails.seconds_skipped
-
+            if player_item_index is not None:
+                if queue.flow_mode:
+                    # flow mode active, calculate current item
+                    current_index, item_time = self.__get_queue_stream_index(
+                        queue, player, player_item_index
+                    )
+                else:
+                    # queue is active and player has one of our tracks loaded, update state
+                    current_index = player_item_index
+                    item_time = int(player.corrected_elapsed_time)
+                # only update these attributes if the queue is active
+                # and has an item loaded so we are able to resume it
+                queue.current_index = current_index
+                queue.elapsed_time = item_time
+                queue.elapsed_time_last_updated = time.time()
+                queue.current_item = self.get_item(queue_id, queue.current_index)
+                queue.next_item = self.get_next_item(queue_id)
+                # correct elapsed time when seeking
+                if (
+                    queue.current_item
+                    and queue.current_item.streamdetails
+                    and queue.current_item.streamdetails.seconds_skipped
+                    and not queue.flow_mode
+                ):
+                    queue.elapsed_time += queue.current_item.streamdetails.seconds_skipped
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state = self._prev_states.get(queue_id, {})
-        new_state = self._queues[queue_id].to_dict()
+        new_state = queue.to_dict()
         new_state.pop("elapsed_time_last_updated", None)
         changed_keys = get_changed_keys(prev_state, new_state)
-        self._prev_states[queue_id] = new_state
 
+        # return early if nothing changed
         if len(changed_keys) == 0:
             return
-
-        if "elapsed_time" in changed_keys:
+        # do not send full updates if only time was updated
+        if changed_keys == {"elapsed_time"}:
             self.mass.signal_event(
                 EventType.QUEUE_TIME_UPDATED,
                 object_id=queue_id,
                 data=queue.elapsed_time,
             )
-        # do not send full updates if only time was updated
-        if changed_keys == {"elapsed_time"}:
+            self._prev_states[queue_id] = new_state
             return
-
-        # only signal queue updated event if other properties than elapsed_time updated
+        # handle player was playing and is now stopped
+        # if player finished playing a track for 90%, mark current item as finished
+        if (
+            prev_state.get("state") == "playing"
+            and queue.state == PlayerState.IDLE
+            and (
+                queue.current_item
+                and queue.current_item.duration
+                and queue.elapsed_time > (queue.current_item.duration * 0.8)
+            )
+        ):
+            queue.current_index += 1
+            queue.current_item = None
+            queue.next_item = None
+        # signal update and store state
         self.signal_update(queue_id)
+        self._prev_states[queue_id] = new_state
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
             fill_index = len(self._queue_items[queue_id]) - 5
@@ -585,7 +601,7 @@ class PlayerQueuesController:
         self._queue_items.pop(player_id, None)
 
     async def player_ready_for_next_track(
-        self, queue_or_player_id: str, current_item_id: str | None = None
+        self, queue_or_player_id: str, current_item_id: str
     ) -> tuple[QueueItem, bool]:
         """Call when a player is ready to load the next track into the buffer.
 
@@ -597,10 +613,7 @@ class PlayerQueuesController:
         just like with the play_media call.
         """
         queue = self.get_active_source(queue_or_player_id)
-        if current_item_id is None:
-            cur_index = queue.current_index
-        else:
-            cur_index = self.index_by_id(queue.queue_id, current_item_id)
+        cur_index = self.index_by_id(queue.queue_id, current_item_id)
         cur_item = self.get_item(queue.queue_id, cur_index)
         next_index = self.get_next_index(queue.queue_id, cur_index)
         next_item = self.get_item(queue.queue_id, next_index)
