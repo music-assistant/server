@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.util import get_changed_keys
@@ -66,9 +67,12 @@ class PlayerQueuesController:
         return self._queues.get(queue_id)
 
     @api_command("players/queue/items")
-    def items(self, queue_id: str) -> list[QueueItem]:
+    async def items(self, queue_id: str) -> AsyncGenerator[QueueItem, None]:
         """Return all QueueItems for given PlayerQueue."""
-        return self._queue_items.get(queue_id, [])
+        # because the QueueItems can potentially be a very large list, this is a async generator
+        for index, queue_item in enumerate(self._queue_items.get(queue_id, [])):
+            queue_item.index = index
+            yield queue_item
 
     @api_command("players/queue/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue:
