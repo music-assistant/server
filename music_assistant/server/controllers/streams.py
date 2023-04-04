@@ -19,7 +19,6 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
-    MASS_LOGO_ONLINE,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
@@ -448,15 +447,9 @@ class StreamsController:
                     title = current_item.streamdetails.stream_title
                 elif current_item and current_item.name:
                     title = current_item.name
-                    image_url = (
-                        self.mass.metadata.get_image_url(current_item.image)
-                        if current_item.image
-                        else ""
-                    )
                 else:
                     title = "Music Assistant"
-                    image_url = MASS_LOGO_ONLINE
-                metadata = f"StreamTitle='{title}';StreamUrl='&picture={image_url}';".encode()
+                metadata = f"StreamTitle='{title}';".encode()
                 while len(metadata) % 16 != 0:
                     metadata += b"\x00"
                 length = len(metadata)
