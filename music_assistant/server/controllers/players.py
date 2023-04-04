@@ -21,7 +21,7 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.player import Player
-from music_assistant.constants import CONF_PLAYERS, ROOT_LOGGER_NAME
+from music_assistant.constants import CONF_HIDE_GROUP_CHILDS, CONF_PLAYERS, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -162,7 +162,9 @@ class PlayerController:
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     @api_command("players/update")
-    def update(self, player_id: str, skip_forward: bool = False) -> None:
+    def update(
+        self, player_id: str, skip_forward: bool = False, force_update: bool = False
+    ) -> None:
         """Update player state."""
         if player_id not in self._players:
             return
@@ -182,6 +184,21 @@ class PlayerController:
             player.state = PlayerState.IDLE
         elif not player.powered:
             player.state = PlayerState.OFF
+        # handle automatic hiding of group child's feature
+        for group_player in self._get_player_groups(player_id):
+            try:
+                hide_group_childs = self.mass.config.get_player_config_value(
+                    group_player.player_id, CONF_HIDE_GROUP_CHILDS
+                ).value
+            except KeyError:
+                continue
+            if hide_group_childs == "always":
+                player.hidden_by.add(group_player.player_id)
+            elif group_player.powered:
+                if hide_group_childs == "active":
+                    player.hidden_by.add(group_player.player_id)
+            elif group_player.player_id in player.hidden_by:
+                player.hidden_by.remove(group_player.player_id)
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
@@ -192,14 +209,14 @@ class PlayerController:
         )
         self._prev_states[player_id] = new_state
 
-        if not player.enabled and "enabled" not in changed_keys:
+        if not player.enabled and not force_update:
             # ignore updates for disabled players
             return
 
         # always signal update to the playerqueue
         self.queues.on_player_update(player, changed_keys)
 
-        if len(changed_keys) == 0:
+        if len(changed_keys) == 0 and not force_update:
             return
 
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -211,11 +228,11 @@ class PlayerController:
             for child_player_id in player.group_childs:
                 if child_player_id == player_id:
                     continue
-                self.update(child_player_id, skip_forward=True)
+                self.update(child_player_id, skip_forward=True, force_update=force_update)
 
         # update group player(s) when child updates
         for group_player in self._get_player_groups(player_id):
-            self.update(group_player.player_id, skip_forward=True)
+            self.update(group_player.player_id, skip_forward=True, force_update=force_update)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -475,8 +492,8 @@ class PlayerController:
         if player.current_url:
             if self.mass.webserver.base_url in player.current_url:
                 return player.player_id
-            elif ":" in player.current_url and "://" not in player.current_url:
-                # extract source from uri
+            elif ":" in player.current_url:
+                # extract source from uri/url
                 return player.current_url.split(":")[0]
             return player.current_item_id or player.current_url
         elif not player.powered:
