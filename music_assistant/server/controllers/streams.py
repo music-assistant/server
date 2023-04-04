@@ -426,8 +426,8 @@ class StreamsController:
                 # do not allow the player to prebuffer more than 60 seconds
                 seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
                 if (
-                    seconds_streamed > 120
-                    and (seconds_streamed - player.corrected_elapsed_time) > 30
+                    seconds_streamed > 30
+                    and (seconds_streamed - player.corrected_elapsed_time) > 60
                 ):
                     await asyncio.sleep(1)
 
