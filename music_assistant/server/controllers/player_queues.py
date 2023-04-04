@@ -74,11 +74,13 @@ class PlayerQueuesController:
             queue_item.index = index
             yield queue_item
 
-    @api_command("players/queue/get_active_source")
-    def get_active_source(self, player_id: str) -> PlayerQueue:
+    @api_command("players/queue/get_active_queue")
+    def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
         player = self.mass.players.get(player_id)
-        return self.get(player.active_source)
+        if queue := self.get(player.active_source):
+            return queue
+        return self.get(player_id)
 
     # Queue commands
 
@@ -307,6 +309,8 @@ class PlayerQueuesController:
         if queue.state not in (PlayerState.IDLE, PlayerState.OFF):
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
+        queue.current_item = None
+        queue.elapsed_time = 0
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
 
@@ -517,11 +521,10 @@ class PlayerQueuesController:
         queue.display_name = player.display_name
         queue.available = player.available
         queue.items = len(self._queue_items[queue_id])
-        queue.state = player.state
-
         # determine if this queue is currently active for this player
         queue.active = player.active_source == queue.queue_id
         if queue.active:
+            queue.state = player.state
             # update current item from player report
             player_item_index = self.index_by_id(queue_id, player.current_item_id)
             if player_item_index is None:
@@ -552,6 +555,8 @@ class PlayerQueuesController:
                     and not queue.flow_mode
                 ):
                     queue.elapsed_time += queue.current_item.streamdetails.seconds_skipped
+        else:
+            queue.state = PlayerState.IDLE
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state = self._prev_states.get(queue_id, {})
         new_state = queue.to_dict()
@@ -612,7 +617,7 @@ class PlayerQueuesController:
         NOTE: The player(s) should resolve the stream URL for the QueueItem,
         just like with the play_media call.
         """
-        queue = self.get_active_source(queue_or_player_id)
+        queue = self.get_active_queue(queue_or_player_id)
         cur_index = self.index_by_id(queue.queue_id, current_item_id)
         cur_item = self.get_item(queue.queue_id, cur_index)
         next_index = self.get_next_index(queue.queue_id, cur_index)

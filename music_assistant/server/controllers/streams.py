@@ -305,7 +305,7 @@ class StreamsController:
         )
         player_id = request.match_info["player_id"]
         player = self.mass.players.get(player_id)
-        queue = self.mass.players.queues.get_active_source(player_id)
+        queue = self.mass.players.queues.get_active_queue(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown player_id: {player_id}")
         stream_id = request.match_info["stream_id"]

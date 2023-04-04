@@ -466,13 +466,23 @@ class PlayerController:
             # prefer the first playing (or paused) group parent
             for group_player in group_players:
                 if group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-                    return group_player.player_id
+                    return group_player.active_source
             # fallback to the first powered group player
             for group_player in group_players:
                 if group_player.powered:
-                    return group_player.player_id
+                    return group_player.active_source
         # defaults to the player's own player id
-        return player.player_id
+        if player.current_url:
+            if self.mass.webserver.base_url in player.current_url:
+                return player.player_id
+            elif ":" in player.current_url and "://" not in player.current_url:
+                # extract source from uri
+                return player.current_url.split(":")[0]
+            return player.current_item_id or player.current_url
+        elif not player.powered:
+            # reset active source when player powers off
+            return player.player_id
+        return player.active_source
 
     def _get_group_volume_level(self, player: Player) -> int:
         """Calculate a group volume from the grouped members."""
