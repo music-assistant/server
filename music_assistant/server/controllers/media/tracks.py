@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -335,8 +336,8 @@ class TracksController(MediaControllerBase[Track]):
         provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
         if getattr(item, "isrc", None):
             cur_item.isrc.update(item.isrc)
-        track_artists = await self._get_artist_mappings(cur_item, item)
-        track_albums = await self._get_track_albums(cur_item, item)
+        track_artists = await self._get_artist_mappings(cur_item, item, overwrite=overwrite)
+        track_albums = await self._get_track_albums(cur_item, item, overwrite=overwrite)
         async with self._db_add_lock:
             await self.mass.music.database.update(
                 self.db_table,
@@ -361,42 +362,51 @@ class TracksController(MediaControllerBase[Track]):
 
     async def _get_track_albums(
         self,
-        base_track: Track,
-        upd_track: Track | ItemMapping | None = None,
+        org_item: DbTrack,
+        update_item: Track | ItemMapping | None = None,
+        overwrite: bool = False,
     ) -> list[TrackAlbumMapping]:
         """Extract all (unique) albums of track as TrackAlbumMapping."""
-        track_albums: list[TrackAlbumMapping] = []
-        # existing TrackAlbumMappings are starting point
-        if base_track.albums:
-            track_albums = base_track.albums
-        elif upd_track and getattr(upd_track, "albums", None):
-            track_albums = upd_track.albums
-        # append update item album if needed
-        if upd_track and getattr(upd_track, "album", None):
-            mapping = await self._get_album_mapping(upd_track.album)
-            mapping = TrackAlbumMapping.from_dict(
-                {
-                    **mapping.to_dict(),
-                    "disc_number": upd_track.disc_number,
-                    "track_number": upd_track.track_number,
-                }
-            )
-            if mapping not in track_albums:
-                track_albums.append(mapping)
-        # append base item album if needed
-        elif base_track and base_track.album:
-            mapping = await self._get_album_mapping(base_track.album)
-            mapping = TrackAlbumMapping.from_dict(
-                {
-                    **mapping.to_dict(),
-                    "disc_number": base_track.disc_number,
-                    "track_number": base_track.track_number,
-                }
-            )
-            if mapping not in track_albums:
-                track_albums.append(mapping)
-
-        return track_albums
+        if update_item is None or isinstance(update_item, ItemMapping) and org_item.albums:
+            # already TrackAlbumMappings
+            return org_item.albums
+        track_albums: set[TrackAlbumMapping] = set()
+        # add base albums (only if not overwriting)
+        if (
+            not overwrite
+            or update_item is None
+            or isinstance(update_item, ItemMapping)
+            or not (update_item.album or update_item.albums)
+        ):
+            track_albums.update(org_item.albums)
+            if org_item.album:
+                mapping = await self._get_album_mapping(update_item.album)
+                track_albums.add(
+                    TrackAlbumMapping.from_dict(
+                        {
+                            **mapping.to_dict(),
+                            "disc_number": org_item.disc_number,
+                            "track_number": org_item.track_number,
+                        }
+                    )
+                )
+        # album(s) from update item
+        if update_item and not isinstance(update_item, ItemMapping):
+            if update_item.albums:
+                track_albums.update(update_item.albums)
+            if update_item.album:
+                mapping = await self._get_album_mapping(update_item.album)
+                track_albums.add(
+                    TrackAlbumMapping.from_dict(
+                        {
+                            **mapping.to_dict(),
+                            "disc_number": update_item.disc_number,
+                            "track_number": update_item.track_number,
+                        }
+                    )
+                )
+        # use intermediate set to prevent duplicates
+        return list(track_albums)
 
     async def _get_album_mapping(
         self,
@@ -414,12 +424,14 @@ class TracksController(MediaControllerBase[Track]):
             return ItemMapping.from_item(db_album)
 
         # try to request the full item
+        with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
+            db_album = await self.mass.music.albums.add(album, skip_metadata_lookup=True)
+            return ItemMapping.from_item(db_album)
+        # fallback to just the provider item
         album = await self.mass.music.albums.get_provider_item(
             album.item_id, album.provider, fallback=album
         )
         if isinstance(album, ItemMapping):
             # this can happen for unavailable items
             return album
-
-        db_album = await self.mass.music.albums.add(album, skip_metadata_lookup=True)
-        return ItemMapping.from_item(db_album)
+        return ItemMapping.from_item(album)

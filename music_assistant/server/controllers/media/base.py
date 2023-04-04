@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     ItemMapping,
     MediaItemType,
@@ -546,14 +546,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         overwrite: bool = False,
     ) -> list[ItemMapping]:
         """Extract (database) album/track artist(s) as ItemMapping."""
-        if not update_item or isinstance(update_item, ItemMapping):
-            return org_item.artists
-        if overwrite and update_item.provider_mappings:
-            return update_item.artists
-        item_artists: set[ItemMapping] = set()
-        for item in (org_item, update_item):
-            for artist in item.artists:
-                item_artists.add(await self._get_artist_mapping(artist))
+        if update_item is None or isinstance(update_item, ItemMapping):
+            source_artists = org_item.artists
+        elif overwrite and update_item.artists:
+            source_artists = update_item.artists
+        else:
+            source_artists = org_item.artists + update_item.artists
+        item_artists = {await self._get_artist_mapping(artist) for artist in source_artists}
         # use intermediate set to prevent duplicates
         # filter various artists if multiple artists
         if len(item_artists) > 1:
@@ -573,12 +572,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return ItemMapping.from_item(db_artist)
 
         # try to request the full item
-        artist = await self.mass.music.artists.get_provider_item(
+        with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
+            db_artist = await self.mass.music.artists.add(artist, skip_metadata_lookup=True)
+            return ItemMapping.from_item(db_artist)
+        # fallback to just the provider item
+        album = await self.mass.music.albums.get_provider_item(
             artist.item_id, artist.provider, fallback=artist
         )
-        if isinstance(artist, ItemMapping):
+        if isinstance(album, ItemMapping):
             # this can happen for unavailable items
             return artist
-
-        db_artist = await self.mass.music.artists.add(artist, skip_metadata_lookup=True)
-        return ItemMapping.from_item(db_artist)
+        return ItemMapping.from_item(album)
