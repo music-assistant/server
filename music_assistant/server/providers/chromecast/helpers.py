@@ -10,8 +10,6 @@ from pychromecast import dial
 from pychromecast.const import CAST_TYPE_GROUP
 from zeroconf import ServiceInfo
 
-from music_assistant.constants import CONF_HIDE_GROUP_CHILDS
-
 if TYPE_CHECKING:
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.multizone import MultizoneManager
@@ -172,12 +170,7 @@ class CastStatusListener:
         self.prov.logger.debug(
             "%s is added to multizone: %s", self.castplayer.player.display_name, group_uuid
         )
-        if group_player := self.prov.castplayers.get(group_uuid):
-            hide_group_childs = self.prov.mass.config.get_player_config_value(
-                group_player.player_id, CONF_HIDE_GROUP_CHILDS
-            ).value
-            if hide_group_childs == "always":
-                self.castplayer.player.hidden_by.add(group_uuid)
+        self.new_cast_status(self.castplayer.cc.status)
 
     def removed_from_multizone(self, group_uuid):
         """Handle the cast removed from a group."""
@@ -188,26 +181,21 @@ class CastStatusListener:
         self.prov.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.player.display_name, group_uuid
         )
+        self.new_cast_status(self.castplayer.cc.status)
 
     def multizone_new_cast_status(self, group_uuid, cast_status):  # noqa: ARG002
         """Handle reception of a new CastStatus for a group."""
         if group_player := self.prov.castplayers.get(group_uuid):
-            hide_group_childs = self.prov.mass.config.get_player_config_value(
-                group_uuid, CONF_HIDE_GROUP_CHILDS
-            ).value
-            if hide_group_childs == "always":
-                self.castplayer.player.hidden_by.add(group_uuid)
             if group_player.cc.media_controller.is_active:
                 self.castplayer.active_group = group_uuid
-                if hide_group_childs == "active":
-                    self.castplayer.player.hidden_by.add(group_uuid)
+                self.castplayer.player.active_source = group_uuid
             elif group_uuid == self.castplayer.active_group:
                 self.castplayer.active_group = None
-                if hide_group_childs != "always" and group_uuid in self.castplayer.player.hidden_by:
-                    self.castplayer.player.hidden_by.remove(group_uuid)
+                self.castplayer.player.active_source = self.castplayer.player.player_id
         self.prov.logger.debug(
             "%s got new cast status for group: %s", self.castplayer.player.display_name, group_uuid
         )
+        self.new_cast_status(self.castplayer.cc.status)
 
     def multizone_new_media_status(self, group_uuid, media_status):  # noqa: ARG002
         """Handle reception of a new MediaStatus for a group."""

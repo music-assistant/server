@@ -50,7 +50,7 @@ if TYPE_CHECKING:
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.socket_client import ConnectionStatus
 
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -179,6 +179,13 @@ class ChromecastProvider(PlayerProvider):
                 ),
             )
         return entries
+
+    def on_player_config_changed(
+        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+    ) -> None:
+        """Call (by config manager) when the configuration of a player changes."""
+        if "enabled" in changed_keys and config.player_id not in self.castplayers:
+            self.mass.create_task(self.mass.config.reload_provider, self.instance_id)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -369,7 +376,7 @@ class ChromecastProvider(PlayerProvider):
             self.castplayers[player_id] = castplayer
 
             castplayer.status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
-            if cast_info.is_audio_group:
+            if cast_info.is_audio_group and not cast_info.is_multichannel_group:
                 mz_controller = MultizoneController(cast_info.uuid)
                 castplayer.cc.register_handler(mz_controller)
                 castplayer.mz_controller = mz_controller
@@ -397,6 +404,8 @@ class ChromecastProvider(PlayerProvider):
             status.volume_level,
         )
         castplayer.player.name = castplayer.cast_info.friendly_name
+        castplayer.player.volume_level = int(status.volume_level * 100)
+        castplayer.player.volume_muted = status.volume_muted
         if castplayer.active_group:
             # use mute as power when group is active
             castplayer.player.powered = not status.volume_muted
@@ -405,15 +414,12 @@ class ChromecastProvider(PlayerProvider):
                 castplayer.cc.app_id is not None
                 and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
             )
-        castplayer.player.volume_level = int(status.volume_level * 100)
-        castplayer.player.volume_muted = status.volume_muted
-
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.STEREO_PAIR
             castplayer.player.group_childs = []
         # handle cast groups
-        elif castplayer.cast_info.is_audio_group:
+        if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.GROUP
             castplayer.player.group_childs = [
                 str(UUID(x)) for x in castplayer.mz_controller.members
@@ -422,6 +428,7 @@ class ChromecastProvider(PlayerProvider):
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
             )
+
         # send update to player manager
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
