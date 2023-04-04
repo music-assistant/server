@@ -167,8 +167,8 @@ class PlayerController:
         if player_id not in self._players:
             return
         player = self._players[player_id]
-        # calculate active_queue
-        player.active_queue = self._get_active_queue(player)
+        # calculate active_source
+        player.active_source = self._get_active_source(player)
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
         # prefer any overridden name from config
@@ -456,11 +456,11 @@ class PlayerController:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
         return tuple(x for x in self if player_id in x.group_childs)
 
-    def _get_active_queue(self, player: Player) -> str:
-        """Return the active_queue id for given player."""
+    def _get_active_source(self, player: Player) -> str:
+        """Return the active_source id for given player."""
         # if player is synced, return master/group leader
         if player.synced_to and player.synced_to in self._players:
-            return self._get_active_queue(self.get(player.synced_to))
+            return self._get_active_source(self.get(player.synced_to))
         # iterate player groups to find out if one is playing
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
@@ -526,7 +526,7 @@ class PlayerController:
                 # if the player is playing, update elapsed time every tick
                 # to ensure the queue has accurate details
                 player_playing = (
-                    player.active_queue == player.player_id and player.state == PlayerState.PLAYING
+                    player.active_source == player.player_id and player.state == PlayerState.PLAYING
                 )
                 if player_playing:
                     self.mass.loop.call_soon(self.update, player_id)

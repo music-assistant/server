@@ -246,7 +246,7 @@ class LmsCli(PluginProvider):
         """Handle player status command."""
         player = self.mass.players.get(player_id)
         assert player is not None
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.players.queues.get_active_source(player_id)
         assert queue is not None
         if start_index == "-":
             start_index = queue.current_index or 0
@@ -305,7 +305,7 @@ class LmsCli(PluginProvider):
         # You may jump to a particular position in a song by specifying a number of seconds
         # to seek to. You may also jump to a relative position within a song by putting an
         # explicit "-" or "+" character before a number of seconds you would like to seek.
-        player_queue = self.mass.players.queues.get_active_queue(player_id)
+        player_queue = self.mass.players.queues.get_active_source(player_id)
         assert player_queue is not None
 
         if number == "?":
@@ -340,7 +340,7 @@ class LmsCli(PluginProvider):
     ) -> int | None:
         """Handle player `playlist` command."""
         arg = args[0] if args else "?"
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.players.queues.get_active_source(player_id)
         assert queue is not None
 
         # <playerid> playlist index <index|+index|-index|?> <fadeInSecs>
@@ -367,7 +367,7 @@ class LmsCli(PluginProvider):
         **kwargs,
     ) -> int | None:
         """Handle player `play` command."""
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.players.queues.get_active_source(player_id)
         assert queue is not None
         self.mass.create_task(self.mass.players.queues.play, player_id)
 
@@ -378,7 +378,7 @@ class LmsCli(PluginProvider):
         **kwargs,
     ) -> int | None:
         """Handle player `stop` command."""
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.players.queues.get_active_source(player_id)
         assert queue is not None
         self.mass.create_task(self.mass.players.queues.stop, player_id)
 
@@ -390,7 +390,7 @@ class LmsCli(PluginProvider):
         **kwargs,
     ) -> int | None:
         """Handle player `stop` command."""
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.players.queues.get_active_source(player_id)
         assert queue is not None
 
         if force or queue.state == PlayerState.PLAYING:

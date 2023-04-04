@@ -74,11 +74,11 @@ class PlayerQueuesController:
             queue_item.index = index
             yield queue_item
 
-    @api_command("players/queue/get_active_queue")
-    def get_active_queue(self, player_id: str) -> PlayerQueue:
+    @api_command("players/queue/get_active_source")
+    def get_active_source(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
         player = self.mass.players.get(player_id)
-        return self.get(player.active_queue)
+        return self.get(player.active_source)
 
     # Queue commands
 
@@ -507,13 +507,13 @@ class PlayerQueuesController:
     def on_player_update(self, player: Player, changed_keys: set[str]) -> None:
         """Call when a PlayerQueue needs to be updated (e.g. when player updates)."""
         if player.player_id not in self._queues:
-            self.mass.create_task(self.on_player_register(player))
+            # race condition
             return
         queue_id = player.player_id
         player = self.players.get(queue_id)
         queue = self._queues[queue_id]
 
-        # copy most properties from the player
+        # basic properties
         queue.display_name = player.display_name
         queue.available = player.available
         queue.items = len(self._queue_items[queue_id])
@@ -522,7 +522,7 @@ class PlayerQueuesController:
         queue.elapsed_time_last_updated = time.time()
 
         # determine if this queue is currently active for this player
-        queue.active = player.active_queue == queue.queue_id
+        queue.active = player.active_source == queue.queue_id
         if queue.active:
             # update current item from player report
             player_item_index = self.index_by_id(queue_id, player.current_item_id)
@@ -552,6 +552,7 @@ class PlayerQueuesController:
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state = self._prev_states.get(queue_id, {})
         new_state = self._queues[queue_id].to_dict()
+        new_state.pop("elapsed_time_last_updated", None)
         changed_keys = get_changed_keys(prev_state, new_state)
         self._prev_states[queue_id] = new_state
 
@@ -565,14 +566,7 @@ class PlayerQueuesController:
                 data=queue.elapsed_time,
             )
         # do not send full updates if only time was updated
-        if changed_keys in (
-            {"elapsed_time_last_updated"},
-            {
-                "elapsed_time",
-                "elapsed_time_last_updated",
-            },
-        ):
-            # ignore
+        if changed_keys == {"elapsed_time"}:
             return
 
         # only signal queue updated event if other properties than elapsed_time updated
@@ -602,7 +596,7 @@ class PlayerQueuesController:
         NOTE: The player(s) should resolve the stream URL for the QueueItem,
         just like with the play_media call.
         """
-        queue = self.get_active_queue(queue_or_player_id)
+        queue = self.get_active_source(queue_or_player_id)
         if current_item_id is None:
             cur_index = queue.current_index
         else:
