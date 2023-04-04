@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
+    MASS_LOGO_ONLINE,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
@@ -423,10 +424,11 @@ class StreamsController:
                     break
                 bytes_streamed += len(chunk)
 
-                # do not allow the player to prebuffer more than 30 seconds
+                # slow down player that buffers too aggressively
                 seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
                 if (
                     seconds_streamed > 30
+                    and player.corrected_elapsed_time > 30
                     and (seconds_streamed - player.corrected_elapsed_time) > 30
                 ):
                     await asyncio.sleep(0.5)
@@ -435,18 +437,26 @@ class StreamsController:
                     continue
 
                 # if icy metadata is enabled, send the icy metadata after the chunk
+                current_item = self.mass.players.queues.get_item(
+                    queue.queue_id, queue.index_in_buffer
+                )
                 if (
-                    queue
-                    and queue.current_item
-                    and queue.current_item.streamdetails
-                    and queue.current_item.streamdetails.stream_title
+                    current_item
+                    and current_item.streamdetails
+                    and current_item.streamdetails.stream_title
                 ):
-                    title = queue.current_item.streamdetails.stream_title
-                elif queue.current_item and queue.current_item.name:
-                    title = queue.current_item.name
+                    title = current_item.streamdetails.stream_title
+                elif current_item and current_item.name:
+                    title = current_item.name
+                    image_url = (
+                        self.mass.metadata.get_image_url(current_item.image)
+                        if current_item.image
+                        else ""
+                    )
                 else:
                     title = "Music Assistant"
-                metadata = f"StreamTitle='{title}';".encode()
+                    image_url = MASS_LOGO_ONLINE
+                metadata = f"StreamTitle='{title}';StreamUrl='&picture={image_url}';".encode()
                 while len(metadata) % 16 != 0:
                     metadata += b"\x00"
                 length = len(metadata)
