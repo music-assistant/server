@@ -94,7 +94,7 @@ class StreamJob:
         self.start()
         self.seen_players.add(player_id)
         try:
-            sub_queue = asyncio.Queue(3)
+            sub_queue = asyncio.Queue(1)
 
             # some checks
             assert player_id not in self.subscribers, "No duplicate subscriptions allowed"
@@ -119,18 +119,25 @@ class StreamJob:
                     break
                 yield chunk
         finally:
-            # some delay here to detect misbehaving (reconnecting) players
-            await asyncio.sleep(2)
             empty_queue(sub_queue)
             self.subscribers.pop(player_id)
+            # some delay here to detect misbehaving (reconnecting) players
             await asyncio.sleep(2)
             # check if this was the last subscriber and we should cancel
             if len(self.subscribers) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
 
-    async def _put_data(self, data: Any, timeout: float = 1200) -> None:
+    async def _put_data(self, data: Any, timeout: float = 120) -> None:
         """Put chunk of data to all subscribers."""
         async with asyncio.timeout(timeout):
+            while len(self.subscribers) == 0:
+                # this may happen with misbehaving clients that do
+                # multiple GET requests for the same audio stream.
+                # they receive the first chunk, disconnect and then
+                # directly reconnect again.
+                if not self._audio_task or self.finished:
+                    return
+                await asyncio.sleep(0.1)
             async with asyncio.TaskGroup() as tg:
                 for sub_id in self.subscribers:
                     sub_queue = self.subscribers[sub_id]
@@ -397,12 +404,14 @@ class StreamsController:
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
             # feed stdin with pcm audio chunks from origin
             async def read_audio():
-                async for chunk in stream_job.subscribe(player_id):
-                    try:
-                        await ffmpeg_proc.write(chunk)
-                    except BrokenPipeError:
-                        break
-                ffmpeg_proc.write_eof()
+                try:
+                    async for chunk in stream_job.subscribe(player_id):
+                        try:
+                            await ffmpeg_proc.write(chunk)
+                        except BrokenPipeError:
+                            break
+                finally:
+                    ffmpeg_proc.write_eof()
 
             ffmpeg_proc.attach_task(read_audio())
 
@@ -426,9 +435,9 @@ class StreamsController:
                 # slow down player that buffers too aggressively
                 seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
                 if (
-                    seconds_streamed > 30
-                    and player.corrected_elapsed_time > 30
-                    and (seconds_streamed - player.corrected_elapsed_time) > 30
+                    seconds_streamed > 10
+                    and player.corrected_elapsed_time > 20
+                    and (seconds_streamed - player.corrected_elapsed_time) > 20
                 ):
                     await asyncio.sleep(0.5)
 
@@ -436,17 +445,15 @@ class StreamsController:
                     continue
 
                 # if icy metadata is enabled, send the icy metadata after the chunk
-                current_item = self.mass.players.queues.get_item(
-                    queue.queue_id, queue.index_in_buffer
-                )
                 if (
-                    current_item
-                    and current_item.streamdetails
-                    and current_item.streamdetails.stream_title
+                    queue
+                    and queue.current_item
+                    and queue.current_item.streamdetails
+                    and queue.current_item.streamdetails.stream_title
                 ):
-                    title = current_item.streamdetails.stream_title
-                elif current_item and current_item.name:
-                    title = current_item.name
+                    title = queue.current_item.streamdetails.stream_title
+                elif queue and queue.current_item and queue.current_item.name:
+                    title = queue.current_item.name
                 else:
                     title = "Music Assistant"
                 metadata = f"StreamTitle='{title}';".encode()
