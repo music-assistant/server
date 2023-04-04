@@ -388,7 +388,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def set_db_library(self, item_id: int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""
-        match = {"item_id": item_id}
+        match = {"item_id": int(item_id)}
         await self.mass.music.database.update(self.db_table, match, {"in_library": in_library})
         db_item = await self.get_db_item(item_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
