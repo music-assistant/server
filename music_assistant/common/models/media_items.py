@@ -130,9 +130,11 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: MediaItemMetadata,
-        allow_overwrite: bool = False,
+        allow_overwrite: bool = True,
     ) -> MediaItemMetadata:
         """Update metadata (in-place) with new values."""
+        if not new_values:
+            return self
         for fld in fields(self):
             new_val = getattr(new_values, fld.name)
             if new_val is None:
@@ -269,11 +271,14 @@ class ItemMapping(DataClassDictMixin):
     sort_name: str | None = None
     uri: str | None = None
     version: str = ""
+    available: bool = True
 
     @classmethod
     def from_item(cls, item: MediaItem):
         """Create ItemMapping object from regular item."""
-        return cls.from_dict(item.to_dict())
+        result = cls.from_dict(item.to_dict())
+        result.available = item.available
+        return result
 
     def __hash__(self):
         """Return custom hash."""
@@ -329,6 +334,10 @@ class TrackAlbumMapping(ItemMapping):
 
     disc_number: int | None = None
     track_number: int | None = None
+
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
 
 
 @dataclass

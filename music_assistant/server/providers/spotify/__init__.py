@@ -218,18 +218,21 @@ class SpotifyProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        album_obj = await self._get_data(f"albums/{prov_album_id}")
-        return await self._parse_album(album_obj) if album_obj else None
+        if album_obj := await self._get_data(f"albums/{prov_album_id}"):
+            return await self._parse_album(album_obj)
+        raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        track_obj = await self._get_data(f"tracks/{prov_track_id}")
-        return await self._parse_track(track_obj) if track_obj else None
+        if track_obj := await self._get_data(f"tracks/{prov_track_id}"):
+            return await self._parse_track(track_obj)
+        raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
-        return await self._parse_playlist(playlist_obj) if playlist_obj else None
+        if playlist_obj := await self._get_data(f"playlists/{prov_playlist_id}"):
+            return await self._parse_playlist(playlist_obj)
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_album_tracks(self, prov_album_id) -> list[Track]:
         """Get all album tracks for given album id."""

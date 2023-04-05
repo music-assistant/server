@@ -36,7 +36,13 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     if abs(len(str1) - len(str2)) > 4:
         return False
     if not strict:
+        # handle '&' vs 'And'
+        if " & " in str1 and " and " in str2.lower():
+            str2 = str2.lower().replace(" and ", " & ")
+        elif " and " in str1.lower() and " & " in str2:
+            str2 = str2.replace(" & ", " and ")
         return create_safe_string(str1) == create_safe_string(str2)
+
     return create_sort_name(str1) == create_sort_name(str2)
 
 
@@ -231,7 +237,7 @@ def compare_album(
     return left_album.sort_name == right_album.sort_name
 
 
-def compare_track(left_track: Track, right_track: Track):
+def compare_track(left_track: Track, right_track: Track, strict: bool = True):
     """Compare two track items and return True if they match."""
     if left_track is None or right_track is None:
         return False
@@ -244,7 +250,7 @@ def compare_track(left_track: Track, right_track: Track):
     if compare_strings(left_track.musicbrainz_id, right_track.musicbrainz_id):
         return True
     # album is required for track linking
-    if left_track.album is None or right_track.album is None:
+    if strict and left_track.album is None or right_track.album is None:
         return False
     # track name must match
     if not compare_strings(left_track.name, right_track.name, False):
@@ -256,7 +262,7 @@ def compare_track(left_track: Track, right_track: Track):
     if not compare_artists(left_track.artists, right_track.artists):
         return False
     # track if both tracks are (not) explicit
-    if not compare_explicit(left_track.metadata, right_track.metadata):
+    if strict and not compare_explicit(left_track.metadata, right_track.metadata):
         return False
     # exact albumtrack match = 100% match
     if (

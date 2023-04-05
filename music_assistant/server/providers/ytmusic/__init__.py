@@ -213,12 +213,9 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        album_obj = await get_album(prov_album_id=prov_album_id)
-        return (
-            await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
-            if album_obj
-            else None
-        )
+        if album_obj := await get_album(prov_album_id=prov_album_id):
+            return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
+        raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -227,7 +224,10 @@ class YoutubeMusicProvider(MusicProvider):
             return []
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
-            track = await self._parse_track(track_obj=track_obj)
+            try:
+                track = await self._parse_track(track_obj=track_obj)
+            except InvalidDataError:
+                continue
             track.disc_number = 0
             track.track_number = idx
             tracks.append(track)
@@ -235,22 +235,25 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-        return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+        if artist_obj := await get_artist(prov_artist_id=prov_artist_id):
+            return await self._parse_artist(artist_obj=artist_obj)
+        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        track_obj = await get_track(prov_track_id=prov_track_id)
-        return await self._parse_track(track_obj)
+        if track_obj := await get_track(prov_track_id=prov_track_id):
+            return await self._parse_track(track_obj)
+        raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = await get_playlist(
+        if playlist_obj := await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers,
             username=self.config.get_value(CONF_USERNAME),
-        )
-        return await self._parse_playlist(playlist_obj)
+        ):
+            return await self._parse_playlist(playlist_obj)
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
@@ -601,6 +604,8 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parse a YT Track response to a Track model object."""
+        if not track_obj.get("videoId"):
+            raise InvalidDataError("Track is missing videoId")
         track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
         if "artists" in track_obj:
             track.artists = [
@@ -680,7 +685,7 @@ class YoutubeMusicProvider(MusicProvider):
                     )
                 self.logger.debug("Cipher expired. Obtaining new Cipher.")
                 self._cipher = None
-                return self._parse_stream_url(
+                return await self._parse_stream_url(
                     stream_format=stream_format, item_id=item_id, retry=False
                 )
         elif stream_format.get("url"):

@@ -388,11 +388,10 @@ class MusicProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def sync_library(self, media_types: tuple[MediaType, ...] | None = None) -> None:
+    async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
         # this reference implementation can be overridden
         # with a provider specific approach if needed
-        media_types = tuple(x for x in MediaType)
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue
@@ -400,19 +399,20 @@ class MusicProvider(Provider):
             controller = self.mass.music.get_controller(media_type)
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type):
-                db_item: MediaItemType = await controller.get_db_item_by_prov_id(
-                    prov_item.item_id,
-                    prov_item.provider,
-                )
-                if not db_item:  # noqa: SIM114
+                db_item: MediaItemType
+                if not (
+                    db_item := await controller.get_db_item_by_prov_id(
+                        prov_item.item_id,
+                        prov_item.provider,
+                    )
+                ):
                     # create full db item
                     db_item = await controller.add(prov_item, skip_metadata_lookup=True)
-
                 elif (
                     db_item.metadata.checksum and prov_item.metadata.checksum
                 ) and db_item.metadata.checksum != prov_item.metadata.checksum:
-                    # item checksum changed
-                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
+                    # existing dbitem checksum changed
+                    db_item = await controller.update(db_item.item_id, prov_item)
                 cur_db_ids.add(db_item.item_id)
                 if not db_item.in_library:
                     await controller.set_db_library(db_item.item_id, True)

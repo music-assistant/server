@@ -19,7 +19,11 @@ from pychromecast.discovery import CastBrowser, SimpleCastListener
 from pychromecast.models import CastInfo
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueOption
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_OUTPUT_CODEC,
+    ConfigEntry,
+    ConfigValueOption,
+)
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -31,7 +35,12 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_HIDE_GROUP_CHILDS, CONF_PLAYERS, MASS_LOGO_ONLINE
+from music_assistant.constants import (
+    CONF_HIDE_GROUP_CHILDS,
+    CONF_OUTPUT_CODEC,
+    CONF_PLAYERS,
+    MASS_LOGO_ONLINE,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -41,13 +50,14 @@ if TYPE_CHECKING:
     from pychromecast.controllers.receiver import CastStatus
     from pychromecast.socket_client import ConnectionStatus
 
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
 
 CONF_ALT_APP = "alt_app"
+
 
 BASE_PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
@@ -59,6 +69,7 @@ BASE_PLAYER_CONFIG_ENTRIES = (
         "the playback experience but may not work on non-Google hardware.",
         advanced=True,
     ),
+    CONF_ENTRY_OUTPUT_CODEC,
 )
 
 
@@ -109,6 +120,7 @@ class ChromecastProvider(PlayerProvider):
         # silence the cast logger a bit
         logging.getLogger("pychromecast.socket_client").setLevel(logging.INFO)
         logging.getLogger("pychromecast.controllers").setLevel(logging.INFO)
+        logging.getLogger("pychromecast.dial").setLevel(logging.INFO)
         self.mz_mgr = MultizoneManager()
         self.browser = CastBrowser(
             SimpleCastListener(
@@ -168,6 +180,13 @@ class ChromecastProvider(PlayerProvider):
             )
         return entries
 
+    def on_player_config_changed(
+        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+    ) -> None:
+        """Call (by config manager) when the configuration of a player changes."""
+        if "enabled" in changed_keys and config.player_id not in self.castplayers:
+            self.mass.create_task(self.mass.config.reload_provider, self.instance_id)
+
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         castplayer = self.castplayers[player_id]
@@ -188,13 +207,13 @@ class ChromecastProvider(PlayerProvider):
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         castplayer = self.castplayers[player_id]
+        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC).value
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=player_id,
             seek_position=seek_position,
             fade_in=fade_in,
-            # prefer FLAC as it seems to work on all CC players
-            content_type=ContentType.FLAC,
+            content_type=ContentType(output_codec),
             flow_mode=flow_mode,
         )
         castplayer.flow_mode_active = flow_mode
@@ -357,7 +376,7 @@ class ChromecastProvider(PlayerProvider):
             self.castplayers[player_id] = castplayer
 
             castplayer.status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
-            if cast_info.is_audio_group:
+            if cast_info.is_audio_group and not cast_info.is_multichannel_group:
                 mz_controller = MultizoneController(cast_info.uuid)
                 castplayer.cc.register_handler(mz_controller)
                 castplayer.mz_controller = mz_controller
@@ -385,6 +404,8 @@ class ChromecastProvider(PlayerProvider):
             status.volume_level,
         )
         castplayer.player.name = castplayer.cast_info.friendly_name
+        castplayer.player.volume_level = int(status.volume_level * 100)
+        castplayer.player.volume_muted = status.volume_muted
         if castplayer.active_group:
             # use mute as power when group is active
             castplayer.player.powered = not status.volume_muted
@@ -393,15 +414,12 @@ class ChromecastProvider(PlayerProvider):
                 castplayer.cc.app_id is not None
                 and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
             )
-        castplayer.player.volume_level = int(status.volume_level * 100)
-        castplayer.player.volume_muted = status.volume_muted
-
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.STEREO_PAIR
             castplayer.player.group_childs = []
         # handle cast groups
-        elif castplayer.cast_info.is_audio_group:
+        if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.GROUP
             castplayer.player.group_childs = [
                 str(UUID(x)) for x in castplayer.mz_controller.members
@@ -410,6 +428,7 @@ class ChromecastProvider(PlayerProvider):
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
             )
+
         # send update to player manager
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 

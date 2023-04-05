@@ -179,7 +179,7 @@ class MetaDataController:
                 playlist.item_id, playlist.provider
             ):
                 if not playlist.image and track.image:
-                    image_urls.add(track.image.url)
+                    image_urls.add(track.image.path)
                 if track.media_type != MediaType.TRACK:
                     # filter out radio items
                     continue
