@@ -429,6 +429,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
+            if provider.is_unique:
+                # matching on unique provider sis pointless as they push (all) their content to MA
+                continue
             if await find_prov_match(provider):
                 cur_provider_domains.add(provider.domain)
             else:
