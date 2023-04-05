@@ -122,15 +122,17 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         return db_item
 
-    async def update(self, item_id: int, update: Album, overwrite: bool = False) -> Album:
+    async def update(self, item_id: str | int, update: Album, overwrite: bool = False) -> Album:
         """Update existing record in the database."""
-        return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
+        db_id = int(item_id)  # ensure integer
+        return await self._update_db_item(item_id=db_id, item=update, overwrite=overwrite)
 
-    async def delete(self, item_id: int, recursive: bool = False) -> None:
+    async def delete(self, item_id: str | int, recursive: bool = False) -> None:
         """Delete record from the database."""
+        db_id = int(item_id)  # ensure integer
         # check album tracks
         db_rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id FROM {DB_TABLE_TRACKS} WHERE albums LIKE '%\"{item_id}\"%'",
+            f"SELECT item_id FROM {DB_TABLE_TRACKS} WHERE albums LIKE '%\"{db_id}\"%'",
             limit=5000,
         )
         assert not (db_rows and not recursive), "Tracks attached to album"
@@ -243,10 +245,11 @@ class AlbumsController(MediaControllerBase[Album]):
         return await self.get_db_item(item_id)
 
     async def _update_db_item(
-        self, item_id: int, item: Album | ItemMapping, overwrite: bool = False
+        self, item_id: str | int, item: Album | ItemMapping, overwrite: bool = False
     ) -> Album:
         """Update Album record in the database."""
-        cur_item = await self.get_db_item(item_id)
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_db_item(db_id)
         metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
         album_artists = await self._get_artist_mappings(cur_item, item, overwrite)
@@ -260,7 +263,7 @@ class AlbumsController(MediaControllerBase[Album]):
         async with self._db_add_lock:
             await self.mass.music.database.update(
                 self.db_table,
-                {"item_id": item_id},
+                {"item_id": db_id},
                 {
                     "name": item.name if overwrite else cur_item.name,
                     "sort_name": item.sort_name if overwrite else cur_item.sort_name,
@@ -277,9 +280,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 },
             )
             # update/set provider_mappings table
-            await self._set_provider_mappings(item_id, provider_mappings)
-            self.logger.debug("updated %s in database: %s", item.name, item_id)
-        return await self.get_db_item(item_id)
+            await self._set_provider_mappings(db_id, provider_mappings)
+            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        return await self.get_db_item(db_id)
 
     async def _get_provider_album_tracks(
         self, item_id: str, provider_instance_id_or_domain: str
@@ -358,13 +361,14 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _get_db_album_tracks(
         self,
-        item_id: str,
+        item_id: str | int,
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
-        db_album = await self.get_db_item(item_id)
+        db_id = int(item_id)  # ensure integer
+        db_album = await self.get_db_item(db_id)
         # simply grab all tracks in the db that are linked to this album
         # TODO: adjust to json query instead of text search?
-        query = f'SELECT * FROM {DB_TABLE_TRACKS} WHERE albums LIKE \'%"item_id":"{item_id}","provider":"database"%\''  # noqa: E501
+        query = f'SELECT * FROM {DB_TABLE_TRACKS} WHERE albums LIKE \'%"item_id":"{db_id}","provider":"database"%\''  # noqa: E501
         result = []
         for track in await self.mass.music.tracks.get_db_items_by_query(query):
             if album_mapping := next(

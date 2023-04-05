@@ -76,7 +76,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         return db_item
 
-    async def update(self, item_id: int, update: Artist, overwrite: bool = False) -> Artist:
+    async def update(self, item_id: str | int, update: Artist, overwrite: bool = False) -> Artist:
         """Update existing record in the database."""
         return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
 
@@ -158,11 +158,12 @@ class ArtistsController(MediaControllerBase[Artist]):
                 final_items[key].in_library = True
         return list(final_items.values())
 
-    async def delete(self, item_id: int, recursive: bool = False) -> None:
+    async def delete(self, item_id: str | int, recursive: bool = False) -> None:
         """Delete record from the database."""
+        db_id = int(item_id)  # ensure integer
         # check artist albums
         db_rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id FROM {DB_TABLE_ALBUMS} WHERE artists LIKE '%\"{item_id}\"%'",
+            f"SELECT item_id FROM {DB_TABLE_ALBUMS} WHERE artists LIKE '%\"{db_id}\"%'",
             limit=5000,
         )
         assert not (db_rows and not recursive), "Albums attached to artist"
@@ -172,7 +173,7 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         # check artist tracks
         db_rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id FROM {DB_TABLE_TRACKS} WHERE artists LIKE '%\"{item_id}\"%'",
+            f"SELECT item_id FROM {DB_TABLE_TRACKS} WHERE artists LIKE '%\"{db_id}\"%'",
             limit=5000,
         )
         assert not (db_rows and not recursive), "Tracks attached to artist"
@@ -181,7 +182,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 await self.mass.music.albums.delete(db_row["item_id"], recursive)
 
         # delete the artist itself from db
-        await super().delete(item_id)
+        await super().delete(db_id)
 
     async def match_artist(self, db_artist: Artist):
         """Try to find matching artists on all providers for the provided (database) item_id.
@@ -322,10 +323,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         return await self.get_db_item(item_id)
 
     async def _update_db_item(
-        self, item_id: int, item: Artist | ItemMapping, overwrite: bool = False
+        self, item_id: str | int, item: Artist | ItemMapping, overwrite: bool = False
     ) -> Artist:
         """Update Artist record in the database."""
-        cur_item = await self.get_db_item(item_id)
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_db_item(db_id)
         metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
 
@@ -339,7 +341,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         async with self._db_add_lock:
             await self.mass.music.database.update(
                 self.db_table,
-                {"item_id": item_id},
+                {"item_id": db_id},
                 {
                     "name": item.name if overwrite else cur_item.name,
                     "sort_name": item.sort_name if overwrite else cur_item.sort_name,
@@ -350,9 +352,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 },
             )
             # update/set provider_mappings table
-            await self._set_provider_mappings(item_id, provider_mappings)
-            self.logger.debug("updated %s in database: %s", item.name, item_id)
-        return await self.get_db_item(item_id)
+            await self._set_provider_mappings(db_id, provider_mappings)
+            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        return await self.get_db_item(db_id)
 
     async def _get_provider_dynamic_tracks(
         self,

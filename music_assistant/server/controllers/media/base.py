@@ -11,7 +11,7 @@ from typing import TYPE_CHECKING, Generic, TypeVar
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     ItemMapping,
     MediaItemType,
@@ -49,27 +49,28 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         raise NotImplementedError
 
     @abstractmethod
-    async def update(self, item_id: int, update: ItemCls, overwrite: bool = False) -> ItemCls:
+    async def update(self, item_id: str | int, update: ItemCls, overwrite: bool = False) -> ItemCls:
         """Update existing record in the database."""
 
-    async def delete(self, item_id: int, recursive: bool = False) -> None:  # noqa: ARG002
+    async def delete(self, item_id: str | int, recursive: bool = False) -> None:  # noqa: ARG002
         """Delete record from the database."""
-        db_item = await self.get_db_item(item_id)
-        assert db_item, f"Item does not exist: {item_id}"
+        db_id = int(item_id)  # ensure integer
+        db_item = await self.get_db_item(db_id)
+        assert db_item, f"Item does not exist: {db_id}"
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
-            {"item_id": int(item_id)},
+            {"item_id": db_id},
         )
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
-            {"media_type": self.media_type.value, "item_id": int(item_id)},
+            {"media_type": self.media_type.value, "item_id": db_id},
         )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, db_item.uri, db_item)
-        self.logger.debug("deleted item with id %s from database", item_id)
+        self.logger.debug("deleted item with id %s from database", db_id)
 
     async def db_items(
         self,
@@ -316,10 +317,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def get_db_item(self, item_id: int | str) -> ItemCls:
         """Get record by id."""
-        match = {"item_id": int(item_id)}
+        db_id = int(item_id)  # ensure integer
+        match = {"item_id": db_id}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
             return self.item_cls.from_db_row(db_row)
-        raise MediaNotFoundError(f"Album not found in database: {item_id}")
+        raise MediaNotFoundError(f"Album not found in database: {db_id}")
 
     async def get_db_item_by_prov_id(
         self,
@@ -386,11 +388,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 break
             offset += limit
 
-    async def set_db_library(self, item_id: int, in_library: bool) -> None:
+    async def set_db_library(self, item_id: str | int, in_library: bool) -> None:
         """Set the in-library bool on a database item."""
-        match = {"item_id": item_id}
+        db_id = int(item_id)  # ensure integer
+        match = {"item_id": db_id}
         await self.mass.music.database.update(self.db_table, match, {"in_library": in_library})
-        db_item = await self.get_db_item(item_id)
+        db_item = await self.get_db_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
     async def get_provider_item(
@@ -428,10 +431,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             "found on provider {provider_instance_id_or_domain}"
         )
 
-    async def remove_prov_mapping(self, item_id: int, provider_instance_id: str) -> None:
+    async def remove_prov_mapping(self, item_id: str | int, provider_instance_id: str) -> None:
         """Remove provider id(s) from item."""
+        db_id = int(item_id)  # ensure integer
         try:
-            db_item = await self.get_db_item(item_id)
+            db_item = await self.get_db_item(db_id)
         except MediaNotFoundError:
             # edge case: already deleted / race condition
             return
@@ -441,7 +445,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             DB_TABLE_PROVIDER_MAPPINGS,
             {
                 "media_type": self.media_type.value,
-                "item_id": int(item_id),
+                "item_id": db_id,
                 "provider_instance": provider_instance_id,
             },
         )
@@ -450,19 +454,19 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db_item.provider_mappings = {
             x for x in db_item.provider_mappings if x.provider_instance != provider_instance_id
         }
-        match = {"item_id": item_id}
+        match = {"item_id": db_id}
         if db_item.provider_mappings:
             await self.mass.music.database.update(
                 self.db_table,
                 match,
                 {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
             )
-            self.logger.debug("removed provider %s from item id %s", provider_instance_id, item_id)
+            self.logger.debug("removed provider %s from item id %s", provider_instance_id, db_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
         else:
             # delete item if it has no more providers
             with suppress(AssertionError):
-                await self.delete(item_id)
+                await self.delete(db_id)
 
     async def dynamic_tracks(
         self,
@@ -500,13 +504,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Get dynamic list of tracks for given item, fallback/default implementation."""
 
     async def _set_provider_mappings(
-        self, item_id: int, provider_mappings: list[ProviderMapping]
+        self, item_id: str | int, provider_mappings: list[ProviderMapping]
     ) -> None:
         """Update the provider_items table for the media item."""
+        db_id = int(item_id)  # ensure integer
         # clear all records first
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
-            {"media_type": self.media_type.value, "item_id": int(item_id)},
+            {"media_type": self.media_type.value, "item_id": db_id},
         )
         # add entries
         for provider_mapping in provider_mappings:
@@ -514,7 +519,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 DB_TABLE_PROVIDER_MAPPINGS,
                 {
                     "media_type": self.media_type.value,
-                    "item_id": item_id,
+                    "item_id": db_id,
                     "provider_domain": provider_mapping.provider_domain,
                     "provider_instance": provider_mapping.provider_instance,
                     "provider_item_id": provider_mapping.item_id,
@@ -541,14 +546,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         overwrite: bool = False,
     ) -> list[ItemMapping]:
         """Extract (database) album/track artist(s) as ItemMapping."""
-        if not update_item or isinstance(update_item, ItemMapping):
-            return org_item.artists
-        if overwrite and update_item.provider_mappings:
-            return update_item.artists
-        item_artists: set[ItemMapping] = set()
-        for item in (org_item, update_item):
-            for artist in item.artists:
-                item_artists.add(await self._get_artist_mapping(artist))
+        if update_item is None or isinstance(update_item, ItemMapping):
+            source_artists = org_item.artists
+        elif overwrite and update_item.artists:
+            source_artists = update_item.artists
+        else:
+            source_artists = org_item.artists + update_item.artists
+        item_artists = {await self._get_artist_mapping(artist) for artist in source_artists}
         # use intermediate set to prevent duplicates
         # filter various artists if multiple artists
         if len(item_artists) > 1:
@@ -568,12 +572,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return ItemMapping.from_item(db_artist)
 
         # try to request the full item
-        artist = await self.mass.music.artists.get_provider_item(
+        with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
+            db_artist = await self.mass.music.artists.add(artist, skip_metadata_lookup=True)
+            return ItemMapping.from_item(db_artist)
+        # fallback to just the provider item
+        album = await self.mass.music.albums.get_provider_item(
             artist.item_id, artist.provider, fallback=artist
         )
-        if isinstance(artist, ItemMapping):
+        if isinstance(album, ItemMapping):
             # this can happen for unavailable items
             return artist
-
-        db_artist = await self.mass.music.artists.add(artist, skip_metadata_lookup=True)
-        return ItemMapping.from_item(db_artist)
+        return ItemMapping.from_item(album)
