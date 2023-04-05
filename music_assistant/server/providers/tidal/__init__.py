@@ -522,7 +522,7 @@ class TidalProvider(MusicProvider):
         if (
             self._tidal_session
             and self._tidal_session.access_token == self._access_token
-            and self._expiry_time > datetime.now(UTC) + timedelta(minutes=30)
+            and self._expiry_time > (datetime.now(UTC) + timedelta(minutes=30))
         ):
             return self._tidal_session
         session = await tidal_session(
