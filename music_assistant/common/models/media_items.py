@@ -335,6 +335,10 @@ class TrackAlbumMapping(ItemMapping):
     disc_number: int | None = None
     track_number: int | None = None
 
+    def __hash__(self):
+        """Return custom hash."""
+        return hash((self.media_type, self.provider, self.item_id))
+
 
 @dataclass
 class Track(MediaItem):

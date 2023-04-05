@@ -604,7 +604,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parse a YT Track response to a Track model object."""
-        if not track_obj["videoId"]:
+        if not track_obj.get("videoId"):
             raise InvalidDataError("Track is missing videoId")
         track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
         if "artists" in track_obj:

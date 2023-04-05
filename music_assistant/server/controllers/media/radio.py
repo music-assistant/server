@@ -72,7 +72,7 @@ class RadioController(MediaControllerBase[Radio]):
         )
         return db_item
 
-    async def update(self, item_id: int, update: Radio, overwrite: bool = False) -> Radio:
+    async def update(self, item_id: str | int, update: Radio, overwrite: bool = False) -> Radio:
         """Update existing record in the database."""
         return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
 
@@ -95,12 +95,15 @@ class RadioController(MediaControllerBase[Radio]):
         # return created object
         return await self.get_db_item(item_id)
 
-    async def _update_db_item(self, item_id: int, item: Radio, overwrite: bool = False) -> Radio:
+    async def _update_db_item(
+        self, item_id: str | int, item: Radio, overwrite: bool = False
+    ) -> Radio:
         """Update Radio record in the database."""
-        cur_item = await self.get_db_item(item_id)
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_db_item(db_id)
         metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
-        match = {"item_id": item_id}
+        match = {"item_id": db_id}
         async with self._db_add_lock:
             await self.mass.music.database.update(
                 self.db_table,
@@ -115,9 +118,9 @@ class RadioController(MediaControllerBase[Radio]):
                 },
             )
             # update/set provider_mappings table
-            await self._set_provider_mappings(item_id, provider_mappings)
-            self.logger.debug("updated %s in database: %s", item.name, item_id)
-        return await self.get_db_item(item_id)
+            await self._set_provider_mappings(db_id, provider_mappings)
+            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        return await self.get_db_item(db_id)
 
     async def _get_provider_dynamic_tracks(
         self,

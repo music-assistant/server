@@ -27,6 +27,7 @@ class QueueItem(DataClassDictMixin):
     streamdetails: StreamDetails | None = None
     media_item: Track | Radio | None = None
     image: MediaItemImage | None = None
+    index: int = 0
 
     def __post_init__(self):
         """Set default values."""

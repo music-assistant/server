@@ -294,7 +294,7 @@ class ConfigController:
         try:
             player = self.mass.players.get(config.player_id)
             player.enabled = config.enabled
-            self.mass.players.update(config.player_id)
+            self.mass.players.update(config.player_id, force_update=True)
         except PlayerUnavailableError:
             pass
 
