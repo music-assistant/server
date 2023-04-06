@@ -8,7 +8,11 @@ from datetime import UTC, datetime, timedelta
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
+from tidalapi import Album as TidalAlbum
+from tidalapi import Artist as TidalArtist
+from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Session as TidalSession
+from tidalapi import Track as TidalTrack
 
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name
@@ -335,8 +339,7 @@ class TidalProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         playlist_obj = await create_playlist(self._tidal_session, self._tidal_user_id, name)
         playlist = await self._parse_playlist(playlist_obj)
-        db_playlist = await self.mass.music.playlists.add_db_item(playlist)
-        return db_playlist
+        return await self.mass.music.playlists.add_db_item(playlist)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -355,9 +358,8 @@ class TidalProvider(MusicProvider):
             direct=url,
         )
 
-    async def _parse_artist(self, artist_obj) -> Artist:
+    async def _parse_artist(self, artist_obj: TidalArtist) -> Artist:
         """Parse tidal artist object to generic layout."""
-        artist_id = None
         artist_id = artist_obj.id
         artist = Artist(item_id=artist_id, provider=self.instance_id, name=artist_obj.name)
         artist.add_provider_mapping(
@@ -383,24 +385,22 @@ class TidalProvider(MusicProvider):
         #            break
         return artist
 
-    async def _parse_album(self, album_obj: dict) -> Album:
+    async def _parse_album(self, album_obj: TidalAlbum) -> Album:
         """Parse tidal album object to generic layout."""
         name = album_obj.name
-        version = None
-        if album_obj.version is not None:
-            version = album_obj.version
+        version = album_obj.version if album_obj.version is not None else None
         album_id = album_obj.id
         album = Album(item_id=album_id, provider=self.instance_id, name=name, version=version)
         for artist_obj in album_obj.artists:
             album.artists.append(await self._parse_artist(artist_obj))
-        if album_obj.type == "SINGLE":
-            album.album_type = AlbumType.SINGLE
+        if album_obj.type == "ALBUM":
+            album.album_type = AlbumType.ALBUM
         elif album_obj.type == "COMPILATION":
             album.album_type = AlbumType.COMPILATION
-        elif album_obj.type == "ALBUM":
-            album.album_type = AlbumType.ALBUM
         elif album_obj.type == "EP":
             album.album_type = AlbumType.EP
+        elif album_obj.type == "SINGLE":
+            album.album_type = AlbumType.SINGLE
         image_url = None
         try:
             image_url = album_obj.image(1280)
@@ -438,11 +438,9 @@ class TidalProvider(MusicProvider):
             create_sort_name(self.name),
         )
 
-    async def _parse_track(self, track_obj) -> Track:
+    async def _parse_track(self, track_obj: TidalTrack) -> Track:
         """Parse tidal track object to generic layout."""
-        version = None
-        if track_obj.version is not None:
-            version = track_obj.version
+        version = track_obj.version if track_obj.version is not None else None
         track_id = str(track_obj.id)
         track = Track(
             item_id=track_id,
@@ -479,12 +477,10 @@ class TidalProvider(MusicProvider):
         )
         return track
 
-    async def _parse_playlist(self, playlist_obj) -> Playlist:
+    async def _parse_playlist(self, playlist_obj: TidalPlaylist) -> Playlist:
         """Parse tidal playlist object to generic layout."""
         playlist_id = playlist_obj.id
-        creator_id = None
-        if playlist_obj.creator:
-            creator_id = playlist_obj.creator.id
+        creator_id = playlist_obj.creator.id if playlist_obj.creator else None
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.instance_id,
@@ -499,9 +495,7 @@ class TidalProvider(MusicProvider):
                 url=f"http://www.tidal.com/playlists/{playlist_id}",
             )
         )
-        is_editable = False
-        if creator_id and creator_id == self._tidal_user_id:
-            is_editable = True
+        is_editable = bool(creator_id and creator_id == self._tidal_user_id)
         playlist.is_editable = is_editable
         image_url = None
         try:
