@@ -339,6 +339,19 @@ class TrackAlbumMapping(ItemMapping):
         """Return custom hash."""
         return hash((self.media_type, self.provider, self.item_id))
 
+    @classmethod
+    def from_item(
+        cls,
+        item: MediaItemType | ItemMapping,
+        disc_number: int | None = None,
+        track_number: int | None = None,
+    ) -> TrackAlbumMapping:
+        """Create TrackAlbumMapping object from regular item."""
+        result = super().from_item(item)
+        result.disc_number = disc_number
+        result.track_number = track_number
+        return result
+
 
 @dataclass
 class Track(MediaItem):
