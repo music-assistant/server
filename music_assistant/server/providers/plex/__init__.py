@@ -452,12 +452,12 @@ class PlexProvider(MusicProvider):
         """Get full artist details by id."""
         if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             # This artist does not exist in plex, so we can just load it from DB.
-            db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
+
+            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
                 prov_artist_id, self.instance_id
-            )
-            if db_artist is None:
-                raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
-            return db_artist
+            ):
+                return db_artist
+            raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
 
         if plex_artist := await self._get_data(prov_artist_id, PlexArtist):
             return await self._parse_artist(plex_artist)
