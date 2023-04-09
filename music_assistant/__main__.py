@@ -89,6 +89,7 @@ def main():
         hass_options = {}
 
     log_level = hass_options.get("log_level", args.log_level).upper()
+    dev_mode = bool(os.environ.get("PYTHONDEVMODE", "0"))
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
@@ -100,7 +101,7 @@ def main():
 
     async def start_mass():
         loop = asyncio.get_running_loop()
-        if log_level == "DEBUG":
+        if dev_mode:
             loop.set_debug(True)
         await mass.start()
 

@@ -114,10 +114,8 @@ class AsyncProcess:
         if self.closed or self._proc.stdin.is_closing():
             return
         self._proc.stdin.write(data)
-        try:
+        with suppress(BrokenPipeError):
             await self._proc.stdin.drain()
-        except BrokenPipeError:
-            LOGGER.warning("Attempted write to an already closed process")
 
     def write_eof(self) -> None:
         """Write end of file to to process stdin."""
@@ -134,7 +132,7 @@ class AsyncProcess:
             ConnectionResetError,
         ):
             # already exited, race condition
-            LOGGER.warning("Attempted write to an already closed process")
+            pass
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""

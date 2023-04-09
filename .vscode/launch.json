@@ -13,7 +13,7 @@
             "args":[
                  "--log-level", "debug"
             ],
-            "env": {"PYTHONDEVMODE": "1"}
+            // "env": {"PYTHONDEVMODE": "1"}
         }
     ]
 }

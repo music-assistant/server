@@ -27,6 +27,19 @@ class MusicProvider(Provider):
     Music Provider implementations should inherit from this base model.
     """
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return False
+
     async def search(
         self,
         search_query: str,
@@ -375,14 +388,10 @@ class MusicProvider(Provider):
             raise NotImplementedError
         return []
 
-    async def sync_library(self, media_types: tuple[MediaType, ...] | None = None) -> None:
+    async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
-        # this reference implementation can be overridden with provider specific approach
-        # this logic is aimed at streaming/online providers,
-        # which all have more or less the same structure.
-        # filesystem implementation(s) just override this.
-        if media_types is None:
-            media_types = tuple(x for x in MediaType)
+        # this reference implementation can be overridden
+        # with a provider specific approach if needed
         for media_type in media_types:
             if not self.library_supported(media_type):
                 continue
@@ -390,23 +399,20 @@ class MusicProvider(Provider):
             controller = self.mass.music.get_controller(media_type)
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type):
-                db_item: MediaItemType = await controller.get_db_item_by_prov_id(
-                    item_id=prov_item.item_id,
-                    provider_domain=prov_item.provider,
-                )
-                if not db_item:
-                    # dump the item in the db, rich metadata is lazy loaded later
-                    db_item = await controller.add_db_item(prov_item)
-
+                db_item: MediaItemType
+                if not (
+                    db_item := await controller.get_db_item_by_prov_id(
+                        prov_item.item_id,
+                        prov_item.provider,
+                    )
+                ):
+                    # create full db item
+                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
                 elif (
                     db_item.metadata.checksum and prov_item.metadata.checksum
                 ) and db_item.metadata.checksum != prov_item.metadata.checksum:
-                    # item checksum changed
-                    db_item = await controller.update_db_item(db_item.item_id, prov_item)
-                    # preload album/playlist tracks
-                    if prov_item.media_type == (MediaType.ALBUM, MediaType.PLAYLIST):
-                        for track in controller.tracks(prov_item.item_id, prov_item.provider):
-                            await self.mass.music.tracks.add_db_item(track)
+                    # existing dbitem checksum changed
+                    db_item = await controller.update(db_item.item_id, prov_item)
                 cur_db_ids.add(db_item.item_id)
                 if not db_item.in_library:
                     await controller.set_db_library(db_item.item_id, True)
@@ -423,11 +429,6 @@ class MusicProvider(Provider):
                         continue
                     # only mark the item as not in library and leave the metadata in db
                     await controller.set_db_library(db_item.item_id, False)
-
-    def is_file(self) -> bool:
-        """Return if this is a FileSystem based provider."""
-        # override this is needed
-        return self.domain.startswith("filesystem")
 
     # DO NOT OVERRIDE BELOW
 
