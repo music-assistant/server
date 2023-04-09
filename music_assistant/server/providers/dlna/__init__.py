@@ -23,12 +23,12 @@ from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
 from async_upnp_client.utils import CaseInsensitiveDict
 
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import CONF_ENTRY_OUTPUT_CODEC, ConfigEntry
 from music_assistant.common.models.enums import ContentType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_PLAYERS
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -46,7 +46,7 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
 )
-PLAYER_CONFIG_ENTRIES = tuple()  # we don't have any player config entries (for now)
+PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_OUTPUT_CODEC,)
 
 _DLNAPlayerProviderT = TypeVar("_DLNAPlayerProviderT", bound="DLNAPlayerProvider")
 _R = TypeVar("_R")
@@ -220,6 +220,10 @@ class DLNAPlayerProvider(PlayerProvider):
             for dlna_player in self.dlnaplayers.values():
                 tg.create_task(self._device_disconnect(dlna_player))
 
+    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:  # noqa: ARG002
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        return PLAYER_CONFIG_ENTRIES
+
     def on_player_config_changed(
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
     ) -> None:
@@ -258,17 +262,17 @@ class DLNAPlayerProvider(PlayerProvider):
         # always clear queue (by sending stop) first
         if dlna_player.device.can_stop:
             await self.cmd_stop(player_id)
-
+        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC).value
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=dlna_player.udn,
             seek_position=seek_position,
             fade_in=fade_in,
-            content_type=ContentType.FLAC,
+            content_type=ContentType(output_codec),
             flow_mode=flow_mode,
         )
 
-        didl_metadata = create_didl_metadata(url, queue_item, flow_mode)
+        didl_metadata = create_didl_metadata(self.mass, url, queue_item, flow_mode)
         await dlna_player.device.async_set_transport_uri(url, queue_item.name, didl_metadata)
         # Play it
         await dlna_player.device.async_wait_for_can_play(10)
@@ -548,14 +552,17 @@ class DLNAPlayerProvider(PlayerProvider):
             return
 
         # send queue item to dlna queue
+        output_codec = self.mass.config.get_player_config_value(
+            dlna_player.player.player_id, CONF_OUTPUT_CODEC
+        ).value
         url = await self.mass.streams.resolve_stream_url(
             queue_item=next_item,
             player_id=dlna_player.udn,
-            content_type=ContentType.FLAC,
+            content_type=ContentType(output_codec),
             # DLNA pre-caches pretty aggressively so do not yet start the runner
             auto_start_runner=False,
         )
-        didl_metadata = create_didl_metadata(url, next_item)
+        didl_metadata = create_didl_metadata(self.mass, url, next_item)
         try:
             await dlna_player.device.async_set_next_transport_uri(
                 url, next_item.name, didl_metadata

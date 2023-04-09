@@ -27,7 +27,7 @@ from music_assistant.server.controllers.music import (
     DB_TABLE_ARTISTS,
     DB_TABLE_TRACKS,
 )
-from music_assistant.server.helpers.compare import compare_strings
+from music_assistant.server.helpers.compare import compare_artist, compare_strings
 
 if TYPE_CHECKING:
     from music_assistant.server.models.music_provider import MusicProvider
@@ -49,8 +49,36 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.mass.register_api_command("music/artist", self.get)
         self.mass.register_api_command("music/artist/albums", self.albums)
         self.mass.register_api_command("music/artist/tracks", self.tracks)
-        self.mass.register_api_command("music/artist/update", self.update_db_item)
-        self.mass.register_api_command("music/artist/delete", self.delete_db_item)
+        self.mass.register_api_command("music/artist/update", self._update_db_item)
+        self.mass.register_api_command("music/artist/delete", self.delete)
+
+    async def add(self, item: Artist | ItemMapping, skip_metadata_lookup: bool = False) -> Artist:
+        """Add artist to local db and return the database item."""
+        if isinstance(item, ItemMapping):
+            skip_metadata_lookup = True
+        # grab musicbrainz id and additional metadata
+        if not skip_metadata_lookup:
+            await self.mass.metadata.get_artist_metadata(item)
+        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        if existing:
+            db_item = await self._update_db_item(existing.item_id, item)
+        else:
+            db_item = await self._add_db_item(item)
+        # also fetch same artist on all providers
+        if not skip_metadata_lookup:
+            await self.match_artist(db_item)
+        # return final db_item after all match/metadata actions
+        db_item = await self.get_db_item(db_item.item_id)
+        self.mass.signal_event(
+            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
+            db_item.uri,
+            db_item,
+        )
+        return db_item
+
+    async def update(self, item_id: str | int, update: Artist, overwrite: bool = False) -> Artist:
+        """Update existing record in the database."""
+        return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
 
     async def album_artists(
         self,
@@ -73,19 +101,17 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def tracks(
         self,
         item_id: str | None = None,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str | None = None,
         artist: Artist | None = None,
     ) -> list[Track]:
         """Return top tracks for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_domain, provider_instance, add_to_db=False)
+            artist = await self.get(item_id, provider_instance_id_or_domain, add_to_db=False)
         # get results from all providers
         coros = [
             self.get_provider_artist_toptracks(
                 prov_mapping.item_id,
-                provider_domain=prov_mapping.provider_domain,
-                provider_instance=prov_mapping.provider_instance,
+                prov_mapping.provider_instance,
                 cache_checksum=artist.metadata.checksum,
             )
             for prov_mapping in artist.provider_mappings
@@ -104,13 +130,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def albums(
         self,
         item_id: str | None = None,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str | None = None,
         artist: Artist | None = None,
     ) -> list[Album]:
         """Return (all/most popular) albums for an artist."""
         if not artist:
-            artist = await self.get(item_id, provider_domain or provider_instance, add_to_db=False)
+            artist = await self.get(item_id, provider_instance_id_or_domain, add_to_db=False)
         # get results from all providers
         coros = [
             self.get_provider_artist_albums(
@@ -120,11 +145,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             )
             for item in artist.provider_mappings
         ]
-        albums = itertools.chain.from_iterable(await asyncio.gather(*coros))
+        albums: list[Album] = itertools.chain.from_iterable(await asyncio.gather(*coros))
         # merge duplicates using a dict
         final_items: dict[str, Album] = {}
         for album in albums:
-            key = f".{album.name}.{album.version}"
+            key = f".{album.name}.{album.version}.{album.metadata.explicit}"
             if key in final_items:
                 final_items[key].provider_mappings.update(album.provider_mappings)
             else:
@@ -133,25 +158,31 @@ class ArtistsController(MediaControllerBase[Artist]):
                 final_items[key].in_library = True
         return list(final_items.values())
 
-    async def add(self, item: Artist) -> Artist:
-        """Add artist to local db and return the database item."""
-        # grab musicbrainz id and additional metadata
-        await self.mass.metadata.get_artist_metadata(item)
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        if existing:
-            db_item = await self.update_db_item(existing.item_id, item)
-        else:
-            db_item = await self.add_db_item(item)
-        # also fetch same artist on all providers
-        await self.match_artist(db_item)
-        # return final db_item after all match/metadata actions
-        db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
-            db_item.uri,
-            db_item,
+    async def delete(self, item_id: str | int, recursive: bool = False) -> None:
+        """Delete record from the database."""
+        db_id = int(item_id)  # ensure integer
+        # check artist albums
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_ALBUMS} WHERE artists LIKE '%\"{db_id}\"%'",
+            limit=5000,
         )
-        return db_item
+        assert not (db_rows and not recursive), "Albums attached to artist"
+        for db_row in db_rows:
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.albums.delete(db_row["item_id"], recursive)
+
+        # check artist tracks
+        db_rows = await self.mass.music.database.get_rows_from_query(
+            f"SELECT item_id FROM {DB_TABLE_TRACKS} WHERE artists LIKE '%\"{db_id}\"%'",
+            limit=5000,
+        )
+        assert not (db_rows and not recursive), "Tracks attached to artist"
+        for db_row in db_rows:
+            with contextlib.suppress(MediaNotFoundError):
+                await self.mass.music.albums.delete(db_row["item_id"], recursive)
+
+        # delete the artist itself from db
+        await super().delete(db_id)
 
     async def match_artist(self, db_artist: Artist):
         """Try to find matching artists on all providers for the provided (database) item_id.
@@ -165,6 +196,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
+            if provider.is_unique:
+                # matching on unique provider sis pointless as they push (all) their content to MA
+                continue
             if await self._match(db_artist, provider):
                 cur_provider_domains.add(provider.domain)
             else:
@@ -177,12 +211,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_provider_artist_toptracks(
         self,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str | None = None,
         cache_checksum: Any = None,
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
-        prov = self.mass.get_provider(provider_instance or provider_domain)
+        assert provider_instance_id_or_domain != "database"
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
         # prefer cache items (if any)
@@ -197,13 +231,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             items = []
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
                 item_id,
-                provider_domain=provider_domain,
-                provider_instance=provider_instance,
+                provider_instance_id_or_domain,
             ):
-                prov_id = provider_instance or provider_domain
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"
+                query += f" AND provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
                 items = await self.mass.music.tracks.get_db_items_by_query(query)
         # store (serializable items) in cache
         self.mass.create_task(
@@ -214,12 +246,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def get_provider_artist_albums(
         self,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str | None = None,
         cache_checksum: Any = None,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
-        prov = self.mass.get_provider(provider_instance or provider_domain)
+        assert provider_instance_id_or_domain != "database"
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
         # prefer cache items (if any)
@@ -233,13 +265,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             # fallback implementation using the db
             if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(  # noqa: PLR5501
                 item_id,
-                provider_domain=provider_domain,
-                provider_instance=provider_instance,
+                provider_instance_id_or_domain,
             ):
-                prov_id = provider_instance or provider_domain
                 # TODO: adjust to json query instead of text search?
                 query = f"SELECT * FROM albums WHERE artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += f" AND provider_mappings LIKE '%\"{prov_id}\"%'"
+                query += f" AND provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
                 items = await self.mass.music.albums.get_db_items_by_query(query)
             else:
                 # edge case
@@ -250,125 +280,101 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         return items
 
-    async def add_db_item(self, item: Artist) -> Artist:
+    async def _add_db_item(self, item: Artist | ItemMapping) -> Artist:
         """Add a new item record to the database."""
-        assert isinstance(item, Artist), "Not a full Artist object"
-        assert item.provider_mappings, "Item is missing provider mapping(s)"
         # enforce various artists name + id
-        if compare_strings(item.name, VARIOUS_ARTISTS):
-            item.musicbrainz_id = VARIOUS_ARTISTS_ID
-        if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
-            item.name = VARIOUS_ARTISTS
+        if not isinstance(item, ItemMapping):
+            if compare_strings(item.name, VARIOUS_ARTISTS):
+                item.musicbrainz_id = VARIOUS_ARTISTS_ID
+            if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
+                item.name = VARIOUS_ARTISTS
 
+        # always try to grab existing item by musicbrainz_id
+        cur_item = None
+        if musicbrainz_id := getattr(item, "musicbrainz_id", None):
+            match = {"musicbrainz_id": musicbrainz_id}
+            cur_item = await self.mass.music.database.get_row(self.db_table, match)
+        if not cur_item:
+            # fallback to exact name match
+            # NOTE: we match an artist by name which could theoretically lead to collisions
+            # but the chance is so small it is not worth the additional overhead of grabbing
+            # the musicbrainz id upfront
+            match = {"sort_name": item.sort_name}
+            for row in await self.mass.music.database.get_rows(self.db_table, match):
+                row_artist = Artist.from_db_row(row)
+                if row_artist.sort_name == item.sort_name:
+                    cur_item = row_artist
+                    break
+        if cur_item:
+            # update existing
+            return await self._update_db_item(cur_item.item_id, item)
+
+        # insert item
+        item.timestamp_added = int(utc_timestamp())
+        item.timestamp_modified = int(utc_timestamp())
+        # edge case: item is an ItemMapping,
+        # try to construct (a half baken) Artist object from it
+        if isinstance(item, ItemMapping):
+            item = Artist.from_dict(item.to_dict())
         async with self._db_add_lock:
-            # always try to grab existing item by musicbrainz_id
-            cur_item = None
-            if item.musicbrainz_id:
-                match = {"musicbrainz_id": item.musicbrainz_id}
-                cur_item = await self.mass.music.database.get_row(self.db_table, match)
-            if not cur_item:
-                # fallback to exact name match
-                # NOTE: we match an artist by name which could theoretically lead to collisions
-                # but the chance is so small it is not worth the additional overhead of grabbing
-                # the musicbrainz id upfront
-                match = {"sort_name": item.sort_name}
-                for row in await self.mass.music.database.get_rows(self.db_table, match):
-                    row_artist = Artist.from_db_row(row)
-                    if row_artist.sort_name == item.sort_name:
-                        cur_item = row_artist
-                        break
-            if cur_item:
-                # update existing
-                return await self.update_db_item(cur_item.item_id, item)
-
-            # insert item
-            item.timestamp_added = int(utc_timestamp())
-            item.timestamp_modified = int(utc_timestamp())
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
             await self._set_provider_mappings(item_id, item.provider_mappings)
             self.logger.debug("added %s to database", item.name)
-            # return created object
-            return await self.get_db_item(item_id)
-
-    async def update_db_item(
-        self,
-        item_id: int,
-        item: Artist,
-    ) -> Artist:
-        """Update Artist record in the database."""
-        assert item.provider_mappings, "Item is missing provider mapping(s)"
-        cur_item = await self.get_db_item(item_id)
-        is_file_provider = item.provider.startswith("filesystem")
-        metadata = cur_item.metadata.update(item.metadata, is_file_provider)
-        provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
-
-        # enforce various artists name + id
-        if compare_strings(item.name, VARIOUS_ARTISTS):
-            item.musicbrainz_id = VARIOUS_ARTISTS_ID
-        if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
-            item.name = VARIOUS_ARTISTS
-
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": item_id},
-            {
-                "name": item.name if is_file_provider else cur_item.name,
-                "sort_name": item.sort_name if is_file_provider else cur_item.sort_name,
-                "musicbrainz_id": item.musicbrainz_id or cur_item.musicbrainz_id,
-                "metadata": serialize_to_json(metadata),
-                "provider_mappings": serialize_to_json(provider_mappings),
-                "timestamp_modified": int(utc_timestamp()),
-            },
-        )
-        # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, provider_mappings)
-        self.logger.debug("updated %s in database: %s", item.name, item_id)
+        # return created object
         return await self.get_db_item(item_id)
 
-    async def delete_db_item(self, item_id: int, recursive: bool = False) -> None:
-        """Delete record from the database."""
-        # check artist albums
-        db_rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id FROM {DB_TABLE_ALBUMS} WHERE artists LIKE '%\"{item_id}\"%'",
-            limit=5000,
-        )
-        assert not (db_rows and not recursive), "Albums attached to artist"
-        for db_row in db_rows:
-            with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
+    async def _update_db_item(
+        self, item_id: str | int, item: Artist | ItemMapping, overwrite: bool = False
+    ) -> Artist:
+        """Update Artist record in the database."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_db_item(db_id)
+        metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
 
-        # check artist tracks
-        db_rows = await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id FROM {DB_TABLE_TRACKS} WHERE artists LIKE '%\"{item_id}\"%'",
-            limit=5000,
-        )
-        assert not (db_rows and not recursive), "Tracks attached to artist"
-        for db_row in db_rows:
-            with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.delete_db_item(db_row["item_id"], recursive)
-
-        # delete the artist itself from db
-        await super().delete_db_item(item_id)
+        # enforce various artists name + id
+        musicbrainz_id = cur_item.musicbrainz_id
+        if (not musicbrainz_id or overwrite) and getattr(item, "musicbrainz_id", None):
+            if compare_strings(item.name, VARIOUS_ARTISTS):
+                item.musicbrainz_id = VARIOUS_ARTISTS_ID
+            if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
+                item.name = VARIOUS_ARTISTS
+        async with self._db_add_lock:
+            await self.mass.music.database.update(
+                self.db_table,
+                {"item_id": db_id},
+                {
+                    "name": item.name if overwrite else cur_item.name,
+                    "sort_name": item.sort_name if overwrite else cur_item.sort_name,
+                    "musicbrainz_id": musicbrainz_id,
+                    "metadata": serialize_to_json(metadata),
+                    "provider_mappings": serialize_to_json(provider_mappings),
+                    "timestamp_modified": int(utc_timestamp()),
+                },
+            )
+            # update/set provider_mappings table
+            await self._set_provider_mappings(db_id, provider_mappings)
+            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        return await self.get_db_item(db_id)
 
     async def _get_provider_dynamic_tracks(
         self,
         item_id: str,
-        provider_domain: str | None = None,
-        provider_instance: str | None = None,
+        provider_instance_id_or_domain: str,
         limit: int = 25,
     ):
         """Generate a dynamic list of tracks based on the artist's top tracks."""
-        prov = self.mass.get_provider(provider_instance or provider_domain)
+        assert provider_instance_id_or_domain != "database"
+        prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
         if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         top_tracks = await self.get_provider_artist_toptracks(
-            item_id=item_id,
-            provider_domain=provider_domain,
-            provider_instance=provider_instance,
+            item_id,
+            provider_instance_id_or_domain,
         )
         # Grab a random track from the album that we use to obtain similar tracks for
         track = choice(top_tracks)
@@ -422,16 +428,18 @@ class ArtistsController(MediaControllerBase[Artist]):
                         # 100% album match
                         # get full artist details so we have all metadata
                         prov_artist = await self.get_provider_item(
-                            search_item_artist.item_id, search_item_artist.provider
+                            search_item_artist.item_id,
+                            search_item_artist.provider,
+                            fallback=search_result_item,
                         )
-                        await self.update_db_item(db_artist.item_id, prov_artist)
+                        await self._update_db_item(db_artist.item_id, prov_artist)
                         return True
         # try to get a match with some reference albums of this artist
         artist_albums = await self.albums(db_artist.item_id, db_artist.provider, artist=db_artist)
         for ref_album in artist_albums:
             if ref_album.album_type == AlbumType.COMPILATION:
                 continue
-            if ref_album.artist is None:
+            if not ref_album.artists:
                 continue
             for search_str in (
                 ref_album.name,
@@ -440,19 +448,20 @@ class ArtistsController(MediaControllerBase[Artist]):
             ):
                 search_result = await self.mass.music.albums.search(search_str, provider.domain)
                 for search_result_item in search_result:
-                    if search_result_item.artist is None:
+                    if not search_result_item.artists:
                         continue
                     if search_result_item.sort_name != ref_album.sort_name:
                         continue
                     # artist must match 100%
-                    if search_result_item.artist.sort_name != ref_album.artist.sort_name:
+                    if not compare_artist(search_result_item.artists[0], db_artist):
                         continue
                     # 100% match
                     # get full artist details so we have all metadata
                     prov_artist = await self.get_provider_item(
-                        search_result_item.artist.item_id,
-                        search_result_item.artist.provider,
+                        search_result_item.artists[0].item_id,
+                        search_result_item.artists[0].provider,
+                        fallback=search_result_item,
                     )
-                    await self.update_db_item(db_artist.item_id, prov_artist)
+                    await self._update_db_item(db_artist.item_id, prov_artist)
                     return True
         return False

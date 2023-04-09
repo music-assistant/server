@@ -21,7 +21,7 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.player import Player
-from music_assistant.constants import CONF_PLAYERS, ROOT_LOGGER_NAME
+from music_assistant.constants import CONF_HIDE_GROUP_CHILDS, CONF_PLAYERS, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -162,13 +162,15 @@ class PlayerController:
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     @api_command("players/update")
-    def update(self, player_id: str, skip_forward: bool = False) -> None:
+    def update(
+        self, player_id: str, skip_forward: bool = False, force_update: bool = False
+    ) -> None:
         """Update player state."""
         if player_id not in self._players:
             return
         player = self._players[player_id]
-        # calculate active_queue
-        player.active_queue = self._get_active_queue(player)
+        # calculate active_source
+        player.active_source = self._get_active_source(player)
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
         # prefer any overridden name from config
@@ -182,6 +184,21 @@ class PlayerController:
             player.state = PlayerState.IDLE
         elif not player.powered:
             player.state = PlayerState.OFF
+        # handle automatic hiding of group child's feature
+        for group_player in self._get_player_groups(player_id):
+            try:
+                hide_group_childs = self.mass.config.get_player_config_value(
+                    group_player.player_id, CONF_HIDE_GROUP_CHILDS
+                ).value
+            except KeyError:
+                continue
+            if hide_group_childs == "always":
+                player.hidden_by.add(group_player.player_id)
+            elif group_player.powered:
+                if hide_group_childs == "active":
+                    player.hidden_by.add(group_player.player_id)
+            elif group_player.player_id in player.hidden_by:
+                player.hidden_by.remove(group_player.player_id)
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
@@ -192,14 +209,14 @@ class PlayerController:
         )
         self._prev_states[player_id] = new_state
 
-        if not player.enabled and "enabled" not in changed_keys:
+        if not player.enabled and not force_update:
             # ignore updates for disabled players
             return
 
         # always signal update to the playerqueue
         self.queues.on_player_update(player, changed_keys)
 
-        if len(changed_keys) == 0:
+        if len(changed_keys) == 0 and not force_update:
             return
 
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -211,11 +228,11 @@ class PlayerController:
             for child_player_id in player.group_childs:
                 if child_player_id == player_id:
                     continue
-                self.update(child_player_id, skip_forward=True)
+                self.update(child_player_id, skip_forward=True, force_update=force_update)
 
         # update group player(s) when child updates
         for group_player in self._get_player_groups(player_id):
-            self.update(group_player.player_id, skip_forward=True)
+            self.update(group_player.player_id, skip_forward=True, force_update=force_update)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -456,23 +473,33 @@ class PlayerController:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
         return tuple(x for x in self if player_id in x.group_childs)
 
-    def _get_active_queue(self, player: Player) -> str:
-        """Return the active_queue id for given player."""
+    def _get_active_source(self, player: Player) -> str:
+        """Return the active_source id for given player."""
         # if player is synced, return master/group leader
         if player.synced_to and player.synced_to in self._players:
-            return self._get_active_queue(self.get(player.synced_to))
+            return self._get_active_source(self.get(player.synced_to))
         # iterate player groups to find out if one is playing
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
             for group_player in group_players:
                 if group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-                    return group_player.player_id
+                    return group_player.active_source
             # fallback to the first powered group player
             for group_player in group_players:
                 if group_player.powered:
-                    return group_player.player_id
+                    return group_player.active_source
         # defaults to the player's own player id
-        return player.player_id
+        if player.current_url:
+            if self.mass.webserver.base_url in player.current_url:
+                return player.player_id
+            elif ":" in player.current_url:
+                # extract source from uri/url
+                return player.current_url.split(":")[0]
+            return player.current_item_id or player.current_url
+        elif not player.powered:
+            # reset active source when player powers off
+            return player.player_id
+        return player.active_source
 
     def _get_group_volume_level(self, player: Player) -> int:
         """Calculate a group volume from the grouped members."""
@@ -521,41 +548,38 @@ class PlayerController:
         count = 0
         while True:
             count += 1
-            async with asyncio.TaskGroup() as tg:
-                for player in list(self._players.values()):
-                    player_id = player.player_id
-                    # if the player is playing, update elapsed time every tick
-                    # to ensure the queue has accurate details
-                    player_playing = (
-                        player.active_queue == player.player_id
-                        and player.state == PlayerState.PLAYING
-                    )
-                    if player_playing:
+            for player in list(self._players.values()):
+                player_id = player.player_id
+                # if the player is playing, update elapsed time every tick
+                # to ensure the queue has accurate details
+                player_playing = (
+                    player.active_source == player.player_id and player.state == PlayerState.PLAYING
+                )
+                if player_playing:
+                    self.mass.loop.call_soon(self.update, player_id)
+                # Poll player;
+                # - every 360 seconds if the player if not powered
+                # - every 30 seconds if the player is powered
+                # - every 10 seconds if the player is playing
+                if (
+                    (player.available and player.powered and count % 30 == 0)
+                    or (player.available and player_playing and count % 10 == 0)
+                    or count == 360
+                ) and (player_prov := self.get_player_provider(player_id)):
+                    try:
+                        await player_prov.poll_player(player_id)
+                    except PlayerUnavailableError:
+                        player.available = False
+                        player.state = PlayerState.IDLE
+                        player.powered = False
                         self.mass.loop.call_soon(self.update, player_id)
-                    # Poll player;
-                    # - every 360 seconds if the player if not powered
-                    # - every 30 seconds if the player is powered
-                    # - every 10 seconds if the player is playing
-                    if (
-                        (player.available and player.powered and count % 30 == 0)
-                        or (player.available and player_playing and count % 10 == 0)
-                        or count == 360
-                    ):
-                        if player_prov := self.get_player_provider(player_id):
-                            try:
-                                tg.create_task(player_prov.poll_player(player_id))
-                            except PlayerUnavailableError:
-                                player.available = False
-                                player.state = PlayerState.IDLE
-                                player.powered = False
-                                self.mass.loop.call_soon(self.update, player_id)
-                            except Exception as err:  # pylint: disable=broad-except
-                                LOGGER.warning(
-                                    "Error while requesting latest state from player %s: %s",
-                                    player.display_name,
-                                    str(err),
-                                    exc_info=err,
-                                )
-                        if count >= 360:
-                            count = 0
+                    except Exception as err:  # pylint: disable=broad-except
+                        LOGGER.warning(
+                            "Error while requesting latest state from player %s: %s",
+                            player.display_name,
+                            str(err),
+                            exc_info=err,
+                        )
+                    if count >= 360:
+                        count = 0
             await asyncio.sleep(1)

@@ -277,7 +277,7 @@ class AirplayProvider(PlayerProvider):
                     return bridge_binary
 
             # other linux architecture... try all options one by one...
-            for arch in ["arm64", "arm", "armv6", "mips", "sparc64", "x86"]:
+            for arch in ["aarch64", "arm", "armv6", "mips", "sparc64", "x86"]:
                 if bridge_binary := await check_bridge_binary(
                     os.path.join(base_path, f"squeeze2raop-linux-{arch}-static")
                 ):

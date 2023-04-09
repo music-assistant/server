@@ -11,3 +11,8 @@ services:
     network_mode: host
     volumes:
       - ${USERDIR:-$HOME}/docker/music-assistant-server/data:/data/
+    # privileged caps needed to mount smb folders within the container
+    cap_add:
+      - SYS_ADMIN
+      - DAC_READ_SEARCH
+    privileged: true

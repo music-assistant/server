@@ -250,6 +250,7 @@ class PlayerFeature(StrEnum):
     SEEK = "seek"
     SET_MEMBERS = "set_members"
     QUEUE = "queue"
+    CROSSFADE = "crossfade"
 
 
 class EventType(StrEnum):
