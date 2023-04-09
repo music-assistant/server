@@ -255,7 +255,7 @@ async def _parse_cookies(cookies: RequestsCookieJar) -> dict[str, SimpleCookie]:
 async def _get_sid(mass, client: deezer.Client):
     """Get a session id."""
     cookies = await _parse_cookies(cookies=client.session.cookies)
-    result = (
+    return (
         await _get_http(
             mass=mass,
             url="https://www.deezer.com/ajax/gw-light.php",
@@ -268,12 +268,11 @@ async def _get_sid(mass, client: deezer.Client):
     ][
         "SESSION"
     ]
-    return result
 
 
 async def _get_user_data(mass, tok, sid):
     """Get user data."""
-    result = (
+    return (
         await _get_http(
             mass=mass,
             url="https://www.deezer.com/ajax/gw-light.php",
@@ -283,12 +282,12 @@ async def _get_user_data(mass, tok, sid):
                 "api_version": "1.0",
                 "api_token": tok,
             },
+            cookies="",
             headers={"Cookie": f"sid={sid}"},
         )
     )[  # type: ignore
         "results"
     ]
-    return result
 
 
 async def _get_song_info(mass, tok, sid, track_id):
@@ -376,9 +375,10 @@ async def update_access_token(mass, creds: Credential, code) -> Credential:
         headers=None,
     )
     try:
+        print(response.split("=")[1].split("&")[0])
         creds.access_token = response.split("=")[1].split("&")[0]
-    except Exception:
-        raise LoginFailed("Invalid auth code")
+    except Exception as error:
+        raise LoginFailed("Invalid auth code") from error
     return creds
 
 
@@ -403,13 +403,12 @@ async def get_url(mass, track_id, creds: Credential, client: deezer.Client) -> s
     track_id = song_info["SNG_ID"]
     url_resp = await _generate_url(mass, licence_token, [track_token])
     url_info = url_resp["data"][0]  # type: ignore
-    url = json.loads(url_info)["media"][0]["sources"][0]["url"]
-    return url
+    return json.loads(url_info)["media"][0]["sources"][0]["url"]
 
 
 async def parse_artist(mass, artist: deezer.Artist) -> Artist:
     """Parse the deezer-python artist to a MASS artist."""
-    artst = Artist(
+    return Artist(
         item_id=str(artist.id),
         provider=mass.domain,
         name=artist.name,
@@ -424,20 +423,18 @@ async def parse_artist(mass, artist: deezer.Artist) -> Artist:
         },
         metadata=await parse_metadata_artist(artist=artist),
     )
-    return artst
 
 
 async def parse_album_type(album_type: str) -> AlbumType:
     """Parse the album type."""
-    type = AlbumType(
+    return AlbumType(
         album_type,
     )
-    return type
 
 
 async def parse_album(mass, album: deezer.Album) -> Album:
     """Parse the deezer-python album to a MASS album."""
-    almb = Album(
+    return Album(
         album_type=await parse_album_type(album_type=album.type),
         item_id=str(album.id),
         provider=mass.domain,
@@ -454,12 +451,11 @@ async def parse_album(mass, album: deezer.Album) -> Album:
         },
         metadata=await parse_metadata_album(album=album),
     )
-    return almb
 
 
 async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
     """Parse the deezer-python playlist to a MASS playlist."""
-    almb = Playlist(
+    return Playlist(
         item_id=str(playlist.id),
         provider=mass.domain,
         name=playlist.title,
@@ -474,25 +470,19 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
         },
         metadata=await parse_metadata_playlist(playlist=playlist),
     )
-    return almb
 
 
 async def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadata:
     """Parse the playlist metadata."""
-    metadata = MediaItemMetadata(
+    return MediaItemMetadata(
         images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
     )
-    return metadata
 
 
 async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
     """Parse the track metadata."""
     try:
-        url = (await get_album_from_track(track=track)).cover_big
-    except Exception:
-        url = False
-    if url:
-        metadata = MediaItemMetadata(
+        return MediaItemMetadata(
             preview=track.preview,
             images=[
                 MediaItemImage(
@@ -501,27 +491,24 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
                 )
             ],
         )
-    else:
-        metadata = MediaItemMetadata(
+    except Exception:
+        return MediaItemMetadata(
             preview=track.preview,
         )
-    return metadata
 
 
 async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
     """Parse the album metadata."""
-    metadata = MediaItemMetadata(
+    return MediaItemMetadata(
         images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
     )
-    return metadata
 
 
 async def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
     """Parse the artist metadata."""
-    metadata = MediaItemMetadata(
+    return MediaItemMetadata(
         images=[MediaItemImage(type=ImageType.THUMB, path=artist.picture_big)],
     )
-    return metadata
 
 
 async def _get_album(mass, track: deezer.Track) -> Album | None:
@@ -579,7 +566,7 @@ async def get_artist_top(artist: deezer.Artist) -> deezer.PaginatedList:
 async def parse_track(mass, track: deezer.Track) -> Track:
     """Parse the deezer-python track to a MASS track."""
     artist = await get_artist_from_track(track=track)
-    trk = Track(
+    return Track(
         item_id=str(track.id),
         provider=mass.domain,
         name=track.title,
@@ -599,4 +586,3 @@ async def parse_track(mass, track: deezer.Track) -> Track:
         },
         metadata=await parse_metadata_track(track=track),
     )
-    return trk

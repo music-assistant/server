@@ -1,4 +1,4 @@
-"""Deezer musicprovider support for MusicAssistant."""
+"""Deezer music provider support for MusicAssistant."""
 from collections.abc import AsyncGenerator
 from time import time
 
@@ -114,9 +114,8 @@ class DeezerProvider(MusicProvider):
             app_id=587964,
             app_secret="3725582e5aeec225901e4eb03684dbfb",
         )
-        auth_encrypted = self.mass.config.get(auth_token)
-        if auth_encrypted:
-            auth = self.mass.config.decrypt_string(self.mass.config.get(auth_token))
+        if auth_encrypted := self.mass.config.get(auth_token):
+            auth = self.mass.config.decrypt_string(auth_encrypted)
             self.creds.access_token = auth
         else:
             code = str(self.config.get_value(CONF_AUTHORIZATION_CODE))
@@ -128,8 +127,8 @@ class DeezerProvider(MusicProvider):
             )
         try:
             self.client = await get_deezer_client(creds=self.creds)
-        except Exception:
-            raise LoginFailed("Invalid login credentials")
+        except Exception as error:
+            raise LoginFailed("Invalid login credentials") from error
         # Reset auth code since its one time
         self.mass.config.set(f"{self.instance_id}{CONF_AUTHORIZATION_CODE}", "")
 
@@ -141,7 +140,7 @@ class DeezerProvider(MusicProvider):
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
     ) -> SearchResults:
-        """Perform search on musicprovider.
+        """Perform search on music provider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
@@ -167,7 +166,6 @@ class DeezerProvider(MusicProvider):
                     )
                     for thing in search_results_album:
                         result.albums.append(await parse_album(self, thing))
-            return result
         else:
             # Add tracks
             search_results_album = await search_album(
@@ -187,7 +185,7 @@ class DeezerProvider(MusicProvider):
             # Add albums
             for thing in search_results_album:
                 result.albums.append(await parse_album(self, thing))
-            return result
+        return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Deezer."""
@@ -309,7 +307,7 @@ class DeezerProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""
         track = await get_track(client=self.client, track_id=int(item_id))
-        details = StreamDetails(
+        return StreamDetails(
             provider=self.domain,
             item_id=item_id,
             content_type=ContentType.MP3,
@@ -318,7 +316,6 @@ class DeezerProvider(MusicProvider):
             duration=track.duration,
             expires=time() + 3600,
         )
-        return details
 
 
 #    async def get_audio_stream(
