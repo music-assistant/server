@@ -1,4 +1,5 @@
 """Deezer music provider support for MusicAssistant."""
+from asyncio import create_task
 from collections.abc import AsyncGenerator
 from time import time
 
@@ -49,9 +50,9 @@ from .helpers import (
     remove_user_albums,
     remove_user_artists,
     remove_user_tracks,
-    search_album,
-    search_artist,
-    search_track,
+    search_and_parse_album,
+    search_and_parse_artist,
+    search_and_parse_track,
     update_access_token,
 )
 
@@ -85,7 +86,7 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001 # pylint: disable=W0613
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
     return (
@@ -137,6 +138,19 @@ class DeezerProvider(MusicProvider):
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
 
+    @property
+    def is_unique(self) -> bool:
+        """
+        Return True if the (non user related) data in this provider instance is unique.
+
+        For example on a global streaming provider (like Spotify),
+        the data on all instances is the same.
+        For a file provider each instance has other items.
+        Setting this to False will only query one instance of the provider for search and lookups.
+        Setting this to True will query all instances of this provider for search and lookups.
+        """
+        return False
+
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
     ) -> SearchResults:
@@ -145,47 +159,50 @@ class DeezerProvider(MusicProvider):
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
         """
-        result = SearchResults()
-        if media_types and len(media_types) > 0:  # type: ignore
-            for media_type in media_types:
-                if media_type == MediaType.TRACK:
-                    search_results_track = await search_track(
-                        client=self.client, query=search_query, limit=limit
+        if not media_types:
+            media_types = [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
+
+        tasks = {}
+
+        for media_type in media_types:
+            if media_type == MediaType.TRACK:
+                tasks[MediaType.TRACK] = create_task(
+                    search_and_parse_track(
+                        mass=self, client=self.client, query=search_query, limit=limit
                     )
-                    for thing in search_results_track:
-                        result.tracks.append(await parse_track(self, thing))
-                elif media_type == MediaType.ARTIST:
-                    search_results_artists = await search_artist(
-                        client=self.client, query=search_query, limit=limit
+                )
+            elif media_type == MediaType.ARTIST:
+                tasks[MediaType.ARTIST] = create_task(
+                    search_and_parse_artist(
+                        mass=self, client=self.client, query=search_query, limit=limit
                     )
-                    for thing in search_results_artists:
-                        result.artists.append(await parse_artist(self, thing))
-                elif media_type == MediaType.ALBUM:
-                    search_results_album = await search_album(
-                        client=self.client, query=search_query, limit=limit
+                )
+            elif media_type == MediaType.ALBUM:
+                tasks[MediaType.ALBUM] = create_task(
+                    search_and_parse_album(
+                        mass=self, client=self.client, query=search_query, limit=limit
                     )
-                    for thing in search_results_album:
-                        result.albums.append(await parse_album(self, thing))
-        else:
-            # Add tracks
-            search_results_album = await search_album(
-                client=self.client, query=search_query, limit=limit
-            )
-            search_results_track = await search_track(
-                client=self.client, query=search_query, limit=limit
-            )
-            search_results_artists = await search_artist(
-                client=self.client, query=search_query, limit=limit
-            )
-            for thing in search_results_track:
-                result.tracks.append(await parse_track(self, thing))
-            # Add artists
-            for thing in search_results_artists:
-                result.artists.append(await parse_artist(self, thing))
-            # Add albums
-            for thing in search_results_album:
-                result.albums.append(await parse_album(self, thing))
-        return result
+                )
+        #            elif media_type == MediaType.PLAYLIST:
+        #                tasks[MediaType.PLAYLIST] = create_task(
+        #                    search_and_parse_playlist(
+        #                        mass=self, client=self.client, query=search_query, limit=limit
+        #                    )
+        #                )
+
+        results = SearchResults()
+
+        for media_type, task in tasks.items():
+            if media_type == MediaType.ARTIST:
+                results.artists = await task
+            elif media_type == MediaType.ALBUM:
+                results.albums = await task
+            elif media_type == MediaType.TRACK:
+                results.tracks = await task
+        #            elif media_type == MediaType.PLAYLIST:
+        #                results.playlists = await task
+
+        return results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Deezer."""
@@ -316,6 +333,10 @@ class DeezerProvider(MusicProvider):
             duration=track.duration,
             expires=time() + 3600,
         )
+
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+        """Not implemented."""
+        raise NotImplementedError
 
 
 #    async def get_audio_stream(

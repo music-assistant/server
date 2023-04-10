@@ -240,6 +240,18 @@ async def search_artist(client: deezer.Client, query: str, limit: int = 5) -> li
     return await asyncio.to_thread(_search)
 
 
+# async def search_playlist(
+#    client: deezer.Client, query: str, limit: int = 5
+# ) -> list[deezer.Playlist]:
+#    """Async wrapper of the deezer-python search_playlist function."""
+#
+#    def _search():
+#        result = client.search_playlists(query=query)[:limit]
+#        return result
+#
+#    return await asyncio.to_thread(_search)
+
+
 async def _parse_cookies(cookies: RequestsCookieJar) -> dict[str, SimpleCookie]:
     result = {}
     for cookie in cookies:
@@ -329,7 +341,7 @@ async def _generate_url(mass, usr_lic, track_tok):
 
 
 async def _get_http(mass, url, params, headers, cookies):
-    async with mass._throttler:
+    async with mass._throttler:  # pylint: disable=W0212
         time_start = time()
         try:
             async with mass.mass.http_session as session:
@@ -387,7 +399,7 @@ async def _post_http(mass, url, data, params=None, headers=None) -> str:
         url, headers=headers, params=params, json=data, ssl=False
     ) as response:
         if response.status != 200:
-            raise Exception(f"HTTP Error {response.status}: {response.reason}")
+            raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
         response_text = await response.text()
         return response_text
 
@@ -491,7 +503,7 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
                 )
             ],
         )
-    except Exception:
+    except AttributeError:
         return MediaItemMetadata(
             preview=track.preview,
         )
@@ -514,7 +526,7 @@ async def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
 async def _get_album(mass, track: deezer.Track) -> Album | None:
     try:
         return await parse_album(mass=mass, album=await get_album_from_track(track=track))
-    except Exception:
+    except AttributeError:
         return None
 
 
@@ -522,7 +534,10 @@ async def get_album_from_track(track: deezer.Track) -> deezer.Album:
     """Get track's artist."""
 
     def _get_album_from_track():
-        return track.get_album()
+        try:
+            return track.get_album()
+        except deezer.exceptions.DeezerErrorResponse:
+            return None
 
     return await asyncio.to_thread(_get_album_from_track)
 
@@ -586,3 +601,47 @@ async def parse_track(mass, track: deezer.Track) -> Track:
         },
         metadata=await parse_metadata_track(track=track),
     )
+
+
+async def search_and_parse_track(
+    mass, client: deezer.Client, query: str, limit: int = 5
+) -> list[Track]:
+    """Search for tracks and parse them."""
+    deezer_tracks = await search_track(client=client, query=query, limit=limit)
+    tracks = []
+    for track in deezer_tracks:
+        tracks.append(await parse_track(track=track, mass=mass))
+    return tracks
+
+
+async def search_and_parse_artist(
+    mass, client: deezer.Client, query: str, limit: int = 5
+) -> list[Artist]:
+    """Search for artists and parse them."""
+    deezer_artist = await search_artist(client=client, query=query, limit=limit)
+    artists = []
+    for artist in deezer_artist:
+        artists.append(await parse_artist(artist=artist, mass=mass))
+    return artists
+
+
+async def search_and_parse_album(
+    mass, client: deezer.Client, query: str, limit: int = 5
+) -> list[Album]:
+    """Search for album and parse them."""
+    deezer_albums = await search_album(client=client, query=query, limit=limit)
+    albums = []
+    for album in deezer_albums:
+        albums.append(await parse_album(album=album, mass=mass))
+    return albums
+
+
+# async def search_and_parse_playlist(
+#    mass, client: deezer.Client, query: str, limit: int = 5
+# ) -> list[Playlist]:
+#    """Search for playlists and parse them"""
+#    deezer_playlists = await search_playlist(client=client, query=query, limit=limit)
+#    playlists = []
+#    for playlist in deezer_playlists:
+#        playlists.append(await parse_playlist(playlist=playlist, mass=mass))
+#    return playlists
