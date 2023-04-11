@@ -11,7 +11,7 @@ coloredlogs==15.0.1
 cryptography==40.0.1
 databases==0.7.0
 git+https://github.com/pytube/pytube.git@refs/pull/1501/head
-mashumaro==3.5.0
+mashumaro==3.6
 memory-tempfile==2.2.3
 music-assistant-frontend==20230404.0
 orjson==3.8.9
