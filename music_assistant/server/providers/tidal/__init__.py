@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import AsyncGenerator
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
@@ -382,7 +382,6 @@ class TidalProvider(MusicProvider):
                 image_url,
             )
         ]
-        #            break
         return artist
 
     async def _parse_album(self, album_obj: TidalAlbum) -> Album:
@@ -481,11 +480,12 @@ class TidalProvider(MusicProvider):
         """Parse tidal playlist object to generic layout."""
         playlist_id = playlist_obj.id
         creator_id = playlist_obj.creator.id if playlist_obj.creator else None
+        creator_name = playlist_obj.creator.name if playlist_obj.creator else "Tidal"
         playlist = Playlist(
             item_id=playlist_id,
             provider=self.instance_id,
             name=playlist_obj.name,
-            owner=playlist_obj.creator.name,
+            owner=creator_name,
         )
         playlist.add_provider_mapping(
             ProviderMapping(
@@ -516,7 +516,7 @@ class TidalProvider(MusicProvider):
         if (
             self._tidal_session
             and self._tidal_session.access_token == self._access_token
-            and self._expiry_time > (datetime.now(UTC) + timedelta(minutes=30))
+            and self._expiry_time > (datetime.now() + timedelta(minutes=30))
         ):
             return self._tidal_session
         session = await tidal_session(

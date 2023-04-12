@@ -87,7 +87,6 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     """Async wrapper around the tidalapi Artist function."""
 
     def _get_artist():
-        artist_obj = None
         try:
             artist_obj = TidalArtist(session, prov_artist_id)
         except HTTPError as err:
@@ -135,7 +134,6 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
     """Async wrapper around the tidalapi Album function."""
 
     def _get_album():
-        album_obj = None
         try:
             album_obj = TidalAlbum(session, prov_album_id)
         except HTTPError as err:
@@ -149,7 +147,6 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     """Async wrapper around the tidalapi Track function."""
 
     def _get_track():
-        track_obj = None
         try:
             track_obj = TidalTrack(session, prov_track_id)
         except HTTPError as err:
@@ -199,7 +196,6 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
     """Async wrapper around the tidal Playlist function."""
 
     def _get_playlist():
-        playlist_obj = None
         try:
             playlist_obj = TidalPlaylist(session, prov_playlist_id)
         except HTTPError as err:
@@ -272,7 +268,6 @@ async def search(
         models = search_types
 
     def _search():
-        foo = session.search(query, models, limit, offset)
-        return foo
+        return session.search(query, models, limit, offset)
 
     return await asyncio.to_thread(_search)
