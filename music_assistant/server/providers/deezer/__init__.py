@@ -1,5 +1,5 @@
 """Deezer music provider support for MusicAssistant."""
-from asyncio import create_task
+from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from time import time
 
@@ -52,6 +52,7 @@ from .helpers import (
     remove_user_tracks,
     search_and_parse_album,
     search_and_parse_artist,
+    search_and_parse_playlist,
     search_and_parse_track,
     update_access_token,
 )
@@ -164,43 +165,44 @@ class DeezerProvider(MusicProvider):
 
         tasks = {}
 
-        for media_type in media_types:
-            if media_type == MediaType.TRACK:
-                tasks[MediaType.TRACK] = create_task(
-                    search_and_parse_track(
-                        mass=self, client=self.client, query=search_query, limit=limit
+        async with TaskGroup() as taskgroup:
+            for media_type in media_types:
+                if media_type == MediaType.TRACK:
+                    tasks[MediaType.TRACK] = taskgroup.create_task(
+                        search_and_parse_track(
+                            mass=self, client=self.client, query=search_query, limit=limit
+                        )
                     )
-                )
-            elif media_type == MediaType.ARTIST:
-                tasks[MediaType.ARTIST] = create_task(
-                    search_and_parse_artist(
-                        mass=self, client=self.client, query=search_query, limit=limit
+                elif media_type == MediaType.ARTIST:
+                    tasks[MediaType.ARTIST] = taskgroup.create_task(
+                        search_and_parse_artist(
+                            mass=self, client=self.client, query=search_query, limit=limit
+                        )
                     )
-                )
-            elif media_type == MediaType.ALBUM:
-                tasks[MediaType.ALBUM] = create_task(
-                    search_and_parse_album(
-                        mass=self, client=self.client, query=search_query, limit=limit
+                elif media_type == MediaType.ALBUM:
+                    tasks[MediaType.ALBUM] = taskgroup.create_task(
+                        search_and_parse_album(
+                            mass=self, client=self.client, query=search_query, limit=limit
+                        )
                     )
-                )
-        #            elif media_type == MediaType.PLAYLIST:
-        #                tasks[MediaType.PLAYLIST] = create_task(
-        #                    search_and_parse_playlist(
-        #                        mass=self, client=self.client, query=search_query, limit=limit
-        #                    )
-        #                )
+                elif media_type == MediaType.PLAYLIST:
+                    tasks[MediaType.PLAYLIST] = taskgroup.create_task(
+                        search_and_parse_playlist(
+                            mass=self, client=self.client, query=search_query, limit=limit
+                        )
+                    )
 
         results = SearchResults()
 
         for media_type, task in tasks.items():
             if media_type == MediaType.ARTIST:
-                results.artists = await task
+                results.artists = task.result()
             elif media_type == MediaType.ALBUM:
-                results.albums = await task
+                results.albums = task.result()
             elif media_type == MediaType.TRACK:
-                results.tracks = await task
-        #            elif media_type == MediaType.PLAYLIST:
-        #                results.playlists = await task
+                results.tracks = task.result()
+            elif media_type == MediaType.PLAYLIST:
+                results.playlists = task.result()
 
         return results
 

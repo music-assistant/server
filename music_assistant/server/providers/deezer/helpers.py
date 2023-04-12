@@ -240,16 +240,16 @@ async def search_artist(client: deezer.Client, query: str, limit: int = 5) -> li
     return await asyncio.to_thread(_search)
 
 
-# async def search_playlist(
-#    client: deezer.Client, query: str, limit: int = 5
-# ) -> list[deezer.Playlist]:
-#    """Async wrapper of the deezer-python search_playlist function."""
-#
-#    def _search():
-#        result = client.search_playlists(query=query)[:limit]
-#        return result
-#
-#    return await asyncio.to_thread(_search)
+async def search_playlist(
+    client: deezer.Client, query: str, limit: int = 5
+) -> list[deezer.Playlist]:
+    """Async wrapper of the deezer-python search_playlist function."""
+
+    def _search():
+        result = client.search_playlists(query=query)[:limit]
+        return result
+
+    return await asyncio.to_thread(_search)
 
 
 async def _parse_cookies(cookies: RequestsCookieJar) -> dict[str, SimpleCookie]:
@@ -636,12 +636,12 @@ async def search_and_parse_album(
     return albums
 
 
-# async def search_and_parse_playlist(
-#    mass, client: deezer.Client, query: str, limit: int = 5
-# ) -> list[Playlist]:
-#    """Search for playlists and parse them"""
-#    deezer_playlists = await search_playlist(client=client, query=query, limit=limit)
-#    playlists = []
-#    for playlist in deezer_playlists:
-#        playlists.append(await parse_playlist(playlist=playlist, mass=mass))
-#    return playlists
+async def search_and_parse_playlist(
+    mass, client: deezer.Client, query: str, limit: int = 5
+) -> list[Playlist]:
+    """Search for playlists and parse them."""
+    deezer_playlists = await search_playlist(client=client, query=query, limit=limit)
+    playlists = []
+    for playlist in deezer_playlists:
+        playlists.append(await parse_playlist(playlist=playlist, mass=mass))
+    return playlists

@@ -19,7 +19,7 @@ done)
 
 stripe_size=2048
 openssl_opt="-d -nopad -bufsize $stripe_size -K $track_key -iv 0001020304050607"
-# OpenSSL 3 require som extra argument
+# OpenSSL 3 require some extra argument
 if openssl bf-cbc -help 2>&1 | grep -q provider; then
 	openssl_opt="$openssl_opt -provider legacy";
 fi
