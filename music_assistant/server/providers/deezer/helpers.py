@@ -471,7 +471,7 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
         item_id=str(playlist.id),
         provider=mass.domain,
         name=playlist.title,
-        media_type=MediaType.ALBUM,
+        media_type=MediaType.PLAYLIST,
         provider_mappings={
             ProviderMapping(
                 item_id=str(playlist.id),
