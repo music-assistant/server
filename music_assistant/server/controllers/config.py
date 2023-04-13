@@ -5,6 +5,7 @@ import asyncio
 import base64
 import logging
 import os
+from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
@@ -74,7 +75,7 @@ class ConfigController:
         if not self._timer_handle:
             # no point in forcing a save when there are no changes pending
             return
-        await self.async_save()
+        await self._async_save()
         LOGGER.debug("Stopped.")
 
     def get(self, key: str, default: Any = None) -> Any:
@@ -165,10 +166,9 @@ class ConfigController:
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
-            prov_config_entries = await self.get_provider_config_entries(
+            config_entries = await self.get_provider_config_entries(
                 raw_conf["domain"], instance_id=instance_id, values=raw_conf.get("values")
             )
-            config_entries = DEFAULT_PROVIDER_CONFIG_ENTRIES + prov_config_entries
             return ProviderConfig.parse(config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
@@ -197,93 +197,34 @@ class ConfigController:
             raise KeyError(f"Unknown provider domain: {provider_domain}")
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
-        return await prov_mod.get_config_entries(
-            self.mass, instance_id=instance_id, action=action, values=values
+        return (
+            await prov_mod.get_config_entries(
+                self.mass, instance_id=instance_id, action=action, values=values
+            )
+            + DEFAULT_PROVIDER_CONFIG_ENTRIES
         )
 
-    @api_command("config/providers/update")
-    async def update_provider_config(
-        self, instance_id: str, values: dict[str, ConfigValueType]
-    ) -> None:
-        """Update ProviderConfig."""
-        config = await self.get_provider_config(instance_id)
-        changed_keys = config.update(values)
-        available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
-        if not changed_keys and (config.enabled == available):
-            # no changes
-            return
-        # try to load the provider first to catch errors before we save it.
-        if config.enabled:
-            await self.mass.load_provider(config)
-        else:
-            await self.mass.unload_provider(config.instance_id)
-        # load succeeded, save new config
-        config.last_error = None
-        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
-        self.set(conf_key, config.to_raw())
-
-    @api_command("config/providers/add")
-    async def add_provider_instance(
+    @api_command("config/providers/save")
+    async def save_provider_config(
         self,
         provider_domain: str,
         values: dict[str, ConfigValueType],
-    ) -> list[ConfigEntry] | ProviderConfig:
+        instance_id: str | None = None,
+    ) -> ProviderConfig:
         """
-        Add new Provider (instance).
+        Save Provider(instance) Config.
 
-        params:
-        - provider_domain: domain of the provider for which to add an instance of.
-        - values: the raw values for config entries.
-
-        Returns: newly created ProviderConfig.
+        provider_domain: (mandatory) domain of the provider.
+        values: the raw values for config entries that need to be stored/updated.
+        instance_id: id of an existing provider instance (None for new instance setup).
+        action: [optional] action key called from config entries UI.
         """
-        # lookup provider manifest and module
-        for prov in self.mass.get_available_providers():
-            if prov.domain == provider_domain:
-                manifest = prov
-                prov_mod = await get_provider_module(provider_domain)
-                break
+        if instance_id is not None:
+            config = await self._update_provider_config(instance_id, values)
         else:
-            raise KeyError(f"Unknown provider domain: {provider_domain}")
-        # ensure we have a values dict
-        if values is None:
-            values = {}
-        # ensure we have a session id to pass along the flow steps
-        if "flow_session_id" not in values:
-            values["flow_session_id"] = uuid4().hex
-        # create new provider config with given values
-        existing = {
-            x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
-        }
-        # determine instance id based on previous configs
-        if existing and not manifest.multi_instance:
-            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
-        if len(existing) == 0:
-            instance_id = provider_domain
-            name = manifest.name
-        else:
-            instance_id = f"{provider_domain}{len(existing)+1}"
-            name = f"{manifest.name} {len(existing)+1}"
-        # all checks passed, create config object
-        config_entries = await prov_mod.get_config_entries(self.mass, instance_id)
-        config: ProviderConfig = ProviderConfig.parse(
-            DEFAULT_PROVIDER_CONFIG_ENTRIES + config_entries,
-            {
-                "type": manifest.type.value,
-                "domain": manifest.domain,
-                "instance_id": instance_id,
-                "name": name,
-                "values": values,
-            },
-        )
-        # validate the new config
-        config.validate()
-        # try to load the provider first to catch errors before we save it.
-        await self.mass.load_provider(config)
-        # the load was a success, store this config
-        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
-        self.set(conf_key, config.to_raw())
-        return config
+            config = await self._add_provider_config(provider_domain, values)
+        # return full config, just in case
+        return await self.get_provider_config(config.instance_id)
 
     @api_command("config/providers/remove")
     async def remove_provider_config(self, instance_id: str) -> None:
@@ -345,9 +286,11 @@ class ConfigController:
                 return ConfigEntry.from_dict(entry.to_dict()).parse_value(conf["values"].get(key))
         raise KeyError(f"ConfigEntry {key} is invalid")
 
-    @api_command("config/players/update")
-    def update_player_config(self, player_id: str, values: dict[str, ConfigValueType]) -> None:
-        """Update PlayerConfig."""
+    @api_command("config/players/save")
+    def save_player_config(
+        self, player_id: str, values: dict[str, ConfigValueType]
+    ) -> PlayerConfig:
+        """Save/update PlayerConfig."""
         config = self.get_player_config(player_id)
         changed_keys = config.update(values)
 
@@ -364,20 +307,17 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        try:
+        with suppress(PlayerUnavailableError):
             player = self.mass.players.get(config.player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id, force_update=True)
-        except PlayerUnavailableError:
-            pass
 
         # signal player provider that the config changed
-        try:
+        with suppress(PlayerUnavailableError):
             if provider := self.mass.get_provider(config.provider):
-                assert isinstance(provider, PlayerProvider)
                 provider.on_player_config_changed(config, changed_keys)
-        except PlayerUnavailableError:
-            pass
+        # return full player config (just in case)
+        return self.get_player_config(player_id)
 
     @api_command("config/players/remove")
     async def remove_player_config(self, player_id: str) -> None:
@@ -429,10 +369,9 @@ class ConfigController:
                 break
         else:
             raise KeyError(f"Unknown provider domain: {provider_domain}")
-        prov_mod = await get_provider_module(provider_domain)
-        config_entries = await prov_mod.get_config_entries(self.mass)
+        config_entries = await self.get_provider_config_entries(provider_domain)
         default_config: ProviderConfig = ProviderConfig.parse(
-            DEFAULT_PROVIDER_CONFIG_ENTRIES + config_entries,
+            config_entries,
             {
                 "type": manifest.type.value,
                 "domain": manifest.domain,
@@ -446,6 +385,38 @@ class ConfigController:
         default_config.validate()
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set(conf_key, default_config.to_raw())
+
+    def save(self, immediate: bool = False) -> None:
+        """Schedule save of data to disk."""
+        if self._timer_handle is not None:
+            self._timer_handle.cancel()
+            self._timer_handle = None
+
+        if immediate:
+            self.mass.loop.create_task(self._async_save())
+        else:
+            # schedule the save for later
+            self._timer_handle = self.mass.loop.call_later(
+                DEFAULT_SAVE_DELAY, self.mass.create_task, self._async_save
+            )
+
+    def encrypt_string(self, str_value: str) -> str:
+        """Encrypt a (password)string with Fernet."""
+        if str_value.startswith(ENCRYPT_SUFFIX):
+            return str_value
+        return ENCRYPT_SUFFIX + self._fernet.encrypt(str_value.encode()).decode()
+
+    def decrypt_string(self, encrypted_str: str) -> str:
+        """Decrypt a (password)string with Fernet."""
+        if not encrypted_str:
+            return encrypted_str
+        if not encrypted_str.startswith(ENCRYPT_SUFFIX):
+            return encrypted_str
+        encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
+        try:
+            return self._fernet.decrypt(encrypted_str.encode()).decode()
+        except InvalidToken as err:
+            raise InvalidDataError("Password decryption failed") from err
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
@@ -465,21 +436,7 @@ class ConfigController:
                 LOGGER.debug("Loaded persistent settings from %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    def save(self, immediate: bool = False) -> None:
-        """Schedule save of data to disk."""
-        if self._timer_handle is not None:
-            self._timer_handle.cancel()
-            self._timer_handle = None
-
-        if immediate:
-            self.mass.loop.create_task(self.async_save())
-        else:
-            # schedule the save for later
-            self._timer_handle = self.mass.loop.call_later(
-                DEFAULT_SAVE_DELAY, self.mass.create_task, self.async_save
-            )
-
-    async def async_save(self):
+    async def _async_save(self):
         """Save persistent data to disk."""
         filename_backup = f"{self.filename}.backup"
         # make backup before we write a new file
@@ -492,20 +449,82 @@ class ConfigController:
             await _file.write(json_dumps(self._data, indent=True))
         LOGGER.debug("Saved data to persistent storage")
 
-    def encrypt_string(self, str_value: str) -> str:
-        """Encrypt a (password)string with Fernet."""
-        if str_value.startswith(ENCRYPT_SUFFIX):
-            return str_value
-        return ENCRYPT_SUFFIX + self._fernet.encrypt(str_value.encode()).decode()
+    async def _update_provider_config(
+        self, instance_id: str, values: dict[str, ConfigValueType]
+    ) -> ProviderConfig:
+        """Update ProviderConfig."""
+        config = await self.get_provider_config(instance_id)
+        changed_keys = config.update(values)
+        # validate the new config
+        config.validate()
+        available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
+        if not changed_keys and (config.enabled == available):
+            # no changes
+            return
+        # try to load the provider first to catch errors before we save it.
+        if config.enabled:
+            await self.mass.load_provider(config)
+        else:
+            await self.mass.unload_provider(config.instance_id)
+        # load succeeded, save new config
+        config.last_error = None
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
+        self.set(conf_key, config.to_raw())
+        return config
 
-    def decrypt_string(self, encrypted_str: str) -> str:
-        """Decrypt a (password)string with Fernet."""
-        if not encrypted_str:
-            return encrypted_str
-        if not encrypted_str.startswith(ENCRYPT_SUFFIX):
-            return encrypted_str
-        encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
-        try:
-            return self._fernet.decrypt(encrypted_str.encode()).decode()
-        except InvalidToken as err:
-            raise InvalidDataError("Password decryption failed") from err
+    async def _add_provider_config(
+        self,
+        provider_domain: str,
+        values: dict[str, ConfigValueType],
+    ) -> list[ConfigEntry] | ProviderConfig:
+        """
+        Add new Provider (instance).
+
+        params:
+        - provider_domain: domain of the provider for which to add an instance of.
+        - values: the raw values for config entries.
+
+        Returns: newly created ProviderConfig.
+        """
+        # lookup provider manifest and module
+        for prov in self.mass.get_available_providers():
+            if prov.domain == provider_domain:
+                manifest = prov
+                break
+        else:
+            raise KeyError(f"Unknown provider domain: {provider_domain}")
+        # create new provider config with given values
+        existing = {
+            x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
+        }
+        # determine instance id based on previous configs
+        if existing and not manifest.multi_instance:
+            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
+        if len(existing) == 0:
+            instance_id = provider_domain
+            name = manifest.name
+        else:
+            instance_id = f"{provider_domain}{len(existing)+1}"
+            name = f"{manifest.name} {len(existing)+1}"
+        # all checks passed, create config object
+        config_entries = await self.get_provider_config_entries(
+            provider_domain=provider_domain, instance_id=instance_id, values=values
+        )
+        config: ProviderConfig = ProviderConfig.parse(
+            config_entries,
+            {
+                "type": manifest.type.value,
+                "domain": manifest.domain,
+                "instance_id": instance_id,
+                "name": name,
+                "values": values,
+            },
+        )
+        # validate the new config
+        config.validate()
+        # try to load the provider first to catch errors before we save it.
+        await self.mass.load_provider(config)
+        # the load was a success, store this config
+        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
+        self.set(conf_key, config.to_raw())
+        return config

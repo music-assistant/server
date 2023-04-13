@@ -272,6 +272,7 @@ class EventType(StrEnum):
     PROVIDERS_UPDATED = "providers_updated"
     PLAYER_CONFIG_UPDATED = "player_config_updated"
     SYNC_TASKS_UPDATED = "sync_tasks_updated"
+    AUTH_SESSION = "auth_session"
 
 
 class ProviderFeature(StrEnum):
