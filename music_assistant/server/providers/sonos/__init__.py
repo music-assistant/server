@@ -14,7 +14,11 @@ from soco.events_base import Event as SonosEvent
 from soco.events_base import SubscriptionBase
 from soco.groups import ZoneGroup
 
-from music_assistant.common.models.config_entries import CONF_ENTRY_OUTPUT_CODEC, ConfigEntry
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_OUTPUT_CODEC,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import (
     ContentType,
     MediaType,
@@ -55,9 +59,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return tuple()  # we do not have any config entries (yet)
 
 
@@ -282,7 +296,7 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC).value
+        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
         radio_mode = (
             flow_mode or not queue_item.duration or queue_item.media_type == MediaType.RADIO
         )
@@ -552,7 +566,7 @@ class SonosPlayerProvider(PlayerProvider):
         # send queue item to sonos queue
         output_codec = self.mass.config.get_player_config_value(
             sonos_player.player_id, CONF_OUTPUT_CODEC
-        ).value
+        )
         is_radio = next_item.media_type != MediaType.TRACK
         url = await self.mass.streams.resolve_stream_url(
             queue_item=next_item,

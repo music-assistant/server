@@ -315,7 +315,7 @@ class ProviderFeature(StrEnum):
     #
     # PLAYERPROVIDER FEATURES
     #
-    CREATE_PLAYER_CONFIG = "create_player_config"
+    # we currently have none ;-)
 
     #
     # METADATAPROVIDER FEATURES
@@ -348,3 +348,5 @@ class ConfigEntryType(StrEnum):
     INTEGER = "integer"
     FLOAT = "float"
     LABEL = "label"
+    DIVIDER = "divider"
+    ACTION = "action"

@@ -331,7 +331,7 @@ class StreamsController:
         if output_format.is_pcm() or output_format == ContentType.WAV:
             output_channels = self.mass.config.get_player_config_value(
                 player_id, CONF_OUTPUT_CHANNELS
-            ).value
+            )
             channels = 1 if output_channels != "stereo" else 2
             output_format_str = (
                 f"x-wav;codec=pcm;rate={output_sample_rate};"

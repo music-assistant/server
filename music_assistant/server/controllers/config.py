@@ -17,8 +17,8 @@ from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
     DEFAULT_PLAYER_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
-    ConfigEntryValue,
-    ConfigUpdate,
+    ConfigEntry,
+    ConfigValueType,
     PlayerConfig,
     ProviderConfig,
 )
@@ -165,20 +165,49 @@ class ConfigController:
     async def get_provider_config(self, instance_id: str) -> ProviderConfig:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
-            for prov in self.mass.get_available_providers():
-                if prov.domain != raw_conf["domain"]:
-                    continue
-                prov_mod = await get_provider_module(prov.domain)
-                prov_config_entries = await prov_mod.get_config_entries(self.mass, prov)
-                config_entries = DEFAULT_PROVIDER_CONFIG_ENTRIES + prov_config_entries
-                return ProviderConfig.parse(config_entries, raw_conf)
+            prov_config_entries = await self.get_provider_config_entries(
+                raw_conf["domain"], instance_id=instance_id, values=raw_conf.get("values")
+            )
+            config_entries = DEFAULT_PROVIDER_CONFIG_ENTRIES + prov_config_entries
+            return ProviderConfig.parse(config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
+    @api_command("config/providers/get_entries")
+    async def get_provider_config_entries(
+        self,
+        provider_domain: str,
+        instance_id: str | None = None,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to setup/configure a provider.
+
+        provider_domain: (mandatory) domain of the provider.
+        instance_id: id of an existing provider instance (None for new instance setup).
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+        """
+        # lookup provider manifest and module
+        for prov in self.mass.get_available_providers():
+            if prov.domain == provider_domain:
+                prov_mod = await get_provider_module(provider_domain)
+                break
+        else:
+            raise KeyError(f"Unknown provider domain: {provider_domain}")
+        if values is None:
+            values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
+        return await prov_mod.get_config_entries(
+            self.mass, instance_id=instance_id, action=action, values=values
+        )
+
     @api_command("config/providers/update")
-    async def update_provider_config(self, instance_id: str, update: ConfigUpdate) -> None:
+    async def update_provider_config(
+        self, instance_id: str, values: dict[str, ConfigValueType]
+    ) -> None:
         """Update ProviderConfig."""
         config = await self.get_provider_config(instance_id)
-        changed_keys = config.update(update)
+        changed_keys = config.update(values)
         available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
         if not changed_keys and (config.enabled == available):
             # no changes
@@ -194,21 +223,64 @@ class ConfigController:
         self.set(conf_key, config.to_raw())
 
     @api_command("config/providers/add")
-    async def add_provider_config(
-        self, provider_domain: str, config: ProviderConfig | None = None
-    ) -> ProviderConfig:
-        """Add new Provider (instance) Config Flow."""
-        if not config:
-            return await self._get_default_provider_config(provider_domain)
-        for key, conf_entry_value in config.values.items():
-            # parse entry to do type validation
-            parsed_val = ConfigEntryValue.parse(conf_entry_value, conf_entry_value.value)
-            conf_entry_value.value = parsed_val.value
-        # if provider config is provided, the frontend wants to submit a new provider instance
-        # based on the earlier created template config.
+    async def add_provider_instance(
+        self,
+        provider_domain: str,
+        values: dict[str, ConfigValueType],
+    ) -> list[ConfigEntry] | ProviderConfig:
+        """
+        Add new Provider (instance).
+
+        params:
+        - provider_domain: domain of the provider for which to add an instance of.
+        - values: the raw values for config entries.
+
+        Returns: newly created ProviderConfig.
+        """
+        # lookup provider manifest and module
+        for prov in self.mass.get_available_providers():
+            if prov.domain == provider_domain:
+                manifest = prov
+                prov_mod = await get_provider_module(provider_domain)
+                break
+        else:
+            raise KeyError(f"Unknown provider domain: {provider_domain}")
+        # ensure we have a values dict
+        if values is None:
+            values = {}
+        # ensure we have a session id to pass along the flow steps
+        if "flow_session_id" not in values:
+            values["flow_session_id"] = uuid4().hex
+        # create new provider config with given values
+        existing = {
+            x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
+        }
+        # determine instance id based on previous configs
+        if existing and not manifest.multi_instance:
+            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
+        if len(existing) == 0:
+            instance_id = provider_domain
+            name = manifest.name
+        else:
+            instance_id = f"{provider_domain}{len(existing)+1}"
+            name = f"{manifest.name} {len(existing)+1}"
+        # all checks passed, create config object
+        config_entries = await prov_mod.get_config_entries(self.mass, instance_id)
+        config: ProviderConfig = ProviderConfig.parse(
+            DEFAULT_PROVIDER_CONFIG_ENTRIES + config_entries,
+            {
+                "type": manifest.type.value,
+                "domain": manifest.domain,
+                "instance_id": instance_id,
+                "name": name,
+                "values": values,
+            },
+        )
+        # validate the new config
+        config.validate()
         # try to load the provider first to catch errors before we save it.
         await self.mass.load_provider(config)
-        # config provided and load success, storeconfig
+        # the load was a success, store this config
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
         return config
@@ -259,7 +331,7 @@ class ConfigController:
         raise KeyError(f"No config found for player id {player_id}")
 
     @api_command("config/players/get_value")
-    def get_player_config_value(self, player_id: str, key: str) -> ConfigEntryValue:
+    def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a player."""
         conf = self.get(f"{CONF_PLAYERS}/{player_id}")
         if not conf:
@@ -269,14 +341,15 @@ class ConfigController:
         entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(player_id)
         for entry in entries:
             if entry.key == key:
-                return ConfigEntryValue.parse(entry, conf["values"].get(key))
+                # always create a copy to prevent we're altering the base object
+                return ConfigEntry.from_dict(entry.to_dict()).parse_value(conf["values"].get(key))
         raise KeyError(f"ConfigEntry {key} is invalid")
 
     @api_command("config/players/update")
-    def update_player_config(self, player_id: str, update: ConfigUpdate) -> None:
+    def update_player_config(self, player_id: str, values: dict[str, ConfigValueType]) -> None:
         """Update PlayerConfig."""
         config = self.get_player_config(player_id)
-        changed_keys = config.update(update)
+        changed_keys = config.update(values)
 
         if not changed_keys:
             # no changes
@@ -305,14 +378,6 @@ class ConfigController:
                 provider.on_player_config_changed(config, changed_keys)
         except PlayerUnavailableError:
             pass
-
-    @api_command("config/players/create")
-    async def create_player_config(
-        self, provider_domain: str, config: PlayerConfig | None = None
-    ) -> PlayerConfig:
-        """Register a new Player(config) if the provider supports this."""
-        provider: PlayerProvider = self.mass.get_provider(provider_domain)
-        return await provider.create_player_config(config)
 
     @api_command("config/players/remove")
     async def remove_player_config(self, player_id: str) -> None:
@@ -358,55 +423,29 @@ class ConfigController:
         for conf in await self.get_provider_configs(provider_domain=provider_domain):
             # return if there is already a config
             return
-        # config does not yet exist, create a default one
-        default_config = await self._get_default_provider_config(provider_domain)
-        conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
-        self.set(conf_key, default_config.to_raw())
-
-    async def _get_default_provider_config(self, provider_domain: str) -> ProviderConfig:
-        """
-        Return default/empty ProviderConfig.
-
-        This is intended to be used as helper method to add a new provider,
-        and it performs some quick sanity checks as well as handling the
-        instance_id generation.
-        """
-        # lookup provider manifest
         for prov in self.mass.get_available_providers():
             if prov.domain == provider_domain:
                 manifest = prov
                 break
         else:
             raise KeyError(f"Unknown provider domain: {provider_domain}")
-
-        # determine instance id based on previous configs
-        existing = {
-            x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
-        }
-
-        if existing and not manifest.multi_instance:
-            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
-
-        if len(existing) == 0:
-            instance_id = provider_domain
-            name = manifest.name
-        else:
-            instance_id = f"{provider_domain}{len(existing)+1}"
-            name = f"{manifest.name} {len(existing)+1}"
-
-        # all checks passed, return a default config
         prov_mod = await get_provider_module(provider_domain)
-        config_entries = await prov_mod.get_config_entries(self.mass, manifest)
-        return ProviderConfig.parse(
+        config_entries = await prov_mod.get_config_entries(self.mass)
+        default_config: ProviderConfig = ProviderConfig.parse(
             DEFAULT_PROVIDER_CONFIG_ENTRIES + config_entries,
             {
                 "type": manifest.type.value,
                 "domain": manifest.domain,
-                "instance_id": instance_id,
-                "name": name,
+                "instance_id": manifest.domain,
+                "name": manifest.name,
+                # note: this will only work for providers that do
+                # not have any required config entries or provide defaults
                 "values": {},
             },
         )
+        default_config.validate()
+        conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
+        self.set(conf_key, default_config.to_raw())
 
     async def _load(self) -> None:
         """Load data from persistent storage."""

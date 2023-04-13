@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 import aiofiles
 
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -31,8 +31,8 @@ if TYPE_CHECKING:
 
 PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
-        key="airplay_label",
-        type=ConfigEntryType.LABEL,
+        key="airplay_header",
+        type=ConfigEntryType.DIVIDER,
         label="Airplay specific settings",
         description="Configure Airplay specific settings. "
         "Note that changing any airplay specific setting, will reconnect all players.",
@@ -83,9 +83,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return tuple()  # we do not have any config entries (yet)
 
 

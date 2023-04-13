@@ -189,7 +189,7 @@ class PlayerController:
             try:
                 hide_group_childs = self.mass.config.get_player_config_value(
                     group_player.player_id, CONF_HIDE_GROUP_CHILDS
-                ).value
+                )
             except KeyError:
                 continue
             if hide_group_childs == "always":

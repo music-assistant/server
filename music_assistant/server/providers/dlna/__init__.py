@@ -23,7 +23,11 @@ from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
 from async_upnp_client.utils import CaseInsensitiveDict
 
-from music_assistant.common.models.config_entries import CONF_ENTRY_OUTPUT_CODEC, ConfigEntry
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_OUTPUT_CODEC,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import ContentType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
@@ -63,9 +67,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return tuple()  # we do not have any config entries (yet)
 
 
@@ -262,7 +276,7 @@ class DLNAPlayerProvider(PlayerProvider):
         # always clear queue (by sending stop) first
         if dlna_player.device.can_stop:
             await self.cmd_stop(player_id)
-        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC).value
+        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=dlna_player.udn,
@@ -554,7 +568,7 @@ class DLNAPlayerProvider(PlayerProvider):
         # send queue item to dlna queue
         output_codec = self.mass.config.get_player_config_value(
             dlna_player.player.player_id, CONF_OUTPUT_CODEC
-        ).value
+        )
         url = await self.mass.streams.resolve_stream_url(
             queue_item=next_item,
             player_id=dlna_player.udn,
