@@ -1,7 +1,7 @@
 """Deezer music provider support for MusicAssistant."""
+import os
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
-from time import time
 
 import deezer
 from asyncio_throttle.throttler import Throttler
@@ -17,12 +17,14 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    MediaItemType,
     Playlist,
     SearchResults,
     StreamDetails,
     Track,
 )
 from music_assistant.common.models.provider import ProviderManifest
+from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
@@ -69,7 +71,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.TRACK_METADATA,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_METADATA,
-    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
 )
@@ -327,25 +328,43 @@ class DeezerProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         track = await get_track(client=self.client, track_id=int(item_id))
         return StreamDetails(
-            provider=self.domain,
             item_id=item_id,
+            provider=self.instance_id,
             content_type=ContentType.MP3,
-            media_type=MediaType.TRACK,
-            stream_title=track.title,
             duration=track.duration,
-            expires=time() + 3600,
         )
 
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        base_path = os.path.join(os.path.dirname(__file__), "dzr")
+        args = [
+            f"{base_path}/get-bytes.sh",
+            streamdetails.item_id,
+        ]
+        print(seek_position)
+        async with AsyncProcess(args) as dzr_proc:
+            async for chunk in dzr_proc.iter_any():
+                print(chunk)
+                yield chunk
+
     async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
-        """Not implemented."""
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        NOT IMPLEMENTED
+        """
         raise NotImplementedError
 
-
-#    async def get_audio_stream(
-#        self, streamdetails: StreamDetails, seek_position: int = 0
-#        """Return the audio stream for the provider item."""
-#        yup = seek_position
-#        url = await get_url(
-#            mass=self, track_id=streamdetails.item_id, creds=self.creds, client=self.client
-#        )
-#        yield b""
+    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
+        """Get single MediaItem from provider."""
+        if media_type == MediaType.ARTIST:
+            return await self.get_artist(prov_item_id)
+        if media_type == MediaType.ALBUM:
+            return await self.get_album(prov_item_id)
+        if media_type == MediaType.PLAYLIST:
+            return await self.get_playlist(prov_item_id)
+        return await self.get_track(prov_item_id)

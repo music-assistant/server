@@ -11,13 +11,8 @@ dzr: (inspired the track-url gatherer) https://github.com/yne/dzr by @yne.
 """
 
 import asyncio
-import json
-from http.cookies import SimpleCookie
-from time import time
 
-import aiohttp
 import deezer
-from requests.cookies import RequestsCookieJar
 
 from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
 from music_assistant.common.models.errors import LoginFailed
@@ -252,6 +247,7 @@ async def search_playlist(
     return await asyncio.to_thread(_search)
 
 
+"""
 async def _parse_cookies(cookies: RequestsCookieJar) -> dict[str, SimpleCookie]:
     result = {}
     for cookie in cookies:
@@ -265,7 +261,7 @@ async def _parse_cookies(cookies: RequestsCookieJar) -> dict[str, SimpleCookie]:
 
 
 async def _get_sid(mass, client: deezer.Client):
-    """Get a session id."""
+    ""Get a session id.""
     cookies = await _parse_cookies(cookies=client.session.cookies)
     return (
         await _get_http(
@@ -283,7 +279,7 @@ async def _get_sid(mass, client: deezer.Client):
 
 
 async def _get_user_data(mass, tok, sid):
-    """Get user data."""
+    ""Get user data.""
     return (
         await _get_http(
             mass=mass,
@@ -303,7 +299,7 @@ async def _get_user_data(mass, tok, sid):
 
 
 async def _get_song_info(mass, tok, sid, track_id):
-    """Get info for song. Can't use that of deezer-python because we need the track token."""
+    ""Get info for song. Can't use that of deezer-python because we need the track token.""
     return (
         await _post_http(
             mass=mass,
@@ -327,7 +323,7 @@ async def _get_song_info(mass, tok, sid, track_id):
 
 
 async def _generate_url(mass, usr_lic, track_tok):
-    """Get the url for the given track."""
+    ""Get the url for the given track.""
     url = "https://media.deezer.com/v1/get_url"
     payload = {
         "license_token": usr_lic,
@@ -367,6 +363,7 @@ async def _get_http(mass, url, params, headers, cookies):
                 round(time() - time_start, 2),
             )
         return result
+"""
 
 
 async def update_access_token(mass, creds: Credential, code) -> Credential:
@@ -404,8 +401,9 @@ async def _post_http(mass, url, data, params=None, headers=None) -> str:
         return response_text
 
 
+"""
 async def get_url(mass, track_id, creds: Credential, client: deezer.Client) -> str:
-    """Get the url of the track."""
+    ""Get the url of the track.""
     sid = await _get_sid(mass=mass, client=client)
     user_data = await _get_user_data(mass=mass, tok=creds.access_token, sid=sid)
     licence_token = user_data["USER"]["OPTIONS"]["license_token"]
@@ -416,6 +414,7 @@ async def get_url(mass, track_id, creds: Credential, client: deezer.Client) -> s
     url_resp = await _generate_url(mass, licence_token, [track_token])
     url_info = url_resp["data"][0]  # type: ignore
     return json.loads(url_info)["media"][0]["sources"][0]["url"]
+"""
 
 
 async def parse_artist(mass, artist: deezer.Artist) -> Artist:
