@@ -338,6 +338,7 @@ class DeezerProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
+        print("Is this running??")
         base_path = os.path.join(os.path.dirname(__file__), "dzr")
         args = [
             f"{base_path}/get-bytes.sh",
