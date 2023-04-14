@@ -108,12 +108,6 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
             )
             for subkey, subvalue in value.items()
         }
-    elif origin is tuple:
-        return [
-            parse_value(name, subvalue, get_args(value_type)[0])
-            for subvalue in value
-            if subvalue is not None
-        ]
     elif origin is Union or origin is UnionType:
         # try all possible types
         sub_value_types = get_args(value_type)
