@@ -272,6 +272,7 @@ class EventType(StrEnum):
     PROVIDERS_UPDATED = "providers_updated"
     PLAYER_CONFIG_UPDATED = "player_config_updated"
     SYNC_TASKS_UPDATED = "sync_tasks_updated"
+    AUTH_SESSION = "auth_session"
 
 
 class ProviderFeature(StrEnum):
@@ -315,7 +316,7 @@ class ProviderFeature(StrEnum):
     #
     # PLAYERPROVIDER FEATURES
     #
-    CREATE_PLAYER_CONFIG = "create_player_config"
+    # we currently have none ;-)
 
     #
     # METADATAPROVIDER FEATURES
@@ -348,3 +349,5 @@ class ConfigEntryType(StrEnum):
     INTEGER = "integer"
     FLOAT = "float"
     LABEL = "label"
+    DIVIDER = "divider"
+    ACTION = "action"

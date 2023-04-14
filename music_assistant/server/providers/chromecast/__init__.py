@@ -23,6 +23,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueOption,
+    ConfigValueType,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -83,9 +84,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return tuple()  # we do not have any config entries (yet)
 
 
@@ -207,7 +218,7 @@ class ChromecastProvider(PlayerProvider):
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         castplayer = self.castplayers[player_id]
-        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC).value
+        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=player_id,
@@ -548,7 +559,7 @@ class ChromecastProvider(PlayerProvider):
         event = asyncio.Event()
         if use_alt_app := self.mass.config.get_player_config_value(
             castplayer.player_id, CONF_ALT_APP
-        ).value:
+        ):
             app_id = pychromecast.config.APP_BUBBLEUPNP
         else:
             app_id = pychromecast.config.APP_MEDIA_RECEIVER
