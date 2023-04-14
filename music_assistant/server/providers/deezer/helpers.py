@@ -317,7 +317,6 @@ async def parse_album(mass, album: deezer.Album) -> Album:
                 item_id=str(album.id),
                 provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
-                content_type=ContentType.MP3,
             )
         },
         metadata=await parse_metadata_album(album=album),
