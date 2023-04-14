@@ -41,7 +41,7 @@ class Credential:
     access_token: str
 
 
-async def get_deezer_client(creds: Credential = None) -> deezer.Client:  # type: ignore
+async def get_deezer_client(creds: Credential) -> deezer.Client:  # type: ignore
     """
     Return a deezer-python Client.
 
@@ -51,17 +51,13 @@ async def get_deezer_client(creds: Credential = None) -> deezer.Client:  # type:
     :param creds: Credentials. If none are given client is not authorized, defaults to None
     :type creds: credential, optional
     """
-    if creds and not isinstance(creds, Credential):
+    if not isinstance(creds, Credential):
         raise TypeError("Creds must be of type credential")
 
     def _authorize():
-        if creds:
-            client = deezer.Client(
-                app_id=creds.app_id, app_secret=creds.app_secret, access_token=creds.access_token
-            )
-        else:
-            client = deezer.Client()
-        return client
+        return deezer.Client(
+            app_id=creds.app_id, app_secret=creds.app_secret, access_token=creds.access_token
+        )
 
     return await asyncio.to_thread(_authorize)
 
