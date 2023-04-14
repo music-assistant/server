@@ -32,7 +32,7 @@ server = [
   "databases==0.7.0",
   "aiosqlite==0.18.0",
   "python-slugify==8.0.1",
-  "mashumaro==3.5.0",
+  "mashumaro==3.7",
   "memory-tempfile==2.2.3",
   "music-assistant-frontend==20230414.0",
   "pillow==9.5.0",
