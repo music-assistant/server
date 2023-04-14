@@ -157,19 +157,6 @@ class DeezerProvider(MusicProvider):
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
 
-    @property
-    def is_unique(self) -> bool:
-        """
-        Return True if the (non user related) data in this provider instance is unique.
-
-        For example on a global streaming provider (like Spotify),
-        the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to False will only query one instance of the provider for search and lookups.
-        Setting this to True will query all instances of this provider for search and lookups.
-        """
-        return False
-
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
     ) -> SearchResults:
