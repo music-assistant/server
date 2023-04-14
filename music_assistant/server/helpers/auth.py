@@ -45,8 +45,16 @@ class AuthenticationHelper:
 
     async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
         """Start the auth process and return any query params if received on the callback."""
+        self.send_url(auth_url)
+        return await self.wait_for_callback(timeout)
+
+    def send_url(self, auth_url: str) -> None:
+        """Send the user to the given URL to authenticate (or fill in a code)."""
         # redirect the user in the frontend to the auth url
         self.mass.signal_event(EventType.AUTH_SESSION, self.session_id, auth_url)
+
+    async def wait_for_callback(self, timeout: int = 60) -> dict[str, str]:
+        """Wait for the external party to call the callback and return any query strings."""
         async with asyncio.timeout(timeout):
             return await self._callback_response.get()
 
