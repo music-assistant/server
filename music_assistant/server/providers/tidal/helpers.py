@@ -38,6 +38,7 @@ from music_assistant.common.models.media_items import (
     ProviderMapping,
     Track,
 )
+from music_assistant.server.helpers.auth import AuthenticationHelper
 
 
 async def tidal_session(
@@ -48,16 +49,24 @@ async def tidal_session(
     def _tidal_session():
         config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
         session = TidalSession(config=config)
-        if access_token is None:
-            login, future = session.login_oauth()
-            webbrowser.open(f"https://{login.verification_uri_complete}")
-            future.result()
-            return session
-        else:
-            session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
-            return session
+        session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
+        return session
 
     return await asyncio.to_thread(_tidal_session)
+
+
+async def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
+    """Async wrapper around the tidalapi Session function."""
+
+    def _tidal_code_login():
+        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
+        session = TidalSession(config=config)
+        login, future = session.login_oauth()
+        auth_helper.send_url(f"https://{login.verification_uri_complete}")
+        future.result()
+        return session
+
+    return await asyncio.to_thread(_tidal_code_login)
 
 
 async def get_library_artists(session: TidalSession, user_id: str) -> dict[str, str]:

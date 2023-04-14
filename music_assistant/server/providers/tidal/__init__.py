@@ -10,9 +10,9 @@ from typing import TYPE_CHECKING
 
 from tidalapi import Session as TidalSession
 
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -22,12 +22,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.constants import (
-    CONF_ACCESS_TOKEN,
-    CONF_EXPIRY_TIME,
-    CONF_REFRESH_TOKEN,
-    CONF_USERNAME,
-)
+from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -53,6 +48,7 @@ from .helpers import (
     parse_playlist,
     parse_track,
     search,
+    tidal_code_login,
     tidal_session,
 )
 
@@ -64,6 +60,12 @@ if TYPE_CHECKING:
 
 CACHE_DIR = gettempdir()
 TOKEN_TYPE = "Bearer"
+CONF_ACTION_AUTH = "auth"
+CONF_AUTH_TOKEN = "auth_token"
+CONF_REFRESH_TOKEN = "refresh_token"
+CONF_USER_ID = "user_id"
+CONF_EXPIRY_TIME = "expiry_time"
+TIDAL_SESSION = None
 
 
 async def setup(
@@ -76,37 +78,64 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+
+    # config flow auth action/step (authenticate button clicked)
+    if action == CONF_ACTION_AUTH:
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            TIDAL_SESSION = await tidal_code_login(auth_helper)
+            if not TIDAL_SESSION.check_login():
+                raise LoginFailed("Authentication to Tidal failed")
+            # set the retrieved token on the values object to pass along
+            values[CONF_AUTH_TOKEN] = TIDAL_SESSION.access_token
+            values[CONF_REFRESH_TOKEN] = TIDAL_SESSION.refresh_token
+            values[CONF_EXPIRY_TIME] = TIDAL_SESSION.expiry_time.isoformat()
+            values[CONF_USER_ID] = str(TIDAL_SESSION.user.id)
+
+    # return the collected config entries
     return (
         ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="User ID",
-            required=False,
-            hidden=True,
-        ),
-        ConfigEntry(
-            key=CONF_ACCESS_TOKEN,
-            type=ConfigEntryType.STRING,
-            label="Access Token",
-            required=False,
-            hidden=True,
+            key=CONF_AUTH_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Authentication token for Tidal",
+            description="You need to link Music Assistant to your Tidal account.",
+            action=CONF_ACTION_AUTH,
+            action_label="Authenticate on Tidal.com",
+            value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_REFRESH_TOKEN,
-            type=ConfigEntryType.STRING,
-            label="Refresh Token",
-            required=False,
-            hidden=True,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Refresh token for Tidal",
+            description="You need to link Music Assistant to your Tidal account.",
+            action_label="Authenticate on Tidal.com",
+            value=values.get(CONF_REFRESH_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_EXPIRY_TIME,
             type=ConfigEntryType.STRING,
-            label="Expiry Time",
-            required=False,
-            hidden=True,
+            label="Expiry time of auth token for Tidal",
+            action_label="Authenticate on Tidal.com",
+            value=values.get(CONF_EXPIRY_TIME) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_USER_ID,
+            type=ConfigEntryType.STRING,
+            label="Your Tidal User ID",
+            description="This is your unique Tidal user ID.",
+            action_label="Authenticate on Tidal.com",
+            value=values.get(CONF_USER_ID) if values else None,
         ),
     )
 
@@ -114,35 +143,15 @@ async def get_config_entries(
 class TidalProvider(MusicProvider):
     """Implementation of a Tidal MusicProvider."""
 
-    _token_type: str | None = None
-    _access_token: str | None = None
-    _refresh_token: str | None = None
-    _expiry_time: datetime | None = None
-    _tidal_user_id: str | None = None
-    _tidal_session: TidalSession | None = None
-
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._cache_dir = CACHE_DIR
+        self._tidal_session = TIDAL_SESSION
+        self._tidal_user_id = self.config.get_value(CONF_USER_ID)
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
         # try login which will raise if it fails
-        access_token = self.mass.config.get(
-            f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}"
-        )
-        refresh_token = self.mass.config.get(
-            f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}"
-        )
-        expiry_time = self.mass.config.get(
-            f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}"
-        )
-        if access_token is not None and access_token:
-            self._access_token = access_token
-        if refresh_token is not None and refresh_token:
-            self._refresh_token = refresh_token
-        if expiry_time is not None and expiry_time:
-            self._expiry_time = datetime.fromisoformat(expiry_time)
-        await self.login()
+        await self.check_refresh()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -314,7 +323,7 @@ class TidalProvider(MusicProvider):
         if not track:
             raise MediaNotFoundError(f"track {item_id} not found")
         # make sure that the token is still valid by just requesting it
-        await self.login()
+        await self.check_refresh()
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
@@ -325,7 +334,7 @@ class TidalProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         try:
-            artist = parse_artist(
+            artist = await parse_artist(
                 tidal_provider=self,
                 artist_obj=await get_artist(self._tidal_session, prov_artist_id),
             )
@@ -335,7 +344,7 @@ class TidalProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         try:
-            album = parse_album(
+            album = await parse_album(
                 tidal_provider=self, album_obj=await get_album(self._tidal_session, prov_album_id)
             )
         except MediaNotFoundError as err:
@@ -344,7 +353,7 @@ class TidalProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         try:
-            track = parse_track(
+            track = await parse_track(
                 tidal_provider=self, track_obj=await get_track(self._tidal_session, prov_track_id)
             )
         except MediaNotFoundError as err:
@@ -353,7 +362,7 @@ class TidalProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         try:
-            playlist = parse_playlist(
+            playlist = await parse_playlist(
                 tidal_provider=self,
                 playlist_obj=await get_playlist(self._tidal_session, prov_playlist_id),
             )
@@ -361,36 +370,25 @@ class TidalProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
         return playlist
 
-    async def login(self) -> TidalSession:
-        """Log-in Tidal and return tokeninfo."""
-        if (
-            self._tidal_session
-            and self._tidal_session.access_token == self._access_token
-            and self._expiry_time > (datetime.now() + timedelta(minutes=30))
-        ):
+    async def check_refresh(self) -> TidalSession:
+        if self._tidal_session and datetime.fromisoformat(
+            self.config.get_value(CONF_EXPIRY_TIME)
+        ) > (datetime.now() + timedelta(days=1)):
             return self._tidal_session
         session = await tidal_session(
-            TOKEN_TYPE,
-            self._access_token,
-            self._refresh_token,
-            self._expiry_time,
+            token_type=TOKEN_TYPE,
+            access_token=self.config.get_value(CONF_AUTH_TOKEN),
+            refresh_token=self.config.get_value(CONF_REFRESH_TOKEN),
+            expiry_time=datetime.fromisoformat(self.config.get_value(CONF_EXPIRY_TIME)),
         )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_USERNAME}", str(session.user.id)
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_AUTH_TOKEN, session.access_token
         )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_ACCESS_TOKEN}", session.access_token
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_REFRESH_TOKEN, session.refresh_token
         )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_REFRESH_TOKEN}", session.refresh_token
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_EXPIRY_TIME, session.expiry_time.isoformat()
         )
-        self.mass.config.set(
-            f"providers/{self.instance_id}/values/{CONF_EXPIRY_TIME}",
-            session.expiry_time.isoformat(),
-        )
-        self._access_token = session.access_token
-        self._refresh_token = session.refresh_token
-        self._expiry_time = session.expiry_time
-        self._tidal_user_id = session.user.id
         self._tidal_session = session
         return self._tidal_session

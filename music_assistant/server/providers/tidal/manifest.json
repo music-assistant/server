@@ -2,7 +2,7 @@
   "type": "music",
   "domain": "tidal",
   "name": "Tidal",
-  "description": "Support for the Tidal streaming provider in Music Assistant. Just hit save down below and you'll be taken to the Tidal device link page. That's all there is to it!",
+  "description": "Support for the Tidal streaming provider in Music Assistant. Hit the button below to authenticate with Tidal, and check that the redirect is not blocked by a Pop-up Blocker!",
   "codeowners": ["@jozefKruszynski"],
   "requirements": ["git+https://github.com/jozefKruszynski/python-tidal.git"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/432",
