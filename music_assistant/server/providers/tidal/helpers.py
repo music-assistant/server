@@ -4,6 +4,9 @@ This helpers file is an async wrapper around the excellent tidalapi package.
 While the tidalapi package does an excellent job at parsing the Tidal results,
 it is unfortunately not async, which is required for Music Assistant to run smoothly.
 This also nicely separates the parsing logic from the Tidal provider logic.
+
+CREDITS:
+tidalapi: https://github.com/tamland/python-tidal
 """
 
 import asyncio
@@ -30,6 +33,7 @@ from music_assistant.common.models.media_items import (
     Artist,
     ItemMapping,
     MediaItemImage,
+    MediaItemMetadata,
     Playlist,
     ProviderMapping,
     Track,
@@ -310,19 +314,25 @@ async def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
             url=f"http://www.tidal.com/artist/{artist_id}",
         )
     )
+    artist.metadata = await parse_artist_metadata(tidal_provider, artist_obj)
+    return artist
+
+
+async def parse_artist_metadata(tidal_provider, artist_obj: TidalArtist) -> MediaItemMetadata:
+    metadata = MediaItemMetadata()
     image_url = None
     if artist_obj.name != "Various Artists":
         try:
             image_url = artist_obj.image(750)
         except Exception:
-            tidal_provider.logger.info(f"Artist {artist_id} has no available picture")
-    artist.metadata.images = [
+            tidal_provider.logger.info(f"Artist {artist_obj.id} has no available picture")
+    metadata.images = [
         MediaItemImage(
             ImageType.THUMB,
             image_url,
         )
     ]
-    return artist
+    return metadata
 
 
 async def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
@@ -343,21 +353,9 @@ async def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
         album.album_type = AlbumType.EP
     elif album_obj.type == "SINGLE":
         album.album_type = AlbumType.SINGLE
-    image_url = None
-    try:
-        image_url = album_obj.image(1280)
-    except Exception:
-        tidal_provider.logger.info(f"Album {album_id} has no available picture")
-    album.metadata.images = [
-        MediaItemImage(
-            ImageType.THUMB,
-            image_url,
-        )
-    ]
+
     album.upc = album_obj.universal_product_number
     album.year = int(album_obj.year)
-    album.metadata.copyright = album_obj.copyright
-    album.metadata.explicit = album_obj.explicit
     album.add_provider_mapping(
         ProviderMapping(
             item_id=album_id,
@@ -368,7 +366,27 @@ async def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
             url=f"http://www.tidal.com/album/{album_id}",
         )
     )
+    album.metadata = await parse_album_metadata(tidal_provider, album_obj)
     return album
+
+
+async def parse_album_metadata(tidal_provider, album_obj: TidalAlbum) -> MediaItemMetadata:
+    metadata = MediaItemMetadata()
+    image_url = None
+    try:
+        image_url = album_obj.image(1280)
+    except Exception:
+        tidal_provider.logger.info(f"Album {album_obj.id} has no available picture")
+    metadata.images = [
+        MediaItemImage(
+            ImageType.THUMB,
+            image_url,
+        )
+    ]
+    metadata.copyright = album_obj.copyright
+    metadata.explicit = album_obj.explicit
+    metadata.popularity = album_obj.popularity
+    return metadata
 
 
 async def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
@@ -395,10 +413,6 @@ async def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
     for track_artist in track_obj.artists:
         artist = await parse_artist(tidal_provider=tidal_provider, artist_obj=track_artist)
         track.artists.append(artist)
-
-    track.metadata.explicit = track_obj.explicit
-    track.metadata.popularity = track_obj.popularity
-    track.metadata.copyright = track_obj.copyright
     available = track_obj.available
     track.add_provider_mapping(
         ProviderMapping(
@@ -411,7 +425,20 @@ async def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
             available=available,
         )
     )
+    track.metadata = await parse_track_metadata(tidal_provider, track_obj)
     return track
+
+
+async def parse_track_metadata(tidal_provider, track_obj: TidalTrack) -> MediaItemMetadata:
+    metadata = MediaItemMetadata()
+    try:
+        metadata.lyrics = track_obj.lyrics().text
+    except Exception:
+        tidal_provider.logger.info(f"Track {track_obj.id} has no available lyrics")
+    metadata.explicit = track_obj.explicit
+    metadata.popularity = track_obj.popularity
+    metadata.copyright = track_obj.copyright
+    return metadata
 
 
 async def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlist:
@@ -435,16 +462,23 @@ async def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlis
     )
     is_editable = bool(creator_id and creator_id == tidal_provider._tidal_user_id)
     playlist.is_editable = is_editable
+    playlist.metadata = await parse_playlist_metadata(tidal_provider, playlist_obj)
+    return playlist
+
+
+async def parse_playlist_metadata(tidal_provider, playlist_obj: TidalPlaylist) -> MediaItemMetadata:
+    metadata = MediaItemMetadata()
     image_url = None
     try:
         image_url = playlist_obj.image(1080)
     except Exception:
-        tidal_provider.logger.info(f"Playlist {playlist_id} has no available picture")
-    playlist.metadata.images = [
+        tidal_provider.logger.info(f"Playlist {playlist_obj.id} has no available picture")
+    metadata.images = [
         MediaItemImage(
             ImageType.THUMB,
             image_url,
         )
     ]
-    playlist.metadata.checksum = str(playlist_obj.last_updated)
-    return playlist
+    metadata.checksum = str(playlist_obj.last_updated)
+    metadata.popularity = playlist_obj.popularity
+    return metadata
