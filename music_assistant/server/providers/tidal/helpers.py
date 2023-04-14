@@ -21,8 +21,19 @@ from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi import UserPlaylist as TidalUserPlaylist
 
-from music_assistant.common.models.enums import MediaType
+from music_assistant.common.helpers.uri import create_uri
+from music_assistant.common.helpers.util import create_sort_name
+from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
 from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    MediaItemImage,
+    Playlist,
+    ProviderMapping,
+    Track,
+)
 
 
 async def tidal_session(
@@ -271,3 +282,169 @@ async def search(
         return session.search(query, models, limit, offset)
 
     return await asyncio.to_thread(_search)
+
+
+def get_item_mapping(tidal_provider, media_type: MediaType, key: str, name: str) -> ItemMapping:
+    return ItemMapping(
+        media_type,
+        key,
+        tidal_provider.instance_id,
+        name,
+        create_uri(media_type, tidal_provider.instance_id, key),
+        create_sort_name(tidal_provider.name),
+    )
+
+
+# Parsers
+
+
+async def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
+    """Parse tidal artist object to generic layout."""
+    artist_id = artist_obj.id
+    artist = Artist(item_id=artist_id, provider=tidal_provider.instance_id, name=artist_obj.name)
+    artist.add_provider_mapping(
+        ProviderMapping(
+            item_id=str(artist_id),
+            provider_domain=tidal_provider.domain,
+            provider_instance=tidal_provider.instance_id,
+            url=f"http://www.tidal.com/artist/{artist_id}",
+        )
+    )
+    image_url = None
+    if artist_obj.name != "Various Artists":
+        try:
+            image_url = artist_obj.image(750)
+        except Exception:
+            tidal_provider.logger.info(f"Artist {artist_id} has no available picture")
+    artist.metadata.images = [
+        MediaItemImage(
+            ImageType.THUMB,
+            image_url,
+        )
+    ]
+    return artist
+
+
+async def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
+    """Parse tidal album object to generic layout."""
+    name = album_obj.name
+    version = album_obj.version if album_obj.version is not None else None
+    album_id = album_obj.id
+    album = Album(item_id=album_id, provider=tidal_provider.instance_id, name=name, version=version)
+    for artist_obj in album_obj.artists:
+        album.artists.append(
+            await parse_artist(tidal_provider=tidal_provider, artist_obj=artist_obj)
+        )
+    if album_obj.type == "ALBUM":
+        album.album_type = AlbumType.ALBUM
+    elif album_obj.type == "COMPILATION":
+        album.album_type = AlbumType.COMPILATION
+    elif album_obj.type == "EP":
+        album.album_type = AlbumType.EP
+    elif album_obj.type == "SINGLE":
+        album.album_type = AlbumType.SINGLE
+    image_url = None
+    try:
+        image_url = album_obj.image(1280)
+    except Exception:
+        tidal_provider.logger.info(f"Album {album_id} has no available picture")
+    album.metadata.images = [
+        MediaItemImage(
+            ImageType.THUMB,
+            image_url,
+        )
+    ]
+    album.upc = album_obj.universal_product_number
+    album.year = int(album_obj.year)
+    album.metadata.copyright = album_obj.copyright
+    album.metadata.explicit = album_obj.explicit
+    album.add_provider_mapping(
+        ProviderMapping(
+            item_id=album_id,
+            provider_domain=tidal_provider.domain,
+            provider_instance=tidal_provider.instance_id,
+            content_type=ContentType.FLAC,
+            bit_rate=1411,
+            url=f"http://www.tidal.com/album/{album_id}",
+        )
+    )
+    return album
+
+
+async def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
+    """Parse tidal track object to generic layout."""
+    version = track_obj.version if track_obj.version is not None else None
+    track_id = str(track_obj.id)
+    track = Track(
+        item_id=track_id,
+        provider=tidal_provider.instance_id,
+        name=track_obj.name,
+        version=version,
+        duration=track_obj.duration,
+        disc_number=track_obj.volume_num,
+        track_number=track_obj.track_num,
+    )
+    track.isrc.add(track_obj.isrc)
+    track.album = get_item_mapping(
+        tidal_provider=tidal_provider,
+        media_type=MediaType.ALBUM,
+        key=track_obj.album.id,
+        name=track_obj.album.name,
+    )
+    track.artists = []
+    for track_artist in track_obj.artists:
+        artist = await parse_artist(tidal_provider=tidal_provider, artist_obj=track_artist)
+        track.artists.append(artist)
+
+    track.metadata.explicit = track_obj.explicit
+    track.metadata.popularity = track_obj.popularity
+    track.metadata.copyright = track_obj.copyright
+    available = track_obj.available
+    track.add_provider_mapping(
+        ProviderMapping(
+            item_id=track_id,
+            provider_domain=tidal_provider.domain,
+            provider_instance=tidal_provider.instance_id,
+            content_type=ContentType.FLAC,
+            bit_rate=1411,
+            url=f"http://www.tidal.com/tracks/{track_id}",
+            available=available,
+        )
+    )
+    return track
+
+
+async def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlist:
+    """Parse tidal playlist object to generic layout."""
+    playlist_id = playlist_obj.id
+    creator_id = playlist_obj.creator.id if playlist_obj.creator else None
+    creator_name = playlist_obj.creator.name if playlist_obj.creator else "Tidal"
+    playlist = Playlist(
+        item_id=playlist_id,
+        provider=tidal_provider.instance_id,
+        name=playlist_obj.name,
+        owner=creator_name,
+    )
+    playlist.add_provider_mapping(
+        ProviderMapping(
+            item_id=playlist_id,
+            provider_domain=tidal_provider.domain,
+            provider_instance=tidal_provider.instance_id,
+            url=f"http://www.tidal.com/playlists/{playlist_id}",
+        )
+    )
+    is_editable = bool(creator_id and creator_id == tidal_provider._tidal_user_id)
+    playlist.is_editable = is_editable
+    image_url = None
+    try:
+        image_url = playlist_obj.image(1080)
+    except Exception:
+        tidal_provider.logger.info(f"Playlist {playlist_id} has no available picture")
+    playlist.metadata.images = [
+        MediaItemImage(
+            ImageType.THUMB,
+            image_url,
+        )
+    ]
+    playlist.metadata.checksum = str(playlist_obj.last_updated)
+    return playlist

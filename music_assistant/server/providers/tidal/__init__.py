@@ -1,4 +1,4 @@
-"""Tidal musicprovider support for MusicAssistant."""
+"""Tidal music provider support for MusicAssistant."""
 
 from __future__ import annotations
 
@@ -8,31 +8,16 @@ from datetime import datetime, timedelta
 from tempfile import gettempdir
 from typing import TYPE_CHECKING
 
-from tidalapi import Album as TidalAlbum
-from tidalapi import Artist as TidalArtist
-from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Session as TidalSession
-from tidalapi import Track as TidalTrack
 
-from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry
-from music_assistant.common.models.enums import (
-    AlbumType,
-    ConfigEntryType,
-    MediaType,
-    ProviderFeature,
-)
+from music_assistant.common.models.enums import ConfigEntryType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
     ContentType,
-    ImageType,
-    ItemMapping,
-    MediaItemImage,
     Playlist,
-    ProviderMapping,
     SearchResults,
     StreamDetails,
     Track,
@@ -63,6 +48,10 @@ from .helpers import (
     get_track,
     get_track_url,
     library_items_add_remove,
+    parse_album,
+    parse_artist,
+    parse_playlist,
+    parse_track,
     search,
     tidal_session,
 )
@@ -190,48 +179,42 @@ class TidalProvider(MusicProvider):
         parsed_results = SearchResults()
         if results["artists"]:
             for artist in results["artists"]:
-                parsed_results.artists.append(await self._parse_artist(artist))
+                parsed_results.artists.append(await parse_artist(artist))
         if results["albums"]:
             for album in results["albums"]:
-                parsed_results.albums.append(await self._parse_album(album))
+                parsed_results.albums.append(await parse_album(album))
         if results["playlists"]:
             for playlist in results["playlists"]:
-                parsed_results.playlists.append(await self._parse_playlist(playlist))
+                parsed_results.playlists.append(await parse_playlist(playlist))
         if results["tracks"]:
             for track in results["tracks"]:
-                parsed_results.tracks.append(await self._parse_track(track))
+                parsed_results.tracks.append(await parse_track(track))
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
         artists_obj = await get_library_artists(self._tidal_session, self._tidal_user_id)
         for artist in artists_obj:
-            yield await self._parse_artist(artist)
+            yield await parse_artist(tidal_provider=self, artist_obj=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Tidal."""
         albums_obj = await get_library_albums(self._tidal_session, self._tidal_user_id)
         for album in albums_obj:
-            yield await self._parse_album(album)
+            yield await parse_album(tidal_provider=self, album_obj=album)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Tidal."""
         tracks_obj = await get_library_tracks(self._tidal_session, self._tidal_user_id)
         for track in tracks_obj:
             if track.available:
-                yield await self._parse_track(track)
+                yield await parse_track(tidal_provider=self, track_obj=track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         playlists_obj = await get_library_playlists(self._tidal_session, self._tidal_user_id)
         for playlist in playlists_obj:
-            yield await self._parse_playlist(playlist)
-
-    async def get_album(self, prov_album_id) -> Album:
-        """Get full album details by id."""
-        if album_obj := await get_album(self._tidal_session, prov_album_id):
-            return await self._parse_album(album_obj)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+            yield await parse_playlist(tidal_provider=self, playlist_obj=playlist)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -239,23 +222,17 @@ class TidalProvider(MusicProvider):
         tracks = await get_album_tracks(self._tidal_session, prov_album_id)
         for index, track_obj in enumerate(tracks, 1):
             if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
+                track = await parse_track(tidal_provider=self, track_obj=track_obj)
                 track.position = index
                 result.append(track)
         return result
-
-    async def get_artist(self, prov_artist_id) -> Artist:
-        """Get full artist details by id."""
-        if artist_obj := await get_artist(self._tidal_session, prov_artist_id):
-            return await self._parse_artist(artist_obj)
-        raise MediaNotFoundError(f"Item {artist_obj} not found")
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
         result = []
         albums = await get_artist_albums(self._tidal_session, prov_artist_id)
         for album_obj in albums:
-            album = await self._parse_album(album_obj=album_obj)
+            album = await parse_album(tidal_provider=self, album_obj=album_obj)
             result.append(album)
         return result
 
@@ -265,29 +242,17 @@ class TidalProvider(MusicProvider):
         tracks = await get_artist_toptracks(self._tidal_session, prov_artist_id)
         for index, track_obj in enumerate(tracks, 1):
             if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
+                track = await parse_track(tidal_provider=self, track_obj=track_obj)
                 track.position = index
                 result.append(track)
         return result
-
-    async def get_track(self, prov_track_id) -> Track:
-        """Get full track details by id."""
-        if track_obj := await get_track(self._tidal_session, prov_track_id):
-            return await self._parse_track(track_obj)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
-
-    async def get_playlist(self, prov_playlist_id) -> Playlist:
-        """Get full playlist details by id."""
-        if playlist_obj := await get_playlist(self._tidal_session, prov_playlist_id):
-            return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         tracks = await get_playlist_tracks(self._tidal_session, prov_playlist_id=prov_playlist_id)
         for index, track_obj in enumerate(tracks):
             if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
+                track = await parse_track(tidal_provider=self, track_obj=track_obj)
                 if track:
                     track.position = index + 1
                     yield track
@@ -298,7 +263,7 @@ class TidalProvider(MusicProvider):
         tracks = []
         for track_obj in similar_tracks_obj:
             if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
+                track = await parse_track(tidal_provider=self, track_obj=track_obj)
                 if track:
                     tracks.append(track)
         return tracks
@@ -338,7 +303,7 @@ class TidalProvider(MusicProvider):
     async def create_playlist(self, name: str) -> Playlist:  # type: ignore[return]
         """Create a new playlist on provider with given name."""
         playlist_obj = await create_playlist(self._tidal_session, self._tidal_user_id, name)
-        playlist = await self._parse_playlist(playlist_obj)
+        playlist = await parse_playlist(tidal_provider=self, playlist_obj=playlist_obj)
         return await self.mass.music.playlists.add_db_item(playlist)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -358,157 +323,42 @@ class TidalProvider(MusicProvider):
             direct=url,
         )
 
-    async def _parse_artist(self, artist_obj: TidalArtist) -> Artist:
-        """Parse tidal artist object to generic layout."""
-        artist_id = artist_obj.id
-        artist = Artist(item_id=artist_id, provider=self.instance_id, name=artist_obj.name)
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"http://www.tidal.com/artist/{artist_id}",
+    async def get_artist(self, prov_artist_id: str) -> Artist:
+        try:
+            artist = parse_artist(
+                tidal_provider=self,
+                artist_obj=await get_artist(self._tidal_session, prov_artist_id),
             )
-        )
-        image_url = None
-        if artist_obj.name != "Various Artists":
-            try:
-                image_url = artist_obj.image(750)
-            except Exception:
-                self.logger.info(f"Artist {artist_id} has no available picture")
-        artist.metadata.images = [
-            MediaItemImage(
-                ImageType.THUMB,
-                image_url,
-            )
-        ]
+        except MediaNotFoundError as err:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
         return artist
 
-    async def _parse_album(self, album_obj: TidalAlbum) -> Album:
-        """Parse tidal album object to generic layout."""
-        name = album_obj.name
-        version = album_obj.version if album_obj.version is not None else None
-        album_id = album_obj.id
-        album = Album(item_id=album_id, provider=self.instance_id, name=name, version=version)
-        for artist_obj in album_obj.artists:
-            album.artists.append(await self._parse_artist(artist_obj))
-        if album_obj.type == "ALBUM":
-            album.album_type = AlbumType.ALBUM
-        elif album_obj.type == "COMPILATION":
-            album.album_type = AlbumType.COMPILATION
-        elif album_obj.type == "EP":
-            album.album_type = AlbumType.EP
-        elif album_obj.type == "SINGLE":
-            album.album_type = AlbumType.SINGLE
-        image_url = None
+    async def get_album(self, prov_album_id: str) -> Album:
         try:
-            image_url = album_obj.image(1280)
-        except Exception:
-            self.logger.info(f"Album {album_id} has no available picture")
-        album.metadata.images = [
-            MediaItemImage(
-                ImageType.THUMB,
-                image_url,
+            album = parse_album(
+                tidal_provider=self, album_obj=await get_album(self._tidal_session, prov_album_id)
             )
-        ]
-        album.upc = album_obj.universal_product_number
-        album.year = int(album_obj.year)
-        album.metadata.copyright = album_obj.copyright
-        album.metadata.explicit = album_obj.explicit
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=album_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
-                bit_rate=1411,
-                url=f"http://www.tidal.com/album/{album_id}",
-            )
-        )
+        except MediaNotFoundError as err:
+            raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
         return album
 
-    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type,
-            key,
-            self.instance_id,
-            name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
-        )
-
-    async def _parse_track(self, track_obj: TidalTrack) -> Track:
-        """Parse tidal track object to generic layout."""
-        version = track_obj.version if track_obj.version is not None else None
-        track_id = str(track_obj.id)
-        track = Track(
-            item_id=track_id,
-            provider=self.instance_id,
-            name=track_obj.name,
-            version=version,
-            duration=track_obj.duration,
-            disc_number=track_obj.volume_num,
-            track_number=track_obj.track_num,
-        )
-        track.isrc.add(track_obj.isrc)
-        track.album = self._get_item_mapping(
-            MediaType.ALBUM, track_obj.album.id, track_obj.album.name
-        )
-        track.artists = []
-        for track_artist in track_obj.artists:
-            artist = await self._parse_artist(track_artist)
-            track.artists.append(artist)
-
-        track.metadata.explicit = track_obj.explicit
-        track.metadata.popularity = track_obj.popularity
-        track.metadata.copyright = track_obj.copyright
-        available = track_obj.available
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=track_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
-                bit_rate=1411,
-                url=f"http://www.tidal.com/tracks/{track_id}",
-                available=available,
+    async def get_track(self, prov_track_id: str) -> Track:
+        try:
+            track = parse_track(
+                tidal_provider=self, track_obj=await get_track(self._tidal_session, prov_track_id)
             )
-        )
+        except MediaNotFoundError as err:
+            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
         return track
 
-    async def _parse_playlist(self, playlist_obj: TidalPlaylist) -> Playlist:
-        """Parse tidal playlist object to generic layout."""
-        playlist_id = playlist_obj.id
-        creator_id = playlist_obj.creator.id if playlist_obj.creator else None
-        creator_name = playlist_obj.creator.name if playlist_obj.creator else "Tidal"
-        playlist = Playlist(
-            item_id=playlist_id,
-            provider=self.instance_id,
-            name=playlist_obj.name,
-            owner=creator_name,
-        )
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"http://www.tidal.com/playlists/{playlist_id}",
-            )
-        )
-        is_editable = bool(creator_id and creator_id == self._tidal_user_id)
-        playlist.is_editable = is_editable
-        image_url = None
+    async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         try:
-            image_url = playlist_obj.image(1080)
-        except Exception:
-            self.logger.info(f"Playlist {playlist_id} has no available picture")
-        playlist.metadata.images = [
-            MediaItemImage(
-                ImageType.THUMB,
-                image_url,
+            playlist = parse_playlist(
+                tidal_provider=self,
+                playlist_obj=await get_playlist(self._tidal_session, prov_playlist_id),
             )
-        ]
-        playlist.metadata.checksum = str(playlist_obj.last_updated)
+        except MediaNotFoundError as err:
+            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
         return playlist
 
     async def login(self) -> TidalSession:
