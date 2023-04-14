@@ -58,7 +58,6 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
-CACHE_DIR = gettempdir()
 TOKEN_TYPE = "Bearer"
 CONF_ACTION_AUTH = "auth"
 CONF_AUTH_TOKEN = "auth_token"
@@ -145,12 +144,9 @@ class TidalProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-        self._cache_dir = CACHE_DIR
         self._tidal_session = TIDAL_SESSION
         self._tidal_user_id = self.config.get_value(CONF_USER_ID)
-        # try to get a token, raise if that fails
-        self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
-        # try login which will raise if it fails
+        # check token which will raise if it fails
         await self.check_refresh()
 
     @property
