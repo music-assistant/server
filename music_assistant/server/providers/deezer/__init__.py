@@ -6,7 +6,11 @@ from collections.abc import AsyncGenerator
 import deezer
 from asyncio_throttle.throttler import Throttler
 
-from music_assistant.common.models.config_entries import ConfigEntry, ProviderConfig
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigValueType,
+    ProviderConfig,
+)
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -24,6 +28,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.provider import ProviderManifest
+from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
@@ -34,6 +39,7 @@ from .helpers import (
     add_user_albums,
     add_user_artists,
     add_user_tracks,
+    get_access_token,
     get_album,
     get_albums_by_artist,
     get_artist,
@@ -56,7 +62,6 @@ from .helpers import (
     search_and_parse_artist,
     search_and_parse_playlist,
     search_and_parse_track,
-    update_access_token,
 )
 
 SUPPORTED_FEATURES = (
@@ -75,7 +80,14 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_TRACKS_EDIT,
 )
 
-CONF_AUTHORIZATION_CODE = "authorization_code"
+CONF_ACCESS_TOKEN = "access_token"
+CONF_ACTION_AUTH = "auth"
+DEEZER_AUTH_URL = "https://connect.deezer.com/oauth/auth.php"
+RELAY_URL = "https://deezer.oauth.jonathanbangert.com/"
+DEEZER_PERMS = "basic_access,email,offline_access,manage_library,\
+manage_community,delete_library,listening_history"
+DEEZER_APP_ID = "596944"
+DEEZER_APP_SECRET = "6d15ff599e70a706db68ec83698bd885"
 
 
 async def setup(
@@ -88,16 +100,34 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001 # pylint: disable=W0613
+    mass: MusicAssistant,
+    instance_id: str | None = None,  # noqa: ARG001 pylint: disable=W0613
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
     """Return Config entries to setup this provider."""
+    # If the action is to launch oauth flow
+    if action == CONF_ACTION_AUTH:
+        # We use the AuthenticationHelper to authenticate
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            callback_url = auth_helper.callback_url
+            url = f"{DEEZER_AUTH_URL}?app_id={DEEZER_APP_ID}&redirect_uri={RELAY_URL}\
+&perms={DEEZER_PERMS}&state={callback_url}"
+            code = (await auth_helper.authenticate(url))["code"]
+            values[CONF_ACCESS_TOKEN] = await get_access_token(
+                mass, DEEZER_APP_ID, DEEZER_APP_SECRET, code
+            )
+
     return (
         ConfigEntry(
-            key=CONF_AUTHORIZATION_CODE,
-            type=ConfigEntryType.STRING,
-            label="Authorization code",
+            key=CONF_ACCESS_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Access token",
             required=True,
-            description="The auth code u got from deezer",
+            action=CONF_ACTION_AUTH,
+            description="You need to authenticate on Deezer.",
+            action_label="Authenticate with Deezer",
+            value=values.get(CONF_ACCESS_TOKEN) if values else None,
         ),
     )
 
@@ -111,29 +141,16 @@ class DeezerProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
-        auth_token = f"custom_data/{self.instance_id}/auth"
         self._throttler = Throttler(rate_limit=4, period=1)
         self.creds = Credential(
-            app_id=587964,
-            app_secret="3725582e5aeec225901e4eb03684dbfb",
+            app_id=DEEZER_APP_ID,
+            app_secret=DEEZER_APP_SECRET,
+            access_token=self.config.get_value(CONF_ACCESS_TOKEN),
         )
-        if auth_encrypted := self.mass.config.get(auth_token):
-            auth = self.mass.config.decrypt_string(auth_encrypted)
-            self.creds.access_token = auth
-        else:
-            code = str(self.config.get_value(CONF_AUTHORIZATION_CODE))
-            # Reset auth code in config since its one time
-            self.mass.config.set(f"{self.instance_id}{CONF_AUTHORIZATION_CODE}", "")
-            self.creds = await update_access_token(mass=self, creds=self.creds, code=code)
-            self.mass.config.set(
-                key=auth_token, value=self.mass.config.encrypt_string(self.creds.access_token)
-            )
         try:
             self.client = await get_deezer_client(creds=self.creds)
         except Exception as error:
             raise LoginFailed("Invalid login credentials") from error
-        # Reset auth code since its one time
-        self.mass.config.set(f"{self.instance_id}{CONF_AUTHORIZATION_CODE}", "")
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:

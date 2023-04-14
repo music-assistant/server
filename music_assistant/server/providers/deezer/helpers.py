@@ -30,10 +30,11 @@ from music_assistant.common.models.media_items import (
 class Credential:
     """Class for storing credentials."""
 
-    def __init__(self, app_id: int, app_secret: str):
+    def __init__(self, app_id: int, app_secret: str, access_token: str):
         """Set the correct things."""
         self.app_id = app_id
         self.app_secret = app_secret
+        self.access_token = access_token
 
     app_id: int
     app_secret: str
@@ -247,33 +248,31 @@ async def search_playlist(
     return await asyncio.to_thread(_search)
 
 
-async def update_access_token(mass, creds: Credential, code) -> Credential:
+async def get_access_token(mass, app_id, app_secret, code) -> Credential:
     """Update the access_token."""
     response = await _post_http(
         mass=mass,
         url="https://connect.deezer.com/oauth/access_token.php",
         data={
             "code": code,
-            "app_id": creds.app_id,
-            "secret": creds.app_secret,
+            "app_id": app_id,
+            "secret": app_secret,
         },
         params={
             "code": code,
-            "app_id": creds.app_id,
-            "secret": creds.app_secret,
+            "app_id": app_id,
+            "secret": app_secret,
         },
         headers=None,
     )
     try:
-        print(response.split("=")[1].split("&")[0])
-        creds.access_token = response.split("=")[1].split("&")[0]
+        return response.split("=")[1].split("&")[0]
     except Exception as error:
         raise LoginFailed("Invalid auth code") from error
-    return creds
 
 
 async def _post_http(mass, url, data, params=None, headers=None) -> str:
-    async with mass.mass.http_session.post(
+    async with mass.http_session.post(
         url, headers=headers, params=params, json=data, ssl=False
     ) as response:
         if response.status != 200:
