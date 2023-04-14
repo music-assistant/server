@@ -336,7 +336,6 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
                 item_id=str(playlist.id),
                 provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
-                content_type=ContentType.MP3,
             )
         },
         metadata=await parse_metadata_playlist(playlist=playlist),
