@@ -86,13 +86,17 @@ class ConfigEntry(DataClassDictMixin):
     hidden: bool = False
     # advanced: this is an advanced setting (frontend hides it in some corner)
     advanced: bool = False
+    # action: (configentry)action that is needed to get the value for this entry
+    action: str | None = None
+    # action_label: default label for the action when no translation for the action is present
+    action_label: str | None = None
     # value: set by the config manager/flow (or in rare cases by the provider itself)
     value: ConfigValueType = None
 
     def parse_value(
         self,
         value: ConfigValueType,
-        allow_none: bool = False,
+        allow_none: bool = True,
     ) -> ConfigValueType:
         """Parse value from the config entry details and plain value."""
         expected_type = ConfigEntryTypeMap.get(self.type, NoneType)
@@ -158,7 +162,7 @@ class Config(DataClassDictMixin):
         for entry in config_entries:
             # create a copy of the entry
             conf.values[entry.key] = ConfigEntry.from_dict(entry.to_dict())
-            conf.values[entry.key].parse_value(raw["values"].get(entry.key))
+            conf.values[entry.key].parse_value(raw["values"].get(entry.key), allow_none=True)
         return conf
 
     def to_raw(self) -> dict[str, Any]:

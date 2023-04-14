@@ -239,6 +239,14 @@ class ConfigController:
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
 
+    async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
+        """Remove/reset single Provider config value."""
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}/values/{key}"
+        existing = self.get(conf_key)
+        if not existing:
+            return
+        self.remove(conf_key)
+
     @api_command("config/providers/reload")
     async def reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
@@ -460,7 +468,7 @@ class ConfigController:
         available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
         if not changed_keys and (config.enabled == available):
             # no changes
-            return
+            return config
         # try to load the provider first to catch errors before we save it.
         if config.enabled:
             await self.mass.load_provider(config)
