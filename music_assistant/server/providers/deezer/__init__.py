@@ -86,7 +86,7 @@ DEEZER_AUTH_URL = "https://connect.deezer.com/oauth/auth.php"
 RELAY_URL = "https://deezer.oauth.jonathanbangert.com/"
 DEEZER_PERMS = "basic_access,email,offline_access,manage_library,\
 manage_community,delete_library,listening_history"
-DEEZER_APP_ID = "596944"
+DEEZER_APP_ID = 596944
 DEEZER_APP_SECRET = "6d15ff599e70a706db68ec83698bd885"
 
 
@@ -109,12 +109,12 @@ async def get_config_entries(
     # If the action is to launch oauth flow
     if action == CONF_ACTION_AUTH:
         # We use the AuthenticationHelper to authenticate
-        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:  # type: ignore
             callback_url = auth_helper.callback_url
             url = f"{DEEZER_AUTH_URL}?app_id={DEEZER_APP_ID}&redirect_uri={RELAY_URL}\
 &perms={DEEZER_PERMS}&state={callback_url}"
             code = (await auth_helper.authenticate(url))["code"]
-            values[CONF_ACCESS_TOKEN] = await get_access_token(
+            values[CONF_ACCESS_TOKEN] = await get_access_token(  # type: ignore
                 mass, DEEZER_APP_ID, DEEZER_APP_SECRET, code
             )
 
@@ -145,7 +145,7 @@ class DeezerProvider(MusicProvider):
         self.creds = Credential(
             app_id=DEEZER_APP_ID,
             app_secret=DEEZER_APP_SECRET,
-            access_token=self.config.get_value(CONF_ACCESS_TOKEN),
+            access_token=self.config.get_value(CONF_ACCESS_TOKEN),  # type: ignore
         )
         try:
             self.client = await get_deezer_client(creds=self.creds)
