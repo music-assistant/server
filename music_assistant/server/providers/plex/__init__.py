@@ -1,8 +1,11 @@
 """Plex musicprovider support for MusicAssistant."""
+from __future__ import annotations
+
 import logging
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator, Callable, Coroutine
 
+import plexapi.exceptions
 from aiohttp import ClientTimeout
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
@@ -12,10 +15,15 @@ from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.media import AudioStream as PlexAudioStream
 from plexapi.media import Media as PlexMedia
 from plexapi.media import MediaPart as PlexMediaPart
-from plexapi.myplex import MyPlexAccount
+from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.server import PlexServer
 
-from music_assistant.common.models.config_entries import ConfigEntry, ProviderConfig
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+    ProviderConfig,
+)
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -38,13 +46,17 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.server import MusicAssistant
+from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
+from music_assistant.server.providers.plex.helpers import get_libraries
 
+CONF_ACTION_AUTH = "auth"
+CONF_ACTION_LIBRARY = "library"
 CONF_AUTH_TOKEN = "token"
-CONF_SERVER_NAME = "server"
-CONF_LIBRARY_NAME = "library"
+CONF_LIBRARY_ID = "library_id"
+
 FAKE_ARTIST_PREFIX = "_fake://"
 
 
@@ -61,32 +73,70 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # config flow auth action/step (authenticate button clicked)
+    if action == CONF_ACTION_AUTH:
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
+            auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
+            await auth_helper.authenticate(auth_url)
+            if not plex_auth.checkLogin():
+                raise LoginFailed("Authentication to MyPlex failed")
+            # set the retrieved token on the values object to pass along
+            values[CONF_AUTH_TOKEN] = plex_auth.token
+
+    # config flow auth action/step to pick the library to use
+    # because this call is very slow, we only show/calculate the dropdown if we do
+    # not yet have this info or we/user invalidated it.
+    conf_libraries = ConfigEntry(
+        key=CONF_LIBRARY_ID,
+        type=ConfigEntryType.STRING,
+        label="Library",
+        required=True,
+        description="The library to connect to (e.g. Music)",
+        depends_on=CONF_AUTH_TOKEN,
+        action=CONF_ACTION_LIBRARY,
+        action_label="Select Plex Music Library",
+    )
+    if action in (CONF_ACTION_LIBRARY, CONF_ACTION_AUTH):
+        token = mass.config.decrypt_string(values.get(CONF_AUTH_TOKEN))
+        if not (libraries := await get_libraries(mass, token)):
+            raise LoginFailed("Unable to retrieve Servers and/or Music Libraries")
+        conf_libraries.options = tuple(
+            # use the same value for both the value and the title
+            # until we find out what plex uses as stable identifiers
+            ConfigValueOption(
+                title=x,
+                value=x,
+            )
+            for x in libraries
+        )
+        # select first library as (default) value
+        conf_libraries.default_value = libraries[0]
+        conf_libraries.value = libraries[0]
+    # return the collected config entries
     return (
-        ConfigEntry(
-            key=CONF_SERVER_NAME,
-            type=ConfigEntryType.STRING,
-            label="Server",
-            required=True,
-            description="The name of the server (as shown in the interface)",
-        ),
-        ConfigEntry(
-            key=CONF_LIBRARY_NAME,
-            type=ConfigEntryType.STRING,
-            label="Library",
-            required=True,
-            description="The name of the library to connect to (e.g. Music)",
-        ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Token",
-            required=True,
-            description="A token to connect to your plex.tv account.",
-            help_link="https://support.plex.tv/articles/204059436-finding-an-authentication-token-x-plex-token/",
+            label="Authentication token for MyPlex.tv",
+            description="You need to link Music Assistant to your MyPlex account.",
+            action=CONF_ACTION_AUTH,
+            action_label="Authenticate on MyPlex.tv",
+            value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
+        conf_libraries,
     )
 
 
@@ -100,15 +150,21 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence urllib logger
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
+        server_name, library_name = self.config.get_value(CONF_LIBRARY_ID).split(" / ", 1)
 
-        def connect():
-            plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
-            return plex_account.resource(self.config.get_value(CONF_SERVER_NAME)).connect(None, 10)
+        def connect() -> PlexServer:
+            try:
+                plex_account = MyPlexAccount(token=self.config.get_value(CONF_AUTH_TOKEN))
+            except plexapi.exceptions.BadRequest as err:
+                if "Invalid token" in str(err):
+                    # token invalid, invaidate the config
+                    self.mass.config.remove_provider_config_value(self.instance_id, CONF_AUTH_TOKEN)
+                    raise LoginFailed("Authentication failed")
+                raise LoginFailed() from err
+            return plex_account.resource(server_name).connect(None, 10)
 
         self._plex_server = await self._run_async(connect)
-        self._plex_library = await self._run_async(
-            self._plex_server.library.section, self.config.get_value(CONF_LIBRARY_NAME)
-        )
+        self._plex_library = await self._run_async(self._plex_server.library.section, library_name)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
