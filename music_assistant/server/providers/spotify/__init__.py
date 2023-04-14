@@ -16,7 +16,7 @@ import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -74,9 +74,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return (
         ConfigEntry(
             key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
@@ -218,18 +228,21 @@ class SpotifyProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        album_obj = await self._get_data(f"albums/{prov_album_id}")
-        return await self._parse_album(album_obj) if album_obj else None
+        if album_obj := await self._get_data(f"albums/{prov_album_id}"):
+            return await self._parse_album(album_obj)
+        raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        track_obj = await self._get_data(f"tracks/{prov_track_id}")
-        return await self._parse_track(track_obj) if track_obj else None
+        if track_obj := await self._get_data(f"tracks/{prov_track_id}"):
+            return await self._parse_track(track_obj)
+        raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
-        return await self._parse_playlist(playlist_obj) if playlist_obj else None
+        if playlist_obj := await self._get_data(f"playlists/{prov_playlist_id}"):
+            return await self._parse_playlist(playlist_obj)
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_album_tracks(self, prov_album_id) -> list[Track]:
         """Get all album tracks for given album id."""
@@ -239,10 +252,9 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        count = 0
-        result = []
+        count = 1
         for item in await self._get_all_items(
             f"playlists/{prov_playlist_id}/tracks",
         ):
@@ -251,9 +263,8 @@ class SpotifyProvider(MusicProvider):
             track = await self._parse_track(item["track"])
             # use count as position
             track.position = count
-            result.append(track)
+            yield track
             count += 1
-        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
@@ -319,7 +330,7 @@ class SpotifyProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []
-        for track in await self.get_playlist_tracks(prov_playlist_id):
+        async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
                 track_uris.append({"uri": f"spotify:track:{track.item_id}"})
             if len(track_uris) == positions_to_remove:
@@ -538,9 +549,11 @@ class SpotifyProvider(MusicProvider):
             try:
                 retries += 1
                 if not tokeninfo:
-                    tokeninfo = await asyncio.wait_for(self._get_token(), 5)
+                    async with asyncio.timeout(5):
+                        tokeninfo = await self._get_token()
                 if tokeninfo and not userinfo:
-                    userinfo = await asyncio.wait_for(self._get_data("me", tokeninfo=tokeninfo), 5)
+                    async with asyncio.timeout(5):
+                        userinfo = await self._get_data("me", tokeninfo=tokeninfo)
                 if tokeninfo and userinfo:
                     # we have all info we need!
                     break
@@ -672,7 +685,7 @@ class SpotifyProvider(MusicProvider):
             time_start = time.time()
             try:
                 async with self.mass.http_session.get(
-                    url, headers=headers, params=kwargs, verify_ssl=False, timeout=120
+                    url, headers=headers, params=kwargs, ssl=False, timeout=120
                 ) as response:
                     result = await response.json()
                     if "error" in result or ("status" in result and "error" in result["status"]):
@@ -700,7 +713,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.delete(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 
@@ -712,7 +725,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.put(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 
@@ -724,7 +737,7 @@ class SpotifyProvider(MusicProvider):
             return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.post(
-            url, headers=headers, params=kwargs, json=data, verify_ssl=False
+            url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
             return await response.text()
 

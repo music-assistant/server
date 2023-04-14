@@ -47,10 +47,10 @@ class Player(DataClassDictMixin):
     #   this will return the id's of players synced to this player.
     group_childs: list[str] = field(default_factory=list)
 
-    # active_queue: return player_id of the active queue for this player
+    # active_source: return player_id of the active queue for this player
     # if the player is grouped and a group is active, this will be set to the group's player_id
     # otherwise it will be set to the own player_id
-    active_queue: str = ""
+    active_source: str = ""
 
     # can_sync_with: return tuple of player_ids that can be synced to/with this player
     # usually this is just a list of all player_ids within the playerprovider

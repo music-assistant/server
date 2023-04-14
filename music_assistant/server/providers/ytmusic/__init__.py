@@ -11,7 +11,9 @@ from urllib.parse import unquote
 import pytube
 import ytmusicapi
 
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.helpers.uri import create_uri
+from music_assistant.common.helpers.util import create_sort_name
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
@@ -25,6 +27,7 @@ from music_assistant.common.models.media_items import (
     Artist,
     ContentType,
     ImageType,
+    ItemMapping,
     MediaItemImage,
     MediaType,
     Playlist,
@@ -65,6 +68,7 @@ CONF_COOKIE = "cookie"
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
+VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -92,9 +96,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return (
         ConfigEntry(
             key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
@@ -209,12 +223,9 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        album_obj = await get_album(prov_album_id=prov_album_id)
-        return (
-            await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
-            if album_obj
-            else None
-        )
+        if album_obj := await get_album(prov_album_id=prov_album_id):
+            return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
+        raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -223,7 +234,10 @@ class YoutubeMusicProvider(MusicProvider):
             return []
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
-            track = await self._parse_track(track_obj=track_obj)
+            try:
+                track = await self._parse_track(track_obj=track_obj)
+            except InvalidDataError:
+                continue
             track.disc_number = 0
             track.track_number = idx
             tracks.append(track)
@@ -231,24 +245,27 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        artist_obj = await get_artist(prov_artist_id=prov_artist_id)
-        return await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+        if artist_obj := await get_artist(prov_artist_id=prov_artist_id):
+            return await self._parse_artist(artist_obj=artist_obj)
+        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        track_obj = await get_track(prov_track_id=prov_track_id)
-        return await self._parse_track(track_obj)
+        if track_obj := await get_track(prov_track_id=prov_track_id):
+            return await self._parse_track(track_obj)
+        raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = await get_playlist(
+        if playlist_obj := await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers,
             username=self.config.get_value(CONF_USERNAME),
-        )
-        return await self._parse_playlist(playlist_obj)
+        ):
+            return await self._parse_playlist(playlist_obj)
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
@@ -256,8 +273,7 @@ class YoutubeMusicProvider(MusicProvider):
             username=self.config.get_value(CONF_USERNAME),
         )
         if "tracks" not in playlist_obj:
-            return []
-        tracks = []
+            return
         for index, track in enumerate(playlist_obj["tracks"]):
             if track["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
@@ -265,14 +281,13 @@ class YoutubeMusicProvider(MusicProvider):
                 try:
                     track = await self._parse_track(track)
                     if track:
-                        track.position = index
-                        tracks.append(track)
+                        track.position = index + 1
+                        yield track
                 except InvalidDataError:
                     track = await self.get_track(track["videoId"])
                     if track:
-                        track.position = index
-                        tracks.append(track)
-        return tracks
+                        track.position = index + 1
+                        yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -293,7 +308,9 @@ class YoutubeMusicProvider(MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
-            playlist_tracks = await self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
+            playlist_tracks = [
+                x async for x in self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
+            ]
             return playlist_tracks[:25]
         return []
 
@@ -454,7 +471,7 @@ class YoutubeMusicProvider(MusicProvider):
             url,
             headers=self._headers,
             json=data,
-            verify_ssl=False,
+            ssl=False,
             cookies=self._cookies,
         ) as response:
             return await response.json()
@@ -512,12 +529,11 @@ class YoutubeMusicProvider(MusicProvider):
             album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
             album.artists = [
-                await self._parse_artist(artist)
+                self._get_artist_item_mapping(artist)
                 for artist in album_obj["artists"]
-                # artist object may be missing an id
-                # in that case its either a performer (like the composer) OR this
-                # is a Various artists compilation album...
-                if (artist.get("id") or artist["name"] == "Various Artists")
+                if artist.get("id")
+                or artist.get("channelId")
+                or artist.get("name") == "Various Artists"
             ]
         if "type" in album_obj:
             if album_obj["type"] == "Single":
@@ -546,7 +562,7 @@ class YoutubeMusicProvider(MusicProvider):
         elif "id" in artist_obj and artist_obj["id"]:
             artist_id = artist_obj["id"]
         elif artist_obj["name"] == "Various Artists":
-            artist_id = "UCUTXlgdcKU5vfzFqHOWIvkA"
+            artist_id = VARIOUS_ARTISTS_YTM_ID
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
         artist = Artist(item_id=artist_id, name=artist_obj["name"], provider=self.domain)
@@ -598,10 +614,12 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_track(self, track_obj: dict) -> Track:
         """Parse a YT Track response to a Track model object."""
+        if not track_obj.get("videoId"):
+            raise InvalidDataError("Track is missing videoId")
         track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
         if "artists" in track_obj:
             track.artists = [
-                await self._parse_artist(artist)
+                self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
                 if artist.get("id")
                 or artist.get("channelId")
@@ -614,13 +632,11 @@ class YoutubeMusicProvider(MusicProvider):
             track.metadata.images = await self._parse_thumbnails(track_obj["thumbnails"])
         if (
             track_obj.get("album")
-            and track_obj.get("artists")
             and isinstance(track_obj.get("album"), dict)
             and track_obj["album"].get("id")
         ):
             album = track_obj["album"]
-            album["artists"] = track_obj["artists"]
-            track.album = await self._parse_album(album, album["id"])
+            track.album = self._get_item_mapping(MediaType.ALBUM, album["id"], album["name"])
         if "isExplicit" in track_obj:
             track.metadata.explicit = track_obj["isExplicit"]
         if "duration" in track_obj and str(track_obj["duration"]).isdigit():
@@ -679,7 +695,7 @@ class YoutubeMusicProvider(MusicProvider):
                     )
                 self.logger.debug("Cipher expired. Obtaining new Cipher.")
                 self._cipher = None
-                return self._parse_stream_url(
+                return await self._parse_stream_url(
                     stream_format=stream_format, item_id=item_id, retry=False
                 )
         elif stream_format.get("url"):
@@ -706,6 +722,22 @@ class YoutubeMusicProvider(MusicProvider):
         """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
             return response.status == 200
+
+    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+        return ItemMapping(
+            media_type,
+            key,
+            self.instance_id,
+            name,
+            create_uri(media_type, self.instance_id, key),
+            create_sort_name(self.name),
+        )
+
+    def _get_artist_item_mapping(self, artist_obj: dict) -> ItemMapping:
+        artist_id = artist_obj.get("id") or artist_obj.get("channelId")
+        if not artist_id and artist_obj["name"] == "Various Artists":
+            artist_id = VARIOUS_ARTISTS_YTM_ID
+        return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
 
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:

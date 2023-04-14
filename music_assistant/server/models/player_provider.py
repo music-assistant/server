@@ -4,7 +4,6 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
 
@@ -31,19 +30,6 @@ class PlayerProvider(Provider):
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
-
-    async def create_player_config(self, config: PlayerConfig | None = None) -> PlayerConfig:
-        """Handle CREATE_PLAYER flow for this player provider.
-
-        Allows manually registering/creating a player,
-        for example by manually entering an IP address etc.
-
-        Called by the Config manager without a value to get the PlayerConfig to show in the UI.
-        Called with PlayerConfig value with the submitted values.
-        """
-        # will only be called if the provider has the ADD_PLAYER feature set.
-        if ProviderFeature.CREATE_PLAYER_CONFIG in self.supported_features:
-            raise NotImplementedError
 
     @abstractmethod
     async def cmd_stop(self, player_id: str) -> None:

@@ -155,10 +155,16 @@ class MusicAssistant:
     def get_provider(
         self, provider_instance_or_domain: str, return_unavailable: bool = False
     ) -> ProviderInstanceType | None:
-        """Return provider by instance id (or domain)."""
-        prov = self._providers.get(provider_instance_or_domain)
-        if prov is not None and (return_unavailable or prov.available):
-            return prov
+        """Return provider by instance id or domain."""
+        # lookup by instance_id first
+        if prov := self._providers.get(provider_instance_or_domain):
+            if return_unavailable or prov.available:
+                return prov
+            if prov.is_unique:
+                # no need to lookup other instances because this provider has unique data
+                return None
+            provider_instance_or_domain = prov.domain
+        # fallback to match on domain
         for prov in self._providers.values():
             if prov.domain != provider_instance_or_domain:
                 continue
@@ -175,6 +181,17 @@ class MusicAssistant:
     ) -> None:
         """Signal event to subscribers."""
         if self.closing:
+            return
+        if (
+            event
+            in (
+                EventType.MEDIA_ITEM_ADDED,
+                EventType.MEDIA_ITEM_DELETED,
+                EventType.MEDIA_ITEM_UPDATED,
+            )
+            and self.music.in_progress_syncs
+        ):
+            # ignore media item events while sync is running because it clutters too much
             return
 
         if LOGGER.isEnabledFor(logging.DEBUG) and event != EventType.QUEUE_TIME_UPDATED:
@@ -233,10 +250,10 @@ class MusicAssistant:
             return existing
         if asyncio.iscoroutinefunction(target):
             task = self.loop.create_task(target(*args, **kwargs))
-        elif isinstance(target, asyncio.Future):
-            task = target
         elif asyncio.iscoroutine(target):
             task = self.loop.create_task(target)
+        elif isinstance(target, asyncio.Future):
+            task = target
         else:
             # assume normal callable (non coroutine or awaitable)
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
@@ -259,6 +276,13 @@ class MusicAssistant:
         self._tracked_tasks[task_id] = task
         task.add_done_callback(task_done_callback)
         return task
+
+    def get_task(self, task_id: str) -> asyncio.Task | asyncio.Future:
+        """Get existing scheduled task."""
+        if existing := self._tracked_tasks.get(task_id):
+            # prevent duplicate tasks if task_id is given and already present
+            return existing
+        raise KeyError("Task does not exist")
 
     def register_api_command(
         self,
@@ -310,7 +334,8 @@ class MusicAssistant:
         # try to load the module
         prov_mod = await get_provider_module(domain)
         try:
-            provider = await asyncio.wait_for(prov_mod.setup(self, prov_manifest, conf), 30)
+            async with asyncio.timeout(30):
+                provider = await prov_mod.setup(self, prov_manifest, conf)
         except TimeoutError as err:
             raise SetupFailedError(f"Provider {domain} did not load within 30 seconds") from err
         # if we reach this point, the provider loaded successfully

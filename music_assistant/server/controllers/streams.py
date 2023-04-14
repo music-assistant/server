@@ -94,7 +94,7 @@ class StreamJob:
         self.start()
         self.seen_players.add(player_id)
         try:
-            sub_queue = asyncio.Queue(3)
+            sub_queue = asyncio.Queue(1)
 
             # some checks
             assert player_id not in self.subscribers, "No duplicate subscriptions allowed"
@@ -119,18 +119,25 @@ class StreamJob:
                     break
                 yield chunk
         finally:
-            # some delay here to detect misbehaving (reconnecting) players
-            await asyncio.sleep(2)
             empty_queue(sub_queue)
             self.subscribers.pop(player_id)
+            # some delay here to detect misbehaving (reconnecting) players
             await asyncio.sleep(2)
             # check if this was the last subscriber and we should cancel
             if len(self.subscribers) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
 
-    async def _put_data(self, data: Any, timeout: float = 600) -> None:
+    async def _put_data(self, data: Any, timeout: float = 120) -> None:
         """Put chunk of data to all subscribers."""
         async with asyncio.timeout(timeout):
+            while len(self.subscribers) == 0:
+                # this may happen with misbehaving clients that do
+                # multiple GET requests for the same audio stream.
+                # they receive the first chunk, disconnect and then
+                # directly reconnect again.
+                if not self._audio_task or self.finished:
+                    return
+                await asyncio.sleep(0.1)
             async with asyncio.TaskGroup() as tg:
                 for sub_id in self.subscribers:
                     sub_queue = self.subscribers[sub_id]
@@ -279,12 +286,12 @@ class StreamsController:
         url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 
-    def get_preview_url(self, provider_domain_or_instance_id: str, track_id: str) -> str:
+    def get_preview_url(self, provider_instance_id_or_domain: str, track_id: str) -> str:
         """Return url to short preview sample."""
         enc_track_id = urllib.parse.quote(track_id)
         return (
             f"{self.mass.webserver.base_url}/stream/preview?"
-            f"provider={provider_domain_or_instance_id}&item_id={enc_track_id}"
+            f"provider={provider_instance_id_or_domain}&item_id={enc_track_id}"
         )
 
     async def serve_queue_stream(self, request: web.Request) -> web.Response:
@@ -298,6 +305,7 @@ class StreamsController:
         )
         player_id = request.match_info["player_id"]
         player = self.mass.players.get(player_id)
+        queue = self.mass.players.queues.get_active_queue(player_id)
         if not player:
             raise web.HTTPNotFound(reason=f"Unknown player_id: {player_id}")
         stream_id = request.match_info["stream_id"]
@@ -323,7 +331,7 @@ class StreamsController:
         if output_format.is_pcm() or output_format == ContentType.WAV:
             output_channels = self.mass.config.get_player_config_value(
                 player_id, CONF_OUTPUT_CHANNELS
-            ).value
+            )
             channels = 1 if output_channels != "stereo" else 2
             output_format_str = (
                 f"x-wav;codec=pcm;rate={output_sample_rate};"
@@ -356,7 +364,7 @@ class StreamsController:
         if request.method == "HEAD":
             return resp
 
-        # handler workaround for players that do 2 multiple GET requests
+        # handle workaround for players that do 2 multiple GET requests
         # for the same audio stream (because of the missing duration/length)
         if player_id in self.workaround_players and player_id not in stream_job.seen_players:
             stream_job.seen_players.add(player_id)
@@ -378,6 +386,7 @@ class StreamsController:
                 " please create an issue report on the Music Assistant issue tracker.",
                 player.display_name,
             )
+            self.mass.create_task(self.mass.players.queues.next(player_id))
             raise web.HTTPBadRequest(reason="Stream is already running.")
 
         # all checks passed, start streaming!
@@ -395,9 +404,14 @@ class StreamsController:
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
             # feed stdin with pcm audio chunks from origin
             async def read_audio():
-                async for chunk in stream_job.subscribe(player_id):
-                    await ffmpeg_proc.write(chunk)
-                ffmpeg_proc.write_eof()
+                try:
+                    async for chunk in stream_job.subscribe(player_id):
+                        try:
+                            await ffmpeg_proc.write(chunk)
+                        except BrokenPipeError:
+                            break
+                finally:
+                    ffmpeg_proc.write_eof()
 
             ffmpeg_proc.attach_task(read_audio())
 
@@ -405,46 +419,38 @@ class StreamsController:
             iterator = (
                 ffmpeg_proc.iter_chunked(icy_meta_interval)
                 if enable_icy
-                else ffmpeg_proc.iter_any()
+                else ffmpeg_proc.iter_chunked(128000)
             )
-
-            bytes_streamed = 0
-
             async for chunk in iterator:
                 try:
                     await resp.write(chunk)
-                    bytes_streamed += len(chunk)
-
-                    # DISABLE FOR NOW TO AVOID ISSUES WITH SONOS ICW YOUTUBE MUSIC
-                    # do not allow the player to prebuffer more than 30 seconds
-                    # seconds_streamed = int(bytes_streamed / stream_job.pcm_sample_size)
-                    # if (
-                    #     seconds_streamed > 30
-                    #     and (seconds_streamed - player.corrected_elapsed_time) > 30
-                    # ):
-                    #     await asyncio.sleep(1)
-
-                    if not enable_icy:
-                        continue
-
-                    # if icy metadata is enabled, send the icy metadata after the chunk
-                    item_in_buf = stream_job.queue_item
-                    if item_in_buf and item_in_buf.streamdetails.stream_title:
-                        title = item_in_buf.streamdetails.stream_title
-                    elif item_in_buf and item_in_buf.name:
-                        title = item_in_buf.name
-                    else:
-                        title = "Music Assistant"
-                    metadata = f"StreamTitle='{title}';".encode()
-                    while len(metadata) % 16 != 0:
-                        metadata += b"\x00"
-                    length = len(metadata)
-                    length_b = chr(int(length / 16)).encode()
-                    await resp.write(length_b + metadata)
-
                 except (BrokenPipeError, ConnectionResetError):
-                    # connection lost
+                    # race condition
                     break
+
+                if not enable_icy:
+                    continue
+
+                # if icy metadata is enabled, send the icy metadata after the chunk
+                current_item = self.mass.players.queues.get_item(
+                    queue.queue_id, queue.index_in_buffer
+                )
+                if (
+                    current_item
+                    and current_item.streamdetails
+                    and current_item.streamdetails.stream_title
+                ):
+                    title = current_item.streamdetails.stream_title
+                elif queue and current_item and current_item.name:
+                    title = current_item.name
+                else:
+                    title = "Music Assistant"
+                metadata = f"StreamTitle='{title}';".encode()
+                while len(metadata) % 16 != 0:
+                    metadata += b"\x00"
+                length = len(metadata)
+                length_b = chr(int(length / 16)).encode()
+                await resp.write(length_b + metadata)
 
         return resp
 
@@ -458,6 +464,7 @@ class StreamsController:
         # ruff: noqa: PLR0915
         queue_id = stream_job.queue_item.queue_id
         queue = self.mass.players.queues.get(queue_id)
+        queue_player = self.mass.players.get(queue_id)
         queue_track = None
         last_fadeout_part = b""
 
@@ -527,6 +534,15 @@ class StreamsController:
                 strip_silence_begin=last_fadeout_part != b"",
             ):
                 chunk_num += 1
+
+                # slow down if the player buffers too aggressively
+                seconds_streamed = int(bytes_written / stream_job.pcm_sample_size)
+                if (
+                    seconds_streamed > 10
+                    and queue_player.corrected_elapsed_time > 10
+                    and (seconds_streamed - queue_player.corrected_elapsed_time) > 10
+                ):
+                    await asyncio.sleep(1)
 
                 ####  HANDLE FIRST PART OF TRACK
 
@@ -598,11 +614,11 @@ class StreamsController:
 
     async def serve_preview(self, request: web.Request):
         """Serve short preview sample."""
-        provider_domain_or_instance_id = request.query["provider"]
+        provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
         await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_domain_or_instance_id, item_id):
+        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
             await resp.write(chunk)
         return resp
 
@@ -622,7 +638,7 @@ class StreamsController:
             "ffmpeg",
             "-hide_banner",
             "-loglevel",
-            "quiet",
+            "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
             "-ignore_unknown",
         ]
         # input args
@@ -636,17 +652,25 @@ class StreamsController:
             "-i",
             "-",
         ]
-        # output args
-        output_args = [
-            # output args
-            "-f",
-            output_format.value,
+        input_args += ["-metadata", 'title="Music Assistant"']
+        # select output args
+        if output_format == ContentType.FLAC:
+            output_args = ["-f", "flac", "-compression_level", "3"]
+        elif output_format == ContentType.AAC:
+            output_args = ["-f", "adts", "-c:a", output_format.value, "-b:a", "320k"]
+        elif output_format == ContentType.MP3:
+            output_args = ["-f", "mp3", "-c:a", output_format.value, "-b:a", "320k"]
+        else:
+            output_args = ["-f", output_format.value]
+
+        output_args += [
+            # append channels
             "-ac",
             "1" if conf_channels != "stereo" else "2",
+            # append sample rate
             "-ar",
             str(output_sample_rate),
-            "-compression_level",
-            "0",
+            # output = pipe
             "-",
         ]
         # collect extra and filter args

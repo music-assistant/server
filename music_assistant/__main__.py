@@ -10,6 +10,7 @@ from logging.handlers import TimedRotatingFileHandler
 import coloredlogs
 from aiorun import run
 
+from music_assistant.common.helpers.json import json_loads
 from music_assistant.server import MusicAssistant
 
 
@@ -78,8 +79,19 @@ def main():
     data_dir = args.config
     if not os.path.isdir(data_dir):
         os.makedirs(data_dir)
+
+    # TEMP: override options though hass config file
+    hass_options_file = os.path.join(data_dir, "options.json")
+    if os.path.isfile(hass_options_file):
+        with open(hass_options_file, "rb") as _file:
+            hass_options = json_loads(_file.read())
+    else:
+        hass_options = {}
+
+    log_level = hass_options.get("log_level", args.log_level).upper()
+    dev_mode = bool(os.environ.get("PYTHONDEVMODE", "0"))
+
     # setup logger
-    log_level = args.log_level.upper()
     logger = setup_logger(data_dir, log_level)
     mass = MusicAssistant(data_dir)
 
@@ -89,7 +101,7 @@ def main():
 
     async def start_mass():
         loop = asyncio.get_running_loop()
-        if log_level == "DEBUG":
+        if dev_mode:
             loop.set_debug(True)
         await mass.start()
 
@@ -97,7 +109,7 @@ def main():
         start_mass(),
         use_uvloop=False,
         shutdown_callback=on_shutdown,
-        executor_workers=64,
+        executor_workers=32,
     )
 
 

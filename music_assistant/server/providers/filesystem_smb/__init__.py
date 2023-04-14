@@ -2,28 +2,19 @@
 from __future__ import annotations
 
 import asyncio
-import logging
-import os
-from collections.abc import AsyncGenerator
-from os.path import basename
+import platform
 from typing import TYPE_CHECKING
 
-import smbclient
-from smbclient import path as smbpath
-
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.helpers.util import get_ip_from_host
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
-from music_assistant.server.providers.filesystem_local.base import (
+from music_assistant.server.providers.filesystem_local import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
-    IGNORE_DIRS,
-    FileSystemItem,
-    FileSystemProviderBase,
-)
-from music_assistant.server.providers.filesystem_local.helpers import (
-    get_absolute_path,
-    get_relative_path,
+    LocalFileSystemProvider,
+    exists,
+    makedirs,
 )
 
 if TYPE_CHECKING:
@@ -35,35 +26,51 @@ if TYPE_CHECKING:
 CONF_HOST = "host"
 CONF_SHARE = "share"
 CONF_SUBFOLDER = "subfolder"
+CONF_MOUNT_OPTIONS = "mount_options"
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    # silence logging a bit on smbprotocol
-    logging.getLogger("smbprotocol").setLevel("WARNING")
-    logging.getLogger("smbclient").setLevel("INFO")
+    # check if valid dns name is given for the host
+    server: str = config.get_value(CONF_HOST)
+    if not await get_ip_from_host(server):
+        raise LoginFailed(f"Unable to resolve {server}, make sure the address is resolveable.")
+    # check if share is valid
+    share: str = config.get_value(CONF_SHARE)
+    if not share or "/" in share or "\\" in share:
+        raise LoginFailed("Invalid share name")
     prov = SMBFileSystemProvider(mass, manifest, config)
     await prov.handle_setup()
     return prov
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key="host",
+            key=CONF_HOST,
             type=ConfigEntryType.STRING,
-            label="Remote host",
+            label="Server",
             required=True,
-            description="The (fqdn) hostname of the SMB/CIFS server to connect to."
+            description="The (fqdn) hostname of the SMB/CIFS/DFS server to connect to."
             "For example mynas.local.",
         ),
         ConfigEntry(
-            key="share",
+            key=CONF_SHARE,
             type=ConfigEntryType.STRING,
             label="Share",
             required=True,
@@ -71,7 +78,7 @@ async def get_config_entries(
             "the remote host, For example 'media'.",
         ),
         ConfigEntry(
-            key="username",
+            key=CONF_USERNAME,
             type=ConfigEntryType.STRING,
             label="Username",
             required=True,
@@ -80,16 +87,16 @@ async def get_config_entries(
             "For anynymous access you may want to try with the user `guest`.",
         ),
         ConfigEntry(
-            key="password",
+            key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
-            label="Username",
-            required=True,
-            default_value="guest",
+            label="Password",
+            required=False,
+            default_value=None,
             description="The username to authenticate to the remote server. "
             "For anynymous access you may want to try with the user `guest`.",
         ),
         ConfigEntry(
-            key="subfolder",
+            key=CONF_SUBFOLDER,
             type=ConfigEntryType.STRING,
             label="Subfolder",
             required=False,
@@ -97,160 +104,101 @@ async def get_config_entries(
             description="[optional] Use if your music is stored in a sublevel of the share. "
             "E.g. 'collections' or 'albums/A-K'.",
         ),
+        ConfigEntry(
+            key=CONF_MOUNT_OPTIONS,
+            type=ConfigEntryType.STRING,
+            label="Mount options",
+            required=False,
+            advanced=True,
+            default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0",
+            description="[optional] Any additional mount options you "
+            "want to pass to the mount command if needed for your particular setup.",
+        ),
         CONF_ENTRY_MISSING_ALBUM_ARTIST,
     )
 
 
-async def create_item(base_path: str, entry: smbclient.SMBDirEntry) -> FileSystemItem:
-    """Create FileSystemItem from smbclient.SMBDirEntry."""
+class SMBFileSystemProvider(LocalFileSystemProvider):
+    """
+    Implementation of an SMB File System Provider.
 
-    def _create_item():
-        entry_path = entry.path.replace("/\\", os.sep).replace("\\", os.sep)
-        absolute_path = get_absolute_path(base_path, entry_path)
-        stat = entry.stat(follow_symlinks=False)
-        return FileSystemItem(
-            name=entry.name,
-            path=get_relative_path(base_path, entry_path),
-            absolute_path=absolute_path,
-            is_file=entry.is_file(follow_symlinks=False),
-            is_dir=entry.is_dir(follow_symlinks=False),
-            checksum=str(int(stat.st_mtime)),
-            file_size=stat.st_size,
-        )
-
-    # run in thread because strictly taken this may be blocking IO
-    return await asyncio.to_thread(_create_item)
-
-
-class SMBFileSystemProvider(FileSystemProviderBase):
-    """Implementation of an SMB File System Provider."""
+    Basically this is just a wrapper around the regular local files provider,
+    except for the fact that it will mount a remote folder to a temporary location.
+    We went for this OS-depdendent approach because there is no solid async-compatible
+    smb library for Python (and we tried both pysmb and smbprotocol).
+    """
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-        # silence SMB.SMBConnection logger a bit
-        logging.getLogger("SMB.SMBConnection").setLevel("WARNING")
+        # base_path will be the path where we're going to mount the remote share
+        self.base_path = f"/tmp/{self.instance_id}"
+        if not await exists(self.base_path):
+            await makedirs(self.base_path)
 
+        try:
+            await self.mount()
+        except Exception as err:
+            raise LoginFailed(f"Connection failed for the given details: {err}") from err
+
+    async def unload(self) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+        await self.unmount()
+
+    async def mount(self) -> None:
+        """Mount the SMB location to a temporary folder."""
         server: str = self.config.get_value(CONF_HOST)
+        username: str = self.config.get_value(CONF_USERNAME)
+        password: str = self.config.get_value(CONF_PASSWORD)
         share: str = self.config.get_value(CONF_SHARE)
+
+        # handle optional subfolder
         subfolder: str = self.config.get_value(CONF_SUBFOLDER)
+        if subfolder:
+            subfolder = subfolder.replace("\\", "/")
+            if not subfolder.startswith("/"):
+                subfolder = "/" + subfolder
+            if subfolder.endswith("/"):
+                subfolder = subfolder[:-1]
 
-        # register smb session
-        self.logger.info("Connecting to server %s", server)
-        self._session = await asyncio.to_thread(
-            smbclient.register_session,
-            server,
-            username=self.config.get_value(CONF_USERNAME),
-            password=self.config.get_value(CONF_PASSWORD),
+        if platform.system() == "Darwin":
+            password_str = f":{password}" if password else ""
+            mount_cmd = f"mount -t smbfs //{username}{password_str}@{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
+
+        elif platform.system() == "Linux":
+            options = [
+                "rw",
+                f'username="{username}"',
+            ]
+            if password:
+                options.append(f'password="{password}"')
+            if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
+                options += mount_options.split(",")
+            mount_cmd = f"mount -t cifs -o {','.join(options)} //{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
+
+        else:
+            raise LoginFailed(f"SMB provider is not supported on {platform.system()}")
+
+        self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
+        self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
+
+        proc = await asyncio.create_subprocess_shell(
+            mount_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            raise LoginFailed(f"SMB mount failed with error: {stderr.decode()}")
 
-        # create windows like path (\\server\share\subfolder)
-        if subfolder.endswith(os.sep):
-            subfolder = subfolder[:-1]
-        self._root_path = f"{os.sep}{os.sep}{server}{os.sep}{share}{os.sep}{subfolder}"
-        self.logger.debug("Using root path: %s", self._root_path)
-        # validate provided path
-        if not await asyncio.to_thread(smbpath.isdir, self._root_path):
-            raise LoginFailed(f"Invalid share or subfolder given: {self._root_path}")
-
-    async def listdir(
-        self, path: str, recursive: bool = False
-    ) -> AsyncGenerator[FileSystemItem, None]:
-        """List contents of a given provider directory/path.
-
-        Parameters
-        ----------
-        - path: path of the directory (relative or absolute) to list contents of.
-            Empty string for provider's root.
-        - recursive: If True will recursively keep unwrapping subdirectories (scandir equivalent).
-
-        Returns:
-        -------
-            AsyncGenerator yielding FileSystemItem objects.
-
-        """
-        abs_path = get_absolute_path(self._root_path, path)
-        for entry in await asyncio.to_thread(smbclient.scandir, abs_path):
-            if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
-                # skip invalid/system files and dirs
-                continue
-            item = await create_item(self._root_path, entry)
-            if recursive and item.is_dir:
-                try:
-                    async for subitem in self.listdir(item.absolute_path, True):
-                        yield subitem
-                except (OSError, PermissionError) as err:
-                    self.logger.warning("Skip folder %s: %s", item.path, str(err))
-            else:
-                yield item
-
-    async def resolve(
-        self, file_path: str, require_local: bool = False  # noqa: ARG002
-    ) -> FileSystemItem:
-        """Resolve (absolute or relative) path to FileSystemItem.
-
-        If require_local is True, we prefer to have the `local_path` attribute filled
-        (e.g. with a tempfile), if supported by the provider/item.
-        """
-        file_path = file_path.replace("\\", os.sep)
-        absolute_path = get_absolute_path(self._root_path, file_path)
-
-        def _create_item():
-            stat = smbclient.stat(absolute_path, follow_symlinks=False)
-            return FileSystemItem(
-                name=basename(file_path),
-                path=get_relative_path(self._root_path, file_path),
-                absolute_path=absolute_path,
-                is_dir=smbpath.isdir(absolute_path),
-                is_file=smbpath.isfile(absolute_path),
-                checksum=str(int(stat.st_mtime)),
-                file_size=stat.st_size,
-            )
-
-        # run in thread because strictly taken this may be blocking IO
-        return await asyncio.to_thread(_create_item)
-
-    async def exists(self, file_path: str) -> bool:
-        """Return bool is this FileSystem musicprovider has given file/dir."""
-        if not file_path:
-            return False  # guard
-        file_path = file_path.replace("\\", os.sep)
-        abs_path = get_absolute_path(self._root_path, file_path)
-        return await asyncio.to_thread(smbpath.exists, abs_path)
-
-    async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
-        """Yield (binary) contents of file in chunks of bytes."""
-        file_path = file_path.replace("\\", os.sep)
-        abs_path = get_absolute_path(self._root_path, file_path)
-        chunk_size = 512000
-        queue = asyncio.Queue()
-        self.logger.debug("Reading file contents for %s", abs_path)
-
-        def _reader():
-            with smbclient.open_file(abs_path, "rb", share_access="r") as _file:
-                if seek:
-                    _file.seek(seek)
-                # yield chunks of data from file
-                while True:
-                    data = _file.read(chunk_size)
-                    if not data:
-                        break
-                    self.mass.loop.call_soon_threadsafe(queue.put_nowait, data)
-            self.mass.loop.call_soon_threadsafe(queue.put_nowait, b"")
-
-        self.mass.create_task(_reader)
-        while True:
-            chunk = await queue.get()
-            if chunk == b"":
-                break
-            yield chunk
-
-    async def write_file_content(self, file_path: str, data: bytes) -> None:
-        """Write entire file content as bytes (e.g. for playlists)."""
-        file_path = file_path.replace("\\", os.sep)
-        abs_path = get_absolute_path(self._root_path, file_path)
-
-        def _writer():
-            with smbclient.open_file(abs_path, "wb") as _file:
-                _file.write(data)
-
-        await asyncio.to_thread(_writer)
+    async def unmount(self) -> None:
+        """Unmount the remote share."""
+        proc = await asyncio.create_subprocess_shell(
+            f"umount {self.base_path}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await proc.communicate()
+        if proc.returncode != 0:
+            self.logger.warning("SMB unmount failed with error: %s", stderr.decode())

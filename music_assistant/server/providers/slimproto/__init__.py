@@ -14,7 +14,7 @@ from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -22,7 +22,7 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
 )
-from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
+from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_PLAYERS
@@ -94,9 +94,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return tuple()  # we do not have any config entries (yet)
 
 
@@ -352,9 +362,8 @@ class SlimprotoProvider(PlayerProvider):
         """Process SlimClient update/add to Player controller."""
         player_id = client.player_id
         virtual_provider_info = self._virtual_providers.get(client.device_model)
-        try:
-            player = self.mass.players.get(player_id, raise_unavailable=False)
-        except PlayerUnavailableError:
+        player = self.mass.players.get(player_id, raise_unavailable=False)
+        if not player:
             # player does not yet exist, create it
             player = Player(
                 player_id=player_id,

@@ -17,14 +17,18 @@ from aiohttp import ClientTimeout
 from music_assistant.common.helpers.util import create_tempfile
 from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
-from music_assistant.constants import CONF_VOLUME_NORMALISATION, CONF_VOLUME_NORMALISATION_TARGET
+from music_assistant.constants import (
+    CONF_VOLUME_NORMALISATION,
+    CONF_VOLUME_NORMALISATION_TARGET,
+    ROOT_LOGGER_NAME,
+)
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 
 if TYPE_CHECKING:
     from music_assistant.common.models.player_queue import QueueItem
     from music_assistant.server import MusicAssistant
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.audio")
 
 # pylint:disable=consider-using-f-string
 
@@ -498,7 +502,7 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1"}
-    timeout = ClientTimeout(total=0, connect=30, sock_read=600)
+    timeout = ClientTimeout(total=0, connect=30, sock_read=60)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         headers = resp.headers
         meta_int = int(headers.get("icy-metaint", "0"))
@@ -550,7 +554,7 @@ async def get_http_stream(
     buffer = b""
     buffer_all = False
     bytes_received = 0
-    timeout = ClientTimeout(total=0, connect=30, sock_read=600)
+    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         is_partial = resp.status == 206
         buffer_all = seek_position and not is_partial
@@ -616,11 +620,11 @@ async def check_audio_support() -> tuple[bool, bool, str]:
 
 async def get_preview_stream(
     mass: MusicAssistant,
-    provider_domain_or_instance_id: str,
+    provider_instance_id_or_domain: str,
     track_id: str,
 ) -> AsyncGenerator[bytes, None]:
     """Create a 30 seconds preview audioclip for the given streamdetails."""
-    music_prov = mass.get_provider(provider_domain_or_instance_id)
+    music_prov = mass.get_provider(provider_instance_id_or_domain)
 
     streamdetails = await music_prov.get_stream_details(track_id)
 
@@ -743,7 +747,7 @@ async def _get_ffmpeg_args(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "quiet",
+        "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
     ]
     # collect input args

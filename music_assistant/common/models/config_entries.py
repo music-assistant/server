@@ -5,7 +5,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from types import NoneType
-from typing import Any
+from typing import Any, Self
 
 from mashumaro import DataClassDictMixin
 
@@ -17,6 +17,7 @@ from music_assistant.constants import (
     CONF_FLOW_MODE,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
+    CONF_OUTPUT_CODEC,
     CONF_VOLUME_NORMALISATION,
     CONF_VOLUME_NORMALISATION_TARGET,
     SECURE_STRING_SUBSTITUTE,
@@ -38,7 +39,11 @@ ConfigEntryTypeMap = {
     ConfigEntryType.INTEGER: int,
     ConfigEntryType.FLOAT: float,
     ConfigEntryType.LABEL: str,
+    ConfigEntryType.DIVIDER: str,
+    ConfigEntryType.ACTION: str,
 }
+
+UI_ONLY = (ConfigEntryType.LABEL, ConfigEntryType.DIVIDER, ConfigEntryType.ACTION)
 
 
 @dataclass
@@ -53,8 +58,9 @@ class ConfigValueOption(DataClassDictMixin):
 class ConfigEntry(DataClassDictMixin):
     """Model for a Config Entry.
 
-    The definition of something that can be configured for an object (e.g. provider or player)
-    within Music Assistant (without the value).
+    The definition of something that can be configured
+    for an object (e.g. provider or player)
+    within Music Assistant.
     """
 
     # key: used as identifier for the entry, also for localization
@@ -80,73 +86,62 @@ class ConfigEntry(DataClassDictMixin):
     hidden: bool = False
     # advanced: this is an advanced setting (frontend hides it in some corner)
     advanced: bool = False
-    # encrypt: store string value encrypted and do not send its value in the api
-    encrypt: bool = False
-
-
-@dataclass
-class ConfigEntryValue(ConfigEntry):
-    """Config Entry with its value parsed."""
-
+    # action: (configentry)action that is needed to get the value for this entry
+    action: str | None = None
+    # action_label: default label for the action when no translation for the action is present
+    action_label: str | None = None
+    # value: set by the config manager/flow (or in rare cases by the provider itself)
     value: ConfigValueType = None
 
-    @classmethod
-    def parse(
-        cls,
-        entry: ConfigEntry,
+    def parse_value(
+        self,
         value: ConfigValueType,
         allow_none: bool = True,
-    ) -> ConfigEntryValue:
-        """Parse ConfigEntryValue from the config entry and plain value."""
-        result = ConfigEntryValue.from_dict(entry.to_dict())
-        result.value = value
-        expected_type = ConfigEntryTypeMap.get(result.type, NoneType)
-        if result.value is None:
-            result.value = entry.default_value
-        if result.value is None and not entry.required:
+    ) -> ConfigValueType:
+        """Parse value from the config entry details and plain value."""
+        expected_type = ConfigEntryTypeMap.get(self.type, NoneType)
+        if value is None:
+            value = self.default_value
+        if value is None and (not self.required or allow_none):
             expected_type = NoneType
-        if entry.type == ConfigEntryType.LABEL:
-            result.value = result.label
-        if not isinstance(result.value, expected_type):
+        if self.type == ConfigEntryType.LABEL:
+            value = self.label
+        if not isinstance(value, expected_type):
             # handle common conversions/mistakes
-            if expected_type == float and isinstance(result.value, int):
-                result.value = float(result.value)
-                return result
-            if expected_type == int and isinstance(result.value, float):
-                result.value = int(result.value)
-                return result
-            if expected_type == int and isinstance(result.value, str) and result.value.isnumeric():
-                result.value = int(result.value)
-                return result
-            if (
-                expected_type == float
-                and isinstance(result.value, str)
-                and result.value.isnumeric()
-            ):
-                result.value = float(result.value)
-                return result
+            if expected_type == float and isinstance(value, int):
+                self.value = float(value)
+                return self.value
+            if expected_type == int and isinstance(value, float):
+                self.value = int(value)
+                return self.value
+            if expected_type == int and isinstance(value, str) and value.isnumeric():
+                self.value = int(value)
+                return self.value
+            if expected_type == float and isinstance(value, str) and value.isnumeric():
+                self.value = float(value)
+                return self.value
+            if self.type in UI_ONLY:
+                self.value = self.default_value
+                return self.value
             # fallback to default
-            if result.value is None and allow_none:
-                # In some cases we allow this (e.g. create default config)
-                result.value = None
-                return result
-            if entry.default_value:
+            if self.default_value is not None:
                 LOGGER.warning(
                     "%s has unexpected type: %s, fallback to default",
-                    result.key,
-                    type(result.value),
+                    self.key,
+                    type(self.value),
                 )
-                result.value = entry.default_value
-                return result
-            raise ValueError(f"{result.key} has unexpected type: {type(result.value)}")
-        return result
+                self.value = self.default_value
+                return self.value
+            raise ValueError(f"{self.key} has unexpected type: {type(value)}")
+        self.value = value
+        return self.value
 
 
 @dataclass
 class Config(DataClassDictMixin):
     """Base Configuration object."""
 
-    values: dict[str, ConfigEntryValue]
+    values: dict[str, ConfigEntry]
 
     def get_value(self, key: str) -> ConfigValueType:
         """Return config value for given key."""
@@ -158,22 +153,22 @@ class Config(DataClassDictMixin):
 
     @classmethod
     def parse(
-        cls,
+        cls: Self,
         config_entries: Iterable[ConfigEntry],
         raw: dict[str, Any],
-    ) -> Config:
+    ) -> Self:
         """Parse Config from the raw values (as stored in persistent storage)."""
-        values = {
-            x.key: ConfigEntryValue.parse(x, raw.get("values", {}).get(x.key)).to_dict()
-            for x in config_entries
-        }
-        conf = cls.from_dict({**raw, "values": values})
+        conf = cls.from_dict({**raw, "values": {}})
+        for entry in config_entries:
+            # create a copy of the entry
+            conf.values[entry.key] = ConfigEntry.from_dict(entry.to_dict())
+            conf.values[entry.key].parse_value(raw["values"].get(entry.key), allow_none=True)
         return conf
 
     def to_raw(self) -> dict[str, Any]:
         """Return minimized/raw dict to store in persistent storage."""
 
-        def _handle_value(value: ConfigEntryValue):
+        def _handle_value(value: ConfigEntry):
             if value.type == ConfigEntryType.SECURE_STRING:
                 assert ENCRYPT_CALLBACK is not None
                 return ENCRYPT_CALLBACK(value.value)
@@ -182,7 +177,9 @@ class Config(DataClassDictMixin):
         return {
             **self.to_dict(),
             "values": {
-                x.key: _handle_value(x) for x in self.values.values() if x.value != x.default_value
+                x.key: _handle_value(x)
+                for x in self.values.values()
+                if (x.value != x.default_value and x.type not in UI_ONLY)
             },
         }
 
@@ -196,31 +193,30 @@ class Config(DataClassDictMixin):
                 d["values"][key]["value"] = SECURE_STRING_SUBSTITUTE
         return d
 
-    def update(self, update: ConfigUpdate) -> set[str]:
+    def update(self, update: dict[str, ConfigValueType]) -> set[str]:
         """Update Config with updated values."""
         changed_keys: set[str] = set()
 
         # root values (enabled, name)
-        for key in ("enabled", "name"):
-            cur_val = getattr(self, key, None)
-            new_val = getattr(update, key, None)
-            if new_val is None:
+        root_values = ("enabled", "name")
+        for key in root_values:
+            cur_val = getattr(self, key)
+            if key not in update:
                 continue
+            new_val = update[key]
             if new_val == cur_val:
                 continue
             setattr(self, key, new_val)
             changed_keys.add(key)
 
-        # update values
-        if update.values is not None:
-            for key, new_val in update.values.items():
-                cur_val = self.values[key].value
-                if cur_val == new_val:
-                    continue
-                if new_val is None:
-                    self.values[key].value = self.values[key].default_value
-                else:
-                    self.values[key].value = new_val
+        # config entry values
+        for key, new_val in update.items():
+            if key in root_values:
+                continue
+            cur_val = self.values[key].value
+            # parse entry to do type validation
+            parsed_val = self.values[key].parse_value(new_val)
+            if cur_val != parsed_val:
                 changed_keys.add(f"values/{key}")
 
         return changed_keys
@@ -230,7 +226,7 @@ class Config(DataClassDictMixin):
         # For now we just use the parse method to check for not allowed None values
         # this can be extended later
         for value in self.values.values():
-            value.parse(value, value.value, allow_none=False)
+            value.parse_value(value.value, allow_none=False)
 
 
 @dataclass
@@ -260,17 +256,8 @@ class PlayerConfig(Config):
     name: str | None = None
     # available: boolean to indicate if the player is available
     available: bool = True
-    # default_name: default name to use when there is name available
+    # default_name: default name to use when there is no name available
     default_name: str | None = None
-
-
-@dataclass
-class ConfigUpdate(DataClassDictMixin):
-    """Config object to send when updating some/all values through the API."""
-
-    enabled: bool | None = None
-    name: str | None = None
-    values: dict[str, ConfigValueType] | None = None
 
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (
@@ -364,4 +351,22 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
         "for example to a create a stereo pair with 2 players.",
         advanced=True,
     ),
+)
+
+CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
+    key=CONF_OUTPUT_CODEC,
+    type=ConfigEntryType.STRING,
+    label="Output codec",
+    options=[
+        ConfigValueOption("FLAC (lossless, compact file size)", "flac"),
+        ConfigValueOption("AAC (lossy, superior quality)", "aac"),
+        ConfigValueOption("MP3 (lossy, average quality)", "mp3"),
+        ConfigValueOption("WAV (lossless, huge file size)", "wav"),
+    ],
+    default_value="flac",
+    description="Define the codec that is sent to the player when streaming audio. "
+    "By default Music Assistant prefers FLAC because it is lossless, has a "
+    "respectable filesize and is supported by most player devices. "
+    "Change this setting only if needed for your device/environment.",
+    advanced=True,
 )

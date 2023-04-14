@@ -243,10 +243,15 @@ async def search(query: str, ytm_filter: str = None, limit: int = 20) -> list[di
         # Sync result properties with uniformal objects
         for result in results:
             if result["resultType"] == "artist":
-                result["id"] = result["browseId"]
-                result["name"] = result["artist"]
-                del result["browseId"]
-                del result["artist"]
+                if "artists" in result and len(result["artists"]) > 0:
+                    result["id"] = result["artists"][0]["id"]
+                    result["name"] = result["artists"][0]["name"]
+                    del result["artists"]
+                else:
+                    result["id"] = result["browseId"]
+                    result["name"] = result["artist"]
+                    del result["browseId"]
+                    del result["artist"]
             elif result["resultType"] == "playlist":
                 if "playlistId" in result:
                     result["id"] = result["playlistId"]
@@ -261,7 +266,7 @@ async def search(query: str, ytm_filter: str = None, limit: int = 20) -> list[di
 
 def get_playlist_checksum(playlist_obj: dict) -> str:
     """Try to calculate a checksum so we can detect changes in a playlist."""
-    for key in ("duration_seconds", "trackCount"):
+    for key in ("duration_seconds", "trackCount", "count"):
         if key in playlist_obj:
             return playlist_obj[key]
     return str(int(time()))

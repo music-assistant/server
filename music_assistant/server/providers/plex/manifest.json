@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "plex",
+  "name": "Plex Media Server Library",
+  "description": "Support for the Plex streaming provider in Music Assistant.",
+  "codeowners": ["@micha91"],
+  "requirements": ["plexapi==4.13.4"],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1168",
+  "multi_instance": true
+}

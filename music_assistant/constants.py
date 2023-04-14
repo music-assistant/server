@@ -3,9 +3,9 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b16"
+__version__: Final[str] = "2.0.0b27"
 
-SCHEMA_VERSION: Final[int] = 21
+SCHEMA_VERSION: Final[int] = 22
 
 ROOT_LOGGER_NAME: Final[str] = "music_assistant"
 
@@ -45,6 +45,7 @@ CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
+CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
