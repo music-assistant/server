@@ -354,16 +354,6 @@ class DeezerProvider(MusicProvider):
                 print(chunk)
                 yield chunk
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
-        """
-        Resolve an image from an image path.
-
-        This either returns (a generator to get) raw bytes of the image or
-        a string with an http(s) URL or local path that is accessible from the server.
-        NOT IMPLEMENTED
-        """
-        raise NotImplementedError
-
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
         if media_type == MediaType.ARTIST:
