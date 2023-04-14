@@ -480,13 +480,13 @@ class PlayerQueuesController:
         # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
         flow_mode = self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
-        queue.flow_mode = flow_mode.value
+        queue.flow_mode = flow_mode
         await player_prov.cmd_play_media(
             queue_id,
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
-            flow_mode=flow_mode.value,
+            flow_mode=flow_mode,
         )
 
     # Interaction with player
