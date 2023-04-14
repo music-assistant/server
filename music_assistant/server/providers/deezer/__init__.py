@@ -21,7 +21,6 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
-    MediaItemType,
     Playlist,
     SearchResults,
     StreamDetails,
@@ -354,13 +353,3 @@ class DeezerProvider(MusicProvider):
             async for chunk in dzr_proc.iter_any():
                 print(chunk)
                 yield chunk
-
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """Get single MediaItem from provider."""
-        if media_type == MediaType.ARTIST:
-            return await self.get_artist(prov_item_id)
-        if media_type == MediaType.ALBUM:
-            return await self.get_album(prov_item_id)
-        if media_type == MediaType.PLAYLIST:
-            return await self.get_playlist(prov_item_id)
-        return await self.get_track(prov_item_id)
