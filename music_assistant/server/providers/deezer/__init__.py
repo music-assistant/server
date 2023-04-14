@@ -78,6 +78,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.ARTIST_METADATA,
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.BROWSE,
 )
 
 CONF_ACCESS_TOKEN = "access_token"
