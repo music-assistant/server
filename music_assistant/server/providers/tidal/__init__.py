@@ -118,14 +118,14 @@ async def get_config_entries(
             type=ConfigEntryType.SECURE_STRING,
             label="Refresh token for Tidal",
             description="You need to link Music Assistant to your Tidal account.",
-            action_label="Authenticate on Tidal.com",
+            hidden=True,
             value=values.get(CONF_REFRESH_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_EXPIRY_TIME,
             type=ConfigEntryType.STRING,
             label="Expiry time of auth token for Tidal",
-            action_label="Authenticate on Tidal.com",
+            hidden=True,
             value=values.get(CONF_EXPIRY_TIME) if values else None,
         ),
         ConfigEntry(
@@ -133,7 +133,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Your Tidal User ID",
             description="This is your unique Tidal user ID.",
-            action_label="Authenticate on Tidal.com",
+            hidden=True,
             value=values.get(CONF_USER_ID) if values else None,
         ),
     )
