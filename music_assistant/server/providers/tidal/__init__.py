@@ -372,6 +372,7 @@ class TidalProvider(MusicProvider):
         ) > (datetime.now() + timedelta(days=1)):
             return self._tidal_session
         session = await tidal_session(
+        session = await tidal_session(
             token_type=TOKEN_TYPE,
             access_token=self.config.get_value(CONF_AUTH_TOKEN),
             refresh_token=self.config.get_value(CONF_REFRESH_TOKEN),
