@@ -491,7 +491,36 @@ async def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
     return await asyncio.to_thread(_tidal_code_login)
 
 
-async def tidal_session(
+async def validate_token_and_refresh(
+    tidal_session: TidalSession, mass: MusicAssistant, provider_config: ProviderConfig
+) -> TidalSession:
+    """Validate token and refresh if needed."""
+    if (
+        tidal_session
+        and tidal_session.access_token
+        and datetime.fromisoformat(provider_config.get_value(CONF_EXPIRY_TIME))
+        > (datetime.now() + timedelta(days=1))
+    ):
+        return tidal_session
+    tidal_session = await load_tidal_session(
+        token_type="Bearer",
+        access_token=provider_config.get_value(CONF_AUTH_TOKEN),
+        refresh_token=provider_config.get_value(CONF_REFRESH_TOKEN),
+        expiry_time=datetime.fromisoformat(provider_config.get_value(CONF_EXPIRY_TIME)),
+    )
+    await mass.config.set_provider_config_value(
+        provider_config.instance_id, CONF_AUTH_TOKEN, tidal_session.access_token
+    )
+    await mass.config.set_provider_config_value(
+        provider_config.instance_id, CONF_REFRESH_TOKEN, tidal_session.refresh_token
+    )
+    await mass.config.set_provider_config_value(
+        provider_config.instance_id, CONF_EXPIRY_TIME, tidal_session.expiry_time.isoformat()
+    )
+    return tidal_session
+
+
+async def load_tidal_session(
     token_type, access_token, refresh_token=None, expiry_time=None
 ) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
@@ -505,59 +534,6 @@ async def tidal_session(
     return await asyncio.to_thread(_tidal_session)
 
 
-# Context manager
-
-
-class TidalSessionManager:
-    """Context manager for Tidal session."""
-
-    def __init__(
-        self,
-        instance_id: str,
-        provider_config: ProviderConfig,
-        mass: MusicAssistant,
-        quality: TidalQuality = TidalQuality.lossless,
-    ):
-        """Initialize Tidal session manager."""
-        self.config = TidalConfig(quality=quality, item_limit=10000, alac=False)
-        self.session = TidalSession(config=self.config)
-        self.provider_config = provider_config
-        self.mass = mass
-        self.instance_id = instance_id
-        self.token_type = "Bearer"
-
-    async def __aenter__(self) -> TidalSession:
-        """Enter context manager."""
-        self.session = await self.validate_token_and_refresh()
-        return self.session
-
-    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
-        """Exit context manager."""
-        self.session = None
-
-    async def validate_token_and_refresh(self) -> TidalSession:
-        """Validate token and refresh if needed."""
-        if self.session and datetime.fromisoformat(
-            self.provider_config.get_value(CONF_EXPIRY_TIME)
-        ) > (datetime.now() + timedelta(days=1)):
-            return self
-        self.session = await tidal_session(
-            token_type=self.token_type,
-            access_token=self.provider_config.get_value(CONF_AUTH_TOKEN),
-            refresh_token=self.provider_config.get_value(CONF_REFRESH_TOKEN),
-            expiry_time=datetime.fromisoformat(self.provider_config.get_value(CONF_EXPIRY_TIME)),
-        )
-        await self.mass.config.set_provider_config_value(
-            self.instance_id, CONF_AUTH_TOKEN, self.session.access_token
-        )
-        await self.mass.config.set_provider_config_value(
-            self.instance_id, CONF_REFRESH_TOKEN, self.session.refresh_token
-        )
-        await self.mass.config.set_provider_config_value(
-            self.instance_id, CONF_EXPIRY_TIME, self.session.expiry_time.isoformat()
-        )
-        return self.session
-
-    async def check_login(self) -> bool:
-        """Check if login was successful."""
-        return self.session.check_login()
+async def check_login(tidal_session: TidalSession) -> bool:
+    """Check if login was successful."""
+    return tidal_session.check_login()
