@@ -10,7 +10,7 @@ tidalapi: https://github.com/tamland/python-tidal
 """
 
 import asyncio
-import webbrowser
+from datetime import datetime, timedelta
 
 from requests import HTTPError
 from tidalapi import Album as TidalAlbum
@@ -26,6 +26,7 @@ from tidalapi import UserPlaylist as TidalUserPlaylist
 
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name
+from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -39,34 +40,12 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.server.helpers.auth import AuthenticationHelper
+from music_assistant.server.server import MusicAssistant
 
-
-async def tidal_session(
-    token_type, access_token, refresh_token=None, expiry_time=None
-) -> TidalSession:
-    """Async wrapper around the tidalapi Session function."""
-
-    def _tidal_session():
-        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
-        session = TidalSession(config=config)
-        session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
-        return session
-
-    return await asyncio.to_thread(_tidal_session)
-
-
-async def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
-    """Async wrapper around the tidalapi Session function."""
-
-    def _tidal_code_login():
-        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
-        session = TidalSession(config=config)
-        login, future = session.login_oauth()
-        auth_helper.send_url(f"https://{login.verification_uri_complete}")
-        future.result()
-        return session
-
-    return await asyncio.to_thread(_tidal_code_login)
+CONF_AUTH_TOKEN = "auth_token"
+CONF_REFRESH_TOKEN = "refresh_token"
+CONF_USER_ID = "user_id"
+CONF_EXPIRY_TIME = "expiry_time"
 
 
 async def get_library_artists(session: TidalSession, user_id: str) -> dict[str, str]:
@@ -298,6 +277,7 @@ async def search(
 
 
 def get_item_mapping(tidal_provider, media_type: MediaType, key: str, name: str) -> ItemMapping:
+    """Create a generic item mapping."""
     return ItemMapping(
         media_type,
         key,
@@ -328,6 +308,7 @@ def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
 
 
 def parse_artist_metadata(tidal_provider, artist_obj: TidalArtist) -> MediaItemMetadata:
+    """Parse tidal artist object to MA metadata."""
     metadata = MediaItemMetadata()
     image_url = None
     if artist_obj.name != "Various Artists":
@@ -377,6 +358,7 @@ def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
 
 
 def parse_album_metadata(tidal_provider, album_obj: TidalAlbum) -> MediaItemMetadata:
+    """Parse tidal album object to MA metadata."""
     metadata = MediaItemMetadata()
     image_url = None
     try:
@@ -436,6 +418,7 @@ def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
 
 
 def parse_track_metadata(tidal_provider, track_obj: TidalTrack) -> MediaItemMetadata:
+    """Parse tidal track object to MA metadata."""
     metadata = MediaItemMetadata()
     try:
         metadata.lyrics = track_obj.lyrics().text
@@ -473,6 +456,7 @@ def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlist:
 
 
 def parse_playlist_metadata(tidal_provider, playlist_obj: TidalPlaylist) -> MediaItemMetadata:
+    """Parse tidal playlist object to MA metadata."""
     metadata = MediaItemMetadata()
     image_url = None
     try:
@@ -488,3 +472,92 @@ def parse_playlist_metadata(tidal_provider, playlist_obj: TidalPlaylist) -> Medi
     metadata.checksum = str(playlist_obj.last_updated)
     metadata.popularity = playlist_obj.popularity
     return metadata
+
+
+# Login and session management
+
+
+async def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
+    """Async wrapper around the tidalapi Session function."""
+
+    def _tidal_code_login():
+        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
+        session = TidalSession(config=config)
+        login, future = session.login_oauth()
+        auth_helper.send_url(f"https://{login.verification_uri_complete}")
+        future.result()
+        return session
+
+    return await asyncio.to_thread(_tidal_code_login)
+
+
+async def tidal_session(
+    token_type, access_token, refresh_token=None, expiry_time=None
+) -> TidalSession:
+    """Async wrapper around the tidalapi Session function."""
+
+    def _tidal_session():
+        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
+        session = TidalSession(config=config)
+        session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
+        return session
+
+    return await asyncio.to_thread(_tidal_session)
+
+
+# Context manager
+
+
+class TidalSessionManager:
+    """Context manager for Tidal session."""
+
+    def __init__(
+        self,
+        instance_id: str,
+        provider_config: ProviderConfig,
+        mass: MusicAssistant,
+        quality: TidalQuality = TidalQuality.lossless,
+    ):
+        """Initialize Tidal session manager."""
+        self.config = TidalConfig(quality=quality, item_limit=10000, alac=False)
+        self.session = TidalSession(config=self.config)
+        self.provider_config = provider_config
+        self.mass = mass
+        self.instance_id = instance_id
+        self.token_type = "Bearer"
+
+    async def __aenter__(self) -> TidalSession:
+        """Enter context manager."""
+        self.session = await self.validate_token_and_refresh()
+        return self.session
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+        """Exit context manager."""
+        self.session = None
+
+    async def validate_token_and_refresh(self) -> TidalSession:
+        """Validate token and refresh if needed."""
+        if self.session and datetime.fromisoformat(
+            self.provider_config.get_value(CONF_EXPIRY_TIME)
+        ) > (datetime.now() + timedelta(days=1)):
+            return self
+        self.session = await tidal_session(
+            token_type=self.token_type,
+            access_token=self.provider_config.get_value(CONF_AUTH_TOKEN),
+            refresh_token=self.provider_config.get_value(CONF_REFRESH_TOKEN),
+            expiry_time=datetime.fromisoformat(self.provider_config.get_value(CONF_EXPIRY_TIME)),
+        )
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_AUTH_TOKEN, self.session.access_token
+        )
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_REFRESH_TOKEN, self.session.refresh_token
+        )
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_EXPIRY_TIME, self.session.expiry_time.isoformat()
+        )
+        return self.session
+
+    async def check_login(self) -> bool:
+        """Check if login was successful."""
+        return self.session.check_login()
