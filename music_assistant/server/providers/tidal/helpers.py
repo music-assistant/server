@@ -311,7 +311,7 @@ def get_item_mapping(tidal_provider, media_type: MediaType, key: str, name: str)
 # Parsers
 
 
-async def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
+def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
     """Parse tidal artist object to generic layout."""
     artist_id = artist_obj.id
     artist = Artist(item_id=artist_id, provider=tidal_provider.instance_id, name=artist_obj.name)
@@ -323,11 +323,11 @@ async def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
             url=f"http://www.tidal.com/artist/{artist_id}",
         )
     )
-    artist.metadata = await parse_artist_metadata(tidal_provider, artist_obj)
+    artist.metadata = parse_artist_metadata(tidal_provider, artist_obj)
     return artist
 
 
-async def parse_artist_metadata(tidal_provider, artist_obj: TidalArtist) -> MediaItemMetadata:
+def parse_artist_metadata(tidal_provider, artist_obj: TidalArtist) -> MediaItemMetadata:
     metadata = MediaItemMetadata()
     image_url = None
     if artist_obj.name != "Various Artists":
@@ -344,16 +344,14 @@ async def parse_artist_metadata(tidal_provider, artist_obj: TidalArtist) -> Medi
     return metadata
 
 
-async def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
+def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
     """Parse tidal album object to generic layout."""
     name = album_obj.name
     version = album_obj.version if album_obj.version is not None else None
     album_id = album_obj.id
     album = Album(item_id=album_id, provider=tidal_provider.instance_id, name=name, version=version)
     for artist_obj in album_obj.artists:
-        album.artists.append(
-            await parse_artist(tidal_provider=tidal_provider, artist_obj=artist_obj)
-        )
+        album.artists.append(parse_artist(tidal_provider=tidal_provider, artist_obj=artist_obj))
     if album_obj.type == "ALBUM":
         album.album_type = AlbumType.ALBUM
     elif album_obj.type == "COMPILATION":
@@ -371,15 +369,14 @@ async def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
             provider_domain=tidal_provider.domain,
             provider_instance=tidal_provider.instance_id,
             content_type=ContentType.FLAC,
-            bit_rate=1411,
             url=f"http://www.tidal.com/album/{album_id}",
         )
     )
-    album.metadata = await parse_album_metadata(tidal_provider, album_obj)
+    album.metadata = parse_album_metadata(tidal_provider, album_obj)
     return album
 
 
-async def parse_album_metadata(tidal_provider, album_obj: TidalAlbum) -> MediaItemMetadata:
+def parse_album_metadata(tidal_provider, album_obj: TidalAlbum) -> MediaItemMetadata:
     metadata = MediaItemMetadata()
     image_url = None
     try:
@@ -398,7 +395,7 @@ async def parse_album_metadata(tidal_provider, album_obj: TidalAlbum) -> MediaIt
     return metadata
 
 
-async def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
+def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
     """Parse tidal track object to generic layout."""
     version = track_obj.version if track_obj.version is not None else None
     track_id = str(track_obj.id)
@@ -420,7 +417,7 @@ async def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
     )
     track.artists = []
     for track_artist in track_obj.artists:
-        artist = await parse_artist(tidal_provider=tidal_provider, artist_obj=track_artist)
+        artist = parse_artist(tidal_provider=tidal_provider, artist_obj=track_artist)
         track.artists.append(artist)
     available = track_obj.available
     track.add_provider_mapping(
@@ -434,11 +431,11 @@ async def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
             available=available,
         )
     )
-    track.metadata = await parse_track_metadata(tidal_provider, track_obj)
+    track.metadata = parse_track_metadata(tidal_provider, track_obj)
     return track
 
 
-async def parse_track_metadata(tidal_provider, track_obj: TidalTrack) -> MediaItemMetadata:
+def parse_track_metadata(tidal_provider, track_obj: TidalTrack) -> MediaItemMetadata:
     metadata = MediaItemMetadata()
     try:
         metadata.lyrics = track_obj.lyrics().text
@@ -450,7 +447,7 @@ async def parse_track_metadata(tidal_provider, track_obj: TidalTrack) -> MediaIt
     return metadata
 
 
-async def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlist:
+def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlist:
     """Parse tidal playlist object to generic layout."""
     playlist_id = playlist_obj.id
     creator_id = playlist_obj.creator.id if playlist_obj.creator else None
@@ -471,11 +468,11 @@ async def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlis
     )
     is_editable = bool(creator_id and creator_id == tidal_provider._tidal_user_id)
     playlist.is_editable = is_editable
-    playlist.metadata = await parse_playlist_metadata(tidal_provider, playlist_obj)
+    playlist.metadata = parse_playlist_metadata(tidal_provider, playlist_obj)
     return playlist
 
 
-async def parse_playlist_metadata(tidal_provider, playlist_obj: TidalPlaylist) -> MediaItemMetadata:
+def parse_playlist_metadata(tidal_provider, playlist_obj: TidalPlaylist) -> MediaItemMetadata:
     metadata = MediaItemMetadata()
     image_url = None
     try:
