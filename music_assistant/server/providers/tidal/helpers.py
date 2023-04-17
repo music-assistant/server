@@ -68,33 +68,30 @@ def get_library_artists(session: TidalSession, user_id: str) -> dict[str, str]:
     return TidalFavorites(session, user_id).artists(limit=9999)
 
 
-async def library_items_add_remove(
+@async_wrap
+def library_items_add_remove(
     session: TidalSession, user_id: str, item_id: str, media_type: MediaType, add: bool = True
 ) -> None:
     """Async wrapper around the tidalapi Favorites.items add/remove function."""
-
-    def _library_items_add_remove():
-        match media_type:
-            case MediaType.ARTIST:
-                TidalFavorites(session, user_id).add_artist(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_artist(item_id)
-            case MediaType.ALBUM:
-                TidalFavorites(session, user_id).add_album(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_album(item_id)
-            case MediaType.TRACK:
-                TidalFavorites(session, user_id).add_track(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_track(item_id)
-            case MediaType.PLAYLIST:
-                TidalFavorites(session, user_id).add_playlist(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_playlist(item_id)
-            case MediaType.UNKNOWN:
-                return
-
-    return await asyncio.to_thread(_library_items_add_remove)
+    match media_type:
+        case MediaType.ARTIST:
+            TidalFavorites(session, user_id).add_artist(item_id) if add else TidalFavorites(
+                session, user_id
+            ).remove_artist(item_id)
+        case MediaType.ALBUM:
+            TidalFavorites(session, user_id).add_album(item_id) if add else TidalFavorites(
+                session, user_id
+            ).remove_album(item_id)
+        case MediaType.TRACK:
+            TidalFavorites(session, user_id).add_track(item_id) if add else TidalFavorites(
+                session, user_id
+            ).remove_track(item_id)
+        case MediaType.PLAYLIST:
+            TidalFavorites(session, user_id).add_playlist(item_id) if add else TidalFavorites(
+                session, user_id
+            ).remove_playlist(item_id)
+        case MediaType.UNKNOWN:
+            return
 
 
 @async_wrap
@@ -437,18 +434,15 @@ def parse_playlist_metadata(tidal_provider, playlist_obj: TidalPlaylist) -> Medi
 # Login and session management
 
 
-async def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
+@async_wrap
+def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
-
-    def _tidal_code_login():
-        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
-        session = TidalSession(config=config)
-        login, future = session.login_oauth()
-        auth_helper.send_url(f"https://{login.verification_uri_complete}")
-        future.result()
-        return session
-
-    return await asyncio.to_thread(_tidal_code_login)
+    config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
+    session = TidalSession(config=config)
+    login, future = session.login_oauth()
+    auth_helper.send_url(f"https://{login.verification_uri_complete}")
+    future.result()
+    return session
 
 
 async def validate_token_and_refresh(
@@ -480,18 +474,15 @@ async def validate_token_and_refresh(
     return tidal_session
 
 
-async def load_tidal_session(
+@async_wrap
+def load_tidal_session(
     token_type, access_token, refresh_token=None, expiry_time=None
 ) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
-
-    def _tidal_session():
-        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
-        session = TidalSession(config=config)
-        session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
-        return session
-
-    return await asyncio.to_thread(_tidal_session)
+    config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
+    session = TidalSession(config=config)
+    session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
+    return session
 
 
 async def check_login(tidal_session: TidalSession) -> bool:
