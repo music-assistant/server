@@ -277,6 +277,13 @@ class MusicAssistant:
         task.add_done_callback(task_done_callback)
         return task
 
+    def get_task(self, task_id: str) -> asyncio.Task | asyncio.Future:
+        """Get existing scheduled task."""
+        if existing := self._tracked_tasks.get(task_id):
+            # prevent duplicate tasks if task_id is given and already present
+            return existing
+        raise KeyError("Task does not exist")
+
     def register_api_command(
         self,
         command: str,
@@ -327,7 +334,8 @@ class MusicAssistant:
         # try to load the module
         prov_mod = await get_provider_module(domain)
         try:
-            provider = await asyncio.wait_for(prov_mod.setup(self, prov_manifest, conf), 30)
+            async with asyncio.timeout(30):
+                provider = await prov_mod.setup(self, prov_manifest, conf)
         except TimeoutError as err:
             raise SetupFailedError(f"Provider {domain} did not load within 30 seconds") from err
         # if we reach this point, the provider loaded successfully
