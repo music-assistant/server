@@ -46,6 +46,7 @@ CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
+CONF_GROUPED_POWER_ON: Final[str] = "grouped_power_on"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
