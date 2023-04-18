@@ -9,8 +9,17 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 import asyncio
 import json
 from time import time
+from aiohttp import ClientSession
 
 import ytmusicapi
+from ytmusicapi.constants import (
+    OAUTH_CLIENT_ID,
+    OAUTH_CLIENT_SECRET,
+    OAUTH_SCOPE,
+    OAUTH_CODE_URL,
+    OAUTH_TOKEN_URL,
+    OAUTH_USER_AGENT,
+)
 
 
 async def get_artist(prov_artist_id: str) -> dict[str, str]:
@@ -285,3 +294,47 @@ def get_sec(time_str):
     if len(parts) == 2:
         return int(parts[0]) * 60 + int(parts[1])
     return 0
+
+
+def _get_data_and_headers(data: dict):
+    data.update({"client_id": OAUTH_CLIENT_ID})
+    headers = {"User-Agent": OAUTH_USER_AGENT}
+    return data, headers
+
+
+async def get_oauth_code(session: ClientSession):
+    data, headers = _get_data_and_headers({"scope": OAUTH_SCOPE})
+    async with session.post(OAUTH_CODE_URL, json=data, headers=headers) as code_response:
+        return await code_response.json()
+
+
+async def get_oauth_token_from_code(session: ClientSession, device_code: str):
+    data, headers = _get_data_and_headers(
+        data={
+            "client_secret": OAUTH_CLIENT_SECRET,
+            "grant_type": "http://oauth.net/grant_type/device/1.0",
+            "code": device_code,
+        }
+    )
+    async with session.post(
+        OAUTH_TOKEN_URL,
+        json=data,
+        headers=headers,
+    ) as token_response:
+        return await token_response.json()
+
+
+async def refresh_oauth_token(session: ClientSession, refresh_token: str):
+    data, headers = _get_data_and_headers(
+        {
+            "client_secret": OAUTH_CLIENT_SECRET,
+            "grant_type": "refresh_token",
+            "refresh_token": refresh_token,
+        }
+    )
+    async with session.post(
+        OAUTH_TOKEN_URL,
+        json=data,
+        headers=headers,
+    ) as response:
+        return await response.json()

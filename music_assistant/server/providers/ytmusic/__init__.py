@@ -10,6 +10,7 @@ from urllib.parse import unquote
 
 import pytube
 import ytmusicapi
+from ytmusicapi.auth.oauth import YTMusicOAuth
 
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name
@@ -38,6 +39,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.server.models.music_provider import MusicProvider
+from music_assistant.server.helpers.auth import AuthenticationHelper
 
 from .helpers import (
     add_remove_playlist_tracks,
@@ -54,6 +56,9 @@ from .helpers import (
     library_add_remove_artist,
     library_add_remove_playlist,
     search,
+    get_oauth_code,
+    get_oauth_token_from_code,
+    refresh_oauth_token,
 )
 
 if TYPE_CHECKING:
@@ -64,6 +69,11 @@ if TYPE_CHECKING:
 
 
 CONF_COOKIE = "cookie"
+CONF_ACTION_AUTH = "auth"
+CONF_AUTH_TOKEN = "auth_token"
+CONF_REFRESH_TOKEN = "refresh_token"
+CONF_TOKEN_TYPE = "token_type"
+CONF_EXPIRY_TIME = "expiry_time"
 
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
@@ -108,18 +118,48 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
+    if action == CONF_ACTION_AUTH:
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            code = await get_oauth_code(mass.http_session)
+            auth_url = f"{code['verification_url']}?user_code={code['user_code']}"
+            auth_helper.send_url(auth_url)
+            token = await get_oauth_token_from_code(mass.http_session, code["device_code"])
+            values[CONF_AUTH_TOKEN] = token["access_token"]
+            values[CONF_REFRESH_TOKEN] = token["refresh_token"]
+            values[CONF_EXPIRY_TIME] = token["expires_at"]
+            values[CONF_TOKEN_TYPE] = token["token_type"]
+    # return the collected config entries
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_AUTH_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Authentication token for Youtube Music",
+            description="You need to link Music Assistant to your Youtube Music account.",
+            action=CONF_ACTION_AUTH,
+            action_label="Authenticate on Youtube Music",
+            value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
         ConfigEntry(
-            key=CONF_COOKIE,
+            key=CONF_REFRESH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Login Cookie",
-            required=True,
-            description="The Login cookie you grabbed from an existing session, "
-            "see the documentation.",
+            label="Refresh token for Youtube Music",
+            description="You need to link Music Assistant to your Youtube Music account.",
+            hidden=True,
+            value=values.get(CONF_REFRESH_TOKEN) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_EXPIRY_TIME,
+            type=ConfigEntryType.STRING,
+            label="Expiry time of auth token for Youtube Music",
+            hidden=True,
+            value=values.get(CONF_EXPIRY_TIME) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_TOKEN_TYPE,
+            type=ConfigEntryType.STRING,
+            label="The token type required to create headers",
+            hidden=True,
+            value=values.get(CONF_TOKEN_TYPE) if values else None,
         ),
     )
 
@@ -491,11 +531,12 @@ class YoutubeMusicProvider(MusicProvider):
             "Content-Type": "application/json",
             "X-Goog-AuthUser": "0",
             "x-origin": "https://music.youtube.com",
-            "Cookie": cookie,
+            "X-Goog-Request-Time": str(int(time.time())),
+            "Authorization": f"{self.config.get_value(CONF_TOKEN_TYPE)} {self.config.get_value(CONF_AUTH_TOKEN)}",
         }
-        sapisid = ytmusicapi.helpers.sapisid_from_cookie(cookie)
+        # sapisid = ytmusicapi.helpers.sapisid_from_cookie(cookie)
         origin = headers.get("origin", headers.get("x-origin"))
-        headers["Authorization"] = ytmusicapi.helpers.get_authorization(sapisid + " " + origin)
+        # headers["Authorization"] = ytmusicapi.helpers.get_authorization(sapisid + " " + origin)
         self._headers = headers
 
     async def _initialize_context(self) -> dict[str, str]:
