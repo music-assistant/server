@@ -247,6 +247,13 @@ class ConfigController:
             return
         self.remove(conf_key)
 
+    async def set_provider_config_value(
+        self, instance_id: str, key: str, value: ConfigValueType
+    ) -> None:
+        """Set single ProviderConfig value."""
+        conf_key = f"{CONF_PROVIDERS}/{instance_id}/values/{key}"
+        self.set(conf_key, value)
+
     @api_command("config/providers/reload")
     async def reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
