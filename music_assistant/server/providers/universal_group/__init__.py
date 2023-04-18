@@ -296,9 +296,6 @@ class UniversalGroupProvider(PlayerProvider):
                     ignore_ids.update(
                         x for x in child_player.group_childs if x != child_player.player_id
                     )
-            else:
-                # add unavailable id anyway so we get notified when it comes back online
-                child_players.append(child_id)
         return [x for x in child_players if x.player_id not in ignore_ids]
 
     async def _sync_players(self) -> None:
