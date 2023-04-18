@@ -6,7 +6,7 @@
   "codeowners": ["@gieljnssns"],
   "requirements": [
     "aioradios==0.2.6",
-    "git+https://github.com/gieljnssns/python-radios@Add-search-option#egg=radios"
+    "git+https://github.com/gieljnssns/python-radios.git@refs/heads/Add-search-option"
   ],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/categories/music-providers",
   "multi_instance": true
