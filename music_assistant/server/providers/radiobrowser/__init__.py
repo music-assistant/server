@@ -20,7 +20,7 @@ from music_assistant.common.models.media_items import (
     SearchResults,
     StreamDetails,
 )
-from music_assistant.constants import __version__
+from music_assistant.constants import __version__ as MASS_VERSION  # noqa: N812
 from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -70,7 +70,7 @@ class RadioBrowserProvider(MusicProvider):
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.radios = RadioBrowser(
-            session=self.mass.http_session, user_agent=f"MusicAssistant/{__version__}"
+            session=self.mass.http_session, user_agent=f"MusicAssistant/{MASS_VERSION}"
         )
         try:
             # Try to get some stats to check connection to RadioBrowser API
