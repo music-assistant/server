@@ -217,9 +217,7 @@ class FileSystemProviderBase(MusicProvider):
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        print(type(path), path)
         _, item_path = path.split("://")
-        print(type(item_path), item_path)
         if not item_path:
             item_path = ""
         subitems = []
