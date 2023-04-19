@@ -10,7 +10,7 @@ description = "Music Assistant"
 readme = "README.md"
 requires-python = ">=3.11"
 authors     = [
-    {name = "The usic Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
+    {name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
 ]
 classifiers = [
   "Environment :: Console",
@@ -24,6 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 server = [
+  "faust-cchardet>=2.1.18",
+  "aiodns>=3.0.0",
+  "Brotli>=1.0.9",
   "aiohttp==3.8.4",
   "asyncio-throttle==1.0.2",
   "aiofiles==23.1.0",
