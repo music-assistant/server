@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
 from .enums import MediaType
-from .media_items import ItemMapping, MediaItemImage, StreamDetails
-
-if TYPE_CHECKING:
-    from .media_items import Album, Radio, Track
+from .media_items import Album, ItemMapping, MediaItemImage, Radio, StreamDetails, Track
 
 
 @dataclass
