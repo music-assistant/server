@@ -236,7 +236,7 @@ class TidalProvider(MusicProvider):
                 result.append(track)
         return result
 
-    async def get_artist_albums(self, prov_artist_id) -> list[Album]:
+    async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         result = []
         albums = await get_artist_albums(self, prov_artist_id)
@@ -245,7 +245,7 @@ class TidalProvider(MusicProvider):
             result.append(album)
         return result
 
-    async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         result = []
         tracks = await get_artist_toptracks(self, prov_artist_id)
@@ -256,7 +256,7 @@ class TidalProvider(MusicProvider):
                 result.append(track)
         return result
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         tracks = await get_playlist_tracks(self, prov_playlist_id=prov_playlist_id)
         for index, track_obj in enumerate(tracks):
@@ -265,7 +265,7 @@ class TidalProvider(MusicProvider):
                 track.position = index + 1
                 yield track
 
-    async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
         """Get similar tracks for given track id."""
         similar_tracks_obj = await get_similar_tracks(self, prov_track_id, limit)
         tracks = []
@@ -275,7 +275,7 @@ class TidalProvider(MusicProvider):
                 tracks.append(track)
         return tracks
 
-    async def library_add(self, prov_item_id, media_type: MediaType):
+    async def library_add(self, prov_item_id: str, media_type: MediaType):
         """Add item to library."""
         return await library_items_add_remove(
             self,
@@ -285,7 +285,7 @@ class TidalProvider(MusicProvider):
             add=True,
         )
 
-    async def library_remove(self, prov_item_id, media_type: MediaType):
+    async def library_remove(self, prov_item_id: str, media_type: MediaType):
         """Remove item from library."""
         return await library_items_add_remove(
             self,
