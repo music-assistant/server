@@ -320,8 +320,8 @@ class PlayerController:
         player = self.get(player_id, True)
         if player.powered == powered:
             return
-        # send stop at power off
-        if not powered:
+        # stop player at power off
+        if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(player_id)
         # unsync player at power off
         if not powered and player.synced_to is not None:
@@ -495,7 +495,7 @@ class PlayerController:
                 if group_player.powered:
                     return group_player.player_id
         # guess source from player's current url
-        if player.current_url:
+        if player.current_url and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             if self.mass.webserver.base_url in player.current_url:
                 return player.player_id
             if ":" in player.current_url:
