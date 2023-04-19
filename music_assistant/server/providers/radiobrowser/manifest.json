@@ -5,9 +5,8 @@
   "description": "Play your favorite radio stations from RadioBrowser in Music Assistant.",
   "codeowners": ["@gieljnssns"],
   "requirements": [
-    "aioradios==0.2.6",
     "git+https://github.com/gieljnssns/python-radios.git@refs/heads/Add-search-option"
   ],
-  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/categories/music-providers",
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1202",
   "multi_instance": true
 }
