@@ -1,9 +1,9 @@
 """Deezer music provider support for MusicAssistant."""
-import os
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 
 import deezer
+from aiohttp import ClientTimeout
 from asyncio_throttle.throttler import Throttler
 
 from music_assistant.common.models.config_entries import (
@@ -28,7 +28,6 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.server.helpers.auth import AuthenticationHelper
-from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
@@ -38,12 +37,15 @@ from .helpers import (
     add_user_albums,
     add_user_artists,
     add_user_tracks,
+    decrypt_chunk,
     get_access_token,
     get_album,
     get_albums_by_artist,
     get_artist,
     get_artist_top,
+    get_blowfish_key,
     get_deezer_client,
+    get_deezer_track_url,
     get_playlist,
     get_track,
     get_user_albums,
@@ -331,25 +333,30 @@ class DeezerProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""
         track = await get_track(client=self.client, track_id=int(item_id))
+        url_details = await get_deezer_track_url(self.client.session, item_id)
+        url = url_details["sources"][0]["url"]
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
             content_type=ContentType.MP3,
             duration=track.duration,
+            data=url,
+            expires=url_details["exp"],
         )
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        print("Is this running??")
-        base_path = os.path.join(os.path.dirname(__file__), "dzr")
-        args = [
-            f"{base_path}/get-bytes.sh",
-            streamdetails.item_id,
-        ]
         print(seek_position)
-        async with AsyncProcess(args) as dzr_proc:
-            async for chunk in dzr_proc.iter_any():
-                print(chunk)
-                yield chunk
+        blowfish_key = get_blowfish_key(streamdetails.item_id)
+        i = 0
+        timeout = ClientTimeout(total=0, connect=30, sock_read=600)
+        async with self.mass.http_session.get(streamdetails.data, timeout=timeout) as resp:
+            async for chunk in resp.content.iter_chunked(2048):
+                chunk_size = len(chunk)
+                if i % 3 > 0 or chunk_size < 2048:
+                    yield chunk
+                else:
+                    yield decrypt_chunk(chunk, blowfish_key)
+                i += 1

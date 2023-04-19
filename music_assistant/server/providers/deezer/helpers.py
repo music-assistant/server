@@ -11,8 +11,10 @@ dzr: (inspired the track-url gatherer) https://github.com/yne/dzr by @yne.
 """
 
 import asyncio
+import hashlib
 
 import deezer
+from Crypto.Cipher import Blowfish
 
 from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
 from music_assistant.common.models.errors import LoginFailed
@@ -502,3 +504,73 @@ async def search_and_parse_playlist(
     for playlist in deezer_playlists:
         playlists.append(await parse_playlist(playlist=playlist, mass=mass))
     return playlists
+
+
+def _md5(data, data_type="ascii"):
+    md5sum = hashlib.md5()
+    md5sum.update(data.encode(data_type))
+    return md5sum.hexdigest()
+
+
+def get_blowfish_key(track_id):
+    """Get blowfish key to decrypt a chunk of a track."""
+    secret = "g4el58wc" + "0zvf9na1"
+    id_md5 = _md5(track_id)
+    bf_key = ""
+    for i in range(16):
+        bf_key += chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i]))
+    return bf_key
+
+
+def decrypt_chunk(chunk, blowfish_key):
+    """Decrypt a given chunk using the blow fish key."""
+    cipher = Blowfish.new(
+        blowfish_key.encode("ascii"), Blowfish.MODE_CBC, b"\x00\x01\x02\x03\x04\x05\x06\x07"
+    )
+    return cipher.decrypt(chunk)
+
+
+def _gw_api_call(session, method, api_token="null", args=None, params=None):
+    if params is None:
+        params = {}
+    if args is None:
+        args = {}
+    p = {"api_version": "1.0", "api_token": api_token, "input": "3", "method": method}
+    p.update(params)
+    result_json = session.post(
+        "http://www.deezer.com/ajax/gw-light.php",
+        params=p,
+        timeout=30,
+        json=args,
+        headers={
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/79.0.3945.130 Safari/537.36"
+        },
+    ).json()
+    return result_json
+
+
+async def get_deezer_track_url(session, track_id):
+    """Get the URL for a given track id."""
+
+    def _get_deezer_track_url():
+        user_data = _gw_api_call(session, "deezer.getUserData")
+        api_token = user_data["results"]["checkForm"]
+        license_token = user_data["results"]["USER"]["OPTIONS"]["license_token"]
+        sng_data = _gw_api_call(session, "song.getData", api_token, {"SNG_ID": track_id})
+        sng_data = sng_data["results"]
+        track_token = sng_data["TRACK_TOKEN"]
+        url_data = {
+            "license_token": license_token,
+            "media": [
+                {
+                    "type": "FULL",
+                    "formats": [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}],
+                }
+            ],
+            "track_tokens": [track_token],
+        }
+        url_response = session.post("https://media.deezer.com/v1/get_url", json=url_data)
+        return url_response.json()["data"][0]["media"][0]
+
+    return await asyncio.to_thread(_get_deezer_track_url)
