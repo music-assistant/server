@@ -12,6 +12,7 @@ tidalapi: https://github.com/tamland/python-tidal
 import asyncio
 from datetime import datetime, timedelta
 from functools import partial, wraps
+from typing import TYPE_CHECKING
 
 from requests import HTTPError
 from tidalapi import Album as TidalAlbum
@@ -41,16 +42,20 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.server.helpers.auth import AuthenticationHelper
 
+if TYPE_CHECKING:
+    from . import TidalProvider
+
 CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
 
+DEFAULT_LIMIT = 250
 
 # Parsers
 
 
-def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
+def parse_artist(tidal_provider: TidalProvider, artist_obj: TidalArtist) -> Artist:
     """Parse tidal artist object to generic layout."""
     artist_id = artist_obj.id
     artist = Artist(item_id=artist_id, provider=tidal_provider.instance_id, name=artist_obj.name)
@@ -66,7 +71,9 @@ def parse_artist(tidal_provider, artist_obj: TidalArtist) -> Artist:
     return artist
 
 
-def parse_artist_metadata(tidal_provider, artist_obj: TidalArtist) -> MediaItemMetadata:
+def parse_artist_metadata(
+    tidal_provider: TidalProvider, artist_obj: TidalArtist
+) -> MediaItemMetadata:
     """Parse tidal artist object to MA metadata."""
     metadata = MediaItemMetadata()
     image_url = None
@@ -84,7 +91,7 @@ def parse_artist_metadata(tidal_provider, artist_obj: TidalArtist) -> MediaItemM
     return metadata
 
 
-def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
+def parse_album(tidal_provider: TidalProvider, album_obj: TidalAlbum) -> Album:
     """Parse tidal album object to generic layout."""
     name = album_obj.name
     version = album_obj.version if album_obj.version is not None else None
@@ -116,7 +123,7 @@ def parse_album(tidal_provider, album_obj: TidalAlbum) -> Album:
     return album
 
 
-def parse_album_metadata(tidal_provider, album_obj: TidalAlbum) -> MediaItemMetadata:
+def parse_album_metadata(tidal_provider: TidalProvider, album_obj: TidalAlbum) -> MediaItemMetadata:
     """Parse tidal album object to MA metadata."""
     metadata = MediaItemMetadata()
     image_url = None
@@ -136,7 +143,7 @@ def parse_album_metadata(tidal_provider, album_obj: TidalAlbum) -> MediaItemMeta
     return metadata
 
 
-def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
+def parse_track(tidal_provider: TidalProvider, track_obj: TidalTrack) -> Track:
     """Parse tidal track object to generic layout."""
     version = track_obj.version if track_obj.version is not None else None
     track_id = str(track_obj.id)
@@ -177,7 +184,7 @@ def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
     return track
 
 
-def parse_track_metadata(tidal_provider, track_obj: TidalTrack) -> MediaItemMetadata:
+def parse_track_metadata(tidal_provider: TidalProvider, track_obj: TidalTrack) -> MediaItemMetadata:
     """Parse tidal track object to MA metadata."""
     metadata = MediaItemMetadata()
     try:
@@ -190,7 +197,7 @@ def parse_track_metadata(tidal_provider, track_obj: TidalTrack) -> MediaItemMeta
     return metadata
 
 
-def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlist:
+def parse_playlist(tidal_provider: TidalProvider, playlist_obj: TidalPlaylist) -> Playlist:
     """Parse tidal playlist object to generic layout."""
     playlist_id = playlist_obj.id
     creator_id = playlist_obj.creator.id if playlist_obj.creator else None
@@ -215,7 +222,9 @@ def parse_playlist(tidal_provider, playlist_obj: TidalPlaylist) -> Playlist:
     return playlist
 
 
-def parse_playlist_metadata(tidal_provider, playlist_obj: TidalPlaylist) -> MediaItemMetadata:
+def parse_playlist_metadata(
+    tidal_provider: TidalProvider, playlist_obj: TidalPlaylist
+) -> MediaItemMetadata:
     """Parse tidal playlist object to MA metadata."""
     metadata = MediaItemMetadata()
     image_url = None
@@ -255,13 +264,13 @@ def get_session(func):
     """Async decorator to get a tidal session."""
 
     @wraps(func)
-    async def wrapper(tidal_provider, *args, **kwargs):
+    async def wrapper(tidal_provider: TidalProvider, *args, **kwargs):
         return await func(await get_tidal_session(tidal_provider), *args, **kwargs)
 
     return wrapper
 
 
-async def get_tidal_session(tidal_provider) -> TidalSession:
+async def get_tidal_session(tidal_provider: TidalProvider) -> TidalSession:
     """Ensure the current token is valid and return a tidal session."""
     if (
         tidal_provider._tidal_session
@@ -318,9 +327,11 @@ def load_tidal_session(
 
 @get_session
 @async_wrap
-def get_library_artists(session: TidalSession, user_id: str) -> dict[str, str]:
+def get_library_artists(
+    session: TidalSession, user_id: str, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> dict[str, str]:
     """Async wrapper around the tidalapi Favorites.artists function."""
-    return TidalFavorites(session, user_id).artists(limit=9999)
+    return TidalFavorites(session, user_id).artists(limit=limit, offset=offset)
 
 
 @get_session
@@ -366,9 +377,9 @@ def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
 def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[TidalAlbum]:
     """Async wrapper around 3 tidalapi album functions."""
     all_albums = []
-    albums = TidalArtist(session, prov_artist_id).get_albums(limit=9999)
-    eps_singles = TidalArtist(session, prov_artist_id).get_albums_ep_singles(limit=9999)
-    compilations = TidalArtist(session, prov_artist_id).get_albums_other(limit=9999)
+    albums = TidalArtist(session, prov_artist_id).get_albums(limit=DEFAULT_LIMIT)
+    eps_singles = TidalArtist(session, prov_artist_id).get_albums_ep_singles(limit=DEFAULT_LIMIT)
+    compilations = TidalArtist(session, prov_artist_id).get_albums_other(limit=DEFAULT_LIMIT)
     all_albums.extend(albums)
     all_albums.extend(eps_singles)
     all_albums.extend(compilations)
@@ -377,16 +388,20 @@ def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[TidalA
 
 @get_session
 @async_wrap
-def get_artist_toptracks(session: TidalSession, prov_artist_id: str) -> list[TidalTrack]:
+def get_artist_toptracks(
+    session: TidalSession, prov_artist_id: str, limit: int = 10, offset: int = 0
+) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Artist.get_top_tracks function."""
-    return TidalArtist(session, prov_artist_id).get_top_tracks(limit=10)
+    return TidalArtist(session, prov_artist_id).get_top_tracks(limit=limit, offset=offset)
 
 
 @get_session
 @async_wrap
-def get_library_albums(session: TidalSession, user_id: str) -> list[TidalAlbum]:
+def get_library_albums(
+    session: TidalSession, user_id: str, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> list[TidalAlbum]:
     """Async wrapper around the tidalapi Favorites.albums function."""
-    return TidalFavorites(session, user_id).albums(limit=9999)
+    return TidalFavorites(session, user_id).albums(limit=limit, offset=offset)
 
 
 @get_session
@@ -422,14 +437,16 @@ def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, str]:
 @async_wrap
 def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Album.tracks function."""
-    return TidalAlbum(session, prov_album_id).tracks()
+    return TidalAlbum(session, prov_album_id).tracks(limit=DEFAULT_LIMIT)
 
 
 @get_session
 @async_wrap
-def get_library_tracks(session: TidalSession, user_id: str) -> list[TidalTrack]:
+def get_library_tracks(
+    session: TidalSession, user_id: str, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Favorites.tracks function."""
-    return TidalFavorites(session, user_id).tracks(limit=9999)
+    return TidalFavorites(session, user_id).tracks(limit=limit, offset=offset)
 
 
 @get_session
@@ -452,9 +469,11 @@ def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPlaylist:
 
 @get_session
 @async_wrap
-def get_playlist_tracks(session: TidalSession, prov_playlist_id: str) -> list[TidalTrack]:
+def get_playlist_tracks(
+    session: TidalSession, prov_playlist_id: str, limit: int = DEFAULT_LIMIT, offset: int = 0
+) -> list[TidalTrack]:
     """Async wrapper around the tidal Playlist.tracks function."""
-    return TidalPlaylist(session, prov_playlist_id).tracks(limit=9999)
+    return TidalPlaylist(session, prov_playlist_id).tracks(limit=limit, offset=offset)
 
 
 @get_session

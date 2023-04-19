@@ -194,9 +194,17 @@ class TidalProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
-        artists_obj = await get_library_artists(self, self._tidal_user_id)
-        for artist in artists_obj:
-            yield parse_artist(tidal_provider=self, artist_obj=artist)
+        items_per_chunk = 200
+        count = 0
+        while True:
+            chunk = await get_library_artists(
+                self, self._tidal_user_id, limit=items_per_chunk, offset=count
+            )
+            count += len(chunk)
+            for artist in chunk:
+                yield parse_artist(tidal_provider=self, artist_obj=artist)
+            if len(chunk) < items_per_chunk:
+                break
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Tidal."""
