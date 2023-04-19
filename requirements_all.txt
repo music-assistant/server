@@ -14,7 +14,7 @@ git+https://github.com/jozefKruszynski/python-tidal.git@v0.7.1
 git+https://github.com/pytube/pytube.git@refs/pull/1501/head
 mashumaro==3.7
 memory-tempfile==2.2.3
-music-assistant-frontend==20230414.0
+music-assistant-frontend==20230419.0
 orjson==3.8.9
 pillow==9.5.0
 plexapi==4.13.4
