@@ -324,13 +324,15 @@ def load_tidal_session(
     return session
 
 
-@get_session
-@async_wrap
-def get_library_artists(
+async def get_library_artists(
     session: TidalSession, user_id: str, limit: int = DEFAULT_LIMIT, offset: int = 0
 ) -> list[TidalArtist]:
     """Async wrapper around the tidalapi Favorites.artists function."""
-    return TidalFavorites(session, user_id).artists(limit=limit, offset=offset)
+
+    def inner() -> list[TidalArtist]:
+        return TidalFavorites(session, user_id).artists(limit=limit, offset=offset)
+
+    return await asyncio.to_thread(inner)
 
 
 @get_session

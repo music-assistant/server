@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from tidalapi import Session as TidalSession
 
@@ -26,6 +26,7 @@ from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
     DEFAULT_LIMIT,
+    TidalArtist,
     add_remove_playlist_tracks,
     create_playlist,
     get_album,
@@ -137,6 +138,23 @@ async def get_config_entries(
     )
 
 
+async def iter_items(func: Awaitable | Callable, *args, **kwargs) -> AsyncGenerator[Any, None]:
+    """Yield all items from a larger listing."""
+    offset = 0
+    while True:
+        if asyncio.iscoroutinefunction(func):
+            func = await func(*args, **kwargs, limit=DEFAULT_LIMIT, offset=offset)
+        else:
+            chunk = await asyncio.to_thread(
+                func, *args, **kwargs, limit=DEFAULT_LIMIT, offset=offset
+            )
+        offset += len(chunk)
+        for item in chunk:
+            yield item
+        if len(chunk) < DEFAULT_LIMIT:
+            break
+
+
 class TidalProvider(MusicProvider):
     """Implementation of a Tidal MusicProvider."""
 
@@ -197,17 +215,10 @@ class TidalProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
-        offset = 0
         tidal_session = await self._get_tidal_session(self)
-        while True:
-            chunk = await get_library_artists(
-                tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT, offset=offset
-            )
-            offset += len(chunk)
-            for artist in chunk:
-                yield parse_artist(tidal_provider=self, artist_obj=artist)
-            if len(chunk) < DEFAULT_LIMIT:
-                break
+        artist: TidalArtist  # satisfy the type checker
+        async for artist in iter_items(get_library_artists, tidal_session, self._tidal_user_id):
+            yield parse_artist(tidal_provider=self, artist_obj=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Tidal."""
