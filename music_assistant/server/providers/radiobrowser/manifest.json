@@ -2,7 +2,7 @@
   "type": "music",
   "domain": "radiobrowser",
   "name": "RadioBrowser",
-  "description": "Play your favorite radio stations from RadioBrowser in Music Assistant.",
+  "description": "Search radio streams from RadioBrowser in Music Assistant.",
   "codeowners": ["@gieljnssns"],
   "requirements": [
     "git+https://github.com/gieljnssns/python-radios.git@refs/heads/Add-search-option"
