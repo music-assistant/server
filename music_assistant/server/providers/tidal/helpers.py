@@ -314,11 +314,10 @@ def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
     return session
 
 
-@async_wrap
 def load_tidal_session(
     token_type, access_token, refresh_token=None, expiry_time=None
 ) -> TidalSession:
-    """Async wrapper around the tidalapi Session function."""
+    """Load the tidalapi Session."""
     config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
     session = TidalSession(config=config)
     session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)

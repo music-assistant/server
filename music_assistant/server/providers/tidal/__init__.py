@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator
+from datetime import datetime, timedelta
 from typing import TYPE_CHECKING
 
 from tidalapi import Session as TidalSession
@@ -38,10 +40,10 @@ from .helpers import (
     get_playlist,
     get_playlist_tracks,
     get_similar_tracks,
-    get_tidal_session,
     get_track,
     get_track_url,
     library_items_add_remove,
+    load_tidal_session,
     parse_album,
     parse_artist,
     parse_playlist,
@@ -144,7 +146,7 @@ class TidalProvider(MusicProvider):
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._tidal_user_id = self.config.get_value(CONF_USER_ID)
-        self._tidal_session = await get_tidal_session(self)
+        self._tidal_session = await self._get_tidal_session(self)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -196,7 +198,7 @@ class TidalProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
         offset = 0
-        tidal_session = await get_tidal_session(self)
+        tidal_session = await self._get_tidal_session(self)
         while True:
             chunk = await get_library_artists(
                 tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT, offset=offset
@@ -327,8 +329,6 @@ class TidalProvider(MusicProvider):
         url = await get_track_url(self, item_id)
         if not track:
             raise MediaNotFoundError(f"track {item_id} not found")
-        # make sure that the token is still valid by just requesting it
-        await get_tidal_session(self)
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
@@ -382,3 +382,36 @@ class TidalProvider(MusicProvider):
         except MediaNotFoundError as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
         return playlist
+
+    async def _get_tidal_session(self) -> TidalSession:
+        """Ensure the current token is valid and return a tidal session."""
+        if (
+            self._tidal_session
+            and self._tidal_session.access_token
+            and datetime.fromisoformat(self.config.get_value(CONF_EXPIRY_TIME))
+            > (datetime.now() + timedelta(days=1))
+        ):
+            return self._tidal_session
+        self._tidal_session = await asyncio.to_thread(
+            load_tidal_session,
+            token_type="Bearer",
+            access_token=self.config.get_value(CONF_AUTH_TOKEN),
+            refresh_token=self.config.get_value(CONF_REFRESH_TOKEN),
+            expiry_time=datetime.fromisoformat(self.config.get_value(CONF_EXPIRY_TIME)),
+        )
+        await self.mass.config.set_provider_config_value(
+            self.config.instance_id,
+            CONF_AUTH_TOKEN,
+            self._tidal_session.access_token,
+        )
+        await self.mass.config.set_provider_config_value(
+            self.config.instance_id,
+            CONF_REFRESH_TOKEN,
+            self._tidal_session.refresh_token,
+        )
+        await self.mass.config.set_provider_config_value(
+            self.config.instance_id,
+            CONF_EXPIRY_TIME,
+            self._tidal_session.expiry_time.isoformat(),
+        )
+        return self._tidal_session
