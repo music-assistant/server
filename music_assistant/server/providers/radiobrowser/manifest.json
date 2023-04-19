@@ -4,9 +4,7 @@
   "name": "RadioBrowser",
   "description": "Search radio streams from RadioBrowser in Music Assistant.",
   "codeowners": ["@gieljnssns"],
-  "requirements": [
-    "git+https://github.com/gieljnssns/python-radios.git@refs/heads/Add-search-option"
-  ],
+  "requirements": [],
   "documentation": "https://github.com/orgs/music-assistant/discussions/1202",
   "multi_instance": true
 }
