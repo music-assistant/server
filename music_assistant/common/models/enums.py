@@ -134,6 +134,7 @@ class ContentType(StrEnum):
     def try_parse(cls: ContentType, string: str) -> ContentType:
         """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
+        print(tempstr)
         if "audio/" in tempstr:
             tempstr = tempstr.split("/")[1]
         for splitter in (".", ","):
@@ -149,6 +150,7 @@ class ContentType(StrEnum):
         tempstr = tempstr.split(";")[0]
         tempstr = tempstr.replace("mp4", "m4a")
         tempstr = tempstr.replace("mpd", "dash")
+        print(tempstr)
         try:
             return cls(tempstr)
         except ValueError:

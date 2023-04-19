@@ -84,9 +84,6 @@ class RadioBrowser:
                     params[key] = str(value).lower()
         try:
             async with async_timeout.timeout(self.request_timeout):
-                print(method)
-                print(url)
-                print(params)
                 response = await self.session.request(
                     method,
                     url,
