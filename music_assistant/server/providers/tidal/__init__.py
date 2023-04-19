@@ -23,6 +23,7 @@ from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
+    DEFAULT_LIMIT,
     add_remove_playlist_tracks,
     create_playlist,
     get_album,
@@ -194,16 +195,15 @@ class TidalProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
-        items_per_chunk = 200
         offset = 0
         while True:
             chunk = await get_library_artists(
-                self, self._tidal_user_id, limit=items_per_chunk, offset=offset
+                self, self._tidal_user_id, limit=DEFAULT_LIMIT, offset=offset
             )
             offset += len(chunk)
             for artist in chunk:
                 yield parse_artist(tidal_provider=self, artist_obj=artist)
-            if len(chunk) < items_per_chunk:
+            if len(chunk) < DEFAULT_LIMIT:
                 break
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
