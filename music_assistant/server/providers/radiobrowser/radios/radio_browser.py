@@ -59,7 +59,7 @@ class RadioBrowser:
             Radio Browser API.
 
         Raises:
-            RadioBrowserConnectionError: An error occurred while communitcation with
+            RadioBrowserConnectionError: An error occurred while communication with
                 the Radio Browser API.
             RadioBrowserConnectionTimeoutError: A timeout occurred while communicating
                 with the Radio Browser API.

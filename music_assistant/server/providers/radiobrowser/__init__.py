@@ -10,12 +10,10 @@ from asyncio_throttle import Throttler
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
 from music_assistant.common.models.media_items import (
-    BrowseFolder,
     ContentType,
     ImageType,
     MediaItemImage,
     MediaItemLink,
-    MediaItemMetadata,
     MediaType,
     ProviderMapping,
     Radio,
@@ -26,25 +24,15 @@ from music_assistant.constants import __version__
 from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
-from .radios.radio_browser import Order, RadioBrowser, RadioBrowserError
+from .radios.radio_browser import RadioBrowser, RadioBrowserError
 
-SUPPORTED_FEATURES = (
-    ProviderFeature.SEARCH,
-    ProviderFeature.BROWSE,
-)
+SUPPORTED_FEATURES = (ProviderFeature.SEARCH,)
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-
-CODEC_TO_MIMETYPE = {
-    "MP3": "audio/mpeg",
-    "AAC": "audio/aac",
-    "AAC+": "audio/aac",
-    "OGG": "application/ogg",
-}
 
 
 async def setup(
@@ -69,7 +57,7 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
+    # ruff: noqa: ARG001 D205
     return tuple()  # we do not have any config entries (yet)
 
 
@@ -91,7 +79,7 @@ class RadioBrowserProvider(MusicProvider):
         try:
             await self.radios.stats()
         except RadioBrowserError as err:
-            self.logger.error("Could not connect to Radio Browser API", err)
+            self.logger.error("%s", err)
 
         return True
 
@@ -121,304 +109,6 @@ class RadioBrowserProvider(MusicProvider):
             result.radio.append(await self._parse_radio(item))
 
         return result
-
-    async def browse(self, path: str) -> BrowseFolder:
-        """Browse this provider's items.
-
-        :param path: The path to browse, (e.g. provid://artists).
-        """
-        print(type(path), path)
-        _, subpath = path.split("://")
-        print(type(subpath), subpath)
-        # _, subsubpath = path.split("/")
-        # if subpath:
-        #     subsubpath = subpath.split("/")
-
-        # countries = await self.radios.countries()
-        countries = await self.radios.countries(order=Order.NAME)
-        languages = await self.radios.languages(order=Order.NAME, hide_broken=True)
-        tags = await self.radios.tags(
-            hide_broken=True,
-            limit=100,
-            order=Order.STATION_COUNT,
-            reverse=True,
-        )
-        tags.sort(key=lambda tag: tag.name)
-
-        if not subpath:
-            # return main listing
-            root_items: list[BrowseFolder] = []
-            # sub_items: list[BrowseFolder] = []
-            # if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            root_items.append(
-                BrowseFolder(
-                    item_id="popular",
-                    provider=self.domain,
-                    path=path + "popular",
-                    name="",
-                    label="By popularity",
-                )
-            )
-            root_items.append(
-                BrowseFolder(
-                    item_id="country",
-                    provider=self.domain,
-                    path=path + "country",
-                    name="",
-                    label="By country",
-                )
-            )
-            root_items.append(
-                BrowseFolder(
-                    item_id="tag",
-                    provider=self.domain,
-                    path=path + "tag",
-                    name="",
-                    label="By tag",
-                )
-            )
-            return BrowseFolder(
-                item_id="root",
-                provider=self.domain,
-                path=path,
-                name=self.name,
-                items=root_items,
-            )
-
-        # if subpath.startswith("tag"):
-        if subpath == "tag":
-            sub_items: list[BrowseFolder] = []
-            subsub_items: list[BrowseFolder] = []
-            for tag in tags:
-                sub_items.append(
-                    BrowseFolder(
-                        item_id=tag.name,
-                        provider=self.domain,
-                        path=path + "/" + tag.name.lower(),
-                        name="",
-                        label=tag.name,
-                    )
-                )
-            return BrowseFolder(
-                item_id="tag",
-                provider=self.domain,
-                path=path,
-                name=self.name,
-                items=sub_items,
-            )
-        # for tag in tags:
-        #     print(tag.name.lower())
-        #     if subpath == "tag/" + tag.name.lower():
-        #         print("hier ben ik dan")
-        #         items = []
-        #         stations = await self.radios.stations(
-        #             filter_by=FilterBy.TAG_EXACT,
-        #             filter_term=tag,
-        #             hide_broken=True,
-        #             order=Order.NAME,
-        #             reverse=False,
-        #         )
-        #         print(stations)
-        #         for station in stations:
-        #             print(station)
-        #             items.append(await self._parse_radio(station))
-        #         return BrowseFolder(
-        #             item_id="radios",
-        #             provider=self.domain,
-        #             path=path,
-        #             name="",
-        #             label="radios",
-        #             items=[x for x in items],
-        #         )
-        if subpath == "popular":
-            stations = await self.radios.stations(
-                hide_broken=True,
-                limit=250,
-                order=Order.CLICK_COUNT,
-                reverse=True,
-            )
-            items = []
-            for station in stations:
-                items.append(await self._parse_radio(station))
-            return BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path,
-                name="",
-                label="radios",
-                items=[x for x in items],
-            )
-        if subpath == "country":
-            sub_items: list[BrowseFolder] = []
-            for country in countries:
-                metadata = MediaItemMetadata()
-                favicon = country.favicon
-                # sub_items: list[BrowseFolder] = []
-                sub_items.append(
-                    BrowseFolder(
-                        item_id=country.name,
-                        provider=self.domain,
-                        path=path + "/" + country.name.lower(),
-                        name="",
-                        label=country.name,
-                        # metadata=ima
-                        # browsefolder=[MediaItemMetadata = MediaItemMetadata],
-                    )
-                )
-            return BrowseFolder(
-                item_id="country",
-                provider=self.domain,
-                path=path,
-                name=self.name,
-                items=sub_items,
-            )
-
-    # # @callback
-    # @staticmethod
-    # def _async_get_station_mime_type(station: Station) -> str | None:
-    #     """Determine mime type of a radio station."""
-    #     mime_type = CODEC_TO_MIMETYPE.get(station.codec)
-    #     if not mime_type:
-    #         mime_type, _ = mimetypes.guess_type(station.url)
-    #     return mime_type
-
-    # # @callback
-    # def _async_build_stations(
-    #     self, radios: RadioBrowser, stations: list[Station]
-    # ) -> list[BrowseFolder]:
-    #     """Build list of media sources from radio stations."""
-    #     items: list[BrowseFolder] = []
-
-    #     for station in stations:
-    #         # if station.codec == "UNKNOWN" or not (
-    #         #     mime_type := self._async_get_station_mime_type(station)
-    #         # ):
-    #         #     continue
-
-    #         items.append(
-    #             BrowseFolder(
-    #                 item_id="radios",
-    #                 provider=self.domain,
-    #                 path=station.uuid,
-    #                 # media_class=MediaClass.Radio,
-    #                 # media_content_type=mime_type,
-    #                 name=station.name,
-    #                 # can_play=True,
-    #                 # can_expand=False,
-    #                 # thumbnail=station.favicon,
-    #             )
-    #         )
-    #     print(items)
-
-    #     return items
-
-    # async def _async_build_by_country(self, radios: RadioBrowser, path: str) -> list[BrowseFolder]:
-    #     """Handle browsing radio stations by country."""
-    #     category, _, country_code = (path or "").partition("/")
-    #     if country_code:
-    #         stations = await radios.stations(
-    #             filter_by=FilterBy.COUNTRY_CODE_EXACT,
-    #             filter_term=country_code,
-    #             hide_broken=True,
-    #             order=Order.NAME,
-    #             reverse=False,
-    #         )
-    #         return self._async_build_stations(radios, stations)
-
-    #     # We show country in the root additionally, when there is no item
-    #     if not path or category == "country":
-    #         countries = await radios.countries(order=Order.NAME)
-    #         return [
-    #             BrowseFolder(
-    #                 provider=self.domain,
-    #                 path=f"country/{country.code}",
-    #                 # media_class=MediaClass.DIRECTORY,
-    #                 # media_content_type=MediaType.MUSIC,
-    #                 title=country.name,
-    #                 can_play=False,
-    #                 can_expand=True,
-    #                 thumbnail=country.favicon,
-    #             )
-    #             for country in countries
-    #         ]
-
-    #     return []
-
-    # async def _async_build_popular(self, radios: RadioBrowser, path: str) -> list[BrowseFolder]:
-    #     """Handle browsing popular radio stations."""
-    #     if path == "popular":
-    #         stations = await radios.stations(
-    #             hide_broken=True,
-    #             limit=250,
-    #             order=Order.CLICK_COUNT,
-    #             reverse=True,
-    #         )
-    #         return self._async_build_stations(radios, stations)
-
-    #     if not path:
-    #         return [
-    #             BrowseFolder(
-    #                 provider=self.domain,
-    #                 path="popular",
-    #                 # media_class=MediaClass.DIRECTORY,
-    #                 # media_content_type=MediaType.MUSIC,
-    #                 title="Popular",
-    #                 can_play=False,
-    #                 can_expand=True,
-    #             )
-    #         ]
-
-    #     return []
-
-    # async def _async_build_by_tag(self, radios: RadioBrowser, path: str) -> list[BrowseFolder]:
-    #     """Handle browsing radio stations by tags."""
-    #     category, _, tag = (path or "").partition("/")
-    #     if category == "tag" and tag:
-    #         stations = await radios.stations(
-    #             filter_by=FilterBy.TAG_EXACT,
-    #             filter_term=tag,
-    #             hide_broken=True,
-    #             order=Order.NAME,
-    #             reverse=False,
-    #         )
-    #         return self._async_build_stations(radios, stations)
-
-    #     if category == "tag":
-    #         tags = await radios.tags(
-    #             hide_broken=True,
-    #             limit=100,
-    #             order=Order.STATION_COUNT,
-    #             reverse=True,
-    #         )
-
-    #         # Now we have the top tags, reorder them by name
-    #         tags.sort(key=lambda tag: tag.name)
-
-    #         return [
-    #             BrowseFolder(
-    #                 provider=self.domain,
-    #                 path=f"tag/{tag.name}",
-    #                 # media_class=MediaClass.DIRECTORY,
-    #                 # media_content_type=MediaType.MUSIC,
-    #                 title=tag.name.title(),
-    #                 can_play=False,
-    #                 can_expand=True,
-    #             )
-    #             for tag in tags
-    #         ]
-
-    #     if not path:
-    #         return [
-    #             BrowseFolder(
-    #                 provider=self.domain,
-    #                 path="tag",
-    #                 title="By Category",
-    #                 can_play=False,
-    #                 can_expand=True,
-    #             )
-    #         ]
-
-    #     return []
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
