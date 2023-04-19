@@ -5,8 +5,6 @@ from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING
 
-from asyncio_throttle import Throttler
-
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
 from music_assistant.common.models.media_items import (
@@ -64,8 +62,6 @@ async def get_config_entries(
 class RadioBrowserProvider(MusicProvider):
     """Provider implementation for RadioBrowser."""
 
-    _throttler: Throttler
-
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
@@ -80,8 +76,6 @@ class RadioBrowserProvider(MusicProvider):
             await self.radios.stats()
         except RadioBrowserError as err:
             self.logger.error("%s", err)
-
-        return True
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
