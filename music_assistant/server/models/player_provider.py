@@ -141,6 +141,11 @@ class PlayerProvider(Provider):
         If the player does not need any polling, simply do not override this method.
         """
 
+    def on_child_state(self, player_id: str, child_player: Player, changed_keys: set[str]) -> None:
+        """Call when the state of a child player updates."""
+        # default implementation: simply update the state of the group player
+        self.mass.players.update(player_id, skip_forward=True)
+
     # DO NOT OVERRIDE BELOW
 
     @property

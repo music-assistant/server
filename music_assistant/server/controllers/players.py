@@ -136,6 +136,8 @@ class PlayerController:
             player.name,
         )
         self.mass.signal_event(EventType.PLAYER_ADDED, object_id=player.player_id, data=player)
+        # always call update to fix special attributes like display name, group volume etc.
+        self.update(player.player_id)
 
     @api_command("players/register_or_update")
     def register_or_update(self, player: Player) -> None:
@@ -228,11 +230,12 @@ class PlayerController:
             for child_player_id in player.group_childs:
                 if child_player_id == player_id:
                     continue
-                self.update(child_player_id, skip_forward=True, force_update=force_update)
+                self.update(child_player_id, skip_forward=True)
 
         # update group player(s) when child updates
         for group_player in self._get_player_groups(player_id):
-            self.update(group_player.player_id, skip_forward=True, force_update=force_update)
+            player_prov = self.get_player_provider(group_player.player_id)
+            player_prov.on_child_state(group_player.player_id, player, changed_keys)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -317,9 +320,12 @@ class PlayerController:
         player = self.get(player_id, True)
         if player.powered == powered:
             return
-        # stop player at power off
-        if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+        # send stop at power off
+        if not powered:
             await self.cmd_stop(player_id)
+        # unsync player at power off
+        if not powered and player.synced_to is not None:
+            await self.cmd_unsync(player_id)
         if PlayerFeature.POWER not in player.supported_features:
             player.powered = powered
             self.update(player_id)
@@ -358,7 +364,7 @@ class PlayerController:
         group_player = self.get(player_id, True)
         assert group_player
         # handle group volume by only applying the volume to powered members
-        cur_volume = group_player.volume_level
+        cur_volume = group_player.group_volume
         new_volume = volume_level
         volume_dif = new_volume - cur_volume
         volume_dif_percent = 1 + new_volume / 100 if cur_volume == 0 else volume_dif / cur_volume
@@ -477,29 +483,27 @@ class PlayerController:
         """Return the active_source id for given player."""
         # if player is synced, return master/group leader
         if player.synced_to and player.synced_to in self._players:
-            return self._get_active_source(self.get(player.synced_to))
+            return player.synced_to
         # iterate player groups to find out if one is playing
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
             for group_player in group_players:
                 if group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-                    return group_player.active_source
+                    return group_player.player_id
             # fallback to the first powered group player
             for group_player in group_players:
                 if group_player.powered:
-                    return group_player.active_source
-        # defaults to the player's own player id
+                    return group_player.player_id
+        # guess source from player's current url
         if player.current_url:
             if self.mass.webserver.base_url in player.current_url:
                 return player.player_id
-            elif ":" in player.current_url:
+            if ":" in player.current_url:
                 # extract source from uri/url
                 return player.current_url.split(":")[0]
             return player.current_item_id or player.current_url
-        elif not player.powered:
-            # reset active source when player powers off
-            return player.player_id
-        return player.active_source
+        # defaults to the player's own player id
+        return player.player_id
 
     def _get_group_volume_level(self, player: Player) -> int:
         """Calculate a group volume from the grouped members."""

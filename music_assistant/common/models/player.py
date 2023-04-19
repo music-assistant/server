@@ -13,9 +13,9 @@ from .enums import PlayerFeature, PlayerState, PlayerType
 class DeviceInfo(DataClassDictMixin):
     """Model for a player's deviceinfo."""
 
-    model: str = "unknown"
-    address: str = "unknown"
-    manufacturer: str = "unknown"
+    model: str = "Unknown model"
+    address: str = ""
+    manufacturer: str = "Unknown Manufacturer"
 
 
 @dataclass
