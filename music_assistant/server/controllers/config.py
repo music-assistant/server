@@ -443,13 +443,12 @@ class ConfigController:
                 _filename = os.path.join(self.mass.storage_path, filename)
                 async with aiofiles.open(_filename, "r", encoding="utf-8") as _file:
                     self._data = json_loads(await _file.read())
+                    LOGGER.debug("Loaded persistent settings from %s", filename)
                     return
             except FileNotFoundError:
                 pass
             except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
                 LOGGER.error("Error while reading persistent storage file %s", filename)
-            else:
-                LOGGER.debug("Loaded persistent settings from %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
     async def _async_save(self):
