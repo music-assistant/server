@@ -59,6 +59,7 @@ def main() -> int:
     # TODO: compare versions and only store most recent
     final_requirements: dict[str, str] = {}
     for req_str in core_reqs + extra_reqs:
+        package_name = req_str
         if match := PACKAGE_REGEX.search(req_str):
             package_name = match.group(1).lower().replace("_", "-")
         elif match := GIT_REPO_REGEX.search(req_str):
