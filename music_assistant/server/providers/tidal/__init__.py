@@ -319,7 +319,7 @@ class TidalProvider(MusicProvider):
         if not track:
             raise MediaNotFoundError(f"track {item_id} not found")
         # make sure that the token is still valid by just requesting it
-        await self.get_tidal_session()
+        await get_tidal_session(self)
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
