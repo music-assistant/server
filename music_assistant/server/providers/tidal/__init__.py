@@ -143,7 +143,7 @@ async def iter_items(func: Awaitable | Callable, *args, **kwargs) -> AsyncGenera
     offset = 0
     while True:
         if asyncio.iscoroutinefunction(func):
-            func = await func(*args, **kwargs, limit=DEFAULT_LIMIT, offset=offset)
+            chunk = await func(*args, **kwargs, limit=DEFAULT_LIMIT, offset=offset)
         else:
             chunk = await asyncio.to_thread(
                 func, *args, **kwargs, limit=DEFAULT_LIMIT, offset=offset
