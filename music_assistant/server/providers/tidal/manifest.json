@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "tidal",
+  "name": "Tidal",
+  "description": "Support for the Tidal streaming provider in Music Assistant.",
+  "codeowners": ["@jozefKruszynski"],
+  "requirements": ["git+https://github.com/jozefKruszynski/python-tidal.git@v0.7.1"],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1201",
+  "multi_instance": true
+}

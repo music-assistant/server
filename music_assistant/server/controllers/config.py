@@ -282,24 +282,25 @@ class ConfigController:
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
-            entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov_entries
+            prov_entries = prov.get_player_config_entries(player_id)
+            prov_entries_keys = {x.key for x in prov_entries}
+            # combine provider defined entries with default player config entries
+            entries = prov_entries + tuple(
+                x for x in DEFAULT_PLAYER_CONFIG_ENTRIES if x.key not in prov_entries_keys
+            )
             return PlayerConfig.parse(entries, raw_conf)
         raise KeyError(f"No config found for player id {player_id}")
 
     @api_command("config/players/get_value")
     def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a player."""
-        conf = self.get(f"{CONF_PLAYERS}/{player_id}")
-        if not conf:
-            player = self.mass.players.get(player_id, True)
-            conf = {"provider": player.provider, "player_id": player_id, "values": {}}
-        prov = self.mass.get_provider(conf["provider"])
-        entries = DEFAULT_PLAYER_CONFIG_ENTRIES + prov.get_player_config_entries(player_id)
-        for entry in entries:
-            if entry.key == key:
-                # always create a copy to prevent we're altering the base object
-                return ConfigEntry.from_dict(entry.to_dict()).parse_value(conf["values"].get(key))
-        raise KeyError(f"ConfigEntry {key} is invalid")
+        conf = self.get_player_config(player_id)
+        # always create a copy to prevent we're altering the base object
+        return (
+            conf.values[key].value
+            if conf.values[key].value is not None
+            else conf.values[key].default_value
+        )
 
     @api_command("config/players/save")
     def save_player_config(
@@ -442,13 +443,12 @@ class ConfigController:
                 _filename = os.path.join(self.mass.storage_path, filename)
                 async with aiofiles.open(_filename, "r", encoding="utf-8") as _file:
                     self._data = json_loads(await _file.read())
+                    LOGGER.debug("Loaded persistent settings from %s", filename)
                     return
             except FileNotFoundError:
                 pass
             except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
                 LOGGER.error("Error while reading persistent storage file %s", filename)
-            else:
-                LOGGER.debug("Loaded persistent settings from %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
     async def _async_save(self):

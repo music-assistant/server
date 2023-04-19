@@ -443,6 +443,9 @@ class PlayerQueuesController:
             # track is already played for > 90% - skip to next
             resume_item = next_item
             resume_pos = 0
+        elif queue.current_index is not None and len(queue_items) > 0:
+            resume_item = self.get_item(queue_id, queue.current_index)
+            resume_pos = 0
         elif queue.current_index is None and len(queue_items) > 0:
             # items available in queue but no previous track, start at 0
             resume_item = self.get_item(queue_id, 0)
@@ -628,7 +631,7 @@ class PlayerQueuesController:
         cur_item = self.get_item(queue.queue_id, cur_index)
         next_index = self.get_next_index(queue.queue_id, cur_index)
         next_item = self.get_item(queue.queue_id, next_index)
-        if not next_item:
+        if not cur_item or not next_item:
             raise QueueEmpty("No more tracks left in the queue.")
         queue.index_in_buffer = next_index
         # work out crossfade
