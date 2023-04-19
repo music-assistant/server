@@ -5,6 +5,8 @@ from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING
 
+from radios import RadioBrowser, RadioBrowserError
+
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
 from music_assistant.common.models.media_items import (
@@ -21,8 +23,6 @@ from music_assistant.common.models.media_items import (
 from music_assistant.constants import __version__
 from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
-
-from .radios.radio_browser import RadioBrowser, RadioBrowserError
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH,)
 
@@ -73,6 +73,7 @@ class RadioBrowserProvider(MusicProvider):
             session=self.mass.http_session, user_agent=f"MusicAssistant/{__version__}"
         )
         try:
+            # Try to get some stats to check connection to RadioBrowser API
             await self.radios.stats()
         except RadioBrowserError as err:
             self.logger.error("%s", err)
