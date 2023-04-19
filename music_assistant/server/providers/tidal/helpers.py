@@ -167,7 +167,8 @@ def parse_track(tidal_provider, track_obj: TidalTrack) -> Track:
             provider_domain=tidal_provider.domain,
             provider_instance=tidal_provider.instance_id,
             content_type=ContentType.FLAC,
-            bit_rate=1411,
+            sample_rate=44100,
+            bit_depth=16,
             url=f"http://www.tidal.com/tracks/{track_id}",
             available=available,
         )

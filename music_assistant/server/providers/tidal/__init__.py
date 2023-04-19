@@ -324,6 +324,8 @@ class TidalProvider(MusicProvider):
             item_id=track.id,
             provider=self.instance_id,
             content_type=ContentType.FLAC,
+            sample_rate=44100,
+            bit_depth=16,
             duration=track.duration,
             direct=url,
         )
