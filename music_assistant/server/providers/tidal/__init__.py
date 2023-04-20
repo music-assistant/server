@@ -307,25 +307,16 @@ class TidalProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        offset = 0
-        total_playlist_tracks = 1
         tidal_session = await self._get_tidal_session()
-        while True:
-            chunk = await get_playlist_tracks(
-                tidal_session,
-                limit=DEFAULT_LIMIT,
-                offset=offset,
-                prov_playlist_id=prov_playlist_id,
-            )
-            offset += len(chunk)
-            for track_obj in chunk:
-                if track_obj.available:
-                    track = await self._parse_track(track_obj=track_obj)
-                    track.position = total_playlist_tracks
-                    total_playlist_tracks += 1
-                    yield track
-            if len(chunk) < DEFAULT_LIMIT:
-                break
+        total_playlist_tracks = 0
+        track: TidalTrack  # satisfy the type checker
+        async for track_obj in iter_items(
+            get_playlist_tracks, tidal_session, prov_playlist_id, limit=DEFAULT_LIMIT
+        ):
+            total_playlist_tracks += 1
+            track = await self._parse_track(track_obj=track_obj)
+            track.position = total_playlist_tracks
+            yield track
 
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
         """Get similar tracks for given track id."""
