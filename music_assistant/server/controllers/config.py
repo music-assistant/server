@@ -282,7 +282,6 @@ class ConfigController:
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
-            prov_entries = prov.get_player_config_entries(player_id)
             prov_entries_keys = {x.key for x in prov_entries}
             # combine provider defined entries with default player config entries
             entries = prov_entries + tuple(
