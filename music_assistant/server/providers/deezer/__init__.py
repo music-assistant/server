@@ -59,10 +59,10 @@ from .helpers import (
     remove_user_albums,
     remove_user_artists,
     remove_user_tracks,
-    search_and_parse_album,
-    search_and_parse_artist,
-    search_and_parse_playlist,
-    search_and_parse_track,
+    search_and_parse_albums,
+    search_and_parse_artists,
+    search_and_parse_playlists,
+    search_and_parse_tracks,
 )
 
 SUPPORTED_FEATURES = (
@@ -176,25 +176,25 @@ class DeezerProvider(MusicProvider):
             for media_type in media_types:
                 if media_type == MediaType.TRACK:
                     tasks[MediaType.TRACK] = taskgroup.create_task(
-                        search_and_parse_track(
+                        search_and_parse_tracks(
                             mass=self, client=self.client, query=search_query, limit=limit
                         )
                     )
                 elif media_type == MediaType.ARTIST:
                     tasks[MediaType.ARTIST] = taskgroup.create_task(
-                        search_and_parse_artist(
+                        search_and_parse_artists(
                             mass=self, client=self.client, query=search_query, limit=limit
                         )
                     )
                 elif media_type == MediaType.ALBUM:
                     tasks[MediaType.ALBUM] = taskgroup.create_task(
-                        search_and_parse_album(
+                        search_and_parse_albums(
                             mass=self, client=self.client, query=search_query, limit=limit
                         )
                     )
                 elif media_type == MediaType.PLAYLIST:
                     tasks[MediaType.PLAYLIST] = taskgroup.create_task(
-                        search_and_parse_playlist(
+                        search_and_parse_playlists(
                             mass=self, client=self.client, query=search_query, limit=limit
                         )
                     )

@@ -462,7 +462,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
     )
 
 
-async def search_and_parse_track(
+async def search_and_parse_tracks(
     mass, client: deezer.Client, query: str, limit: int = 5
 ) -> list[Track]:
     """Search for tracks and parse them."""
@@ -473,7 +473,7 @@ async def search_and_parse_track(
     return tracks
 
 
-async def search_and_parse_artist(
+async def search_and_parse_artists(
     mass, client: deezer.Client, query: str, limit: int = 5
 ) -> list[Artist]:
     """Search for artists and parse them."""
@@ -484,7 +484,7 @@ async def search_and_parse_artist(
     return artists
 
 
-async def search_and_parse_album(
+async def search_and_parse_albums(
     mass, client: deezer.Client, query: str, limit: int = 5
 ) -> list[Album]:
     """Search for album and parse them."""
@@ -495,7 +495,7 @@ async def search_and_parse_album(
     return albums
 
 
-async def search_and_parse_playlist(
+async def search_and_parse_playlists(
     mass, client: deezer.Client, query: str, limit: int = 5
 ) -> list[Playlist]:
     """Search for playlists and parse them."""

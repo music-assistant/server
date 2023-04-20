@@ -746,7 +746,7 @@ async def _get_ffmpeg_args(
             "Please install ffmpeg on your OS to enable playback.",
         )
 
-    major_version = int(version.split(".")[0])
+    major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
 
     # generic args
     generic_args = [
