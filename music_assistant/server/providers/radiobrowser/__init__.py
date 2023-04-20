@@ -318,7 +318,6 @@ class RadioBrowserProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         stream = await self.radios.station(uuid=item_id)
-        url = stream.url
         url_resolved = stream.url_resolved
         await self.radios.station_click(uuid=item_id)
         return StreamDetails(
@@ -326,9 +325,8 @@ class RadioBrowserProvider(MusicProvider):
             item_id=item_id,
             content_type=ContentType.try_parse(stream.codec),
             media_type=MediaType.RADIO,
-            data=url,
+            data=url_resolved,
             expires=time() + 24 * 3600,
-            direct=url_resolved,
         )
 
     async def get_audio_stream(
