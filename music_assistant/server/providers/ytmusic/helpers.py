@@ -12,9 +12,14 @@ from time import time
 
 import ytmusicapi
 from aiohttp import ClientSession
-from ytmusicapi.constants import (OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET,
-                                  OAUTH_CODE_URL, OAUTH_SCOPE, OAUTH_TOKEN_URL,
-                                  OAUTH_USER_AGENT)
+from ytmusicapi.constants import (
+    OAUTH_CLIENT_ID,
+    OAUTH_CLIENT_SECRET,
+    OAUTH_CODE_URL,
+    OAUTH_SCOPE,
+    OAUTH_TOKEN_URL,
+    OAUTH_USER_AGENT,
+)
 
 from music_assistant.server.helpers.auth import AuthenticationHelper
 
@@ -46,13 +51,10 @@ async def get_album(prov_album_id: str) -> dict[str, str]:
     return await asyncio.to_thread(_get_album)
 
 
-async def get_playlist(
-    prov_playlist_id: str, headers: dict[str, str]
-) -> dict[str, str]:
+async def get_playlist(prov_playlist_id: str, headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=None)
         playlist["checksum"] = get_playlist_checksum(playlist)
@@ -90,7 +92,6 @@ async def get_library_artists(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_artists function."""
 
     def _get_library_artists():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         artists = ytm.get_library_subscriptions(limit=9999)
         # Sync properties with uniformal artist object
@@ -108,7 +109,6 @@ async def get_library_albums(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_albums function."""
 
     def _get_library_albums():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         return ytm.get_library_albums(limit=9999)
 
@@ -119,7 +119,6 @@ async def get_library_playlists(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_playlists function."""
 
     def _get_library_playlists():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlists = ytm.get_library_playlists(limit=9999)
         # Sync properties with uniformal playlist object
@@ -136,7 +135,6 @@ async def get_library_tracks(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_tracks function."""
 
     def _get_library_tracks():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         tracks = ytm.get_library_songs(limit=9999)
         return tracks
@@ -150,7 +148,6 @@ async def library_add_remove_artist(
     """Add or remove an artist to the user's library."""
 
     def _library_add_remove_artist():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         if add:
             return "actions" in ytm.subscribe_artists(channelIds=[prov_artist_id])
@@ -168,7 +165,6 @@ async def library_add_remove_album(
     album = await get_album(prov_album_id=prov_item_id)
 
     def _library_add_remove_album():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlist_id = album["audioPlaylistId"]
         if add:
@@ -186,7 +182,6 @@ async def library_add_remove_playlist(
     """Add or remove an album or playlist to the user's library."""
 
     def _library_add_remove_playlist():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         if add:
             return "actions" in ytm.rate_playlist(prov_item_id, "LIKE")
@@ -198,16 +193,11 @@ async def library_add_remove_playlist(
 
 
 async def add_remove_playlist_tracks(
-    headers: dict[str, str],
-    prov_playlist_id: str,
-    prov_track_ids: list[str],
-    add: bool,
-    username: str = None,
+    headers: dict[str, str], prov_playlist_id: str, prov_track_ids: list[str], add: bool
 ) -> bool:
     """Async wrapper around adding/removing tracks to a playlist."""
 
     def _add_playlist_tracks():
-        
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         if add:
             return ytm.add_playlist_items(playlistId=prov_playlist_id, videoIds=prov_track_ids)
@@ -221,7 +211,7 @@ async def add_remove_playlist_tracks(
 async def get_song_radio_tracks(
     headers: dict[str, str], prov_item_id: str, limit=25
 ) -> dict[str, str]:
-    """Async wrapper around the ytmusicapi radio function."""    
+    """Async wrapper around the ytmusicapi radio function."""
 
     def _get_song_radio_tracks():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
@@ -314,7 +304,7 @@ async def get_oauth_code(session: ClientSession):
         return await code_response.json()
 
 
-async def visit_oauth_auth_url(auth_helper: AuthenticationHelper, code: dict[str, str]):    
+async def visit_oauth_auth_url(auth_helper: AuthenticationHelper, code: dict[str, str]):
     """Redirect the user to the OAuth login page and wait for the token."""
     auth_url = f"{code['verification_url']}?user_code={code['user_code']}"
     auth_helper.send_url(auth_url=auth_url)
@@ -328,9 +318,10 @@ async def visit_oauth_auth_url(auth_helper: AuthenticationHelper, code: dict[str
         await asyncio.sleep(interval)
         expiry -= interval
     raise TimeoutError("You took too long to log in")
-    
+
 
 async def get_oauth_token_from_code(session: ClientSession, device_code: str):
+    """Check if the OAuth token is ready yet."""
     data, headers = _get_data_and_headers(
         data={
             "client_secret": OAUTH_CLIENT_SECRET,
@@ -339,7 +330,7 @@ async def get_oauth_token_from_code(session: ClientSession, device_code: str):
         }
     )
     async with session.post(
-        OAUTH_TOKEN_URL,    
+        OAUTH_TOKEN_URL,
         json=data,
         headers=headers,
     ) as token_response:
@@ -347,6 +338,7 @@ async def get_oauth_token_from_code(session: ClientSession, device_code: str):
 
 
 async def refresh_oauth_token(session: ClientSession, refresh_token: str):
+    """Refresh an expired OAuth token."""
     data, headers = _get_data_and_headers(
         {
             "client_secret": OAUTH_CLIENT_SECRET,
