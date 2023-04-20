@@ -8,6 +8,7 @@ from abc import abstractmethod
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 
+import cchardet
 import xmltodict
 
 from music_assistant.common.helpers.util import parse_title_and_version
@@ -449,7 +450,8 @@ class FileSystemProviderBase(MusicProvider):
             playlist_data = b""
             async for chunk in self.read_file_content(prov_playlist_id):
                 playlist_data += chunk
-            playlist_data = playlist_data.decode("utf-8")
+            encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
+            playlist_data = playlist_data.decode(encoding_details["encoding"])
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = await parse_m3u(playlist_data)
@@ -489,11 +491,12 @@ class FileSystemProviderBase(MusicProvider):
         playlist_data = b""
         async for chunk in self.read_file_content(prov_playlist_id):
             playlist_data += chunk
-        playlist_data = playlist_data.decode("utf-8")
+        encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
+        playlist_data = playlist_data.decode(encoding_details["encoding"])
         for uri in prov_track_ids:
             playlist_data += f"\n{uri}"
 
-        # write playlist file
+        # write playlist file (always in utf-8)
         await self.write_file_content(prov_playlist_id, playlist_data.encode("utf-8"))
 
     async def remove_playlist_tracks(
@@ -509,7 +512,8 @@ class FileSystemProviderBase(MusicProvider):
         playlist_data = b""
         async for chunk in self.read_file_content(prov_playlist_id):
             playlist_data += chunk
-        playlist_data.decode("utf-8")
+        encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
+        playlist_data = playlist_data.decode(encoding_details["encoding"])
 
         if ext in ("m3u", "m3u8"):
             playlist_lines = await parse_m3u(playlist_data)
@@ -521,7 +525,7 @@ class FileSystemProviderBase(MusicProvider):
                 cur_lines.append(playlist_line)
 
         new_playlist_data = "\n".join(cur_lines)
-        # write playlist file
+        # write playlist file (always in utf-8)
         await self.write_file_content(prov_playlist_id, new_playlist_data.encode("utf-8"))
 
     async def create_playlist(self, name: str) -> Playlist:
