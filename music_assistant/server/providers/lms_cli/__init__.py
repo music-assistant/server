@@ -9,7 +9,7 @@ from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.util import select_free_port
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import PlayerState
 from music_assistant.server.models.plugin import PluginProvider
 
@@ -47,9 +47,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return tuple()  # we do not have any config entries (yet)
 
 
@@ -147,6 +157,9 @@ class LmsCli(PluginProvider):
                         str(kwargs),
                     )
                     cmd_result: list[str] = handler(player_id, *args, **kwargs)
+                    if asyncio.iscoroutine(cmd_result):
+                        cmd_result = await cmd_result
+
                     if isinstance(cmd_result, dict):
                         result_parts = dict_to_strings(cmd_result)
                         result_str = " ".join(urllib.parse.quote(x) for x in result_parts)
@@ -167,6 +180,8 @@ class LmsCli(PluginProvider):
                 response += "\n"
                 writer.write(response.encode("utf-8"))
                 await writer.drain()
+        except ConnectionResetError:
+            pass
         except Exception as err:
             self.logger.debug("Error handling CLI command", exc_info=err)
         finally:
@@ -194,6 +209,9 @@ class LmsCli(PluginProvider):
                     str(kwargs),
                 )
                 cmd_result = handler(player_id, *args, **kwargs)
+                if asyncio.iscoroutine(cmd_result):
+                    cmd_result = await cmd_result
+
                 if cmd_result is None:
                     cmd_result = {}
                 elif not isinstance(cmd_result, dict):
@@ -234,7 +252,7 @@ class LmsCli(PluginProvider):
             players.append(player_item_from_mass(start_index + index, mass_player))
         return PlayersResponse(count=len(players), players_loop=players)
 
-    def _handle_status(
+    async def _handle_status(
         self,
         player_id: str,
         *args,
@@ -250,9 +268,14 @@ class LmsCli(PluginProvider):
         assert queue is not None
         if start_index == "-":
             start_index = queue.current_index or 0
-        queue_items = self.mass.players.queues.items(queue.queue_id)[
-            start_index : start_index + limit
-        ]
+        queue_items = []
+        index = 0
+        async for item in self.mass.players.queues.items(queue.queue_id):
+            if index >= start_index:
+                queue_items.append(item)
+            if len(queue_items) == limit:
+                break
+            index += 1
         # we ignore the tags, just always send all info
         return player_status_from_mass(
             self.mass, player=player, queue=queue, queue_items=queue_items

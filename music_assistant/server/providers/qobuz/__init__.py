@@ -12,7 +12,7 @@ import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -67,9 +67,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return (
         ConfigEntry(
             key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
@@ -181,30 +191,30 @@ class QobuzProvider(MusicProvider):
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         params = {"artist_id": prov_artist_id}
-        artist_obj = await self._get_data("artist/get", **params)
-        return await self._parse_artist(artist_obj) if artist_obj and artist_obj["id"] else None
+        if (artist_obj := await self._get_data("artist/get", **params)) and artist_obj["id"]:
+            return await self._parse_artist(artist_obj)
+        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         params = {"album_id": prov_album_id}
-        album_obj = await self._get_data("album/get", **params)
-        return await self._parse_album(album_obj) if album_obj and album_obj["id"] else None
+        if (album_obj := await self._get_data("album/get", **params)) and album_obj["id"]:
+            return await self._parse_album(album_obj)
+        raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         params = {"track_id": prov_track_id}
-        track_obj = await self._get_data("track/get", **params)
-        return await self._parse_track(track_obj) if track_obj and track_obj["id"] else None
+        if (track_obj := await self._get_data("track/get", **params)) and track_obj["id"]:
+            return await self._parse_track(track_obj)
+        raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
-        playlist_obj = await self._get_data("playlist/get", **params)
-        return (
-            await self._parse_playlist(playlist_obj)
-            if playlist_obj and playlist_obj["id"]
-            else None
-        )
+        if (playlist_obj := await self._get_data("playlist/get", **params)) and playlist_obj["id"]:
+            return await self._parse_playlist(playlist_obj)
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_album_tracks(self, prov_album_id) -> list[Track]:
         """Get all album tracks for given album id."""
@@ -650,8 +660,6 @@ class QobuzProvider(MusicProvider):
                 url, headers=headers, params=kwargs, ssl=False
             ) as response:
                 try:
-                    # make sure status is 200
-                    assert response.status == 200
                     result = await response.json()
                     # check for error in json
                     if error := result.get("error"):

@@ -6,7 +6,7 @@ import platform
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.util import get_ip_from_host
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
@@ -47,9 +47,19 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant, manifest: ProviderManifest  # noqa: ARG001
+    mass: MusicAssistant,
+    instance_id: str | None = None,
+    action: str | None = None,
+    values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
-    """Return Config entries to setup this provider."""
+    """
+    Return Config entries to setup this provider.
+
+    instance_id: id of an existing provider instance (None if new instance setup).
+    action: [optional] action key called from config entries UI.
+    values: the (intermediate) raw values for config entries sent with the action.
+    """
+    # ruff: noqa: ARG001
     return (
         ConfigEntry(
             key=CONF_HOST,
@@ -100,7 +110,7 @@ async def get_config_entries(
             label="Mount options",
             required=False,
             advanced=True,
-            default_value="file_mode=0775,dir_mode=0775,uid=0,gid=0",
+            default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0",
             description="[optional] Any additional mount options you "
             "want to pass to the mount command if needed for your particular setup.",
         ),

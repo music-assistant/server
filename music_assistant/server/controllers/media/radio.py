@@ -72,53 +72,55 @@ class RadioController(MediaControllerBase[Radio]):
         )
         return db_item
 
+    async def update(self, item_id: str | int, update: Radio, overwrite: bool = False) -> Radio:
+        """Update existing record in the database."""
+        return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
+
     async def _add_db_item(self, item: Radio) -> Radio:
         """Add a new item record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
+        match = {"name": item.name}
+        if cur_item := await self.mass.music.database.get_row(self.db_table, match):
+            # update existing
+            return await self._update_db_item(cur_item["item_id"], item)
+        # insert new item
+        item.timestamp_added = int(utc_timestamp())
+        item.timestamp_modified = int(utc_timestamp())
         async with self._db_add_lock:
-            match = {"name": item.name}
-            if cur_item := await self.mass.music.database.get_row(self.db_table, match):
-                # update existing
-                return await self._update_db_item(cur_item["item_id"], item)
-
-            # insert new item
-            item.timestamp_added = int(utc_timestamp())
-            item.timestamp_modified = int(utc_timestamp())
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
             await self._set_provider_mappings(item_id, item.provider_mappings)
             self.logger.debug("added %s to database", item.name)
-            # return created object
-            return await self.get_db_item(item_id)
+        # return created object
+        return await self.get_db_item(item_id)
 
     async def _update_db_item(
-        self,
-        item_id: int,
-        item: Radio,
+        self, item_id: str | int, item: Radio, overwrite: bool = False
     ) -> Radio:
         """Update Radio record in the database."""
-        assert item.provider_mappings, "Item is missing provider mapping(s)"
-        cur_item = await self.get_db_item(item_id)
-        metadata = cur_item.metadata.update(item.metadata)
-        provider_mappings = {*cur_item.provider_mappings, *item.provider_mappings}
-        match = {"item_id": item_id}
-        await self.mass.music.database.update(
-            self.db_table,
-            match,
-            {
-                # always prefer name from updated item here
-                "name": item.name,
-                "sort_name": item.sort_name,
-                "metadata": serialize_to_json(metadata),
-                "provider_mappings": serialize_to_json(provider_mappings),
-                "timestamp_modified": int(utc_timestamp()),
-            },
-        )
-        # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, provider_mappings)
-        self.logger.debug("updated %s in database: %s", item.name, item_id)
-        return await self.get_db_item(item_id)
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_db_item(db_id)
+        metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
+        match = {"item_id": db_id}
+        async with self._db_add_lock:
+            await self.mass.music.database.update(
+                self.db_table,
+                match,
+                {
+                    # always prefer name from updated item here
+                    "name": item.name or cur_item.name,
+                    "sort_name": item.sort_name or cur_item.sort_name,
+                    "metadata": serialize_to_json(metadata),
+                    "provider_mappings": serialize_to_json(provider_mappings),
+                    "timestamp_modified": int(utc_timestamp()),
+                },
+            )
+            # update/set provider_mappings table
+            await self._set_provider_mappings(db_id, provider_mappings)
+            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        return await self.get_db_item(db_id)
 
     async def _get_provider_dynamic_tracks(
         self,

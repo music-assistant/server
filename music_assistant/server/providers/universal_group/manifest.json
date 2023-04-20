@@ -1,0 +1,13 @@
+{
+  "type": "player",
+  "domain": "universal_group",
+  "name": "Universal Group Player",
+  "description": "Create a Player Group with your favorite players, regardless of type and model.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": true,
+  "builtin": false,
+  "load_by_default": false,
+  "icon": "mdi:mdi-speaker-multiple"
+}

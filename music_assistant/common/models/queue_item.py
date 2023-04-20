@@ -2,16 +2,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
 from .enums import MediaType
-from .media_items import ItemMapping, MediaItemImage, Radio, StreamDetails, Track
-
-if TYPE_CHECKING:
-    pass
+from .media_items import Album, ItemMapping, MediaItemImage, Radio, StreamDetails, Track
 
 
 @dataclass
@@ -27,6 +24,7 @@ class QueueItem(DataClassDictMixin):
     streamdetails: StreamDetails | None = None
     media_item: Track | Radio | None = None
     image: MediaItemImage | None = None
+    index: int = 0
 
     def __post_init__(self):
         """Set default values."""
@@ -84,6 +82,6 @@ def get_image(media_item: Track | Radio | None) -> MediaItemImage | None:
         return None
     if media_item.image:
         return media_item.image
-    if isinstance(media_item, Track) and media_item.album and getattr(media_item.album, "image"):
+    if isinstance(media_item, Track) and isinstance(media_item.album, Album):
         return media_item.album.image
     return None
