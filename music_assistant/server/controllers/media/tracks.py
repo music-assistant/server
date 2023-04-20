@@ -131,7 +131,9 @@ class TracksController(MediaControllerBase[Track]):
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        async with self._db_add_lock:
+            # use the lock to prevent a race condition of the same item being added twice
+            existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
         if existing:
             db_item = await self._update_db_item(existing.item_id, item)
         else:
@@ -285,6 +287,8 @@ class TracksController(MediaControllerBase[Track]):
         assert item.provider_mappings, "Track is missing provider mapping(s)"
         cur_item = None
 
+        # safety guard: check for existing item first
+        # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
             # always try to grab existing item by external_id
             if item.musicbrainz_id:
@@ -304,15 +308,16 @@ class TracksController(MediaControllerBase[Track]):
                     if compare_track(row_track, item):
                         cur_item = row_track
                         break
-            if cur_item:
-                # update existing
-                return await self._update_db_item(cur_item.item_id, item)
+        if cur_item:
+            # update existing
+            return await self._update_db_item(cur_item.item_id, item)
 
-            # no existing match found: insert new item
-            track_artists = await self._get_artist_mappings(item)
-            track_albums = await self._get_track_albums(item)
-            sort_artist = track_artists[0].sort_name if track_artists else ""
-            sort_album = track_albums[0].sort_name if track_albums else ""
+        # no existing match found: insert new item
+        track_artists = await self._get_artist_mappings(item)
+        track_albums = await self._get_track_albums(item)
+        sort_artist = track_artists[0].sort_name if track_artists else ""
+        sort_album = track_albums[0].sort_name if track_albums else ""
+        async with self._db_add_lock:
             new_item = await self.mass.music.database.insert(
                 self.db_table,
                 {
@@ -325,12 +330,12 @@ class TracksController(MediaControllerBase[Track]):
                     "timestamp_modified": int(utc_timestamp()),
                 },
             )
-            item_id = new_item["item_id"]
-            # update/set provider_mappings table
-            await self._set_provider_mappings(item_id, item.provider_mappings)
-            # return created object
-            self.logger.debug("added %s to database: %s", item.name, item_id)
-            return await self.get_db_item(item_id)
+        item_id = new_item["item_id"]
+        # update/set provider_mappings table
+        await self._set_provider_mappings(item_id, item.provider_mappings)
+        # return created object
+        self.logger.debug("added %s to database: %s", item.name, item_id)
+        return await self.get_db_item(item_id)
 
     async def _update_db_item(
         self, item_id: str | int, item: Track | ItemMapping, overwrite: bool = False

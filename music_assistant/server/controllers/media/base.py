@@ -1,6 +1,7 @@
 """Base (ABC) MediaType specific controller."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import AsyncGenerator
@@ -35,6 +36,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     media_type: MediaType
     item_cls: MediaItemType
     db_table: str
+    _db_add_lock = asyncio.Lock()
 
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
@@ -390,7 +392,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Set the in-library bool on a database item."""
         db_id = int(item_id)  # ensure integer
         match = {"item_id": db_id}
-        await self.mass.music.database.update(self.db_table, match, {"in_library": in_library})
+        async with self._db_add_lock:
+            await self.mass.music.database.update(self.db_table, match, {"in_library": in_library})
         db_item = await self.get_db_item(db_id)
         self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
 
@@ -439,14 +442,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return
 
         # update provider_mappings table
-        await self.mass.music.database.delete(
-            DB_TABLE_PROVIDER_MAPPINGS,
-            {
-                "media_type": self.media_type.value,
-                "item_id": db_id,
-                "provider_instance": provider_instance_id,
-            },
-        )
+        async with self._db_add_lock:
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {
+                    "media_type": self.media_type.value,
+                    "item_id": db_id,
+                    "provider_instance": provider_instance_id,
+                },
+            )
 
         # update the item in db (provider_mappings column only)
         db_item.provider_mappings = {
@@ -454,11 +458,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         }
         match = {"item_id": db_id}
         if db_item.provider_mappings:
-            await self.mass.music.database.update(
-                self.db_table,
-                match,
-                {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
-            )
+            async with self._db_add_lock:
+                await self.mass.music.database.update(
+                    self.db_table,
+                    match,
+                    {"provider_mappings": serialize_to_json(db_item.provider_mappings)},
+                )
             self.logger.debug("removed provider %s from item id %s", provider_instance_id, db_id)
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, db_item.uri, db_item)
         else:
@@ -507,22 +512,23 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Update the provider_items table for the media item."""
         db_id = int(item_id)  # ensure integer
         # clear all records first
-        await self.mass.music.database.delete(
-            DB_TABLE_PROVIDER_MAPPINGS,
-            {"media_type": self.media_type.value, "item_id": db_id},
-        )
-        # add entries
-        for provider_mapping in provider_mappings:
-            await self.mass.music.database.insert_or_replace(
+        async with self._db_add_lock:
+            await self.mass.music.database.delete(
                 DB_TABLE_PROVIDER_MAPPINGS,
-                {
-                    "media_type": self.media_type.value,
-                    "item_id": db_id,
-                    "provider_domain": provider_mapping.provider_domain,
-                    "provider_instance": provider_mapping.provider_instance,
-                    "provider_item_id": provider_mapping.item_id,
-                },
+                {"media_type": self.media_type.value, "item_id": db_id},
             )
+            # add entries
+            for provider_mapping in provider_mappings:
+                await self.mass.music.database.insert_or_replace(
+                    DB_TABLE_PROVIDER_MAPPINGS,
+                    {
+                        "media_type": self.media_type.value,
+                        "item_id": db_id,
+                        "provider_domain": provider_mapping.provider_domain,
+                        "provider_instance": provider_mapping.provider_instance,
+                        "provider_item_id": provider_mapping.item_id,
+                    },
+                )
 
     def _get_provider_mappings(
         self,

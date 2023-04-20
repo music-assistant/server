@@ -50,7 +50,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # preload playlist tracks listing (do not load them in the db)
         async for track in self.tracks(item.item_id, item.provider):
             pass
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        async with self._db_add_lock:
+            # use the lock to prevent a race condition of the same item being added twice
+            existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
         if existing:
             db_item = await self._update_db_item(existing.item_id, item)
         else:
@@ -198,16 +200,21 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _add_db_item(self, item: Playlist) -> Playlist:
         """Add a new record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
+        cur_item = None
+        # safety guard: check for existing item first
+        # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
             match = {"sort_name": item.sort_name, "owner": item.owner}
-            if cur_item := await self.mass.music.database.get_row(self.db_table, match):
-                # update existing
-                return await self._update_db_item(cur_item["item_id"], item)
-            # insert new item
-            item.timestamp_added = int(utc_timestamp())
-            item.timestamp_modified = int(utc_timestamp())
+            cur_item = await self.mass.music.database.get_row(self.db_table, match)
+        if cur_item:
+            # update existing
+            return await self._update_db_item(cur_item["item_id"], item)
+        # insert new item
+        item.timestamp_added = int(utc_timestamp())
+        item.timestamp_modified = int(utc_timestamp())
+        async with self._db_add_lock:
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
-            item_id = new_item["item_id"]
+        item_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(item_id, item.provider_mappings)
         self.logger.debug("added %s to database", item.name)

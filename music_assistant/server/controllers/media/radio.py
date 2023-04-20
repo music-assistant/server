@@ -80,21 +80,26 @@ class RadioController(MediaControllerBase[Radio]):
     async def _add_db_item(self, item: Radio) -> Radio:
         """Add a new item record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
+        cur_item = None
+        # safety guard: check for existing item first
+        # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
             match = {"name": item.name}
-            if cur_item := await self.mass.music.database.get_row(self.db_table, match):
-                # update existing
-                return await self._update_db_item(cur_item["item_id"], item)
-            # insert new item
-            item.timestamp_added = int(utc_timestamp())
-            item.timestamp_modified = int(utc_timestamp())
+            cur_item = await self.mass.music.database.get_row(self.db_table, match)
+        if cur_item:
+            # update existing
+            return await self._update_db_item(cur_item["item_id"], item)
+        # insert new item
+        item.timestamp_added = int(utc_timestamp())
+        item.timestamp_modified = int(utc_timestamp())
+        async with self._db_add_lock:
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
-            item_id = new_item["item_id"]
-            # update/set provider_mappings table
-            await self._set_provider_mappings(item_id, item.provider_mappings)
-            self.logger.debug("added %s to database", item.name)
-            # return created object
-            return await self.get_db_item(item_id)
+        item_id = new_item["item_id"]
+        # update/set provider_mappings table
+        await self._set_provider_mappings(item_id, item.provider_mappings)
+        self.logger.debug("added %s to database", item.name)
+        # return created object
+        return await self.get_db_item(item_id)
 
     async def _update_db_item(
         self, item_id: str | int, item: Radio, overwrite: bool = False
