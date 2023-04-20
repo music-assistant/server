@@ -291,24 +291,16 @@ async def parse_artist(mass, artist: deezer.Artist) -> Artist:
                 item_id=str(artist.id),
                 provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
-                content_type=ContentType.MP3,
             )
         },
         metadata=await parse_metadata_artist(artist=artist),
     )
 
 
-async def parse_album_type(album_type: str) -> AlbumType:
-    """Parse the album type."""
-    return AlbumType(
-        album_type,
-    )
-
-
 async def parse_album(mass, album: deezer.Album) -> Album:
     """Parse the deezer-python album to a MASS album."""
     return Album(
-        album_type=await parse_album_type(album_type=album.type),
+        album_type=AlbumType(album.type),
         item_id=str(album.id),
         provider=mass.domain,
         name=album.title,
@@ -437,6 +429,23 @@ async def get_artist_top(artist: deezer.Artist) -> deezer.PaginatedList:
     return await asyncio.to_thread(_get_artist_top)
 
 
+async def get_track_content_type(track_id: int, mass):
+    """Get a tracks contentType."""
+    url_details = await get_deezer_track_url(mass.client.session, track_id)
+    content_type_string = url_details["format"]
+    if "MP3" in content_type_string:
+        content_type = ContentType.MP3
+    elif content_type_string == "FLAC":
+        content_type = ContentType.FLAC
+    elif content_type_string == "MPEG":
+        content_type = ContentType.MPEG
+    elif content_type_string == "OGG":
+        content_type = ContentType.OGG
+    else:
+        raise NotImplementedError(f"Unsupported contenttype: {content_type_string}")
+    return content_type
+
+
 async def parse_track(mass, track: deezer.Track) -> Track:
     """Parse the deezer-python track to a MASS track."""
     artist = await get_artist_from_track(track=track)
@@ -455,7 +464,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
                 item_id=str(track.id),
                 provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
-                content_type=ContentType.MP3,
+                content_type=await get_track_content_type(track_id=track.id, mass=mass),
             )
         },
         metadata=await parse_metadata_track(track=track),
