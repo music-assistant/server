@@ -9,17 +9,14 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 import asyncio
 import json
 from time import time
-from aiohttp import ClientSession
 
 import ytmusicapi
-from ytmusicapi.constants import (
-    OAUTH_CLIENT_ID,
-    OAUTH_CLIENT_SECRET,
-    OAUTH_SCOPE,
-    OAUTH_CODE_URL,
-    OAUTH_TOKEN_URL,
-    OAUTH_USER_AGENT,
-)
+from aiohttp import ClientSession
+from ytmusicapi.constants import (OAUTH_CLIENT_ID, OAUTH_CLIENT_SECRET,
+                                  OAUTH_CODE_URL, OAUTH_SCOPE, OAUTH_TOKEN_URL,
+                                  OAUTH_USER_AGENT)
+
+from music_assistant.server.helpers.auth import AuthenticationHelper
 
 
 async def get_artist(prov_artist_id: str) -> dict[str, str]:
@@ -50,13 +47,13 @@ async def get_album(prov_album_id: str) -> dict[str, str]:
 
 
 async def get_playlist(
-    prov_playlist_id: str, headers: dict[str, str], username: str
+    prov_playlist_id: str, headers: dict[str, str]
 ) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=None)
         playlist["checksum"] = get_playlist_checksum(playlist)
         return playlist
@@ -89,12 +86,12 @@ async def get_track(prov_track_id: str) -> dict[str, str]:
     return await asyncio.to_thread(_get_song)
 
 
-async def get_library_artists(headers: dict[str, str], username: str) -> dict[str, str]:
+async def get_library_artists(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_artists function."""
 
     def _get_library_artists():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         artists = ytm.get_library_subscriptions(limit=9999)
         # Sync properties with uniformal artist object
         for artist in artists:
@@ -107,23 +104,23 @@ async def get_library_artists(headers: dict[str, str], username: str) -> dict[st
     return await asyncio.to_thread(_get_library_artists)
 
 
-async def get_library_albums(headers: dict[str, str], username: str) -> dict[str, str]:
+async def get_library_albums(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_albums function."""
 
     def _get_library_albums():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         return ytm.get_library_albums(limit=9999)
 
     return await asyncio.to_thread(_get_library_albums)
 
 
-async def get_library_playlists(headers: dict[str, str], username: str) -> dict[str, str]:
+async def get_library_playlists(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_playlists function."""
 
     def _get_library_playlists():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlists = ytm.get_library_playlists(limit=9999)
         # Sync properties with uniformal playlist object
         for playlist in playlists:
@@ -135,12 +132,12 @@ async def get_library_playlists(headers: dict[str, str], username: str) -> dict[
     return await asyncio.to_thread(_get_library_playlists)
 
 
-async def get_library_tracks(headers: dict[str, str], username: str) -> dict[str, str]:
+async def get_library_tracks(headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_tracks function."""
 
     def _get_library_tracks():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         tracks = ytm.get_library_songs(limit=9999)
         return tracks
 
@@ -148,13 +145,13 @@ async def get_library_tracks(headers: dict[str, str], username: str) -> dict[str
 
 
 async def library_add_remove_artist(
-    headers: dict[str, str], prov_artist_id: str, add: bool = True, username: str = None
+    headers: dict[str, str], prov_artist_id: str, add: bool = True
 ) -> bool:
     """Add or remove an artist to the user's library."""
 
     def _library_add_remove_artist():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         if add:
             return "actions" in ytm.subscribe_artists(channelIds=[prov_artist_id])
         if not add:
@@ -165,14 +162,14 @@ async def library_add_remove_artist(
 
 
 async def library_add_remove_album(
-    headers: dict[str, str], prov_item_id: str, add: bool = True, username: str = None
+    headers: dict[str, str], prov_item_id: str, add: bool = True
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
     album = await get_album(prov_album_id=prov_item_id)
 
     def _library_add_remove_album():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlist_id = album["audioPlaylistId"]
         if add:
             return ytm.rate_playlist(playlist_id, "LIKE")
@@ -184,13 +181,13 @@ async def library_add_remove_album(
 
 
 async def library_add_remove_playlist(
-    headers: dict[str, str], prov_item_id: str, add: bool = True, username: str = None
+    headers: dict[str, str], prov_item_id: str, add: bool = True
 ) -> bool:
     """Add or remove an album or playlist to the user's library."""
 
     def _library_add_remove_playlist():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         if add:
             return "actions" in ytm.rate_playlist(prov_item_id, "LIKE")
         if not add:
@@ -210,8 +207,8 @@ async def add_remove_playlist_tracks(
     """Async wrapper around adding/removing tracks to a playlist."""
 
     def _add_playlist_tracks():
-        user = username if is_brand_account(username) else None
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         if add:
             return ytm.add_playlist_items(playlistId=prov_playlist_id, videoIds=prov_track_ids)
         if not add:
@@ -222,13 +219,12 @@ async def add_remove_playlist_tracks(
 
 
 async def get_song_radio_tracks(
-    headers: dict[str, str], username: str, prov_item_id: str, limit=25
+    headers: dict[str, str], prov_item_id: str, limit=25
 ) -> dict[str, str]:
-    """Async wrapper around the ytmusicapi radio function."""
-    user = username if is_brand_account(username) else None
+    """Async wrapper around the ytmusicapi radio function."""    
 
     def _get_song_radio_tracks():
-        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers), user=user)
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlist_id = f"RDAMVM{prov_item_id}"
         result = ytm.get_watch_playlist(videoId=prov_item_id, playlistId=playlist_id, limit=limit)
         # Replace inconsistensies for easier parsing
@@ -296,6 +292,13 @@ def get_sec(time_str):
     return 0
 
 
+async def login_oauth(auth_helper: AuthenticationHelper):
+    """Use device login to get a token."""
+    http_session = auth_helper.mass.http_session
+    code = await get_oauth_code(http_session)
+    token = await visit_oauth_auth_url(auth_helper, code)
+    return token
+
 def _get_data_and_headers(data: dict):
     data.update({"client_id": OAUTH_CLIENT_ID})
     headers = {"User-Agent": OAUTH_USER_AGENT}
@@ -308,6 +311,22 @@ async def get_oauth_code(session: ClientSession):
         return await code_response.json()
 
 
+async def visit_oauth_auth_url(auth_helper: AuthenticationHelper, code: dict[str, str]):    
+    auth_url = f"{code['verification_url']}?user_code={code['user_code']}"
+    auth_helper.send_url(auth_url=auth_url)
+    device_code = code["device_code"]
+    expiry = code["expires_in"]
+    interval = code["interval"]
+    while expiry > 0:
+        token = await get_oauth_token_from_code(auth_helper.mass.http_session, device_code)
+        if token.get("access_token"):
+            return token
+        await asyncio.sleep(interval)
+        expiry -= interval
+    raise TimeoutError("You took too long to log in")
+    
+
+
 async def get_oauth_token_from_code(session: ClientSession, device_code: str):
     data, headers = _get_data_and_headers(
         data={
@@ -317,7 +336,7 @@ async def get_oauth_token_from_code(session: ClientSession, device_code: str):
         }
     )
     async with session.post(
-        OAUTH_TOKEN_URL,
+        OAUTH_TOKEN_URL,    
         json=data,
         headers=headers,
     ) as token_response:
