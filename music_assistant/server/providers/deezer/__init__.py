@@ -334,11 +334,23 @@ class DeezerProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         track = await get_track(client=self.client, track_id=int(item_id))
         url_details = await get_deezer_track_url(self.client.session, item_id)
+        content_type_string = url_details["format"]
+        if "MP3" in content_type_string:
+            content_type = ContentType.MP3
+        elif content_type_string == "FLAC":
+            content_type = ContentType.FLAC
+        elif content_type_string == "MPEG":
+            content_type = ContentType.MPEG
+        elif content_type_string == "OGG":
+            content_type = ContentType.OGG
+        else:
+            raise NotImplementedError(f"Unsupported contenttype: {content_type_string}")
+
         url = url_details["sources"][0]["url"]
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            content_type=ContentType.MP3,
+            content_type=content_type,
             duration=track.duration,
             data=url,
             expires=url_details["exp"],
