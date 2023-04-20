@@ -263,10 +263,14 @@ class ConfigController:
     @api_command("config/players")
     def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
+        available_providers = {x.domain for x in self.mass.providers}
         return [
             self.get_player_config(player_id)
             for player_id, raw_conf in self.get(CONF_PLAYERS).items()
-            if (provider in (None, raw_conf["provider"]))
+            # filter out unavailable providers
+            if raw_conf["provider"] in available_providers
+            # optional provider filter
+            and (provider in (None, raw_conf["provider"]))
         ]
 
     @api_command("config/players/get")
