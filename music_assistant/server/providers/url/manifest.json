@@ -8,6 +8,7 @@
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/categories/music-providers",
   "multi_instance": false,
   "builtin": true,
+  "hidden": true,
   "load_by_default": true,
   "icon": "mdi:mdi-web"
 }
