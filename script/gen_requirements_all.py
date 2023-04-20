@@ -68,7 +68,7 @@ def main() -> int:
             # duplicate package without version is safe to ignore
             continue
         else:
-            print("Found requirement without version specifier: %s" % req_str)
+            print("Found requirement without (exact) version specifier: %s" % req_str)
             package_name = req_str
 
         existing = final_requirements.get(package_name)
