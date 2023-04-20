@@ -24,7 +24,7 @@ from tidalapi import UserPlaylist as TidalUserPlaylist
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.errors import MediaNotFoundError
 
-DEFAULT_LIMIT = 250
+DEFAULT_LIMIT = 50
 
 
 async def get_library_artists(
@@ -175,11 +175,13 @@ async def get_library_tracks(
     return await asyncio.to_thread(inner)
 
 
-async def get_library_playlists(session: TidalSession, user_id: str) -> list[TidalPlaylist]:
+async def get_library_playlists(
+    session: TidalSession, user_id: str, offset: int = 0
+) -> list[TidalPlaylist]:
     """Async wrapper around the tidalapi LoggedInUser.playlist_and_favorite_playlists function."""
 
     def inner() -> list[TidalPlaylist]:
-        return LoggedInUser(session, user_id).playlist_and_favorite_playlists()
+        return LoggedInUser(session, user_id).playlist_and_favorite_playlists(offset=offset)
 
     return await asyncio.to_thread(inner)
 

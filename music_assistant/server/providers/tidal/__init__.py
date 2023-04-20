@@ -52,6 +52,7 @@ from .helpers import (
     get_artist_albums,
     get_artist_toptracks,
     get_library_albums,
+    get_library_artists,
     get_library_playlists,
     get_library_tracks,
     get_playlist,
@@ -167,11 +168,9 @@ async def iter_items(func: Awaitable | Callable, *args, **kwargs) -> AsyncGenera
     offset = 0
     while True:
         if asyncio.iscoroutinefunction(func):
-            chunk = await func(*args, **kwargs, limit=DEFAULT_LIMIT, offset=offset)
+            chunk = await func(*args, **kwargs, offset=offset)
         else:
-            chunk = await asyncio.to_thread(
-                func, *args, **kwargs, limit=DEFAULT_LIMIT, offset=offset
-            )
+            chunk = await asyncio.to_thread(func, *args, **kwargs, offset=offset)
         offset += len(chunk)
         for item in chunk:
             yield item
@@ -239,64 +238,43 @@ class TidalProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Tidal."""
-        offset = 0
         tidal_session = await self._get_tidal_session()
         artist: TidalArtist  # satisfy the type checker
-        while True:
-            chunk = await get_library_albums(
-                tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT, offset=offset
-            )
-            for artist in chunk:
-                yield self._parse_artist(artist_obj=artist)
-            if len(chunk) < DEFAULT_LIMIT:
-                break
-        # async for artist in iter_items(get_library_artists, tidal_session, self._tidal_user_id):
-        #    yield self._parse_artist(artist_obj=artist)
+        async for artist in iter_items(
+            get_library_artists, tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT
+        ):
+            yield self._parse_artist(artist_obj=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Tidal."""
-        offset = 0
         tidal_session = await self._get_tidal_session()
-        while True:
-            chunk = await get_library_albums(
-                tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT, offset=offset
-            )
-            for album in chunk:
-                yield self._parse_album(album_obj=album)
-            if len(chunk) < DEFAULT_LIMIT:
-                break
+        album: TidalAlbum  # satisfy the type checker
+        async for album in iter_items(
+            get_library_albums, tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT
+        ):
+            yield self._parse_album(album_obj=album)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Tidal."""
-        offset = 0
         tidal_session = await self._get_tidal_session()
-        while True:
-            chunk = await get_library_tracks(
-                tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT, offset=offset
-            )
-            for track in chunk:
-                if track.available:
-                    yield self._parse_track(track_obj=track)
-            if len(chunk) < DEFAULT_LIMIT:
-                break
+        track: TidalTrack  # satisfy the type checker
+        async for track in iter_items(
+            get_library_tracks, tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT
+        ):
+            yield self._parse_track(track_obj=track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
-        offset = 0
         tidal_session = await self._get_tidal_session()
-        while True:
-            chunk = await get_library_playlists(
-                tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT, offset=offset
-            )
-            for playlist in chunk:
-                yield self._parse_playlist(playlist_obj=playlist)
-            if len(chunk) < DEFAULT_LIMIT:
-                break
+        playlist: TidalPlaylist  # satisfy the type checker
+        async for playlist in iter_items(get_library_playlists, tidal_session, self._tidal_user_id):
+            yield self._parse_playlist(playlist_obj=playlist)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
+        tidal_session = await self._get_tidal_session()
         result = []
-        tracks = await get_album_tracks(self, prov_album_id)
+        tracks = await get_album_tracks(tidal_session, prov_album_id)
         for index, track_obj in enumerate(tracks, 1):
             if track_obj.available:
                 track = self._parse_track(track_obj=track_obj)
@@ -306,8 +284,9 @@ class TidalProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
+        tidal_session = await self._get_tidal_session()
         result = []
-        albums = await get_artist_albums(self, prov_artist_id)
+        albums = await get_artist_albums(tidal_session, prov_artist_id)
         for album_obj in albums:
             album = self._parse_album(album_obj=album_obj)
             result.append(album)
@@ -315,8 +294,9 @@ class TidalProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
+        tidal_session = await self._get_tidal_session()
         result = []
-        tracks = await get_artist_toptracks(self, prov_artist_id)
+        tracks = await get_artist_toptracks(tidal_session, prov_artist_id)
         for index, track_obj in enumerate(tracks, 1):
             if track_obj.available:
                 track = self._parse_track(track_obj=track_obj)
@@ -332,7 +312,6 @@ class TidalProvider(MusicProvider):
         while True:
             chunk = await get_playlist_tracks(
                 tidal_session,
-                self._tidal_user_id,
                 limit=DEFAULT_LIMIT,
                 offset=offset,
                 prov_playlist_id=prov_playlist_id,
@@ -343,10 +322,13 @@ class TidalProvider(MusicProvider):
                     track.position = total_playlist_tracks
                     total_playlist_tracks += 1
                     yield track
+            if len(chunk) < DEFAULT_LIMIT:
+                break
 
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
         """Get similar tracks for given track id."""
-        similar_tracks_obj = await get_similar_tracks(self, prov_track_id, limit)
+        tidal_session = await self._get_tidal_session()
+        similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
         tracks = []
         for track_obj in similar_tracks_obj:
             if track_obj.available:
@@ -394,14 +376,16 @@ class TidalProvider(MusicProvider):
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
-        playlist_obj = await create_playlist(self, self._tidal_user_id, name)
+        tidal_session = await self._get_tidal_session()
+        playlist_obj = await create_playlist(tidal_session, self._tidal_user_id, name)
         playlist = self._parse_playlist(playlist_obj=playlist_obj)
         return await self.mass.music.playlists.add_db_item(playlist)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         # make sure a valid track is requested.
-        track = await get_track(self, item_id)
+        tidal_session = await self._get_tidal_session()
+        track = await get_track(tidal_session, item_id)
         url = await get_track_url(self, item_id)
         if not track:
             raise MediaNotFoundError(f"track {item_id} not found")
@@ -417,9 +401,10 @@ class TidalProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""
+        tidal_session = await self._get_tidal_session()
         try:
             artist = self._parse_artist(
-                artist_obj=await get_artist(self, prov_artist_id),
+                artist_obj=await get_artist(tidal_session, prov_artist_id),
             )
         except MediaNotFoundError as err:
             raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
@@ -427,9 +412,10 @@ class TidalProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details for given album id."""
+        tidal_session = await self._get_tidal_session()
         try:
             album = self._parse_album(
-                album_obj=await get_album(self, prov_album_id),
+                album_obj=await get_album(tidal_session, prov_album_id),
             )
         except MediaNotFoundError as err:
             raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
@@ -437,9 +423,10 @@ class TidalProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
+        tidal_session = await self._get_tidal_session()
         try:
             track = self._parse_track(
-                track_obj=await get_track(self, prov_track_id),
+                track_obj=await get_track(tidal_session, prov_track_id),
             )
         except MediaNotFoundError as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
@@ -447,9 +434,10 @@ class TidalProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details for given playlist id."""
+        tidal_session = await self._get_tidal_session()
         try:
             playlist = self._parse_playlist(
-                playlist_obj=await get_playlist(self, prov_playlist_id),
+                playlist_obj=await get_playlist(tidal_session, prov_playlist_id),
             )
         except MediaNotFoundError as err:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
