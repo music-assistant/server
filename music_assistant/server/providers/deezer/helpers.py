@@ -279,7 +279,7 @@ async def _post_http(mass, url, data, params=None, headers=None) -> str:
         return response_text
 
 
-async def parse_artist(mass, artist: deezer.Artist) -> Artist:
+def parse_artist(mass, artist: deezer.Artist) -> Artist:
     """Parse the deezer-python artist to a MASS artist."""
     return Artist(
         item_id=str(artist.id),
@@ -293,7 +293,7 @@ async def parse_artist(mass, artist: deezer.Artist) -> Artist:
                 provider_instance=mass.instance_id,
             )
         },
-        metadata=await parse_metadata_artist(artist=artist),
+        metadata=parse_metadata_artist(artist=artist),
     )
 
 
@@ -304,7 +304,7 @@ async def parse_album(mass, album: deezer.Album) -> Album:
         item_id=str(album.id),
         provider=mass.domain,
         name=album.title,
-        artists=[await parse_artist(mass=mass, artist=await get_artist_from_album(album=album))],
+        artists=[parse_artist(mass=mass, artist=album.get_artist())],
         media_type=MediaType.ALBUM,
         provider_mappings={
             ProviderMapping(
@@ -313,7 +313,7 @@ async def parse_album(mass, album: deezer.Album) -> Album:
                 provider_instance=mass.instance_id,
             )
         },
-        metadata=await parse_metadata_album(album=album),
+        metadata=parse_metadata_album(album=album),
     )
 
 
@@ -350,7 +350,7 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
             images=[
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=(await get_album_from_track(track=track)).cover_big,
+                    path=(get_album_from_track(track=track)).cover_big,
                 )
             ],
         )
@@ -360,14 +360,14 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
         )
 
 
-async def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
+def parse_metadata_album(album: deezer.Album) -> MediaItemMetadata:
     """Parse the album metadata."""
     return MediaItemMetadata(
         images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
     )
 
 
-async def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
+def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
     """Parse the artist metadata."""
     return MediaItemMetadata(
         images=[MediaItemImage(type=ImageType.THUMB, path=artist.picture_big)],
@@ -376,7 +376,7 @@ async def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
 
 async def _get_album(mass, track: deezer.Track) -> Album | None:
     try:
-        return await parse_album(mass=mass, album=await get_album_from_track(track=track))
+        return await parse_album(mass=mass, album=get_album_from_track(track=track))
     except AttributeError:
         return None
 
@@ -412,15 +412,6 @@ async def get_artist_from_album(album: deezer.Album) -> deezer.Artist:
 
 
 async def get_albums_by_artist(artist: deezer.Artist) -> deezer.PaginatedList:
-    """Get albums by an artist."""
-
-    def _get_albums_by_artist():
-        return artist.get_albums()
-
-    return await asyncio.to_thread(_get_albums_by_artist)
-
-
-async def get_artist_top(artist: deezer.Artist) -> deezer.PaginatedList:
     """Get top tracks by an artist."""
 
     def _get_artist_top():
