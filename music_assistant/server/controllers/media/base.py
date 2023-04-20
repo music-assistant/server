@@ -1,7 +1,6 @@
 """Base (ABC) MediaType specific controller."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import AsyncGenerator
@@ -41,7 +40,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Initialize class."""
         self.mass = mass
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
-        self._db_add_lock = asyncio.Lock()
 
     @abstractmethod
     async def add(self, item: ItemCls, skip_metadata_lookup: bool = False) -> ItemCls:

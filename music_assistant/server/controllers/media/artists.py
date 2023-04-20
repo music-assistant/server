@@ -39,6 +39,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     db_table = DB_TABLE_ARTISTS
     media_type = MediaType.ARTIST
     item_cls = Artist
+    _db_add_lock = asyncio.Lock()
 
     def __init__(self, *args, **kwargs):
         """Initialize class."""
@@ -288,42 +289,41 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item.musicbrainz_id = VARIOUS_ARTISTS_ID
             if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
                 item.name = VARIOUS_ARTISTS
-
-        # always try to grab existing item by musicbrainz_id
-        cur_item = None
-        if musicbrainz_id := getattr(item, "musicbrainz_id", None):
-            match = {"musicbrainz_id": musicbrainz_id}
-            cur_item = await self.mass.music.database.get_row(self.db_table, match)
-        if not cur_item:
-            # fallback to exact name match
-            # NOTE: we match an artist by name which could theoretically lead to collisions
-            # but the chance is so small it is not worth the additional overhead of grabbing
-            # the musicbrainz id upfront
-            match = {"sort_name": item.sort_name}
-            for row in await self.mass.music.database.get_rows(self.db_table, match):
-                row_artist = Artist.from_db_row(row)
-                if row_artist.sort_name == item.sort_name:
-                    cur_item = row_artist
-                    break
-        if cur_item:
-            # update existing
-            return await self._update_db_item(cur_item.item_id, item)
-
-        # insert item
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
-        # edge case: item is an ItemMapping,
-        # try to construct (a half baken) Artist object from it
-        if isinstance(item, ItemMapping):
-            item = Artist.from_dict(item.to_dict())
         async with self._db_add_lock:
+            # always try to grab existing item by musicbrainz_id
+            cur_item = None
+            if musicbrainz_id := getattr(item, "musicbrainz_id", None):
+                match = {"musicbrainz_id": musicbrainz_id}
+                cur_item = await self.mass.music.database.get_row(self.db_table, match)
+            if not cur_item:
+                # fallback to exact name match
+                # NOTE: we match an artist by name which could theoretically lead to collisions
+                # but the chance is so small it is not worth the additional overhead of grabbing
+                # the musicbrainz id upfront
+                match = {"sort_name": item.sort_name}
+                for row in await self.mass.music.database.get_rows(self.db_table, match):
+                    row_artist = Artist.from_db_row(row)
+                    if row_artist.sort_name == item.sort_name:
+                        cur_item = row_artist
+                        break
+            if cur_item:
+                # update existing
+                return await self._update_db_item(cur_item.item_id, item)
+
+            # insert item
+            item.timestamp_added = int(utc_timestamp())
+            item.timestamp_modified = int(utc_timestamp())
+            # edge case: item is an ItemMapping,
+            # try to construct (a half baken) Artist object from it
+            if isinstance(item, ItemMapping):
+                item = Artist.from_dict(item.to_dict())
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
             # update/set provider_mappings table
             await self._set_provider_mappings(item_id, item.provider_mappings)
             self.logger.debug("added %s to database", item.name)
-        # return created object
-        return await self.get_db_item(item_id)
+            # return created object
+            return await self.get_db_item(item_id)
 
     async def _update_db_item(
         self, item_id: str | int, item: Artist | ItemMapping, overwrite: bool = False
@@ -341,22 +341,21 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item.musicbrainz_id = VARIOUS_ARTISTS_ID
             if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
                 item.name = VARIOUS_ARTISTS
-        async with self._db_add_lock:
-            await self.mass.music.database.update(
-                self.db_table,
-                {"item_id": db_id},
-                {
-                    "name": item.name if overwrite else cur_item.name,
-                    "sort_name": item.sort_name if overwrite else cur_item.sort_name,
-                    "musicbrainz_id": musicbrainz_id,
-                    "metadata": serialize_to_json(metadata),
-                    "provider_mappings": serialize_to_json(provider_mappings),
-                    "timestamp_modified": int(utc_timestamp()),
-                },
-            )
-            # update/set provider_mappings table
-            await self._set_provider_mappings(db_id, provider_mappings)
-            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "name": item.name if overwrite else cur_item.name,
+                "sort_name": item.sort_name if overwrite else cur_item.sort_name,
+                "musicbrainz_id": musicbrainz_id,
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
+        # update/set provider_mappings table
+        await self._set_provider_mappings(db_id, provider_mappings)
+        self.logger.debug("updated %s in database: %s", item.name, db_id)
         return await self.get_db_item(db_id)
 
     async def _get_provider_dynamic_tracks(

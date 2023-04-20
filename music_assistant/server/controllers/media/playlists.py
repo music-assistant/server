@@ -1,6 +1,7 @@
 """Manage MediaItems of type Playlist."""
 from __future__ import annotations
 
+import asyncio
 import random
 from collections.abc import AsyncGenerator
 from typing import Any
@@ -27,6 +28,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     db_table = DB_TABLE_PLAYLISTS
     media_type = MediaType.PLAYLIST
     item_cls = Playlist
+    _db_add_lock = asyncio.Lock()
 
     def __init__(self, *args, **kwargs):
         """Initialize class."""
@@ -196,19 +198,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _add_db_item(self, item: Playlist) -> Playlist:
         """Add a new record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
-        match = {"name": item.name, "owner": item.owner}
-        if cur_item := await self.mass.music.database.get_row(self.db_table, match):
-            # update existing
-            return await self._update_db_item(cur_item["item_id"], item)
-        # insert new item
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
         async with self._db_add_lock:
+            match = {"sort_name": item.sort_name, "owner": item.owner}
+            if cur_item := await self.mass.music.database.get_row(self.db_table, match):
+                # update existing
+                return await self._update_db_item(cur_item["item_id"], item)
+            # insert new item
+            item.timestamp_added = int(utc_timestamp())
+            item.timestamp_modified = int(utc_timestamp())
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
             item_id = new_item["item_id"]
-            # update/set provider_mappings table
-            await self._set_provider_mappings(item_id, item.provider_mappings)
-            self.logger.debug("added %s to database", item.name)
+        # update/set provider_mappings table
+        await self._set_provider_mappings(item_id, item.provider_mappings)
+        self.logger.debug("added %s to database", item.name)
         # return created object
         return await self.get_db_item(item_id)
 
@@ -220,24 +222,23 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item = await self.get_db_item(db_id)
         metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
-        async with self._db_add_lock:
-            await self.mass.music.database.update(
-                self.db_table,
-                {"item_id": db_id},
-                {
-                    # always prefer name/owner from updated item here
-                    "name": item.name or cur_item.name,
-                    "sort_name": item.sort_name or cur_item.sort_name,
-                    "owner": item.owner or cur_item.sort_name,
-                    "is_editable": item.is_editable,
-                    "metadata": serialize_to_json(metadata),
-                    "provider_mappings": serialize_to_json(provider_mappings),
-                    "timestamp_modified": int(utc_timestamp()),
-                },
-            )
-            # update/set provider_mappings table
-            await self._set_provider_mappings(db_id, provider_mappings)
-            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                # always prefer name/owner from updated item here
+                "name": item.name or cur_item.name,
+                "sort_name": item.sort_name or cur_item.sort_name,
+                "owner": item.owner or cur_item.sort_name,
+                "is_editable": item.is_editable,
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
+        # update/set provider_mappings table
+        await self._set_provider_mappings(db_id, provider_mappings)
+        self.logger.debug("updated %s in database: %s", item.name, db_id)
         return await self.get_db_item(db_id)
 
     async def _get_provider_playlist_tracks(
