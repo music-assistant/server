@@ -233,7 +233,7 @@ class TidalProvider(MusicProvider):
                 parsed_results.playlists.append(self._parse_playlist(playlist_obj=playlist))
         if results["tracks"]:
             for track in results["tracks"]:
-                parsed_results.tracks.append(self._parse_track(track_obj=track))
+                parsed_results.tracks.append(await self._parse_track(track_obj=track))
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -261,7 +261,7 @@ class TidalProvider(MusicProvider):
         async for track in iter_items(
             get_library_tracks, tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT
         ):
-            yield self._parse_track(track_obj=track)
+            yield await self._parse_track(track_obj=track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
@@ -277,7 +277,7 @@ class TidalProvider(MusicProvider):
         tracks = await get_album_tracks(tidal_session, prov_album_id)
         for index, track_obj in enumerate(tracks, 1):
             if track_obj.available:
-                track = self._parse_track(track_obj=track_obj)
+                track = await self._parse_track(track_obj=track_obj)
                 track.position = index
                 result.append(track)
         return result
@@ -299,7 +299,7 @@ class TidalProvider(MusicProvider):
         tracks = await get_artist_toptracks(tidal_session, prov_artist_id)
         for index, track_obj in enumerate(tracks, 1):
             if track_obj.available:
-                track = self._parse_track(track_obj=track_obj)
+                track = await self._parse_track(track_obj=track_obj)
                 track.position = index
                 result.append(track)
         return result
@@ -318,7 +318,7 @@ class TidalProvider(MusicProvider):
             )
             for track_obj in chunk:
                 if track_obj.available:
-                    track = self._parse_track(track_obj=track_obj)
+                    track = await self._parse_track(track_obj=track_obj)
                     track.position = total_playlist_tracks
                     total_playlist_tracks += 1
                     yield track
@@ -332,7 +332,7 @@ class TidalProvider(MusicProvider):
         tracks = []
         for track_obj in similar_tracks_obj:
             if track_obj.available:
-                track = self._parse_track(track_obj=track_obj)
+                track = await self._parse_track(track_obj=track_obj)
                 tracks.append(track)
         return tracks
 
@@ -433,9 +433,8 @@ class TidalProvider(MusicProvider):
         try:
             # NOTE: there is IO hidden in the parse functions,
             # hence we need to run it in the executor
-            track = await asyncio.to_thread(
-                self._parse_track,
-                track_obj=await get_track(tidal_session, prov_track_id),
+            track = await self._parse_track(
+                track_obj=await get_track(tidal_session, prov_track_id), full_details=True
             )
         except MediaNotFoundError as err:
             raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
@@ -595,7 +594,7 @@ class TidalProvider(MusicProvider):
         metadata.popularity = album_obj.popularity
         return metadata
 
-    def _parse_track(self, track_obj: TidalTrack) -> Track:
+    async def _parse_track(self, track_obj: TidalTrack, full_details: bool = False) -> Track:
         """Parse tidal track object to generic layout."""
         version = track_obj.version if track_obj.version is not None else None
         track_id = str(track_obj.id)
@@ -631,20 +630,17 @@ class TidalProvider(MusicProvider):
                 available=available,
             )
         )
-        track.metadata = self._parse_track_metadata(track_obj)
+        # metadata
+        track.metadata.explicit = track_obj.explicit
+        track.metadata.popularity = track_obj.popularity
+        track.metadata.copyright = track_obj.copyright
+        if full_details:
+            try:
+                if lyrics_obj := await asyncio.to_thread(track_obj.lyrics):
+                    track.metadata.lyrics = lyrics_obj.text
+            except Exception:
+                self.logger.info(f"Track {track_obj.id} has no available lyrics")
         return track
-
-    def _parse_track_metadata(self, track_obj: TidalTrack) -> MediaItemMetadata:
-        """Parse tidal track object to MA metadata."""
-        metadata = MediaItemMetadata()
-        try:
-            metadata.lyrics = track_obj.lyrics().text
-        except Exception:
-            self.logger.info(f"Track {track_obj.id} has no available lyrics")
-        metadata.explicit = track_obj.explicit
-        metadata.popularity = track_obj.popularity
-        metadata.copyright = track_obj.copyright
-        return metadata
 
     def _parse_playlist(self, playlist_obj: TidalPlaylist) -> Playlist:
         """Parse tidal playlist object to generic layout."""
