@@ -6,8 +6,9 @@ import json
 import os
 import re
 import sys
-import tomllib
 from pathlib import Path
+
+import tomllib
 
 PACKAGE_REGEX = re.compile(r"^(?:--.+\s)?([-_\.\w\d]+).*==.+$")
 GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[@-_\.\w\d\/]*)$")
@@ -68,7 +69,7 @@ def main() -> int:
             # duplicate package without version is safe to ignore
             continue
         else:
-            print("Found requirement without version specifier: %s" % req_str)
+            print("Found requirement without (exact) version specifier: %s" % req_str)
             package_name = req_str
 
         existing = final_requirements.get(package_name)
