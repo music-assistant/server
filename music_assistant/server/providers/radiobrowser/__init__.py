@@ -111,14 +111,8 @@ class RadioBrowserProvider(MusicProvider):
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        print("path", path)
         _, subpath = path.split("://")
-        print("subpath", subpath)
-        if "/" not in subpath:
-            subsubpath = ""
-        else:
-            subsubpath = subpath.split("/")[-1]
-            print("subsubpath", subsubpath)
+        subsubpath = "" if "/" not in subpath else subpath.split("/")[-1]
 
         if not subpath:
             # return main listing
@@ -171,16 +165,22 @@ class RadioBrowserProvider(MusicProvider):
 
         if subpath == "tag":
             sub_items: list[BrowseFolder] = []
-            for tag in await self.get_tag_names():
-                sub_items.append(
-                    BrowseFolder(
-                        item_id=tag,
-                        provider=self.domain,
-                        path=path + "/" + tag,
-                        name="",
-                        label=tag,
-                    )
+            tags = await self.radios.tags(
+                hide_broken=True,
+                limit=100,
+                order=Order.STATION_COUNT,
+                reverse=True,
+            )
+            tags.sort(key=lambda tag: tag.name)
+            for tag in tags:
+                folder = BrowseFolder(
+                    item_id=tag.name.lower(),
+                    provider=self.domain,
+                    path=path + "/" + tag.name.lower(),
+                    name="",
+                    label=tag.name,
                 )
+                sub_items.append(folder)
             return BrowseFolder(
                 item_id="tag",
                 provider=self.domain,
@@ -191,16 +191,17 @@ class RadioBrowserProvider(MusicProvider):
 
         if subpath == "country":
             sub_items: list[BrowseFolder] = []
-            for country in await self.get_country_names():
-                sub_items.append(
-                    BrowseFolder(
-                        item_id=country,
-                        provider=self.domain,
-                        path=path + "/" + country,
-                        name="",
-                        label=country,
-                    )
+            for country in await self.radios.countries(order=Order.NAME):
+                folder = BrowseFolder(
+                    item_id=country.name.lower(),
+                    provider=self.domain,
+                    path=path + "/" + country.name.lower(),
+                    name="",
+                    label=country.name,
                 )
+                # When folder icons become available.
+                # folder.metadata.images = [MediaItemImage(ImageType.THUMB, country.favicon)]
+                sub_items.append(folder)
             return BrowseFolder(
                 item_id="country",
                 provider=self.domain,
