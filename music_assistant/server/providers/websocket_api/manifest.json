@@ -8,6 +8,7 @@
   "documentation": "",
   "multi_instance": false,
   "builtin": true,
+  "hidden": true,
   "load_by_default": true,
   "icon": "md:webhook"
 }

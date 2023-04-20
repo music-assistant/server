@@ -312,7 +312,7 @@ class MetaDataController:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
-            return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}"
+            return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}&provider={image.provider}"  # noqa: E501
         return image.path
 
     async def get_thumbnail(

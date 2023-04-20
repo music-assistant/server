@@ -19,6 +19,7 @@ class RadioController(MediaControllerBase[Radio]):
     db_table = DB_TABLE_RADIOS
     media_type = MediaType.RADIO
     item_cls = Radio
+    _db_add_lock = asyncio.Lock()
 
     def __init__(self, *args, **kwargs):
         """Initialize class."""
@@ -79,8 +80,13 @@ class RadioController(MediaControllerBase[Radio]):
     async def _add_db_item(self, item: Radio) -> Radio:
         """Add a new item record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
-        match = {"name": item.name}
-        if cur_item := await self.mass.music.database.get_row(self.db_table, match):
+        cur_item = None
+        # safety guard: check for existing item first
+        # use the lock to prevent a race condition of the same item being added twice
+        async with self._db_add_lock:
+            match = {"name": item.name}
+            cur_item = await self.mass.music.database.get_row(self.db_table, match)
+        if cur_item:
             # update existing
             return await self._update_db_item(cur_item["item_id"], item)
         # insert new item
@@ -88,10 +94,10 @@ class RadioController(MediaControllerBase[Radio]):
         item.timestamp_modified = int(utc_timestamp())
         async with self._db_add_lock:
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
-            item_id = new_item["item_id"]
-            # update/set provider_mappings table
-            await self._set_provider_mappings(item_id, item.provider_mappings)
-            self.logger.debug("added %s to database", item.name)
+        item_id = new_item["item_id"]
+        # update/set provider_mappings table
+        await self._set_provider_mappings(item_id, item.provider_mappings)
+        self.logger.debug("added %s to database", item.name)
         # return created object
         return await self.get_db_item(item_id)
 
@@ -104,22 +110,21 @@ class RadioController(MediaControllerBase[Radio]):
         metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
         match = {"item_id": db_id}
-        async with self._db_add_lock:
-            await self.mass.music.database.update(
-                self.db_table,
-                match,
-                {
-                    # always prefer name from updated item here
-                    "name": item.name or cur_item.name,
-                    "sort_name": item.sort_name or cur_item.sort_name,
-                    "metadata": serialize_to_json(metadata),
-                    "provider_mappings": serialize_to_json(provider_mappings),
-                    "timestamp_modified": int(utc_timestamp()),
-                },
-            )
-            # update/set provider_mappings table
-            await self._set_provider_mappings(db_id, provider_mappings)
-            self.logger.debug("updated %s in database: %s", item.name, db_id)
+        await self.mass.music.database.update(
+            self.db_table,
+            match,
+            {
+                # always prefer name from updated item here
+                "name": item.name or cur_item.name,
+                "sort_name": item.sort_name or cur_item.sort_name,
+                "metadata": serialize_to_json(metadata),
+                "provider_mappings": serialize_to_json(provider_mappings),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
+        # update/set provider_mappings table
+        await self._set_provider_mappings(db_id, provider_mappings)
+        self.logger.debug("updated %s in database: %s", item.name, db_id)
         return await self.get_db_item(db_id)
 
     async def _get_provider_dynamic_tracks(
