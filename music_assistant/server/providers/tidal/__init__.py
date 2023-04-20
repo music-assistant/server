@@ -32,7 +32,6 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ItemMapping,
     MediaItemImage,
-    MediaItemMetadata,
     Playlist,
     ProviderMapping,
     SearchResults,
@@ -45,7 +44,6 @@ from music_assistant.server.models.music_provider import MusicProvider
 from .helpers import (
     DEFAULT_LIMIT,
     add_remove_playlist_tracks,
-    create_playlist,
     get_album,
     get_album_tracks,
     get_artist,
