@@ -44,6 +44,7 @@ from music_assistant.server.models.music_provider import MusicProvider
 from .helpers import (
     DEFAULT_LIMIT,
     add_remove_playlist_tracks,
+    create_playlist,
     get_album,
     get_album_tracks,
     get_artist,
@@ -202,7 +203,7 @@ class TidalProvider(MusicProvider):
             ProviderFeature.LIBRARY_ALBUMS_EDIT,
             ProviderFeature.LIBRARY_TRACKS_EDIT,
             ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            # ProviderFeature.PLAYLIST_CREATE,
+            ProviderFeature.PLAYLIST_CREATE,
             ProviderFeature.SIMILAR_TRACKS,
             ProviderFeature.BROWSE,
             ProviderFeature.PLAYLIST_TRACKS_EDIT,
@@ -365,12 +366,12 @@ class TidalProvider(MusicProvider):
                 break
         return await add_remove_playlist_tracks(self, prov_playlist_id, prov_track_ids, add=False)
 
-    """ async def create_playlist(self, name: str) -> Playlist:
-        #Create a new playlist on provider with given name.
+    async def create_playlist(self, name: str) -> Playlist:
+        """Create a new playlist on provider with given name."""
         tidal_session = await self._get_tidal_session()
         playlist_obj = await create_playlist(tidal_session, self._tidal_user_id, name)
         playlist = await self._parse_playlist(playlist_obj=playlist_obj)
-        return playlist """
+        return playlist
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
