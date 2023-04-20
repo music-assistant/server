@@ -535,9 +535,7 @@ class FileSystemProviderBase(MusicProvider):
         # filename = await self.resolve(f"{name}.m3u")
         filename = f"{name}.m3u"
         await self.write_file_content(filename, b"")
-        playlist = await self.get_playlist(filename)
-        db_playlist = await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
-        return db_playlist
+        return await self.get_playlist(filename)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""

@@ -100,7 +100,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if provider is None:
             raise ProviderUnavailableError("No provider available which allows playlists creation.")
 
-        return await provider.create_playlist(name)
+        # create playlist on the provider
+        prov_playlist = await provider.create_playlist(name)
+        prov_playlist.in_library = True
+        # return db playlist
+        return await self.add(prov_playlist, True)
 
     async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
