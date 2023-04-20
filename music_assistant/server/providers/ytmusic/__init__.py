@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import re
 from operator import itemgetter
 from time import time
@@ -9,8 +10,6 @@ from typing import TYPE_CHECKING, AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
 import pytube
-import ytmusicapi
-from ytmusicapi.auth.oauth import YTMusicOAuth
 
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name
@@ -39,7 +38,8 @@ from .helpers import (add_remove_playlist_tracks, get_album, get_artist,
                       get_library_playlists, get_library_tracks, get_playlist,
                       get_song_radio_tracks, get_track,
                       library_add_remove_album, library_add_remove_artist,
-                      library_add_remove_playlist, login_oauth, search)
+                      library_add_remove_playlist, login_oauth,
+                      refresh_oauth_token, search)
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -140,7 +140,6 @@ async def get_config_entries(
         ),
     )
 
-
 class YoutubeMusicProvider(MusicProvider):
     """Provider for Youtube Music."""
 
@@ -202,6 +201,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Youtube Music."""
+        await self._check_oauth_token()
         artists_obj = await get_library_artists(
             headers=self._headers, 
         )
@@ -210,6 +210,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Youtube Music."""
+        await self._check_oauth_token()
         albums_obj = await get_library_albums(
             headers=self._headers, 
         )
@@ -218,6 +219,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
+        await self._check_oauth_token()
         playlists_obj = await get_library_playlists(
             headers=self._headers, 
         )
@@ -226,6 +228,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
+        await self._check_oauth_token()
         tracks_obj = await get_library_tracks(
             headers=self._headers, 
         )
@@ -274,6 +277,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
+        await self._check_oauth_token()
         if playlist_obj := await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers
@@ -283,6 +287,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
+        await self._check_oauth_token()
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers
@@ -331,6 +336,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def library_add(self, prov_item_id, media_type: MediaType) -> None:
         """Add an item to the library."""
+        await self._check_oauth_token()
         result = False
         if media_type == MediaType.ARTIST:
             result = await library_add_remove_artist(
@@ -356,6 +362,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def library_remove(self, prov_item_id, media_type: MediaType):
         """Remove an item from the library."""
+        await self._check_oauth_token()
         result = False
         if media_type == MediaType.ARTIST:
             result = await library_add_remove_artist(
@@ -381,6 +388,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
+        await self._check_oauth_token()
         return await add_remove_playlist_tracks(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
@@ -392,6 +400,7 @@ class YoutubeMusicProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
+        await self._check_oauth_token()
         playlist_obj = await get_playlist(
             prov_playlist_id=prov_playlist_id,
             headers=self._headers
@@ -417,6 +426,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
+        await self._check_oauth_token()
         result = []
         result = await get_song_radio_tracks(
             headers=self._headers,
@@ -470,6 +480,8 @@ class YoutubeMusicProvider(MusicProvider):
         return stream_details
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
+        """Post data to the given endpoint."""
+        await self._check_oauth_token()
         url = f"{YTM_BASE_URL}{endpoint}"
         data.update(self._context)
         async with self.mass.http_session.post(
@@ -482,10 +494,21 @@ class YoutubeMusicProvider(MusicProvider):
             return await response.json()
 
     async def _get_data(self, url: str, params: dict = None):
+        """Get data from the given URL."""
+        await self._check_oauth_token()
         async with self.mass.http_session.get(
             url, headers=self._headers, params=params, cookies=self._cookies
         ) as response:
             return await response.text()
+
+    async def _check_oauth_token(self) -> None:
+        """Verify the OAuth token is valid and refresh if needed."""
+        if self.config.get_value(CONF_EXPIRY_TIME) < time():
+            token = await refresh_oauth_token(self.mass.http_session, self.config.get_value(CONF_REFRESH_TOKEN))
+            self.config.update({CONF_AUTH_TOKEN: token["access_token"]})
+            self.config.update({CONF_EXPIRY_TIME: time() + token["expires_in"]})
+            self.config.update({CONF_TOKEN_TYPE: token["token_type"]})
+            await self._initialize_headers()
 
     async def _initialize_headers(self) -> dict[str, str]:
         """Return headers to include in the requests."""
@@ -499,9 +522,6 @@ class YoutubeMusicProvider(MusicProvider):
             "X-Goog-Request-Time": str(int(time())),
             "Authorization": f"{self.config.get_value(CONF_TOKEN_TYPE)} {self.config.get_value(CONF_AUTH_TOKEN)}",
         }
-        # sapisid = ytmusicapi.helpers.sapisid_from_cookie(cookie)
-        origin = headers.get("origin", headers.get("x-origin"))
-        # headers["Authorization"] = ytmusicapi.helpers.get_authorization(sapisid + " " + origin)
         self._headers = headers
 
     async def _initialize_context(self) -> dict[str, str]:

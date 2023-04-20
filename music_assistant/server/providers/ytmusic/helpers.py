@@ -299,19 +299,23 @@ async def login_oauth(auth_helper: AuthenticationHelper):
     token = await visit_oauth_auth_url(auth_helper, code)
     return token
 
+
 def _get_data_and_headers(data: dict):
+    """Prepare headers for OAuth requests."""
     data.update({"client_id": OAUTH_CLIENT_ID})
     headers = {"User-Agent": OAUTH_USER_AGENT}
     return data, headers
 
 
 async def get_oauth_code(session: ClientSession):
+    """Get the OAuth code from the server."""
     data, headers = _get_data_and_headers({"scope": OAUTH_SCOPE})
     async with session.post(OAUTH_CODE_URL, json=data, headers=headers) as code_response:
         return await code_response.json()
 
 
 async def visit_oauth_auth_url(auth_helper: AuthenticationHelper, code: dict[str, str]):    
+    """Redirect the user to the OAuth login page and wait for the token."""
     auth_url = f"{code['verification_url']}?user_code={code['user_code']}"
     auth_helper.send_url(auth_url=auth_url)
     device_code = code["device_code"]
@@ -325,7 +329,6 @@ async def visit_oauth_auth_url(auth_helper: AuthenticationHelper, code: dict[str
         expiry -= interval
     raise TimeoutError("You took too long to log in")
     
-
 
 async def get_oauth_token_from_code(session: ClientSession, device_code: str):
     data, headers = _get_data_and_headers(
