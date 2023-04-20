@@ -439,6 +439,13 @@ class MusicAssistant:
                             if os.path.isfile(icon_path):
                                 provider_manifest.icon = await get_icon_string(icon_path)
                                 break
+                    # check for dark_icon file
+                    if not provider_manifest.icon_dark:
+                        for icon_file in ("icon_dark.svg", "icon_dark.png"):
+                            icon_path = os.path.join(dir_path, icon_file)
+                            if os.path.isfile(icon_path):
+                                provider_manifest.icon_dark = await get_icon_string(icon_path)
+                                break
                     self._available_providers[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", dir_str)
                 except Exception as exc:  # pylint: disable=broad-except

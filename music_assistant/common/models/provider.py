@@ -40,6 +40,10 @@ class ProviderManifest(DataClassORJSONMixin):
     # if this attribute is omitted and an icon.svg or icon.png is found in the provider
     # folder, it will be read instead.
     icon: str | None = None
+    # icon_dark: optional separate dark icon
+    # if this attribute is omitted and an icon_dark.svg or icon_dark.png is found in the provider
+    # folder, it will be read instead.
+    icon_dark: str | None = None
 
     @classmethod
     async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":

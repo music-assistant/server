@@ -20,9 +20,9 @@ from pychromecast.models import CastInfo
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_HIDE_GROUP_MEMBERS,
     CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
-    ConfigValueOption,
     ConfigValueType,
 )
 from music_assistant.common.models.enums import (
@@ -36,12 +36,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import (
-    CONF_HIDE_GROUP_CHILDS,
-    CONF_OUTPUT_CODEC,
-    CONF_PLAYERS,
-    MASS_LOGO_ONLINE,
-)
+from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_PLAYERS, MASS_LOGO_ONLINE
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -173,22 +168,7 @@ class ChromecastProvider(PlayerProvider):
             and cast_player.cast_info.is_audio_group
             and not cast_player.cast_info.is_multichannel_group
         ):
-            entries = entries + (
-                ConfigEntry(
-                    key=CONF_HIDE_GROUP_CHILDS,
-                    type=ConfigEntryType.STRING,
-                    options=[
-                        ConfigValueOption("Always", "always"),
-                        ConfigValueOption("Only if the group is active/powered", "active"),
-                        ConfigValueOption("Never", "never"),
-                    ],
-                    default_value="active",
-                    label="Hide playergroup members in UI",
-                    description="Hide the individual player entry for the members of this group "
-                    "in the user interface.",
-                    advanced=True,
-                ),
-            )
+            entries = entries + (CONF_ENTRY_HIDE_GROUP_MEMBERS,)
         return entries
 
     def on_player_config_changed(
