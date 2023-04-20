@@ -403,7 +403,10 @@ class TidalProvider(MusicProvider):
         """Get artist details for given artist id."""
         tidal_session = await self._get_tidal_session()
         try:
-            artist = self._parse_artist(
+            # NOTE: there is IO hidden in the parse functions,
+            # hence we need to run it in the executor
+            artist = await asyncio.to_thread(
+                self._parse_artist,
                 artist_obj=await get_artist(tidal_session, prov_artist_id),
             )
         except MediaNotFoundError as err:
@@ -414,7 +417,10 @@ class TidalProvider(MusicProvider):
         """Get album details for given album id."""
         tidal_session = await self._get_tidal_session()
         try:
-            album = self._parse_album(
+            # NOTE: there is IO hidden in the parse functions,
+            # hence we need to run it in the executor
+            album = await asyncio.to_thread(
+                self._parse_album,
                 album_obj=await get_album(tidal_session, prov_album_id),
             )
         except MediaNotFoundError as err:
@@ -425,7 +431,10 @@ class TidalProvider(MusicProvider):
         """Get track details for given track id."""
         tidal_session = await self._get_tidal_session()
         try:
-            track = self._parse_track(
+            # NOTE: there is IO hidden in the parse functions,
+            # hence we need to run it in the executor
+            track = await asyncio.to_thread(
+                self._parse_track,
                 track_obj=await get_track(tidal_session, prov_track_id),
             )
         except MediaNotFoundError as err:
@@ -436,7 +445,10 @@ class TidalProvider(MusicProvider):
         """Get playlist details for given playlist id."""
         tidal_session = await self._get_tidal_session()
         try:
-            playlist = self._parse_playlist(
+            # NOTE: there is IO hidden in the parse functions,
+            # hence we need to run it in the executor
+            playlist = await asyncio.to_thread(
+                self._parse_playlist,
                 playlist_obj=await get_playlist(tidal_session, prov_playlist_id),
             )
         except MediaNotFoundError as err:
