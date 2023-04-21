@@ -41,7 +41,7 @@ from .helpers import (
     get_album,
     get_albums_by_artist,
     get_artist,
-    get_artist_top,
+    # get_artist_top,
     get_blowfish_key,
     get_deezer_client,
     get_deezer_track_url,
@@ -216,7 +216,7 @@ class DeezerProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Deezer."""
         for artist in await get_user_artists(client=self.client):
-            yield await parse_artist(mass=self, artist=artist)
+            yield parse_artist(mass=self, artist=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
@@ -235,7 +235,7 @@ class DeezerProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        return await parse_artist(
+        return parse_artist(
             mass=self, artist=await get_artist(client=self.client, artist_id=int(prov_artist_id))
         )
 
@@ -280,11 +280,13 @@ class DeezerProvider(MusicProvider):
             albums.append(await parse_album(mass=self, album=album))
         return albums
 
+    '''
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top 25 tracks of an artist."""
         artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
         top_tracks = (await get_artist_top(artist=artist))[:25]
         return [await parse_track(mass=self, track=track) for track in top_tracks]
+    '''
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add an item to the library."""

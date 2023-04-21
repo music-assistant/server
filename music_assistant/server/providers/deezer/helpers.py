@@ -14,6 +14,7 @@ import asyncio
 import hashlib
 
 import deezer
+import deezer.exceptions
 from Crypto.Cipher import Blowfish
 
 from music_assistant.common.models.enums import AlbumType, ContentType, ImageType, MediaType
@@ -246,7 +247,7 @@ async def search_playlist(
     return await asyncio.to_thread(_search)
 
 
-async def get_access_token(mass, app_id, app_secret, code) -> Credential:
+async def get_access_token(mass, app_id, app_secret, code) -> str:
     """Update the access_token."""
     response = await _post_http(
         mass=mass,
@@ -350,7 +351,7 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
             images=[
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=(get_album_from_track(track=track)).cover_big,
+                    path=(await get_album_from_track(track=track)).cover_big,
                 )
             ],
         )
@@ -376,7 +377,7 @@ def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
 
 async def _get_album(mass, track: deezer.Track) -> Album | None:
     try:
-        return await parse_album(mass=mass, album=get_album_from_track(track=track))
+        return await parse_album(mass=mass, album=await get_album_from_track(track=track))
     except AttributeError:
         return None
 
@@ -448,7 +449,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
         sort_name=track.title_short,
         position=track.track_position,
         duration=track.duration,
-        artists=[await parse_artist(mass=mass, artist=artist)],
+        artists=[parse_artist(mass=mass, artist=artist)],
         album=(await _get_album(mass=mass, track=track)),
         provider_mappings={
             ProviderMapping(
@@ -480,7 +481,7 @@ async def search_and_parse_artists(
     deezer_artist = await search_artist(client=client, query=query, limit=limit)
     artists = []
     for artist in deezer_artist:
-        artists.append(await parse_artist(artist=artist, mass=mass))
+        artists.append(parse_artist(artist=artist, mass=mass))
     return artists
 
 
