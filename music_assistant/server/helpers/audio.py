@@ -508,12 +508,16 @@ async def get_radio_stream(
         meta_int = int(headers.get("icy-metaint", "0"))
         # stream with ICY Metadata
         if meta_int:
+            LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
             while True:
-                audio_chunk = await resp.content.readexactly(meta_int)
-                yield audio_chunk
-                meta_byte = await resp.content.readexactly(1)
-                meta_length = ord(meta_byte) * 16
-                meta_data = await resp.content.readexactly(meta_length)
+                try:
+                    audio_chunk = await resp.content.readexactly(meta_int)
+                    yield audio_chunk
+                    meta_byte = await resp.content.readexactly(1)
+                    meta_length = ord(meta_byte) * 16
+                    meta_data = await resp.content.readexactly(meta_length)
+                except asyncio.exceptions.IncompleteReadError:
+                    break
                 if not meta_data:
                     continue
                 meta_data = meta_data.rstrip(b"\0")
@@ -525,8 +529,10 @@ async def get_radio_stream(
                     streamdetails.stream_title = stream_title
         # Regular HTTP stream
         else:
+            LOGGER.debug("Start streaming radio without ICY metadata from url %s", url)
             async for chunk in resp.content.iter_any():
                 yield chunk
+        LOGGER.debug("Finished streaming radio from url %s", url)
 
 
 async def get_http_stream(

@@ -31,6 +31,8 @@ class ProviderManifest(DataClassORJSONMixin):
     multi_instance: bool = False
     # builtin: whether this provider is a system/builtin and can not disabled/removed
     builtin: bool = False
+    # hidden: hide entry in the UI
+    hidden: bool = False
     # load_by_default: load this provider by default (mostly used together with `builtin`)
     load_by_default: bool = False
     # depends_on: depends on another provider to function
@@ -40,6 +42,10 @@ class ProviderManifest(DataClassORJSONMixin):
     # if this attribute is omitted and an icon.svg or icon.png is found in the provider
     # folder, it will be read instead.
     icon: str | None = None
+    # icon_dark: optional separate dark icon
+    # if this attribute is omitted and an icon_dark.svg or icon_dark.png is found in the provider
+    # folder, it will be read instead.
+    icon_dark: str | None = None
 
     @classmethod
     async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":

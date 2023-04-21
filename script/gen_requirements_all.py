@@ -59,6 +59,7 @@ def main() -> int:
     # TODO: compare versions and only store most recent
     final_requirements: dict[str, str] = {}
     for req_str in core_reqs + extra_reqs:
+        package_name = req_str
         if match := PACKAGE_REGEX.search(req_str):
             package_name = match.group(1).lower().replace("_", "-")
         elif match := GIT_REPO_REGEX.search(req_str):
@@ -67,7 +68,7 @@ def main() -> int:
             # duplicate package without version is safe to ignore
             continue
         else:
-            print("Found requirement without version specifier: %s" % req_str)
+            print("Found requirement without (exact) version specifier: %s" % req_str)
             package_name = req_str
 
         existing = final_requirements.get(package_name)

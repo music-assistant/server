@@ -10,7 +10,7 @@ repos:
           - --branch=main
       - id: debug-statements
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: 'v0.0.261'
+    rev: 'v0.0.262'
     hooks:
       - id: ruff
   - repo: https://github.com/psf/black
@@ -32,12 +32,22 @@ repos:
 
   - repo: local
     hooks:
-      # - id: pylint
-      #   name: pylint
-      #   entry: script/run-in-env.sh pylint -j 0 --ignore-missing-annotations=y
-      #   language: script
-      #   types: [python]
-      #   files: ^music_assistant/.+\.py$
+      - id: pylint
+        name: pylint
+        entry: script/run-in-env.sh pylint -j 0
+        language: script
+        types: [python]
+        files: ^hass_client/.+\.py$
+
+      - id: mypy
+        name: mypy
+        entry: script/run-in-env.sh mypy
+        language: script
+        types: [python]
+        files: ^hass_client/.+\.py$
+
+  - repo: local
+    hooks:
       - id: gen_requirements_all
         name: gen_requirements_all
         entry: script/run-in-env.sh python3 -m script.gen_requirements_all

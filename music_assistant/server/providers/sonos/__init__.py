@@ -405,7 +405,9 @@ class SonosPlayerProvider(PlayerProvider):
         try:
             self._discovery_running = True
             self.logger.debug("Sonos discovery started...")
-            discovered_devices: set[soco.SoCo] = await asyncio.to_thread(soco.discover, 10)
+            discovered_devices: set[soco.SoCo] = await asyncio.to_thread(
+                soco.discover, 30, allow_network_scan=True
+            )
             if discovered_devices is None:
                 discovered_devices = set()
             new_device_ids = {item.uid for item in discovered_devices}

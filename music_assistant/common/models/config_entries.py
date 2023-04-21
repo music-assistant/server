@@ -15,6 +15,8 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
+    CONF_GROUPED_POWER_ON,
+    CONF_HIDE_GROUP_CHILDS,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
@@ -30,7 +32,7 @@ LOGGER = logging.getLogger(__name__)
 ENCRYPT_CALLBACK: callable[[str], str] | None = None
 DECRYPT_CALLBACK: callable[[str], str] | None = None
 
-ConfigValueType = str | int | float | bool | None
+ConfigValueType = str | int | float | bool | list[str] | list[int] | None
 
 ConfigEntryTypeMap = {
     ConfigEntryType.BOOLEAN: bool,
@@ -99,7 +101,7 @@ class ConfigEntry(DataClassDictMixin):
         allow_none: bool = True,
     ) -> ConfigValueType:
         """Parse value from the config entry details and plain value."""
-        expected_type = ConfigEntryTypeMap.get(self.type, NoneType)
+        expected_type = list if self.multi_value else ConfigEntryTypeMap.get(self.type, NoneType)
         if value is None:
             value = self.default_value
         if value is None and (not self.required or allow_none):
@@ -260,98 +262,25 @@ class PlayerConfig(Config):
     default_name: str | None = None
 
 
-DEFAULT_PROVIDER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_LOG_LEVEL,
-        type=ConfigEntryType.STRING,
-        label="Log level",
-        options=[
-            ConfigValueOption("global", "GLOBAL"),
-            ConfigValueOption("info", "INFO"),
-            ConfigValueOption("warning", "WARNING"),
-            ConfigValueOption("error", "ERROR"),
-            ConfigValueOption("debug", "DEBUG"),
-        ],
-        default_value="GLOBAL",
-        description="Set the log verbosity for this provider",
-        advanced=True,
-    ),
+CONF_ENTRY_LOG_LEVEL = ConfigEntry(
+    key=CONF_LOG_LEVEL,
+    type=ConfigEntryType.STRING,
+    label="Log level",
+    options=[
+        ConfigValueOption("global", "GLOBAL"),
+        ConfigValueOption("info", "INFO"),
+        ConfigValueOption("warning", "WARNING"),
+        ConfigValueOption("error", "ERROR"),
+        ConfigValueOption("debug", "DEBUG"),
+    ],
+    default_value="GLOBAL",
+    description="Set the log verbosity for this provider",
+    advanced=True,
 )
 
+DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 
-DEFAULT_PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_VOLUME_NORMALISATION,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable volume normalization (EBU-R128 based)",
-        default_value=True,
-        description="Enable volume normalization based on the EBU-R128 "
-        "standard without affecting dynamic range",
-    ),
-    ConfigEntry(
-        key=CONF_FLOW_MODE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable queue flow mode",
-        default_value=False,
-        description='Enable "flow" mode where all queue tracks are sent as a continuous '
-        "audio stream. Use for players that do not natively support gapless and/or "
-        "crossfading or if the player has trouble transitioning between tracks.",
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_VOLUME_NORMALISATION_TARGET,
-        type=ConfigEntryType.INTEGER,
-        range=(-30, 0),
-        default_value=-14,
-        label="Target level for volume normalisation",
-        description="Adjust average (perceived) loudness to this target level, "
-        "default is -14 LUFS",
-        depends_on=CONF_VOLUME_NORMALISATION,
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_EQ_BASS,
-        type=ConfigEntryType.INTEGER,
-        range=(-10, 10),
-        default_value=0,
-        label="Equalizer: bass",
-        description="Use the builtin basic equalizer to adjust the bass of audio.",
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_EQ_MID,
-        type=ConfigEntryType.INTEGER,
-        range=(-10, 10),
-        default_value=0,
-        label="Equalizer: midrange",
-        description="Use the builtin basic equalizer to adjust the midrange of audio.",
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_EQ_TREBLE,
-        type=ConfigEntryType.INTEGER,
-        range=(-10, 10),
-        default_value=0,
-        label="Equalizer: treble",
-        description="Use the builtin basic equalizer to adjust the treble of audio.",
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_OUTPUT_CHANNELS,
-        type=ConfigEntryType.STRING,
-        options=[
-            ConfigValueOption("Stereo (both channels)", "stereo"),
-            ConfigValueOption("Left channel", "left"),
-            ConfigValueOption("Right channel", "right"),
-            ConfigValueOption("Mono (both channels)", "mono"),
-        ],
-        default_value="stereo",
-        label="Output Channel Mode",
-        description="You can configure this player to play only the left or right channel, "
-        "for example to a create a stereo pair with 2 players.",
-        advanced=True,
-    ),
-)
+# some reusable player config entries
 
 CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
     key=CONF_OUTPUT_CODEC,
@@ -369,4 +298,120 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
     "respectable filesize and is supported by most player devices. "
     "Change this setting only if needed for your device/environment.",
     advanced=True,
+)
+
+CONF_ENTRY_FLOW_MODE = ConfigEntry(
+    key=CONF_FLOW_MODE,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enable queue flow mode",
+    default_value=False,
+    description='Enable "flow" mode where all queue tracks are sent as a continuous '
+    "audio stream. Use for players that do not natively support gapless and/or "
+    "crossfading or if the player has trouble transitioning between tracks.",
+    advanced=False,
+)
+
+CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
+    key=CONF_OUTPUT_CHANNELS,
+    type=ConfigEntryType.STRING,
+    options=[
+        ConfigValueOption("Stereo (both channels)", "stereo"),
+        ConfigValueOption("Left channel", "left"),
+        ConfigValueOption("Right channel", "right"),
+        ConfigValueOption("Mono (both channels)", "mono"),
+    ],
+    default_value="stereo",
+    label="Output Channel Mode",
+    description="You can configure this player to play only the left or right channel, "
+    "for example to a create a stereo pair with 2 players.",
+    advanced=True,
+)
+
+CONF_ENTRY_VOLUME_NORMALISATION = ConfigEntry(
+    key=CONF_VOLUME_NORMALISATION,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enable volume normalization (EBU-R128 based)",
+    default_value=True,
+    description="Enable volume normalization based on the EBU-R128 "
+    "standard without affecting dynamic range",
+)
+
+CONF_ENTRY_VOLUME_NORMALISATION_TARGET = ConfigEntry(
+    key=CONF_VOLUME_NORMALISATION_TARGET,
+    type=ConfigEntryType.INTEGER,
+    range=(-30, 0),
+    default_value=-14,
+    label="Target level for volume normalisation",
+    description="Adjust average (perceived) loudness to this target level, " "default is -14 LUFS",
+    depends_on=CONF_VOLUME_NORMALISATION,
+    advanced=True,
+)
+
+CONF_ENTRY_EQ_BASS = ConfigEntry(
+    key=CONF_EQ_BASS,
+    type=ConfigEntryType.INTEGER,
+    range=(-10, 10),
+    default_value=0,
+    label="Equalizer: bass",
+    description="Use the builtin basic equalizer to adjust the bass of audio.",
+    advanced=True,
+)
+
+CONF_ENTRY_EQ_MID = ConfigEntry(
+    key=CONF_EQ_MID,
+    type=ConfigEntryType.INTEGER,
+    range=(-10, 10),
+    default_value=0,
+    label="Equalizer: midrange",
+    description="Use the builtin basic equalizer to adjust the midrange of audio.",
+    advanced=True,
+)
+
+CONF_ENTRY_EQ_TREBLE = ConfigEntry(
+    key=CONF_EQ_TREBLE,
+    type=ConfigEntryType.INTEGER,
+    range=(-10, 10),
+    default_value=0,
+    label="Equalizer: treble",
+    description="Use the builtin basic equalizer to adjust the treble of audio.",
+    advanced=True,
+)
+
+CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
+    key=CONF_HIDE_GROUP_CHILDS,
+    type=ConfigEntryType.STRING,
+    options=[
+        ConfigValueOption("Always", "always"),
+        ConfigValueOption("Only if the group is active/powered", "active"),
+        ConfigValueOption("Never", "never"),
+    ],
+    default_value="active",
+    label="Hide playergroup members in UI",
+    description="Hide the individual player entry for the members of this group "
+    "in the user interface.",
+    advanced=False,
+)
+
+CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
+    key=CONF_GROUPED_POWER_ON,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=True,
+    label="Forced Power ON of all group members",
+    description="Power ON all child players when the group player is powered on "
+    "(or playback started). \n"
+    "If this setting is disabled, playback will only start on players that "
+    "are already powered ON at the time of playback start.\n"
+    "When turning OFF the group player, all group members are turned off, "
+    "regardless of this setting.",
+    advanced=False,
+)
+
+DEFAULT_PLAYER_CONFIG_ENTRIES = (
+    CONF_ENTRY_VOLUME_NORMALISATION,
+    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_VOLUME_NORMALISATION_TARGET,
+    CONF_ENTRY_EQ_BASS,
+    CONF_ENTRY_EQ_MID,
+    CONF_ENTRY_EQ_TREBLE,
+    CONF_ENTRY_OUTPUT_CHANNELS,
 )
