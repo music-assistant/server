@@ -55,9 +55,13 @@ class ProviderMapping(DataClassDictMixin):
             score += 1
         return int(score)
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """Return custom hash."""
-        return hash((self.provider_domain, self.item_id))
+        return hash((self.provider_instance, self.item_id))
+
+    def __eq__(self, other: ProviderMapping) -> bool:
+        """Check equality of two items."""
+        return self.provider_instance == other.provider_instance and self.item_id == other.item_id
 
 
 @dataclass(frozen=True)
@@ -67,9 +71,13 @@ class MediaItemLink(DataClassDictMixin):
     type: LinkType
     url: str
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """Return custom hash."""
         return hash(self.type)
+
+    def __eq__(self, other: MediaItemLink) -> bool:
+        """Check equality of two items."""
+        return self.url == other.url
 
 
 @dataclass(frozen=True)
@@ -82,9 +90,13 @@ class MediaItemImage(DataClassDictMixin):
     # if the path is just a plain (remotely accessible) URL, set it to 'url'
     provider: str = "url"
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """Return custom hash."""
         return hash(self.type.value, self.path)
+
+    def __eq__(self, other: MediaItemImage) -> bool:
+        """Check equality of two items."""
+        return self.__hash__() == other.__hash__()
 
 
 @dataclass(frozen=True)
@@ -96,9 +108,13 @@ class MediaItemChapter(DataClassDictMixin):
     position_end: float | None = None
     title: str | None = None
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """Return custom hash."""
         return hash(self.chapter_id)
+
+    def __eq__(self, other: MediaItemChapter) -> bool:
+        """Check equality of two items."""
+        return self.chapter_id == other.chapter_id
 
 
 @dataclass
@@ -255,10 +271,6 @@ class MediaItem(DataClassDictMixin):
         }
         self.provider_mappings.add(prov_mapping)
 
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.media_type, self.provider, self.item_id))
-
 
 @dataclass
 class ItemMapping(DataClassDictMixin):
@@ -280,10 +292,6 @@ class ItemMapping(DataClassDictMixin):
         result.available = item.available
         return result
 
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.media_type, self.provider, self.item_id))
-
     def __post_init__(self):
         """Call after init."""
         if not self.uri:
@@ -299,10 +307,6 @@ class Artist(MediaItem):
     media_type: MediaType = MediaType.ARTIST
     musicbrainz_id: str | None = None
 
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.provider, self.item_id))
-
 
 @dataclass
 class Album(MediaItem):
@@ -315,10 +319,6 @@ class Album(MediaItem):
     album_type: AlbumType = AlbumType.UNKNOWN
     barcode: set[str] = field(default_factory=set)
     musicbrainz_id: str | None = None  # release group id
-
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.provider, self.item_id))
 
 
 @dataclass
