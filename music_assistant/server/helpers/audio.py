@@ -755,6 +755,8 @@ async def _get_ffmpeg_args(
         "-loglevel",
         "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
+        "-protocol_whitelist",
+        "ALL",  # support nested protocols (e.g. within playlist)
     ]
     # collect input args
     input_args = []
