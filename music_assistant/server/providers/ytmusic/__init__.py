@@ -135,7 +135,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_REFRESH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label= CONF_REFRESH_TOKEN,
+            label=CONF_REFRESH_TOKEN,
             hidden=True,
             value=values.get(CONF_REFRESH_TOKEN) if values else None,
         ),
