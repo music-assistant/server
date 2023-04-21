@@ -13,7 +13,6 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     MediaType,
     ProviderFeature,
 )
@@ -353,11 +352,15 @@ class DeezerProvider(MusicProvider):
         blowfish_key = get_blowfish_key(streamdetails.item_id)
         i = 0
         timeout = ClientTimeout(total=0, connect=30, sock_read=600)
+        buffer = bytearray()
         async with self.mass.http_session.get(streamdetails.data, timeout=timeout) as resp:
             async for chunk in resp.content.iter_chunked(2048):
-                chunk_size = len(chunk)
-                if i % 3 > 0 or chunk_size < 2048:
-                    yield chunk
-                else:
-                    yield decrypt_chunk(chunk, blowfish_key)
-                i += 1
+                buffer += chunk
+                if len(buffer) >= 2048:
+                    if i % 3 > 0:
+                        yield bytes(buffer[:2048])
+                    else:
+                        yield decrypt_chunk(bytes(buffer[:2048]), blowfish_key)
+                    i += 1
+                    del buffer[:2048]
+        yield bytes(buffer)
