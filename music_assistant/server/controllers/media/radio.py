@@ -61,17 +61,7 @@ class RadioController(MediaControllerBase[Radio]):
         """Add radio to local db and return the new database item."""
         if not skip_metadata_lookup:
             await self.mass.metadata.get_radio_metadata(item)
-        existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        if existing:
-            db_item = await self._update_db_item(existing.item_id, item)
-        else:
-            db_item = await self._add_db_item(item)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
-            db_item.uri,
-            db_item,
-        )
-        return db_item
+        return await self._add_db_item(item)
 
     async def update(self, item_id: str | int, update: Radio, overwrite: bool = False) -> Radio:
         """Update existing record in the database."""
@@ -84,8 +74,10 @@ class RadioController(MediaControllerBase[Radio]):
         # safety guard: check for existing item first
         # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
-            match = {"name": item.name}
-            cur_item = await self.mass.music.database.get_row(self.db_table, match)
+            cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+            if not cur_item:
+                match = {"name": item.name}
+                cur_item = await self.mass.music.database.get_row(self.db_table, match)
         if cur_item:
             # update existing
             return await self._update_db_item(cur_item["item_id"], item)
@@ -94,12 +86,21 @@ class RadioController(MediaControllerBase[Radio]):
         item.timestamp_modified = int(utc_timestamp())
         async with self._db_add_lock:
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
-        item_id = new_item["item_id"]
+        db_id = new_item["item_id"]
         # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, item.provider_mappings)
+        await self._set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database", item.name)
-        # return created object
-        return await self.get_db_item(item_id)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
+            )
+        # return the full item we just added
+        return db_item
 
     async def _update_db_item(
         self, item_id: str | int, item: Radio, overwrite: bool = False
@@ -125,7 +126,17 @@ class RadioController(MediaControllerBase[Radio]):
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, db_id)
-        return await self.get_db_item(db_id)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_UPDATED,
+                db_item.uri,
+                db_item,
+            )
+        # return the full item we just updated
+        return db_item
 
     async def _get_provider_dynamic_tracks(
         self,

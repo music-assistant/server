@@ -96,18 +96,10 @@ class AlbumsController(MediaControllerBase[Album]):
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
-        async with self._db_add_lock:
-            # use the lock to prevent a race condition of the same item being added twice
-            existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        if existing:
-            db_item = await self._update_db_item(existing.item_id, item)
-        else:
-            db_item = await self._add_db_item(item)
+        db_item = await self._add_db_item(item)
         # also fetch the same album on all providers
         if not skip_metadata_lookup:
             await self._match(db_item)
-        # return final db_item after all match/metadata actions
-        db_item = await self.get_db_item(db_item.item_id)
         # preload album tracks in db
         for prov_mapping in db_item.provider_mappings:
             for track in await self._get_provider_album_tracks(
@@ -118,12 +110,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 ):
                     track.album = db_item
                     await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
-            db_item.uri,
-            db_item,
-        )
-        return db_item
+        # return final db_item after all match/metadata actions
+        return await self.get_db_item(db_item.item_id)
 
     async def update(self, item_id: str | int, update: Album, overwrite: bool = False) -> Album:
         """Update existing record in the database."""
@@ -206,8 +194,8 @@ class AlbumsController(MediaControllerBase[Album]):
         # safety guard: check for existing item first
         # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
-            # always try to grab existing item by musicbrainz_id
-            if item.musicbrainz_id:
+            cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+            if not cur_item and item.musicbrainz_id:
                 match = {"musicbrainz_id": item.musicbrainz_id}
                 cur_item = await self.mass.music.database.get_row(self.db_table, match)
             # try barcode/upc
@@ -220,7 +208,8 @@ class AlbumsController(MediaControllerBase[Album]):
                         break
             if not cur_item:
                 # fallback to search and match
-                for row in await self.mass.music.database.search(self.db_table, item.name):
+                match = {"sort_name": item.sort_name}
+                for row in await self.mass.music.database.get_rows(self.db_table, match):
                     row_album = Album.from_db_row(row)
                     if compare_album(row_album, item):
                         cur_item = row_album
@@ -243,12 +232,21 @@ class AlbumsController(MediaControllerBase[Album]):
                     "timestamp_modified": int(utc_timestamp()),
                 },
             )
-        item_id = new_item["item_id"]
+        db_id = new_item["item_id"]
         # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, item.provider_mappings)
+        await self._set_provider_mappings(db_id, item.provider_mappings)
         self.logger.debug("added %s to database", item.name)
-        # return created object
-        return await self.get_db_item(item_id)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
+            )
+        # return the full item we just added
+        return db_item
 
     async def _update_db_item(
         self, item_id: str | int, item: Album | ItemMapping, overwrite: bool = False
@@ -287,7 +285,17 @@ class AlbumsController(MediaControllerBase[Album]):
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, db_id)
-        return await self.get_db_item(db_id)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_UPDATED,
+                db_item.uri,
+                db_item,
+            )
+        # return the full item we just updated
+        return db_item
 
     async def _get_provider_album_tracks(
         self, item_id: str, provider_instance_id_or_domain: str
