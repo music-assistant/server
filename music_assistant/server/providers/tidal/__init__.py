@@ -14,6 +14,7 @@ from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Quality as TidalQuality
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
+from tidalapi.media import Lyrics as TidalLyrics
 
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name
@@ -370,8 +371,7 @@ class TidalProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         tidal_session = await self._get_tidal_session()
         playlist_obj = await create_playlist(tidal_session, self._tidal_user_id, name)
-        playlist = await self._parse_playlist(playlist_obj=playlist_obj)
-        return playlist
+        return await self._parse_playlist(playlist_obj=playlist_obj)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -506,19 +506,18 @@ class TidalProvider(MusicProvider):
             )
         )
         # metadata
-        if full_details:
-            image_url = None
-            if artist_obj.name != "Various Artists":
-                try:
-                    image_url = await asyncio.to_thread(artist_obj.image(750))
-                except Exception:
-                    self.logger.info(f"Artist {artist_obj.id} has no available picture")
-            artist.metadata.images = [
-                MediaItemImage(
-                    ImageType.THUMB,
-                    image_url,
-                )
-            ]
+        if full_details and artist_obj.name != "Various Artists":
+            try:
+                image_url = await self._get_image_url(artist_obj, 750)
+                artist.metadata.images = [
+                    MediaItemImage(
+                        ImageType.THUMB,
+                        image_url,
+                    )
+                ]
+            except Exception:
+                self.logger.info(f"Artist {artist_obj.id} has no available picture")
+
         return artist
 
     async def _parse_album(self, album_obj: TidalAlbum, full_details: bool = False) -> Album:
@@ -554,17 +553,17 @@ class TidalProvider(MusicProvider):
         album.metadata.explicit = album_obj.explicit
         album.metadata.popularity = album_obj.popularity
         if full_details:
-            image_url = None
             try:
-                image_url = await asyncio.to_thread(album_obj.image(1280))
+                image_url = await self._get_image_url(album_obj, 1280)
+                album.metadata.images = [
+                    MediaItemImage(
+                        ImageType.THUMB,
+                        image_url,
+                    )
+                ]
             except Exception:
                 self.logger.info(f"Album {album_obj.id} has no available picture")
-            album.metadata.images = [
-                MediaItemImage(
-                    ImageType.THUMB,
-                    image_url,
-                )
-            ]
+
         return album
 
     async def _parse_track(self, track_obj: TidalTrack, full_details: bool = False) -> Track:
@@ -609,7 +608,7 @@ class TidalProvider(MusicProvider):
         track.metadata.copyright = track_obj.copyright
         if full_details:
             try:
-                if lyrics_obj := await asyncio.to_thread(track_obj.lyrics):
+                if lyrics_obj := await self._get_lyrics(track_obj):
                     track.metadata.lyrics = lyrics_obj.text
             except Exception:
                 self.logger.info(f"Track {track_obj.id} has no available lyrics")
@@ -642,16 +641,27 @@ class TidalProvider(MusicProvider):
         playlist.metadata.checksum = str(playlist_obj.last_updated)
         playlist.metadata.popularity = playlist_obj.popularity
         if full_details:
-            image_url = None
             try:
-                image_url = await asyncio.to_thread(playlist_obj.image(1080))
-            except Exception:
-                self.logger.info(f"Playlist {playlist_obj.id} has no available picture")
-            playlist.metadata.images = [
-                MediaItemImage(
-                    ImageType.THUMB,
-                    image_url,
-                )
-            ]
+                image_url = await self._get_image_url(playlist_obj, 1080)
+                playlist.metadata.images = [
+                    MediaItemImage(
+                        ImageType.THUMB,
+                        image_url,
+                    )
+                ]
+            except Exception as err:
+                self.logger.info(f"x {playlist_obj.id} has no available picture", err)
 
         return playlist
+
+    async def _get_image_url(self, item, size: int):
+        def inner() -> str:
+            return item.image(size)
+
+        return await asyncio.to_thread(inner)
+
+    async def _get_lyrics(self, item):
+        def inner() -> TidalLyrics:
+            return item.lyrics
+
+        return await asyncio.to_thread(inner)
