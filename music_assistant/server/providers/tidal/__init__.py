@@ -649,8 +649,8 @@ class TidalProvider(MusicProvider):
                         image_url,
                     )
                 ]
-            except Exception as err:
-                self.logger.info(f"x {playlist_obj.id} has no available picture", err)
+            except Exception:
+                self.logger.info(f"Playlist {playlist_obj.id} has no available picture")
 
         return playlist
 
