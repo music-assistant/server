@@ -276,10 +276,9 @@ class TidalProvider(MusicProvider):
         result = []
         tracks = await get_album_tracks(tidal_session, prov_album_id)
         for index, track_obj in enumerate(tracks, 1):
-            if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
-                track.position = index
-                result.append(track)
+            track = await self._parse_track(track_obj=track_obj)
+            track.position = index
+            result.append(track)
         return result
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -298,10 +297,9 @@ class TidalProvider(MusicProvider):
         result = []
         tracks = await get_artist_toptracks(tidal_session, prov_artist_id)
         for index, track_obj in enumerate(tracks, 1):
-            if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
-                track.position = index
-                result.append(track)
+            track = await self._parse_track(track_obj=track_obj)
+            track.position = index
+            result.append(track)
         return result
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
@@ -323,9 +321,8 @@ class TidalProvider(MusicProvider):
         similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
         tracks = []
         for track_obj in similar_tracks_obj:
-            if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
-                tracks.append(track)
+            track = await self._parse_track(track_obj=track_obj)
+            tracks.append(track)
         return tracks
 
     async def library_add(self, prov_item_id: str, media_type: MediaType):
