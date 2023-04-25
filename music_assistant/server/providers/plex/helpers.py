@@ -27,7 +27,8 @@ async def get_libraries(mass: MusicAssistant, auth_token: str) -> set[str]:
         all_libraries: list[str] = []
         plex_account = MyPlexAccount(token=auth_token)
         for resource in plex_account.resources():
-            if "server" in resource.provides:
+            if "server" not in resource.provides:
+                continue
                 try:
                     plex_server: PlexServer = resource.connect(None, 10)
                 except plexapi.exceptions.NotFound:
