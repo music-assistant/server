@@ -29,16 +29,16 @@ async def get_libraries(mass: MusicAssistant, auth_token: str) -> set[str]:
         for resource in plex_account.resources():
             if "server" not in resource.provides:
                 continue
-                try:
-                    plex_server: PlexServer = resource.connect(None, 10)
-                except plexapi.exceptions.NotFound:
+            try:
+                plex_server: PlexServer = resource.connect(None, 10)
+            except plexapi.exceptions.NotFound:
+                continue
+            for media_section in plex_server.library.sections():
+                media_section: PlexLibrarySection  # noqa: PLW2901
+                if media_section.type != PlexMusicSection.TYPE:
                     continue
-                for media_section in plex_server.library.sections():
-                    media_section: PlexLibrarySection  # noqa: PLW2901
-                    if media_section.type != PlexMusicSection.TYPE:
-                        continue
-                    # TODO: figure out what plex uses as stable id and use that instead of names
-                    all_libraries.append(f"{resource.name} / {media_section.title}")
+                # TODO: figure out what plex uses as stable id and use that instead of names
+                all_libraries.append(f"{resource.name} / {media_section.title}")
         return all_libraries
 
     if cache := await mass.cache.get(cache_key, checksum=auth_token):
