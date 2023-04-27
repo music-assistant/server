@@ -1,4 +1,8 @@
-"""A minimal client for the unofficial gw-API, which deezer is using on their website and app."""
+"""A minimal client for the unofficial gw-API, which deezer is using on their website and app.
+
+Credits go out to RemixDev (https://gitlab.com/RemixDev) for figuring out, how to get the arl
+cookie based on the api_token.
+"""
 import datetime
 from http.cookies import BaseCookie, Morsel
 
