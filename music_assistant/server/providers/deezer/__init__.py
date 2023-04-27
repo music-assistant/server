@@ -44,7 +44,7 @@ from .helpers import (
     get_album,
     get_albums_by_artist,
     get_artist,
-    # get_artist_top,
+    get_artist_top,
     get_blowfish_key,
     get_deezer_client,
     get_playlist,
@@ -226,17 +226,17 @@ class DeezerProvider(MusicProvider):
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
         for album in await get_user_albums(client=self.client):
-            yield await parse_album(mass=self, album=album)
+            yield parse_album(mass=self, album=album)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Deezer."""
         for playlist in await get_user_playlists(client=self.client):
-            yield await parse_playlist(mass=self, playlist=playlist)
+            yield parse_playlist(mass=self, playlist=playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
         for track in await get_user_tracks(client=self.client):
-            yield await parse_track(mass=self, track=track)
+            yield parse_track(mass=self, track=track)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -246,52 +246,47 @@ class DeezerProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        return await parse_album(
+        return parse_album(
             mass=self, album=await get_album(client=self.client, album_id=int(prov_album_id))
         )
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        return await parse_playlist(
+        return parse_playlist(
             mass=self,
             playlist=await get_playlist(client=self.client, playlist_id=int(prov_playlist_id)),
         )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        return await parse_track(
+        return parse_track(
             mass=self, track=await get_track(client=self.client, track_id=int(prov_track_id))
         )
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all albums in a playlist."""
         album = await get_album(client=self.client, album_id=int(prov_album_id))
-        tracks = []
-        for track in album.tracks:
-            tracks.append(await parse_track(mass=self, track=track))
-        return tracks
+        return [parse_track(mass=self, track=track) for track in album.tracks]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
         playlist = await get_playlist(client=self.client, playlist_id=prov_playlist_id)
         for track in playlist.tracks:
-            yield await parse_track(mass=self, track=track)
+            yield parse_track(mass=self, track=track)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
         artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
         albums = []
         for album in await get_albums_by_artist(artist=artist):
-            albums.append(await parse_album(mass=self, album=album))
+            albums.append(parse_album(mass=self, album=album))
         return albums
 
-    '''
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top 25 tracks of an artist."""
         artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
         top_tracks = (await get_artist_top(artist=artist))[:25]
-        return [await parse_track(mass=self, track=track) for track in top_tracks]
-    '''
+        return [parse_track(mass=self, track=track) for track in top_tracks]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add an item to the library."""

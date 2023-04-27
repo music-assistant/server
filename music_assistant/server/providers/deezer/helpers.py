@@ -7,11 +7,11 @@ This also nicely separates the parsing logic from the Deezer provider logic.
 
 CREDITS:
 deezer-python: https://github.com/browniebroke/deezer-python by @browniebroke
-dzr: (inspired the track-url gatherer) https://github.com/yne/dzr by @yne.
 """
 
 import asyncio
 import hashlib
+from dataclasses import dataclass
 
 import deezer
 import deezer.exceptions
@@ -31,6 +31,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.server.providers.deezer import GWClient
 
 
+@dataclass
 class Credential:
     """Class for storing credentials."""
 
@@ -299,7 +300,7 @@ def parse_artist(mass, artist: deezer.Artist) -> Artist:
     )
 
 
-async def parse_album(mass, album: deezer.Album) -> Album:
+def parse_album(mass, album: deezer.Album) -> Album:
     """Parse the deezer-python album to a MASS album."""
     return Album(
         album_type=AlbumType(album.type),
@@ -319,7 +320,7 @@ async def parse_album(mass, album: deezer.Album) -> Album:
     )
 
 
-async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
+def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
     """Parse the deezer-python playlist to a MASS playlist."""
     return Playlist(
         item_id=str(playlist.id),
@@ -333,18 +334,18 @@ async def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
                 provider_instance=mass.instance_id,
             )
         },
-        metadata=await parse_metadata_playlist(playlist=playlist),
+        metadata=parse_metadata_playlist(playlist=playlist),
     )
 
 
-async def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadata:
+def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadata:
     """Parse the playlist metadata."""
     return MediaItemMetadata(
         images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
     )
 
 
-async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
+def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
     """Parse the track metadata."""
     try:
         return MediaItemMetadata(
@@ -352,7 +353,7 @@ async def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
             images=[
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=(await get_album_from_track(track=track)).cover_big,
+                    path=track.get_album().cover_big,
                 )
             ],
         )
@@ -376,9 +377,9 @@ def parse_metadata_artist(artist: deezer.Artist) -> MediaItemMetadata:
     )
 
 
-async def _get_album(mass, track: deezer.Track) -> Album | None:
+def _get_album(mass, track: deezer.Track) -> Album | None:
     try:
-        return await parse_album(mass=mass, album=await get_album_from_track(track=track))
+        return parse_album(mass=mass, album=track.get_album())
     except AttributeError:
         return None
 
@@ -414,6 +415,15 @@ async def get_artist_from_album(album: deezer.Album) -> deezer.Artist:
 
 
 async def get_albums_by_artist(artist: deezer.Artist) -> deezer.PaginatedList:
+    """Get albums by an artist."""
+
+    def _get_albums_by_artist():
+        return artist.get_albums()
+
+    return await asyncio.to_thread(_get_albums_by_artist)
+
+
+async def get_artist_top(artist: deezer.Artist) -> deezer.PaginatedList:
     """Get top tracks by an artist."""
 
     def _get_artist_top():
@@ -434,9 +444,9 @@ async def get_track_content_type(gw_client: GWClient, track_id: int):
     raise NotImplementedError("Unsupported contenttype")
 
 
-async def parse_track(mass, track: deezer.Track) -> Track:
+def parse_track(mass, track: deezer.Track) -> Track:
     """Parse the deezer-python track to a MASS track."""
-    artist = await get_artist_from_track(track=track)
+    artist = track.get_artist()
     return Track(
         item_id=str(track.id),
         provider=mass.domain,
@@ -446,7 +456,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
         position=track.track_position,
         duration=track.duration,
         artists=[parse_artist(mass=mass, artist=artist)],
-        album=(await _get_album(mass=mass, track=track)),
+        album=track.get_album(),
         provider_mappings={
             ProviderMapping(
                 item_id=str(track.id),
@@ -454,7 +464,7 @@ async def parse_track(mass, track: deezer.Track) -> Track:
                 provider_instance=mass.instance_id,
             )
         },
-        metadata=await parse_metadata_track(track=track),
+        metadata=parse_metadata_track(track=track),
     )
 
 
@@ -463,10 +473,7 @@ async def search_and_parse_tracks(
 ) -> list[Track]:
     """Search for tracks and parse them."""
     deezer_tracks = await search_track(client=client, query=query, limit=limit)
-    tracks = []
-    for track in deezer_tracks:
-        tracks.append(await parse_track(track=track, mass=mass))
-    return tracks
+    return [parse_track(track=track, mass=mass) for track in deezer_tracks]
 
 
 async def search_and_parse_artists(
@@ -474,10 +481,7 @@ async def search_and_parse_artists(
 ) -> list[Artist]:
     """Search for artists and parse them."""
     deezer_artist = await search_artist(client=client, query=query, limit=limit)
-    artists = []
-    for artist in deezer_artist:
-        artists.append(parse_artist(artist=artist, mass=mass))
-    return artists
+    return [parse_artist(artist=artist, mass=mass) for artist in deezer_artist]
 
 
 async def search_and_parse_albums(
@@ -485,10 +489,7 @@ async def search_and_parse_albums(
 ) -> list[Album]:
     """Search for album and parse them."""
     deezer_albums = await search_album(client=client, query=query, limit=limit)
-    albums = []
-    for album in deezer_albums:
-        albums.append(await parse_album(album=album, mass=mass))
-    return albums
+    return [parse_album(album=album, mass=mass) for album in deezer_albums]
 
 
 async def search_and_parse_playlists(
@@ -496,10 +497,7 @@ async def search_and_parse_playlists(
 ) -> list[Playlist]:
     """Search for playlists and parse them."""
     deezer_playlists = await search_playlist(client=client, query=query, limit=limit)
-    playlists = []
-    for playlist in deezer_playlists:
-        playlists.append(await parse_playlist(playlist=playlist, mass=mass))
-    return playlists
+    return [parse_playlist(playlist=playlist, mass=mass) for playlist in deezer_playlists]
 
 
 def _md5(data, data_type="ascii"):
