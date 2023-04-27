@@ -1,6 +1,7 @@
 """Deezer music provider support for MusicAssistant."""
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
+from math import ceil
 
 import deezer
 from aiohttp import ClientTimeout
@@ -338,35 +339,43 @@ class DeezerProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""
-        track = await get_track(client=self.client, track_id=int(item_id))
-        url_details = await self.gw_client.get_deezer_track_urls(item_id)
+        url_details, song_data = await self.gw_client.get_deezer_track_urls(item_id)
         url = url_details["sources"][0]["url"]
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
             content_type=ContentType.try_parse(url_details["format"].split("_")[0]),
-            duration=track.duration,
+            duration=int(song_data["DURATION"]),
             data=url,
             expires=url_details["exp"],
+            size=int(song_data[f"FILESIZE_{url_details['format']}"]),
         )
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        print(seek_position)
         blowfish_key = get_blowfish_key(streamdetails.item_id)
-        i = 0
+        chunk_index = 0
         timeout = ClientTimeout(total=0, connect=30, sock_read=600)
+        headers = {}
+        if seek_position and streamdetails.size:
+            chunk_count = ceil(streamdetails.size / 2048)
+            chunk_index = int(chunk_count / streamdetails.duration) * seek_position
+            skip_bytes = chunk_index * 2048
+            headers["Range"] = f"bytes={skip_bytes}-"
+
         buffer = bytearray()
-        async with self.mass.http_session.get(streamdetails.data, timeout=timeout) as resp:
+        async with self.mass.http_session.get(
+            streamdetails.data, headers=headers, timeout=timeout
+        ) as resp:
             async for chunk in resp.content.iter_chunked(2048):
                 buffer += chunk
                 if len(buffer) >= 2048:
-                    if i % 3 > 0:
+                    if chunk_index % 3 > 0:
                         yield bytes(buffer[:2048])
                     else:
                         yield decrypt_chunk(bytes(buffer[:2048]), blowfish_key)
-                    i += 1
+                    chunk_index += 1
                     del buffer[:2048]
         yield bytes(buffer)

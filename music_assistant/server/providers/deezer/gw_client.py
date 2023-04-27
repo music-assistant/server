@@ -31,6 +31,9 @@ class GWClient:
     _license: str | None
     _license_expiration_timestamp: int
     session: ClientSession
+    formats: list[dict[str, str]] = [
+        {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
+    ]
 
     def __init__(self, session: ClientSession, api_token: str):
         """Provide an aiohttp ClientSession and the deezer api_token."""
@@ -64,6 +67,12 @@ class GWClient:
         self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
             "expiration_timestamp"
         ]
+        web_qualities = user_data["results"]["USER"]["OPTIONS"]["web_sound_quality"]
+        mobile_qualities = user_data["results"]["USER"]["OPTIONS"]["mobile_sound_quality"]
+        if web_qualities["high"] or mobile_qualities["high"]:
+            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
+        if web_qualities["lossless"] or mobile_qualities["lossless"]:
+            self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
 
     async def setup(self):
         """Call this to let the client get its cookies, license and tokens."""
@@ -112,18 +121,14 @@ class GWClient:
     async def get_deezer_track_urls(self, track_id):
         """Get the URL for a given track id."""
         dz_license = await self._get_license()
-        sng_data = await self.get_song_data(track_id)
-        track_token = sng_data["results"]["TRACK_TOKEN"]
+        song_data = await self.get_song_data(track_id)
+        track_token = song_data["results"]["TRACK_TOKEN"]
         url_data = {
             "license_token": dz_license,
             "media": [
                 {
                     "type": "FULL",
-                    "formats": [
-                        {"cipher": "BF_CBC_STRIPE", "format": "FLAC"},
-                        {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"},
-                        {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
-                    ],
+                    "formats": self.formats,
                 }
             ],
             "track_tokens": [track_token],
@@ -138,4 +143,4 @@ class GWClient:
         if error := result_json["data"][0].get("errors"):
             raise DeezerGWError("Received an error from API", error)
 
-        return result_json["data"][0]["media"][0]
+        return result_json["data"][0]["media"][0], song_data["results"]
