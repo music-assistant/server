@@ -62,6 +62,10 @@ class GWClient:
         if not user_data["results"]["USER"]["USER_ID"]:
             await self._get_cookie()
             user_data = await self._gw_api_call("deezer.getUserData", False)
+
+        if not user_data["results"]["OFFER_ID"]:
+            raise DeezerGWError("Free subscriptions cannot be used in MA.")
+
         self._gw_csrf_token = user_data["results"]["checkForm"]
         self._license = user_data["results"]["USER"]["OPTIONS"]["license_token"]
         self._license_expiration_timestamp = user_data["results"]["USER"]["OPTIONS"][
