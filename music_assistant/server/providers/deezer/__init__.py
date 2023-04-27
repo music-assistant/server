@@ -13,6 +13,7 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
+    ContentType,
     MediaType,
     ProviderFeature,
 )
@@ -31,6 +32,7 @@ from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
 
+from .gw_client import GWClient
 from .helpers import (
     Credential,
     add_user_albums,
@@ -44,10 +46,8 @@ from .helpers import (
     # get_artist_top,
     get_blowfish_key,
     get_deezer_client,
-    get_deezer_track_url,
     get_playlist,
     get_track,
-    get_track_content_type,
     get_user_albums,
     get_user_artists,
     get_user_playlists,
@@ -138,6 +138,7 @@ class DeezerProvider(MusicProvider):
     """Deezer provider support."""
 
     client: deezer.Client
+    gw_client: GWClient
     creds: Credential
     _throttler: Throttler
 
@@ -153,6 +154,9 @@ class DeezerProvider(MusicProvider):
             self.client = await get_deezer_client(creds=self.creds)
         except Exception as error:
             raise LoginFailed("Invalid login credentials") from error
+
+        self.gw_client = GWClient(self.mass.http_session, self.config.get_value(CONF_ACCESS_TOKEN))
+        await self.gw_client.setup()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -335,12 +339,12 @@ class DeezerProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""
         track = await get_track(client=self.client, track_id=int(item_id))
-        url_details = await get_deezer_track_url(self.client.session, item_id)
+        url_details = await self.gw_client.get_deezer_track_urls(item_id)
         url = url_details["sources"][0]["url"]
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            content_type=await get_track_content_type(track_id=track.id, mass=self),
+            content_type=ContentType.try_parse(url_details["format"].split("_")[0]),
             duration=track.duration,
             data=url,
             expires=url_details["exp"],

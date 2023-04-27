@@ -28,6 +28,7 @@ from music_assistant.common.models.media_items import (
     ProviderMapping,
     Track,
 )
+from music_assistant.server.providers.deezer import GWClient
 
 
 class Credential:
@@ -421,21 +422,16 @@ async def get_albums_by_artist(artist: deezer.Artist) -> deezer.PaginatedList:
     return await asyncio.to_thread(_get_artist_top)
 
 
-async def get_track_content_type(track_id: int, mass):
+async def get_track_content_type(gw_client: GWClient, track_id: int):
     """Get a tracks contentType."""
-    url_details = await get_deezer_track_url(mass.client.session, track_id)
-    content_type_string = url_details["format"]
-    if "MP3" in content_type_string:
-        content_type = ContentType.MP3
-    elif content_type_string == "FLAC":
-        content_type = ContentType.FLAC
-    elif content_type_string == "MPEG":
-        content_type = ContentType.MPEG
-    elif content_type_string == "OGG":
-        content_type = ContentType.OGG
-    else:
-        raise NotImplementedError(f"Unsupported contenttype: {content_type_string}")
-    return content_type
+    song_data = await gw_client.get_song_data(track_id)
+    if song_data["results"]["FILESIZE_FLAC"]:
+        return ContentType.FLAC
+
+    if song_data["results"]["FILESIZE_MP3_320"] or song_data["results"]["FILESIZE_MP3_128"]:
+        return ContentType.MP3
+
+    raise NotImplementedError("Unsupported contenttype")
 
 
 async def parse_track(mass, track: deezer.Track) -> Track:
@@ -456,7 +452,6 @@ async def parse_track(mass, track: deezer.Track) -> Track:
                 item_id=str(track.id),
                 provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
-                content_type=await get_track_content_type(track_id=track.id, mass=mass),
             )
         },
         metadata=await parse_metadata_track(track=track),
@@ -529,49 +524,3 @@ def decrypt_chunk(chunk, blowfish_key):
         blowfish_key.encode("ascii"), Blowfish.MODE_CBC, b"\x00\x01\x02\x03\x04\x05\x06\x07"
     )
     return cipher.decrypt(chunk)
-
-
-def _gw_api_call(session, method, api_token="null", args=None, params=None):
-    if params is None:
-        params = {}
-    if args is None:
-        args = {}
-    p = {"api_version": "1.0", "api_token": api_token, "input": "3", "method": method}
-    p.update(params)
-    result_json = session.post(
-        "http://www.deezer.com/ajax/gw-light.php",
-        params=p,
-        timeout=30,
-        json=args,
-        headers={
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/79.0.3945.130 Safari/537.36"
-        },
-    ).json()
-    return result_json
-
-
-async def get_deezer_track_url(session, track_id):
-    """Get the URL for a given track id."""
-
-    def _get_deezer_track_url():
-        user_data = _gw_api_call(session, "deezer.getUserData")
-        api_token = user_data["results"]["checkForm"]
-        license_token = user_data["results"]["USER"]["OPTIONS"]["license_token"]
-        sng_data = _gw_api_call(session, "song.getData", api_token, {"SNG_ID": track_id})
-        sng_data = sng_data["results"]
-        track_token = sng_data["TRACK_TOKEN"]
-        url_data = {
-            "license_token": license_token,
-            "media": [
-                {
-                    "type": "FULL",
-                    "formats": [{"cipher": "BF_CBC_STRIPE", "format": "MP3_128"}],
-                }
-            ],
-            "track_tokens": [track_token],
-        }
-        url_response = session.post("https://media.deezer.com/v1/get_url", json=url_data)
-        return url_response.json()["data"][0]["media"][0]
-
-    return await asyncio.to_thread(_get_deezer_track_url)
