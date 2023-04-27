@@ -40,7 +40,7 @@ from .helpers import (
     add_user_artists,
     add_user_tracks,
     decrypt_chunk,
-    get_access_token,
+    update_access_token,
     get_album,
     get_albums_by_artist,
     get_artist,
@@ -117,7 +117,7 @@ async def get_config_entries(
             url = f"{DEEZER_AUTH_URL}?app_id={DEEZER_APP_ID}&redirect_uri={RELAY_URL}\
 &perms={DEEZER_PERMS}&state={callback_url}"
             code = (await auth_helper.authenticate(url))["code"]
-            values[CONF_ACCESS_TOKEN] = await get_access_token(  # type: ignore
+            values[CONF_ACCESS_TOKEN] = await update_access_token(  # type: ignore
                 mass, DEEZER_APP_ID, DEEZER_APP_SECRET, code
             )
 

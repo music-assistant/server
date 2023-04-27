@@ -249,10 +249,10 @@ async def search_playlist(
     return await asyncio.to_thread(_search)
 
 
-async def get_access_token(mass, app_id, app_secret, code) -> str:
+async def update_access_token(mass, app_id, app_secret, code) -> str:
     """Update the access_token."""
     response = await _post_http(
-        mass=mass,
+        http_session=mass.http_session,
         url="https://connect.deezer.com/oauth/access_token.php",
         data={
             "code": code,
@@ -272,8 +272,8 @@ async def get_access_token(mass, app_id, app_secret, code) -> str:
         raise LoginFailed("Invalid auth code") from error
 
 
-async def _post_http(mass, url, data, params=None, headers=None) -> str:
-    async with mass.http_session.post(
+async def _post_http(http_session, url, data, params=None, headers=None) -> str:
+    async with http_session.post(
         url, headers=headers, params=params, json=data, ssl=False
     ) as response:
         if response.status != 200:
@@ -334,14 +334,9 @@ def parse_playlist(mass, playlist: deezer.Playlist) -> Playlist:
                 provider_instance=mass.instance_id,
             )
         },
-        metadata=parse_metadata_playlist(playlist=playlist),
-    )
-
-
-def parse_metadata_playlist(playlist: deezer.Playlist) -> MediaItemMetadata:
-    """Parse the playlist metadata."""
-    return MediaItemMetadata(
-        images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
+        metadata=MediaItemMetadata(
+            images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
+        ),
     )
 
 
