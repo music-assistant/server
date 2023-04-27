@@ -40,7 +40,6 @@ from .helpers import (
     add_user_artists,
     add_user_tracks,
     decrypt_chunk,
-    update_access_token,
     get_album,
     get_albums_by_artist,
     get_artist,
@@ -64,6 +63,7 @@ from .helpers import (
     search_and_parse_artists,
     search_and_parse_playlists,
     search_and_parse_tracks,
+    update_access_token,
 )
 
 SUPPORTED_FEATURES = (
