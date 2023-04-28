@@ -273,34 +273,26 @@ class TidalProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        result = []
-        tracks = await get_album_tracks(tidal_session, prov_album_id)
-        for index, track_obj in enumerate(tracks, 1):
-            track = await self._parse_track(track_obj=track_obj)
-            track.position = index
-            result.append(track)
-        return result
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_album_tracks(tidal_session, prov_album_id)
+        ]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         tidal_session = await self._get_tidal_session()
-        result = []
-        albums = await get_artist_albums(tidal_session, prov_artist_id)
-        for album_obj in albums:
-            album = await self._parse_album(album_obj=album_obj)
-            result.append(album)
-        return result
+        return [
+            await self._parse_album(album_obj=album)
+            for album in await get_artist_albums(tidal_session, prov_artist_id)
+        ]
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        result = []
-        tracks = await get_artist_toptracks(tidal_session, prov_artist_id)
-        for index, track_obj in enumerate(tracks, 1):
-            track = await self._parse_track(track_obj=track_obj)
-            track.position = index
-            result.append(track)
-        return result
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_artist_toptracks(tidal_session, prov_artist_id)
+        ]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
@@ -318,12 +310,10 @@ class TidalProvider(MusicProvider):
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
-        similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
-        tracks = []
-        for track_obj in similar_tracks_obj:
-            track = await self._parse_track(track_obj=track_obj)
-            tracks.append(track)
-        return tracks
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
+        ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType):
         """Add item to library."""
