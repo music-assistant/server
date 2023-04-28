@@ -63,6 +63,7 @@ from .helpers import (
     search_and_parse_artists,
     search_and_parse_playlists,
     search_and_parse_tracks,
+    track_available,
     update_access_token,
 )
 
@@ -182,7 +183,11 @@ class DeezerProvider(MusicProvider):
                 if media_type == MediaType.TRACK:
                     tasks[MediaType.TRACK] = taskgroup.create_task(
                         search_and_parse_tracks(
-                            mass=self, client=self.client, query=search_query, limit=limit
+                            mass=self,
+                            client=self.client,
+                            query=search_query,
+                            limit=limit,
+                            user_country=self.gw_client.user_country,
                         )
                     )
                 elif media_type == MediaType.ARTIST:
@@ -236,7 +241,8 @@ class DeezerProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
         for track in await get_user_tracks(client=self.client):
-            yield parse_track(mass=self, track=track)
+            if track_available(track, self.gw_client.user_country):
+                yield parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -260,19 +266,26 @@ class DeezerProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         return parse_track(
-            mass=self, track=await get_track(client=self.client, track_id=int(prov_track_id))
+            mass=self,
+            track=await get_track(client=self.client, track_id=int(prov_track_id)),
+            user_country=self.gw_client.user_country,
         )
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all albums in a playlist."""
         album = await get_album(client=self.client, album_id=int(prov_album_id))
-        return [parse_track(mass=self, track=track) for track in album.tracks]
+        return [
+            parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
+            for track in album.tracks
+            if track_available(track, self.gw_client.user_country)
+        ]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
         playlist = await get_playlist(client=self.client, playlist_id=prov_playlist_id)
         for track in playlist.tracks:
-            yield parse_track(mass=self, track=track)
+            if track_available(track, self.gw_client.user_country):
+                yield parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -286,7 +299,11 @@ class DeezerProvider(MusicProvider):
         """Get top 25 tracks of an artist."""
         artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
         top_tracks = (await get_artist_top(artist=artist))[:25]
-        return [parse_track(mass=self, track=track) for track in top_tracks]
+        return [
+            parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
+            for track in top_tracks
+            if track_available(track, self.gw_client.user_country)
+        ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add an item to the library."""

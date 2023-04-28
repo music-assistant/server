@@ -34,6 +34,7 @@ class GWClient:
     formats: list[dict[str, str]] = [
         {"cipher": "BF_CBC_STRIPE", "format": "MP3_128"},
     ]
+    user_country: str
 
     def __init__(self, session: ClientSession, api_token: str):
         """Provide an aiohttp ClientSession and the deezer api_token."""
@@ -77,6 +78,8 @@ class GWClient:
             self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "MP3_320"})
         if web_qualities["lossless"] or mobile_qualities["lossless"]:
             self.formats.insert(0, {"cipher": "BF_CBC_STRIPE", "format": "FLAC"})
+
+        self.user_country = user_data["results"]["COUNTRY"]
 
     async def setup(self):
         """Call this to let the client get its cookies, license and tokens."""

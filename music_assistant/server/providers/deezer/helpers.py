@@ -22,6 +22,7 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
     Playlist,
@@ -307,7 +308,14 @@ def parse_album(mass, album: deezer.Album) -> Album:
         item_id=str(album.id),
         provider=mass.domain,
         name=album.title,
-        artists=[parse_artist(mass=mass, artist=album.get_artist())],
+        artists=[
+            ItemMapping(
+                MediaType.ARTIST,
+                str(album.artist.id),
+                mass.instance_id,
+                album.artist.name,
+            )
+        ],
         media_type=MediaType.ALBUM,
         provider_mappings={
             ProviderMapping(
@@ -348,7 +356,7 @@ def parse_metadata_track(track: deezer.Track) -> MediaItemMetadata:
             images=[
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=track.get_album().cover_big,
+                    path=track.album.cover_big,
                 )
             ],
         )
@@ -439,9 +447,8 @@ async def get_track_content_type(gw_client: GWClient, track_id: int):
     raise NotImplementedError("Unsupported contenttype")
 
 
-def parse_track(mass, track: deezer.Track) -> Track:
+def parse_track(mass, track: deezer.Track, user_country: str) -> Track:
     """Parse the deezer-python track to a MASS track."""
-    artist = track.get_artist()
     return Track(
         item_id=str(track.id),
         provider=mass.domain,
@@ -450,13 +457,26 @@ def parse_track(mass, track: deezer.Track) -> Track:
         sort_name=track.title_short,
         position=track.track_position,
         duration=track.duration,
-        artists=[parse_artist(mass=mass, artist=artist)],
-        album=track.get_album(),
+        artists=[
+            ItemMapping(
+                MediaType.ARTIST,
+                str(track.artist.id),
+                mass.instance_id,
+                track.artist.name,
+            )
+        ],
+        album=ItemMapping(
+            MediaType.ALBUM,
+            str(track.album.id),
+            mass.instance_id,
+            track.album.title,
+        ),
         provider_mappings={
             ProviderMapping(
                 item_id=str(track.id),
                 provider_domain=mass.domain,
                 provider_instance=mass.instance_id,
+                available=user_country in track.available_countries,
             )
         },
         metadata=parse_metadata_track(track=track),
@@ -464,11 +484,20 @@ def parse_track(mass, track: deezer.Track) -> Track:
 
 
 async def search_and_parse_tracks(
-    mass, client: deezer.Client, query: str, limit: int = 5
+    mass, client: deezer.Client, query: str, user_country: str, limit: int = 5
 ) -> list[Track]:
     """Search for tracks and parse them."""
     deezer_tracks = await search_track(client=client, query=query, limit=limit)
-    return [parse_track(track=track, mass=mass) for track in deezer_tracks]
+    return [
+        parse_track(mass, track, user_country)
+        for track in deezer_tracks
+        if track_available(track, user_country)
+    ]
+
+
+def track_available(track: deezer.Track, user_country: str) -> bool:
+    """Check if a given track is available in the users country."""
+    return user_country in track.available_countries
 
 
 async def search_and_parse_artists(
