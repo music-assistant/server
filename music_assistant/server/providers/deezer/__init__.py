@@ -1,4 +1,5 @@
 """Deezer music provider support for MusicAssistant."""
+import hashlib
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from math import ceil
@@ -6,6 +7,7 @@ from math import ceil
 import deezer
 from aiohttp import ClientTimeout
 from asyncio_throttle.throttler import Throttler
+from Crypto.Cipher import Blowfish
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -13,8 +15,10 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import (
+    AlbumType,
     ConfigEntryType,
     ContentType,
+    ImageType,
     MediaType,
     ProviderFeature,
 )
@@ -22,7 +26,11 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    ItemMapping,
+    MediaItemImage,
+    MediaItemMetadata,
     Playlist,
+    ProviderMapping,
     SearchResults,
     StreamDetails,
     Track,
@@ -39,12 +47,10 @@ from .helpers import (
     add_user_albums,
     add_user_artists,
     add_user_tracks,
-    decrypt_chunk,
     get_album,
     get_albums_by_artist,
     get_artist,
     get_artist_top,
-    get_blowfish_key,
     get_deezer_client,
     get_playlist,
     get_track,
@@ -52,19 +58,13 @@ from .helpers import (
     get_user_artists,
     get_user_playlists,
     get_user_tracks,
-    parse_album,
-    parse_artist,
-    parse_playlist,
-    parse_track,
     remove_user_albums,
     remove_user_artists,
     remove_user_tracks,
-    search_and_parse_albums,
-    search_and_parse_artists,
-    search_and_parse_playlists,
-    search_and_parse_tracks,
-    track_available,
-    update_access_token,
+    search_album,
+    search_artist,
+    search_playlist,
+    search_track,
 )
 
 SUPPORTED_FEATURES = (
@@ -118,7 +118,7 @@ async def get_config_entries(
             url = f"{DEEZER_AUTH_URL}?app_id={DEEZER_APP_ID}&redirect_uri={RELAY_URL}\
 &perms={DEEZER_PERMS}&state={callback_url}"
             code = (await auth_helper.authenticate(url))["code"]
-            values[CONF_ACCESS_TOKEN] = await update_access_token(  # type: ignore
+            values[CONF_ACCESS_TOKEN] = await DeezerProvider.update_access_token(  # type: ignore
                 mass, DEEZER_APP_ID, DEEZER_APP_SECRET, code
             )
 
@@ -182,9 +182,7 @@ class DeezerProvider(MusicProvider):
             for media_type in media_types:
                 if media_type == MediaType.TRACK:
                     tasks[MediaType.TRACK] = taskgroup.create_task(
-                        search_and_parse_tracks(
-                            mass=self,
-                            client=self.client,
+                        self.search_and_parse_tracks(
                             query=search_query,
                             limit=limit,
                             user_country=self.gw_client.user_country,
@@ -192,21 +190,15 @@ class DeezerProvider(MusicProvider):
                     )
                 elif media_type == MediaType.ARTIST:
                     tasks[MediaType.ARTIST] = taskgroup.create_task(
-                        search_and_parse_artists(
-                            mass=self, client=self.client, query=search_query, limit=limit
-                        )
+                        self.search_and_parse_artists(query=search_query, limit=limit)
                     )
                 elif media_type == MediaType.ALBUM:
                     tasks[MediaType.ALBUM] = taskgroup.create_task(
-                        search_and_parse_albums(
-                            mass=self, client=self.client, query=search_query, limit=limit
-                        )
+                        self.search_and_parse_albums(query=search_query, limit=limit)
                     )
                 elif media_type == MediaType.PLAYLIST:
                     tasks[MediaType.PLAYLIST] = taskgroup.create_task(
-                        search_and_parse_playlists(
-                            mass=self, client=self.client, query=search_query, limit=limit
-                        )
+                        self.search_and_parse_playlists(query=search_query, limit=limit)
                     )
 
         results = SearchResults()
@@ -226,47 +218,45 @@ class DeezerProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Deezer."""
         for artist in await get_user_artists(client=self.client):
-            yield parse_artist(mass=self, artist=artist)
+            yield self.parse_artist(artist=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
         for album in await get_user_albums(client=self.client):
-            yield parse_album(mass=self, album=album)
+            yield self.parse_album(album=album)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Deezer."""
         for playlist in await get_user_playlists(client=self.client):
-            yield parse_playlist(mass=self, playlist=playlist)
+            yield self.parse_playlist(playlist=playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
         for track in await get_user_tracks(client=self.client):
-            if track_available(track, self.gw_client.user_country):
-                yield parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
+            if self.track_available(track, self.gw_client.user_country):
+                yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        return parse_artist(
-            mass=self, artist=await get_artist(client=self.client, artist_id=int(prov_artist_id))
+        return self.parse_artist(
+            artist=await get_artist(client=self.client, artist_id=int(prov_artist_id))
         )
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        return parse_album(
-            mass=self, album=await get_album(client=self.client, album_id=int(prov_album_id))
+        return self.parse_album(
+            album=await get_album(client=self.client, album_id=int(prov_album_id))
         )
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        return parse_playlist(
-            mass=self,
+        return self.parse_playlist(
             playlist=await get_playlist(client=self.client, playlist_id=int(prov_playlist_id)),
         )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        return parse_track(
-            mass=self,
+        return self.parse_track(
             track=await get_track(client=self.client, track_id=int(prov_track_id)),
             user_country=self.gw_client.user_country,
         )
@@ -275,24 +265,24 @@ class DeezerProvider(MusicProvider):
         """Get all albums in a playlist."""
         album = await get_album(client=self.client, album_id=int(prov_album_id))
         return [
-            parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
+            self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in album.tracks
-            if track_available(track, self.gw_client.user_country)
+            if self.track_available(track, self.gw_client.user_country)
         ]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
         playlist = await get_playlist(client=self.client, playlist_id=prov_playlist_id)
         for track in playlist.tracks:
-            if track_available(track, self.gw_client.user_country):
-                yield parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
+            if self.track_available(track, self.gw_client.user_country):
+                yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
         artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
         albums = []
         for album in await get_albums_by_artist(artist=artist):
-            albums.append(parse_album(mass=self, album=album))
+            albums.append(self.parse_album(album=album))
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
@@ -300,9 +290,9 @@ class DeezerProvider(MusicProvider):
         artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
         top_tracks = (await get_artist_top(artist=artist))[:25]
         return [
-            parse_track(mass=self, track=track, user_country=self.gw_client.user_country)
+            self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in top_tracks
-            if track_available(track, self.gw_client.user_country)
+            if self.track_available(track, self.gw_client.user_country)
         ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -367,7 +357,7 @@ class DeezerProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        blowfish_key = get_blowfish_key(streamdetails.item_id)
+        blowfish_key = self.get_blowfish_key(streamdetails.item_id)
         chunk_index = 0
         timeout = ClientTimeout(total=0, connect=30, sock_read=600)
         headers = {}
@@ -387,7 +377,237 @@ class DeezerProvider(MusicProvider):
                     if chunk_index % 3 > 0:
                         yield bytes(buffer[:2048])
                     else:
-                        yield decrypt_chunk(bytes(buffer[:2048]), blowfish_key)
+                        yield self.decrypt_chunk(bytes(buffer[:2048]), blowfish_key)
                     chunk_index += 1
                     del buffer[:2048]
         yield bytes(buffer)
+
+    ### PARSING METADATA FUNCTIONS ###
+
+    def parse_metadata_track(self, track: deezer.Track) -> MediaItemMetadata:
+        """Parse the track metadata."""
+        try:
+            return MediaItemMetadata(
+                preview=track.preview,
+                images=[
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=track.album.cover_big,
+                    )
+                ],
+            )
+        except AttributeError:
+            return MediaItemMetadata(
+                preview=track.preview,
+            )
+
+    def parse_metadata_album(self, album: deezer.Album) -> MediaItemMetadata:
+        """Parse the album metadata."""
+        return MediaItemMetadata(
+            images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
+        )
+
+    def parse_metadata_artist(self, artist: deezer.Artist) -> MediaItemMetadata:
+        """Parse the artist metadata."""
+        return MediaItemMetadata(
+            images=[MediaItemImage(type=ImageType.THUMB, path=artist.picture_big)],
+        )
+
+    ### PARSING FUNCTIONS ###
+    def parse_artist(self, artist: deezer.Artist) -> Artist:
+        """Parse the deezer-python artist to a MASS artist."""
+        return Artist(
+            item_id=str(artist.id),
+            provider=self.domain,
+            name=artist.name,
+            media_type=MediaType.ARTIST,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist.id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=self.parse_metadata_artist(artist=artist),
+        )
+
+    def parse_album(self, album: deezer.Album) -> Album:
+        """Parse the deezer-python album to a MASS album."""
+        return Album(
+            album_type=AlbumType(album.type),
+            item_id=str(album.id),
+            provider=self.domain,
+            name=album.title,
+            artists=[
+                ItemMapping(
+                    MediaType.ARTIST,
+                    str(album.artist.id),
+                    self.instance_id,
+                    album.artist.name,
+                )
+            ],
+            media_type=MediaType.ALBUM,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(album.id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=self.parse_metadata_album(album=album),
+        )
+
+    def parse_playlist(self, playlist: deezer.Playlist) -> Playlist:
+        """Parse the deezer-python playlist to a MASS playlist."""
+        return Playlist(
+            item_id=str(playlist.id),
+            provider=self.domain,
+            name=playlist.title,
+            media_type=MediaType.PLAYLIST,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(playlist.id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+            metadata=MediaItemMetadata(
+                images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
+            ),
+        )
+
+    def parse_track(self, track: deezer.Track, user_country: str) -> Track:
+        """Parse the deezer-python track to a MASS track."""
+        return Track(
+            item_id=str(track.id),
+            provider=self.domain,
+            name=track.title,
+            media_type=MediaType.TRACK,
+            sort_name=track.title_short,
+            position=track.track_position,
+            duration=track.duration,
+            artists=[
+                ItemMapping(
+                    MediaType.ARTIST,
+                    str(track.artist.id),
+                    self.instance_id,
+                    track.artist.name,
+                )
+            ],
+            album=ItemMapping(
+                MediaType.ALBUM,
+                str(track.album.id),
+                self.instance_id,
+                track.album.title,
+            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(track.id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=user_country in track.available_countries,
+                )
+            },
+            metadata=self.parse_metadata_track(track=track),
+        )
+
+    ### SEARCH AND PARSE FUNCTIONS ###
+    async def search_and_parse_tracks(
+        self, query: str, user_country: str, limit: int = 5
+    ) -> list[Track]:
+        """Search for tracks and parse them."""
+        deezer_tracks = await search_track(client=self.client, query=query, limit=limit)
+        return [
+            self.parse_track(track, user_country)
+            for track in deezer_tracks
+            if self.track_available(track, user_country)
+        ]
+
+    async def search_and_parse_artists(self, query: str, limit: int = 5) -> list[Artist]:
+        """Search for artists and parse them."""
+        deezer_artist = await search_artist(client=self.client, query=query, limit=limit)
+        return [self.parse_artist(artist=artist) for artist in deezer_artist]
+
+    async def search_and_parse_albums(self, query: str, limit: int = 5) -> list[Album]:
+        """Search for album and parse them."""
+        deezer_albums = await search_album(client=self.client, query=query, limit=limit)
+        return [self.parse_album(album=album) for album in deezer_albums]
+
+    async def search_and_parse_playlists(self, query: str, limit: int = 5) -> list[Playlist]:
+        """Search for playlists and parse them."""
+        deezer_playlists = await search_playlist(client=self.client, query=query, limit=limit)
+        return [self.parse_playlist(playlist=playlist) for playlist in deezer_playlists]
+
+    ### OTHER PARSING FUNCTIONS ###
+    def _get_album(self, track: deezer.Track) -> Album | None:
+        try:
+            return self.parse_album(album=track.get_album())
+        except AttributeError:
+            return None
+
+    ### OTHER FUNCTIONS ###
+    async def update_access_token(self, app_id, app_secret, code) -> str:
+        """Update the access_token."""
+        response = await self._post_http(
+            url="https://connect.deezer.com/oauth/access_token.php",
+            data={
+                "code": code,
+                "app_id": app_id,
+                "secret": app_secret,
+            },
+            params={
+                "code": code,
+                "app_id": app_id,
+                "secret": app_secret,
+            },
+            headers=None,
+        )
+        try:
+            return response.split("=")[1].split("&")[0]
+        except Exception as error:
+            raise LoginFailed("Invalid auth code") from error
+
+    async def _post_http(self, url, data, params=None, headers=None) -> str:
+        async with self.mass.http_session.post(
+            url, headers=headers, params=params, json=data, ssl=False
+        ) as response:
+            if response.status != 200:
+                raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
+            response_text = await response.text()
+            return response_text
+
+    async def get_track_content_type(self, gw_client: GWClient, track_id: int):
+        """Get a tracks contentType."""
+        song_data = await gw_client.get_song_data(track_id)
+        if song_data["results"]["FILESIZE_FLAC"]:
+            return ContentType.FLAC
+
+        if song_data["results"]["FILESIZE_MP3_320"] or song_data["results"]["FILESIZE_MP3_128"]:
+            return ContentType.MP3
+
+        raise NotImplementedError("Unsupported contenttype")
+
+    def track_available(self, track: deezer.Track, user_country: str) -> bool:
+        """Check if a given track is available in the users country."""
+        return user_country in track.available_countries
+
+    def _md5(self, data, data_type="ascii"):
+        md5sum = hashlib.md5()
+        md5sum.update(data.encode(data_type))
+        return md5sum.hexdigest()
+
+    def get_blowfish_key(self, track_id):
+        """Get blowfish key to decrypt a chunk of a track."""
+        secret = "g4el58wc" + "0zvf9na1"
+        id_md5 = self._md5(track_id)
+        bf_key = ""
+        for i in range(16):
+            bf_key += chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i]))
+        return bf_key
+
+    def decrypt_chunk(self, chunk, blowfish_key):
+        """Decrypt a given chunk using the blow fish key."""
+        cipher = Blowfish.new(
+            blowfish_key.encode("ascii"), Blowfish.MODE_CBC, b"\x00\x01\x02\x03\x04\x05\x06\x07"
+        )
+        return cipher.decrypt(chunk)
