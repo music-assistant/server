@@ -26,6 +26,7 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -42,46 +43,27 @@ from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
 
 from .gw_client import GWClient
-from .helpers import (
-    Credential,
-    add_user_albums,
-    add_user_artists,
-    add_user_tracks,
-    get_album,
-    get_albums_by_artist,
-    get_artist,
-    get_artist_top,
-    get_deezer_client,
-    get_playlist,
-    get_track,
-    get_user_albums,
-    get_user_artists,
-    get_user_playlists,
-    get_user_tracks,
-    remove_user_albums,
-    remove_user_artists,
-    remove_user_tracks,
-    search_album,
-    search_artist,
-    search_playlist,
-    search_track,
-)
+from .helpers import Credential, DeezerClient
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.SEARCH,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_TOPTRACKS,
-    ProviderFeature.ALBUM_METADATA,
-    ProviderFeature.TRACK_METADATA,
-    ProviderFeature.ARTIST_ALBUMS,
-    ProviderFeature.ARTIST_METADATA,
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
+    ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.ALBUM_METADATA,
+    ProviderFeature.TRACK_METADATA,
+    ProviderFeature.ARTIST_METADATA,
+    ProviderFeature.ARTIST_ALBUMS,
+    ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.BROWSE,
+    ProviderFeature.SEARCH,
+    # ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    # ProviderFeature.PLAYLIST_CREATE,
+    # ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
+    # ProviderFeature.RECOMMENDATIONS
 )
 
 CONF_ACCESS_TOKEN = "access_token"
@@ -139,7 +121,7 @@ async def get_config_entries(
 class DeezerProvider(MusicProvider):
     """Deezer provider support."""
 
-    client: deezer.Client
+    client: DeezerClient
     gw_client: GWClient
     creds: Credential
     _throttler: Throttler
@@ -153,7 +135,8 @@ class DeezerProvider(MusicProvider):
             access_token=self.config.get_value(CONF_ACCESS_TOKEN),  # type: ignore
         )
         try:
-            self.client = await get_deezer_client(creds=self.creds)
+            deezer_client = await DeezerClient.get_deezer_client(self=None, creds=self.creds)
+            self.client = DeezerClient(creds=self.creds, client=deezer_client)
         except Exception as error:
             raise LoginFailed("Invalid login credentials") from error
 
@@ -217,53 +200,49 @@ class DeezerProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Deezer."""
-        for artist in await get_user_artists(client=self.client):
+        for artist in await self.client.get_user_artists():
             yield self.parse_artist(artist=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Deezer."""
-        for album in await get_user_albums(client=self.client):
+        for album in await self.client.get_user_albums():
             yield self.parse_album(album=album)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Deezer."""
-        for playlist in await get_user_playlists(client=self.client):
+        for playlist in await self.client.get_user_playlists():
             yield self.parse_playlist(playlist=playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
-        for track in await get_user_tracks(client=self.client):
+        for track in await self.client.get_user_tracks():
             if self.track_available(track, self.gw_client.user_country):
                 yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        return self.parse_artist(
-            artist=await get_artist(client=self.client, artist_id=int(prov_artist_id))
-        )
+        return self.parse_artist(artist=await self.client.get_artist(artist_id=int(prov_artist_id)))
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        return self.parse_album(
-            album=await get_album(client=self.client, album_id=int(prov_album_id))
-        )
+        return self.parse_album(album=await self.client.get_album(album_id=int(prov_album_id)))
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         return self.parse_playlist(
-            playlist=await get_playlist(client=self.client, playlist_id=int(prov_playlist_id)),
+            playlist=await self.client.get_playlist(playlist_id=int(prov_playlist_id)),
         )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         return self.parse_track(
-            track=await get_track(client=self.client, track_id=int(prov_track_id)),
+            track=await self.client.get_track(track_id=int(prov_track_id)),
             user_country=self.gw_client.user_country,
         )
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all albums in a playlist."""
-        album = await get_album(client=self.client, album_id=int(prov_album_id))
+        album = await self.client.get_album(album_id=int(prov_album_id))
         return [
             self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in album.tracks
@@ -272,23 +251,23 @@ class DeezerProvider(MusicProvider):
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
-        playlist = await get_playlist(client=self.client, playlist_id=prov_playlist_id)
+        playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
         for track in playlist.tracks:
             if self.track_available(track, self.gw_client.user_country):
                 yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
-        artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
+        artist = await self.client.get_artist(artist_id=int(prov_artist_id))
         albums = []
-        for album in await get_albums_by_artist(artist=artist):
+        for album in await self.client.get_albums_by_artist(artist=artist):
             albums.append(self.parse_album(album=album))
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top 25 tracks of an artist."""
-        artist = await get_artist(client=self.client, artist_id=int(prov_artist_id))
-        top_tracks = (await get_artist_top(artist=artist))[:25]
+        artist = await self.client.get_artist(artist_id=int(prov_artist_id))
+        top_tracks = (await self.client.get_artist_top(artist=artist))[:25]
         return [
             self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in top_tracks
@@ -299,19 +278,16 @@ class DeezerProvider(MusicProvider):
         """Add an item to the library."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await add_user_artists(
+            result = await self.client.add_user_artists(
                 artist_id=int(prov_item_id),
-                client=self.client,
             )
         elif media_type == MediaType.ALBUM:
-            result = await add_user_albums(
+            result = await self.client.add_user_albums(
                 album_id=int(prov_item_id),
-                client=self.client,
             )
         elif media_type == MediaType.TRACK:
-            result = await add_user_tracks(
+            result = await self.client.add_user_tracks(
                 track_id=int(prov_item_id),
-                client=self.client,
             )
         else:
             raise NotImplementedError
@@ -321,23 +297,24 @@ class DeezerProvider(MusicProvider):
         """Remove an item to the library."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await remove_user_artists(
+            result = await self.client.remove_user_artists(
                 artist_id=int(prov_item_id),
-                client=self.client,
             )
         elif media_type == MediaType.ALBUM:
-            result = await remove_user_albums(
+            result = await self.client.remove_user_albums(
                 album_id=int(prov_item_id),
-                client=self.client,
             )
         elif media_type == MediaType.TRACK:
-            result = await remove_user_tracks(
+            result = await self.client.remove_user_tracks(
                 track_id=int(prov_item_id),
-                client=self.client,
             )
         else:
             raise NotImplementedError
         return result
+
+    async def recommendations(self) -> list[BrowseFolder]:
+        """Get deezer's recommendations."""
+        return [""]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""
@@ -516,7 +493,7 @@ class DeezerProvider(MusicProvider):
         self, query: str, user_country: str, limit: int = 5
     ) -> list[Track]:
         """Search for tracks and parse them."""
-        deezer_tracks = await search_track(client=self.client, query=query, limit=limit)
+        deezer_tracks = await self.client.search_track(query=query, limit=limit)
         return [
             self.parse_track(track, user_country)
             for track in deezer_tracks
@@ -525,17 +502,17 @@ class DeezerProvider(MusicProvider):
 
     async def search_and_parse_artists(self, query: str, limit: int = 5) -> list[Artist]:
         """Search for artists and parse them."""
-        deezer_artist = await search_artist(client=self.client, query=query, limit=limit)
+        deezer_artist = await self.client.search_artist(query=query, limit=limit)
         return [self.parse_artist(artist=artist) for artist in deezer_artist]
 
     async def search_and_parse_albums(self, query: str, limit: int = 5) -> list[Album]:
         """Search for album and parse them."""
-        deezer_albums = await search_album(client=self.client, query=query, limit=limit)
+        deezer_albums = await self.client.search_album(query=query, limit=limit)
         return [self.parse_album(album=album) for album in deezer_albums]
 
     async def search_and_parse_playlists(self, query: str, limit: int = 5) -> list[Playlist]:
         """Search for playlists and parse them."""
-        deezer_playlists = await search_playlist(client=self.client, query=query, limit=limit)
+        deezer_playlists = await self.client.search_playlist(query=query, limit=limit)
         return [self.parse_playlist(playlist=playlist) for playlist in deezer_playlists]
 
     ### OTHER PARSING FUNCTIONS ###
