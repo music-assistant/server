@@ -43,7 +43,7 @@ server = [
   "xmltodict==0.13.0",
   "orjson==3.8.9",
   "shortuuid==1.0.11",
-  "zeroconf==0.56.0",
+  "zeroconf==0.60.0",
   "cryptography==40.0.2"
 ]
 test = [
