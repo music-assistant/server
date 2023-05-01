@@ -101,7 +101,7 @@ async def get_config_entries(
 &perms={DEEZER_PERMS}&state={callback_url}"
             code = (await auth_helper.authenticate(url))["code"]
             values[CONF_ACCESS_TOKEN] = await DeezerProvider.update_access_token(  # type: ignore
-                mass, DEEZER_APP_ID, DEEZER_APP_SECRET, code
+                DeezerProvider, DEEZER_APP_ID, DEEZER_APP_SECRET, code, mass.http_session
             )
 
     return (
@@ -314,7 +314,18 @@ class DeezerProvider(MusicProvider):
 
     async def recommendations(self) -> list[BrowseFolder]:
         """Get deezer's recommendations."""
-        return [""]
+        browser_folder = BrowseFolder(
+            item_id="recommendations",
+            provider=self.domain,
+            path="recommendations",
+            name="Recommendations",
+            label="recommendations",
+            items=[
+                self.parse_track(track=track, user_country=self.gw_client.user_country)
+                for track in await self.client.get_recommended_tracks()
+            ],
+        )
+        return [browser_folder]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""
@@ -523,9 +534,13 @@ class DeezerProvider(MusicProvider):
             return None
 
     ### OTHER FUNCTIONS ###
-    async def update_access_token(self, app_id, app_secret, code) -> str:
+    async def update_access_token(self, app_id, app_secret, code, http_session=None) -> str:
         """Update the access_token."""
-        response = await self._post_http(
+        if not http_session:
+            http_session = self.mass.http_session
+        response = await self._post_http(  # pylint: disable=E1124
+            self=self,
+            http_session=http_session,
             url="https://connect.deezer.com/oauth/access_token.php",
             data={
                 "code": code,
@@ -544,8 +559,8 @@ class DeezerProvider(MusicProvider):
         except Exception as error:
             raise LoginFailed("Invalid auth code") from error
 
-    async def _post_http(self, url, data, params=None, headers=None) -> str:
-        async with self.mass.http_session.post(
+    async def _post_http(self, http_session, url, data, params=None, headers=None) -> str:
+        async with http_session.post(
             url, headers=headers, params=params, json=data, ssl=False
         ) as response:
             if response.status != 200:

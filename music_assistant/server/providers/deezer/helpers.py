@@ -265,3 +265,11 @@ class DeezerClient:
             return artist.get_top()
 
         return await asyncio.to_thread(_get_artist_top)
+
+    async def get_recommended_tracks(self) -> deezer.PaginatedList:
+        """Get recommended tracks for user."""
+
+        def _get_recommended_tracks():
+            return self._client.get_user_recommended_tracks()
+
+        return await asyncio.to_thread(_get_recommended_tracks)
