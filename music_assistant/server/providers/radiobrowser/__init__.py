@@ -193,9 +193,9 @@ class RadioBrowserProvider(MusicProvider):
             sub_items: list[BrowseFolder] = []
             for country in await self.radios.countries(order=Order.NAME):
                 folder = BrowseFolder(
-                    item_id=country.name.lower(),
+                    item_id=country.code.lower(),
                     provider=self.domain,
-                    path=path + "/" + country.name.lower(),
+                    path=path + "/" + country.code.lower(),
                     name="",
                     label=country.name,
                 )
@@ -220,7 +220,7 @@ class RadioBrowserProvider(MusicProvider):
                 items=[x for x in await self.get_by_tag(subsubpath)],
             )
 
-        if subsubpath in await self.get_country_names():
+        if subsubpath in await self.get_country_codes():
             return BrowseFolder(
                 item_id="radios",
                 provider=self.domain,
@@ -244,13 +244,13 @@ class RadioBrowserProvider(MusicProvider):
             tag_names.append(tag.name.lower())
         return tag_names
 
-    async def get_country_names(self):
+    async def get_country_codes(self):
         """Get a list of country names."""
         countries = await self.radios.countries(order=Order.NAME)
-        country_names = []
+        country_codes = []
         for country in countries:
-            country_names.append(country.name.lower())
-        return country_names
+            country_codes.append(country.code.lower())
+        return country_codes
 
     async def get_by_popularity(self):
         """Get radio stations by popularity."""
@@ -279,12 +279,12 @@ class RadioBrowserProvider(MusicProvider):
             items.append(await self._parse_radio(station))
         return items
 
-    async def get_by_country(self, country: str):
+    async def get_by_country(self, country_code: str):
         """Get radio stations by country."""
         items = []
         stations = await self.radios.stations(
-            filter_by=FilterBy.COUNTRY_EXACT,
-            filter_term=country,
+            filter_by=FilterBy.COUNTRY_CODE_EXACT,
+            filter_term=country_code,
             hide_broken=True,
             order=Order.NAME,
             reverse=False,
