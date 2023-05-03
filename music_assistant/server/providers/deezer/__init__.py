@@ -63,7 +63,7 @@ SUPPORTED_FEATURES = (
     # ProviderFeature.PLAYLIST_TRACKS_EDIT,
     # ProviderFeature.PLAYLIST_CREATE,
     # ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-    # ProviderFeature.RECOMMENDATIONS
+    ProviderFeature.RECOMMENDATIONS,
 )
 
 CONF_ACCESS_TOKEN = "access_token"
@@ -225,7 +225,11 @@ class DeezerProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        return self.parse_album(album=await self.client.get_album(album_id=int(prov_album_id)))
+        try:
+            return self.parse_album(album=await self.client.get_album(album_id=int(prov_album_id)))
+        except deezer.exceptions.DeezerErrorResponse as error:
+            self.logger.warning("Failed getting album: %s", error)
+            return Album(prov_album_id, self.instance_id, "Not Found")
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
@@ -253,8 +257,10 @@ class DeezerProvider(MusicProvider):
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
         for track in playlist.tracks:
-            if self.track_available(track, self.gw_client.user_country):
-                yield self.parse_track(track=track, user_country=self.gw_client.user_country)
+            # if self.track_available(track, self.gw_client.user_country):
+            # I think tracks should still be added because
+            # when parsing they get flagged as unavailable anyway.
+            yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
