@@ -36,6 +36,8 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
+
+from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models import ProviderInstanceType
@@ -72,8 +74,8 @@ DEEZER_AUTH_URL = "https://connect.deezer.com/oauth/auth.php"
 RELAY_URL = "https://deezer.oauth.jonathanbangert.com/"
 DEEZER_PERMS = "basic_access,email,offline_access,manage_library,\
 manage_community,delete_library,listening_history"
-DEEZER_APP_ID = 596944
-DEEZER_APP_SECRET = "6d15ff599e70a706db68ec83698bd885"
+DEEZER_APP_ID = app_var(6)
+DEEZER_APP_SECRET = app_var(7)
 
 
 async def setup(
