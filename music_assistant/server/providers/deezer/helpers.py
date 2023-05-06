@@ -187,6 +187,24 @@ class DeezerClient:
 
         return await asyncio.to_thread(_get_artist)
 
+    async def add_user_playlists(self, playlist_id: int) -> bool:
+        """Async wrapper of the deezer-python add_user_playlists function."""
+
+        def _get_playlist():
+            success = self._client.add_user_playlist(playlist_id=playlist_id)
+            return success
+
+        return await asyncio.to_thread(_get_playlist)
+
+    async def remove_user_playlists(self, playlist_id: int) -> bool:
+        """Async wrapper of the deezer-python remove_user_playlists function."""
+
+        def _get_playlist():
+            success = self._client.remove_user_playlist(playlist_id=playlist_id)
+            return success
+
+        return await asyncio.to_thread(_get_playlist)
+
     async def search_album(self, query: str, limit: int = 5) -> list[deezer.Album]:
         """Async wrapper of the deezer-python search_albums function."""
 

@@ -36,9 +36,8 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-
-from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
 from music_assistant.common.models.provider import ProviderManifest
+from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
@@ -55,6 +54,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ALBUMS_EDIT,
     ProviderFeature.LIBRARY_TRACKS_EDIT,
     ProviderFeature.LIBRARY_ARTISTS_EDIT,
+    ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.ALBUM_METADATA,
     ProviderFeature.TRACK_METADATA,
     ProviderFeature.ARTIST_METADATA,
@@ -64,7 +64,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.SEARCH,
     # ProviderFeature.PLAYLIST_TRACKS_EDIT,
     # ProviderFeature.PLAYLIST_CREATE,
-    # ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     ProviderFeature.RECOMMENDATIONS,
 )
 
@@ -297,6 +296,10 @@ class DeezerProvider(MusicProvider):
             result = await self.client.add_user_tracks(
                 track_id=int(prov_item_id),
             )
+        elif media_type == MediaType.PLAYLIST:
+            result = await self.client.add_user_playlists(
+                playlist_id=int(prov_item_id),
+            )
         else:
             raise NotImplementedError
         return result
@@ -315,6 +318,10 @@ class DeezerProvider(MusicProvider):
         elif media_type == MediaType.TRACK:
             result = await self.client.remove_user_tracks(
                 track_id=int(prov_item_id),
+            )
+        elif media_type == MediaType.PLAYLIST:
+            result = await self.client.remove_user_playlists(
+                playlist_id=int(prov_item_id),
             )
         else:
             raise NotImplementedError
