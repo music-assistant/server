@@ -63,7 +63,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     # ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    # ProviderFeature.PLAYLIST_CREATE,
+    ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.RECOMMENDATIONS,
 )
 
@@ -341,6 +341,31 @@ class DeezerProvider(MusicProvider):
             ],
         )
         return [browser_folder]
+
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
+        """Add track(s) to playlist."""
+        self.client.add_playlist_tracks(
+            playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
+        )
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ):
+        """Remove track(s) to playlist."""
+        prov_track_ids = []
+        async for track in self.get_playlist_tracks(prov_playlist_id):
+            if track.position in positions_to_remove:
+                prov_track_ids.append(track.item_id)
+            if len(prov_track_ids) == len(positions_to_remove):
+                break
+        self.client.remove_playlist_tracks(
+            playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
+        )
+
+    async def create_playlist(self, name: str) -> Playlist:
+        """Create a new playlist on provider with given name."""
+        playlist = self.client.create_playlist(playlist_name=name)
+        return self.parse_playlist(playlist=playlist)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""

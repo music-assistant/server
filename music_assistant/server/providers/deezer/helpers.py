@@ -291,3 +291,30 @@ class DeezerClient:
             return self._client.get_user_recommended_tracks()
 
         return await asyncio.to_thread(_get_recommended_tracks)
+
+    async def create_playlist(self, playlist_name) -> deezer.Playlist:
+        """Create a playlist on deezer."""
+
+        def _create_playlist():
+            playlist_id = self._client.create_playlist(playlist_name=playlist_name)
+            return self._client.get_playlist(playlist_id=playlist_id)
+
+        return await asyncio.to_thread(_create_playlist)
+
+    async def add_playlist_tracks(self, playlist_id: int, tracks: list[int]):
+        """Add tracks to playlist."""
+
+        def _add_playlist_tracks():
+            playlist = self._client.get_playlist(playlist_id=playlist_id)
+            playlist.add_tracks(tracks=tracks)
+
+        return await asyncio.to_thread(_add_playlist_tracks)
+
+    async def remove_playlist_tracks(self, playlist_id: int, tracks: list[int]):
+        """Remove tracks from playlist."""
+
+        def _remove_playlist_tracks():
+            playlist = self._client.get_playlist(playlist_id=playlist_id)
+            playlist.delete_tracks(tracks=tracks)
+
+        return await asyncio.to_thread(_remove_playlist_tracks)
