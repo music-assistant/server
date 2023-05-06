@@ -344,7 +344,7 @@ class DeezerProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
-        self.client.add_playlist_tracks(
+        await self.client.add_playlist_tracks(
             playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
         )
 
@@ -358,13 +358,13 @@ class DeezerProvider(MusicProvider):
                 prov_track_ids.append(track.item_id)
             if len(prov_track_ids) == len(positions_to_remove):
                 break
-        self.client.remove_playlist_tracks(
+        await self.client.remove_playlist_tracks(
             playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
         )
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
-        playlist = self.client.create_playlist(playlist_name=name)
+        playlist = await self.client.create_playlist(playlist_name=name)
         return self.parse_playlist(playlist=playlist)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
