@@ -47,7 +47,7 @@ server = [
   "cryptography==40.0.2"
 ]
 test = [
-  "black==23.1.0",
+  "black==23.3.0",
   "codespell==2.2.4",
   "mypy==1.2.0",
   "ruff==0.0.265",
