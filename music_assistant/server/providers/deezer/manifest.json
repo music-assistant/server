@@ -3,7 +3,7 @@
   "domain": "deezer",
   "name": "Deezer",
   "description": "Support for the Deezer streaming provider in Music Assistant.",
-  "codeowners": ["@marcelveldt", "@Un10ck3d", "@music-assistant", "@micha91"],
+  "codeowners": ["@Un10ck3d",  "@micha91"],
   "requirements": ["git+https://github.com/Un10ck3d/deezer-python.git", "pycryptodome==3.17"],
   "multi_instance": true
 }
