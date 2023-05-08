@@ -340,6 +340,27 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return item
         return None
 
+    async def get_db_item_by_prov_mappings(
+        self,
+        provider_mappings: list[ProviderMapping],
+    ) -> ItemCls | None:
+        """Get the database item for the given provider_instance."""
+        # always prefer provider instance first
+        for mapping in provider_mappings:
+            for item in await self.get_db_items_by_prov_id(
+                mapping.provider_instance,
+                provider_item_ids=(mapping.item_id,),
+            ):
+                return item
+        # check by domain too
+        for mapping in provider_mappings:
+            for item in await self.get_db_items_by_prov_id(
+                mapping.provider_domain,
+                provider_item_ids=(mapping.item_id,),
+            ):
+                return item
+        return None
+
     async def get_db_items_by_prov_id(
         self,
         provider_instance_id_or_domain: str,
@@ -510,18 +531,37 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         # we need to use the (mediatype specific) lock here to prevent race conditions
         async with self._db_add_lock:
-            # clear all records first
-            await self.mass.music.database.delete(
-                DB_TABLE_PROVIDER_MAPPINGS,
-                {"media_type": self.media_type.value, "item_id": db_id},
-            )
+            # get current mapings (if any)
+            cur_mappings = set()
+            match = {"media_type": self.media_type.value, "item_id": db_id}
+            for db_row in await self.mass.music.database.get_rows(
+                DB_TABLE_PROVIDER_MAPPINGS, match
+            ):
+                cur_mappings.add(
+                    ProviderMapping(
+                        item_id=db_row["provider_item_id"],
+                        provider_domain=db_row["provider_domain"],
+                        provider_instance=db_row["provider_instance"],
+                    )
+                )
+            # delete removed mappings
+            for prov_mapping in cur_mappings:
+                if prov_mapping not in set(provider_mappings):
+                    await self.mass.music.database.delete(
+                        DB_TABLE_PROVIDER_MAPPINGS,
+                        {
+                            **match,
+                            "provider_domain": prov_mapping.provider_domain,
+                            "provider_instance": prov_mapping.provider_instance,
+                            "provider_item_id": prov_mapping.item_id,
+                        },
+                    )
             # add entries
             for provider_mapping in provider_mappings:
                 await self.mass.music.database.insert_or_replace(
                     DB_TABLE_PROVIDER_MAPPINGS,
                     {
-                        "media_type": self.media_type.value,
-                        "item_id": db_id,
+                        **match,
                         "provider_domain": provider_mapping.provider_domain,
                         "provider_instance": provider_mapping.provider_instance,
                         "provider_item_id": provider_mapping.item_id,

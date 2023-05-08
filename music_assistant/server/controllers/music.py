@@ -87,7 +87,10 @@ class MusicController:
         providers: only sync these provider instances. None for all.
         """
         if media_types is None:
-            media_types = MediaType.ALL
+            # media_types = MediaType.ALL
+            media_types = [
+                MediaType.PLAYLIST,
+            ]
         if providers is None:
             providers = [x.instance_id for x in self.providers]
 
@@ -95,8 +98,6 @@ class MusicController:
             if provider.instance_id not in providers:
                 continue
             self._start_provider_sync(provider.instance_id, media_types)
-        # trigger metadata scan after provider sync completed
-        self.mass.metadata.start_scan()
 
         # reschedule task if needed
         def create_sync_task():
@@ -552,6 +553,8 @@ class MusicController:
         def on_sync_task_done(task: asyncio.Task):  # noqa: ARG001
             self.in_progress_syncs.remove(sync_spec)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
+            # trigger metadata scan after provider sync completed
+            self.mass.metadata.start_scan()
 
         task.add_done_callback(on_sync_task_done)
 
@@ -727,8 +730,7 @@ class MusicController:
                     provider_domain TEXT NOT NULL,
                     provider_instance TEXT NOT NULL,
                     provider_item_id TEXT NOT NULL,
-                    UNIQUE(media_type, item_id, provider_instance,
-                        provider_item_id, provider_item_id)
+                    UNIQUE(media_type, provider_instance, provider_item_id)
                 );"""
         )
 

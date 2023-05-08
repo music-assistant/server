@@ -60,7 +60,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         # grab musicbrainz id and additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_artist_metadata(item)
-        db_item = await self._add_db_item(item)
+        if item.provider == "database":
+            db_item = await self._update_db_item(item.item_id, item)
+        else:
+            db_item = await self._add_db_item(item)
         # also fetch same artist on all providers
         if not skip_metadata_lookup:
             await self.match_artist(db_item)
@@ -282,10 +285,11 @@ class ArtistsController(MediaControllerBase[Artist]):
         # safety guard: check for existing item first
         # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
-            cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+            cur_item = await self.get_db_item_by_prov_mappings(item.provider_mappings)
             if not cur_item and (musicbrainz_id := getattr(item, "musicbrainz_id", None)):
                 match = {"musicbrainz_id": musicbrainz_id}
-                cur_item = await self.mass.music.database.get_row(self.db_table, match)
+                if db_row := await self.mass.music.database.get_row(self.db_table, match):
+                    cur_item = Artist.from_db_row(db_row)
             if not cur_item:
                 # fallback to exact name match
                 # NOTE: we match an artist by name which could theoretically lead to collisions
@@ -297,34 +301,33 @@ class ArtistsController(MediaControllerBase[Artist]):
                     if row_artist.sort_name == item.sort_name:
                         cur_item = row_artist
                         break
-        if cur_item:
-            # update existing
-            return await self._update_db_item(cur_item.item_id, item)
+            if cur_item:
+                # update existing
+                return await self._update_db_item(cur_item.item_id, item)
 
-        # insert item
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
-        # edge case: item is an ItemMapping,
-        # try to construct (a half baken) Artist object from it
-        if isinstance(item, ItemMapping):
-            item = Artist.from_dict(item.to_dict())
-        async with self._db_add_lock:
+            # insert item
+            item.timestamp_added = int(utc_timestamp())
+            item.timestamp_modified = int(utc_timestamp())
+            # edge case: item is an ItemMapping,
+            # try to construct (a half baken) Artist object from it
+            if isinstance(item, ItemMapping):
+                item = Artist.from_dict(item.to_dict())
             new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
-        db_id = new_item["item_id"]
-        # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database", item.name)
-        # get full created object
-        db_item = await self.get_db_item(db_id)
-        # only signal event if we're not running a sync (to prevent a floodstorm of events)
-        if not self.mass.music.get_running_sync_tasks():
-            self.mass.signal_event(
-                EventType.MEDIA_ITEM_ADDED,
-                db_item.uri,
-                db_item,
-            )
-        # return the full item we just added
-        return db_item
+            db_id = new_item["item_id"]
+            # update/set provider_mappings table
+            await self._set_provider_mappings(db_id, item.provider_mappings)
+            self.logger.debug("added %s to database", item.name)
+            # get full created object
+            db_item = await self.get_db_item(db_id)
+            # only signal event if we're not running a sync (to prevent a floodstorm of events)
+            if not self.mass.music.get_running_sync_tasks():
+                self.mass.signal_event(
+                    EventType.MEDIA_ITEM_ADDED,
+                    db_item.uri,
+                    db_item,
+                )
+            # return the full item we just added
+            return db_item
 
     async def _update_db_item(
         self, item_id: str | int, item: Artist | ItemMapping, overwrite: bool = False

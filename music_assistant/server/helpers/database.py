@@ -86,6 +86,8 @@ class DatabaseConnection:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
         sql_query += " AND ".join(f"{x} = :{x}" for x in match)
+        for item in await self.get_rows_from_query(sql_query, match):
+            return item
         return await self._db.fetch_one(sql_query, match)
 
     async def insert(

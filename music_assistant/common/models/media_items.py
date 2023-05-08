@@ -92,7 +92,7 @@ class MediaItemImage(DataClassDictMixin):
 
     def __hash__(self) -> int:
         """Return custom hash."""
-        return hash(self.type.value, self.path)
+        return hash((self.type.value, self.path))
 
     def __eq__(self, other: MediaItemImage) -> bool:
         """Check equality of two items."""
