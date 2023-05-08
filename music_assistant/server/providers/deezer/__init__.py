@@ -62,7 +62,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.ARTIST_TOPTRACKS,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
-    # ProviderFeature.PLAYLIST_TRACKS_EDIT,
+    ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.RECOMMENDATIONS,
 )
@@ -258,9 +258,6 @@ class DeezerProvider(MusicProvider):
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
         for track in playlist.tracks:
-            # if self.track_available(track, self.gw_client.user_country):
-            # I think tracks should still be added because
-            # when parsing they get flagged as unavailable anyway.
             yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -343,7 +340,7 @@ class DeezerProvider(MusicProvider):
         return [browser_folder]
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
-        """Add track(s) to playlist."""
+        """Add tra ck(s) to playlist."""
         await self.client.add_playlist_tracks(
             playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
         )
@@ -353,14 +350,21 @@ class DeezerProvider(MusicProvider):
     ):
         """Remove track(s) to playlist."""
         prov_track_ids = []
-        async for track in self.get_playlist_tracks(prov_playlist_id):
+        print(positions_to_remove)
+        playlist = await self.client.get_playlist(prov_playlist_id)
+        print(playlist.tracks)
+        for track in playlist.tracks:
+            print(track.position)
+            print("uhua")
+            print(track)
             if track.position in positions_to_remove:
                 prov_track_ids.append(track.item_id)
             if len(prov_track_ids) == len(positions_to_remove):
                 break
-        await self.client.remove_playlist_tracks(
-            playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
-        )
+        print(prov_track_ids)
+        yeah = [eval(i) for i in prov_track_ids]
+        print(yeah)
+        await self.client.remove_playlist_tracks(playlist_id=prov_playlist_id, tracks=yeah)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -502,6 +506,7 @@ class DeezerProvider(MusicProvider):
             metadata=MediaItemMetadata(
                 images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
             ),
+            is_editable=playlist.creator.id == self.client.user.id,
         )
 
     def parse_track(self, track: deezer.Track, user_country: str) -> Track:
@@ -632,10 +637,9 @@ class DeezerProvider(MusicProvider):
         """Get blowfish key to decrypt a chunk of a track."""
         secret = "g4el58wc" + "0zvf9na1"
         id_md5 = self._md5(track_id)
-        bf_key = ""
-        for i in range(16):
-            bf_key += chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i]))
-        return bf_key
+        return "".join(
+            chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i])) for i in range(16)
+        )
 
     def decrypt_chunk(self, chunk, blowfish_key):
         """Decrypt a given chunk using the blow fish key."""

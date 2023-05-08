@@ -35,11 +35,13 @@ class DeezerClient:
 
     _client: deezer.Client
     _creds: Credential
+    user: deezer.User
 
     def __init__(self, creds: Credential, client: deezer.Client):
         """Initialize the client."""
         self._creds = creds
         self._client = client
+        self.user = self._client.get_user()
 
     async def get_deezer_client(self, creds: Credential) -> deezer.Client:  # type: ignore
         """
