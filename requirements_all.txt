@@ -12,8 +12,8 @@ asyncio-throttle==1.0.2
 coloredlogs==15.0.1
 cryptography==40.0.2
 databases==0.7.0
+deezer-python==5.10.0
 faust-cchardet>=2.1.18
-git+https://github.com/Un10ck3d/deezer-python.git
 git+https://github.com/gieljnssns/python-radios.git@main
 git+https://github.com/jozefKruszynski/python-tidal.git@v0.7.1
 git+https://github.com/pytube/pytube.git@refs/pull/1501/head
