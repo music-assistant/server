@@ -299,6 +299,10 @@ class ItemMapping(DataClassDictMixin):
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
 
+    def __hash__(self) -> int:
+        """Return custom hash."""
+        return hash((self.media_type.value, self.provider, self.item_id))
+
 
 @dataclass
 class Artist(MediaItem):
