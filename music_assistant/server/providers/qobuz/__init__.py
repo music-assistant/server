@@ -486,7 +486,7 @@ class QobuzProvider(MusicProvider):
         album.barcode.add(album_obj["upc"])
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
-        if album_obj.get("released_at"):
+        if (released_at := album_obj.get("released_at")) and released_at != 0:
             album.year = datetime.datetime.fromtimestamp(album_obj["released_at"]).year
         if album_obj.get("copyright"):
             album.metadata.copyright = album_obj["copyright"]

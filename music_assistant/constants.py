@@ -51,8 +51,6 @@ CONF_GROUPED_POWER_ON: Final[str] = "grouped_power_on"
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
-DEFAULT_DB_LIBRARY: Final[str] = "sqlite:///[storage_path]/library.db"
-DEFAULT_DB_CACHE: Final[str] = "sqlite:///[storage_path]/cache.db"
 
 # common db tables
 DB_TABLE_TRACK_LOUDNESS: Final[str] = "track_loudness"

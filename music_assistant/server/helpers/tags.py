@@ -343,7 +343,7 @@ async def parse_tags(
             data = json.loads(res)
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
-            if not data.get("streams") or data["streams"][0].get("codec_type") == "video":
+            if not data.get("streams"):
                 raise InvalidDataError("Not an audio file")
             tags = AudioTags.parse(data)
             del res

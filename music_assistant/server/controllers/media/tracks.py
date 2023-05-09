@@ -131,24 +131,17 @@ class TracksController(MediaControllerBase[Track]):
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
-        async with self._db_add_lock:
-            # use the lock to prevent a race condition of the same item being added twice
-            existing = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        if existing:
-            db_item = await self._update_db_item(existing.item_id, item)
+        if item.provider == "database":
+            db_item = await self._update_db_item(item.item_id, item)
         else:
-            db_item = await self._add_db_item(item)
+            # use the lock to prevent a race condition of the same item being added twice
+            async with self._db_add_lock:
+                db_item = await self._add_db_item(item)
         # also fetch same track on all providers (will also get other quality versions)
         if not skip_metadata_lookup:
             await self._match(db_item)
         # return final db_item after all match/metadata actions
-        db_item = await self.get_db_item(db_item.item_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED if existing else EventType.MEDIA_ITEM_ADDED,
-            db_item.uri,
-            db_item,
-        )
-        return db_item
+        return await self.get_db_item(db_item.item_id)
 
     async def update(self, item_id: str | int, update: Track, overwrite: bool = False) -> Track:
         """Update existing record in the database."""
@@ -285,57 +278,65 @@ class TracksController(MediaControllerBase[Track]):
         assert isinstance(item, Track), "Not a full Track object"
         assert item.artists, "Track is missing artist(s)"
         assert item.provider_mappings, "Track is missing provider mapping(s)"
-        cur_item = None
-
         # safety guard: check for existing item first
-        # use the lock to prevent a race condition of the same item being added twice
-        async with self._db_add_lock:
-            # always try to grab existing item by external_id
-            if item.musicbrainz_id:
-                match = {"musicbrainz_id": item.musicbrainz_id}
-                cur_item = await self.mass.music.database.get_row(self.db_table, match)
-            for isrc in item.isrc:
-                if search_result := await self.mass.music.database.search(
-                    self.db_table, isrc, "isrc"
-                ):
-                    cur_item = Track.from_db_row(search_result[0])
-                    break
-            if not cur_item:
-                # fallback to matching
-                match = {"sort_name": item.sort_name}
-                for row in await self.mass.music.database.get_rows(self.db_table, match):
-                    row_track = Track.from_db_row(row)
-                    if compare_track(row_track, item):
-                        cur_item = row_track
-                        break
-        if cur_item:
-            # update existing
+        if cur_item := await self.get_db_item_by_prov_mappings(item.provider_mappings):
+            # existing item found: update it
             return await self._update_db_item(cur_item.item_id, item)
+        # try matching on musicbrainz_id
+        if item.musicbrainz_id:
+            match = {"musicbrainz_id": item.musicbrainz_id}
+            if db_row := await self.mass.music.database.get_row(self.db_table, match):
+                cur_item = Track.from_db_row(db_row)
+                # existing item found: update it
+                return await self._update_db_item(cur_item.item_id, item)
+        # try matching on isrc
+        for isrc in item.isrc:
+            if search_result := await self.mass.music.database.search(self.db_table, isrc, "isrc"):
+                cur_item = Track.from_db_row(search_result[0])
+                # existing item found: update it
+                return await self._update_db_item(cur_item.item_id, item)
+        # fallback to compare matching
+        match = {"sort_name": item.sort_name}
+        for row in await self.mass.music.database.get_rows(self.db_table, match):
+            row_track = Track.from_db_row(row)
+            if compare_track(row_track, item):
+                cur_item = row_track
+                # existing item found: update it
+                return await self._update_db_item(cur_item.item_id, item)
 
         # no existing match found: insert new item
         track_artists = await self._get_artist_mappings(item)
         track_albums = await self._get_track_albums(item)
         sort_artist = track_artists[0].sort_name if track_artists else ""
         sort_album = track_albums[0].sort_name if track_albums else ""
-        async with self._db_add_lock:
-            new_item = await self.mass.music.database.insert(
-                self.db_table,
-                {
-                    **item.to_db_row(),
-                    "artists": serialize_to_json(track_artists),
-                    "albums": serialize_to_json(track_albums),
-                    "sort_artist": sort_artist,
-                    "sort_album": sort_album,
-                    "timestamp_added": int(utc_timestamp()),
-                    "timestamp_modified": int(utc_timestamp()),
-                },
-            )
-        item_id = new_item["item_id"]
+        new_item = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                **item.to_db_row(),
+                "artists": serialize_to_json(track_artists),
+                "albums": serialize_to_json(track_albums),
+                "sort_artist": sort_artist,
+                "sort_album": sort_album,
+                "timestamp_added": int(utc_timestamp()),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
+        db_id = new_item["item_id"]
         # update/set provider_mappings table
-        await self._set_provider_mappings(item_id, item.provider_mappings)
+        await self._set_provider_mappings(db_id, item.provider_mappings)
         # return created object
-        self.logger.debug("added %s to database: %s", item.name, item_id)
-        return await self.get_db_item(item_id)
+        self.logger.debug("added %s to database: %s", item.name, db_id)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
+            )
+        # return the full item we just added
+        return db_item
 
     async def _update_db_item(
         self, item_id: str | int, item: Track | ItemMapping, overwrite: bool = False
@@ -368,7 +369,17 @@ class TracksController(MediaControllerBase[Track]):
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, provider_mappings)
         self.logger.debug("updated %s in database: %s", item.name, db_id)
-        return await self.get_db_item(db_id)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_UPDATED,
+                db_item.uri,
+                db_item,
+            )
+        # return the full item we just updated
+        return db_item
 
     async def _get_track_albums(
         self,

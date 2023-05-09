@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import statistics
 from itertools import zip_longest
 from typing import TYPE_CHECKING
@@ -14,7 +15,6 @@ from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
-    CONF_DB_LIBRARY,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
@@ -24,7 +24,6 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
-    DEFAULT_DB_LIBRARY,
     ROOT_LOGGER_NAME,
     SCHEMA_VERSION,
 )
@@ -59,6 +58,7 @@ class MusicController:
         self.radio = RadioController(mass)
         self.playlists = PlaylistController(mass)
         self.in_progress_syncs: list[SyncTask] = []
+        self._sync_lock = asyncio.Lock()
 
     async def setup(self):
         """Async initialize of module."""
@@ -68,6 +68,7 @@ class MusicController:
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self.database.close()
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -95,8 +96,6 @@ class MusicController:
             if provider.instance_id not in providers:
                 continue
             self._start_provider_sync(provider.instance_id, media_types)
-        # trigger metadata scan after provider sync completed
-        self.mass.metadata.start_scan()
 
         # reschedule task if needed
         def create_sync_task():
@@ -107,7 +106,7 @@ class MusicController:
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
-        """Return list with providers that are currently syncing."""
+        """Return list with providers that are currently (scheduled for) syncing."""
         return self.in_progress_syncs
 
     @api_command("music/search")
@@ -536,9 +535,16 @@ class MusicController:
                     )
                     return
 
-        # we keep track of running sync tasks
         provider = self.mass.get_provider(provider_instance)
-        task = self.mass.create_task(provider.sync_library(media_types))
+
+        async def run_sync() -> None:
+            # Wrap the provider sync into a lock to prevent
+            # race conditions when multiple propviders are syncing at the same time.
+            async with self._sync_lock:
+                await provider.sync_library(media_types)
+
+        # we keep track of running sync tasks
+        task = self.mass.create_task(run_sync())
         sync_spec = SyncTask(
             provider_domain=provider.domain,
             provider_instance=provider.instance_id,
@@ -552,6 +558,8 @@ class MusicController:
         def on_sync_task_done(task: asyncio.Task):  # noqa: ARG001
             self.in_progress_syncs.remove(sync_spec)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
+            # trigger metadata scan after provider sync completed
+            self.mass.metadata.start_scan()
 
         task.add_done_callback(on_sync_task_done)
 
@@ -575,9 +583,9 @@ class MusicController:
 
     async def _setup_database(self):
         """Initialize database."""
-        db_url: str = self.mass.config.get(CONF_DB_LIBRARY, DEFAULT_DB_LIBRARY)
-        db_url = db_url.replace("[storage_path]", self.mass.storage_path)
-        self.database = DatabaseConnection(db_url)
+        db_path = os.path.join(self.mass.storage_path, "library.db")
+        self.database = DatabaseConnection(db_path)
+        await self.database.setup()
 
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()
@@ -727,8 +735,7 @@ class MusicController:
                     provider_domain TEXT NOT NULL,
                     provider_instance TEXT NOT NULL,
                     provider_item_id TEXT NOT NULL,
-                    UNIQUE(media_type, item_id, provider_instance,
-                        provider_item_id, provider_item_id)
+                    UNIQUE(media_type, provider_instance, provider_item_id)
                 );"""
         )
 

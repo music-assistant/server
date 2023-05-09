@@ -32,7 +32,6 @@ server = [
   "aiofiles==23.1.0",
   "aiorun==2022.11.1",
   "coloredlogs==15.0.1",
-  "databases==0.7.0",
   "aiosqlite==0.19.0",
   "python-slugify==8.0.1",
   "mashumaro==3.7",
