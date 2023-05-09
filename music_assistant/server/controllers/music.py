@@ -86,10 +86,7 @@ class MusicController:
         providers: only sync these provider instances. None for all.
         """
         if media_types is None:
-            # media_types = MediaType.ALL
-            media_types = [
-                MediaType.PLAYLIST,
-            ]
+            media_types = MediaType.ALL
         if providers is None:
             providers = [x.instance_id for x in self.providers]
 
