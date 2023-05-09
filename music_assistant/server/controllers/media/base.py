@@ -527,7 +527,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> None:
         """Update the provider_items table for the media item."""
         db_id = int(item_id)  # ensure integer
-        # get current mapings (if any)
+        # get current mappings (if any)
         cur_mappings = set()
         match = {"media_type": self.media_type.value, "item_id": db_id}
         for db_row in await self.mass.music.database.get_rows(DB_TABLE_PROVIDER_MAPPINGS, match):
