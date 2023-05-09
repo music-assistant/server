@@ -42,6 +42,7 @@ class CacheController:
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self.database.close()
 
     async def get(self, cache_key: str, checksum: str | None = None, default=None):
         """Get object from cache and return the results.

@@ -58,6 +58,7 @@ class MusicController:
         self.radio = RadioController(mass)
         self.playlists = PlaylistController(mass)
         self.in_progress_syncs: list[SyncTask] = []
+        self._sync_lock = asyncio.Lock()
 
     async def setup(self):
         """Async initialize of module."""
@@ -67,6 +68,7 @@ class MusicController:
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self.database.close()
 
     @property
     def providers(self) -> list[MusicProvider]:
@@ -104,7 +106,7 @@ class MusicController:
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
-        """Return list with providers that are currently syncing."""
+        """Return list with providers that are currently (scheduled for) syncing."""
         return self.in_progress_syncs
 
     @api_command("music/search")
@@ -533,9 +535,16 @@ class MusicController:
                     )
                     return
 
-        # we keep track of running sync tasks
         provider = self.mass.get_provider(provider_instance)
-        task = self.mass.create_task(provider.sync_library(media_types))
+
+        async def run_sync() -> None:
+            # Wrap the provider sync into a lock to prevent
+            # race conditions when multiple propviders are syncing at the same time.
+            async with self._sync_lock:
+                await provider.sync_library(media_types)
+
+        # we keep track of running sync tasks
+        task = self.mass.create_task(run_sync())
         sync_spec = SyncTask(
             provider_domain=provider.domain,
             provider_instance=provider.instance_id,

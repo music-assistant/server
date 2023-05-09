@@ -48,9 +48,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if item.provider == "database":
             db_item = await self._update_db_item(item.item_id, item)
         else:
-            db_item = await self._add_db_item(item)
+            # use the lock to prevent a race condition of the same item being added twice
+            async with self._db_add_lock:
+                db_item = await self._add_db_item(item)
         # preload playlist tracks listing (do not load them in the db)
-        async for track in self.tracks(item.item_id, item.provider):
+        async for _ in self.tracks(item.item_id, item.provider):
             pass
         # metadata lookup we need to do after adding it to the db
         if not skip_metadata_lookup:
@@ -198,37 +200,36 @@ class PlaylistController(MediaControllerBase[Playlist]):
     async def _add_db_item(self, item: Playlist) -> Playlist:
         """Add a new record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
-        async with self._db_add_lock:
-            # safety guard: check for existing item first
-            cur_item = await self.get_db_item_by_prov_mappings(item.provider_mappings)
-            if not cur_item:
-                match = {"name": item.name, "owner": item.owner}
-                if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                    assert db_row
-                    cur_item = Playlist.from_db_row(db_row)
-                    assert cur_item
-            if cur_item:
-                # update existing
-                return await self._update_db_item(cur_item.item_id, item)
-            # insert new item
-            item.timestamp_added = int(utc_timestamp())
-            item.timestamp_modified = int(utc_timestamp())
-            new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
-            db_id = new_item["item_id"]
-            # update/set provider_mappings table
-            await self._set_provider_mappings(db_id, item.provider_mappings)
-            self.logger.debug("added %s to database", item.name)
-            # get full created object
-            db_item = await self.get_db_item(db_id)
-            # only signal event if we're not running a sync (to prevent a floodstorm of events)
-            if not self.mass.music.get_running_sync_tasks():
-                self.mass.signal_event(
-                    EventType.MEDIA_ITEM_ADDED,
-                    db_item.uri,
-                    db_item,
-                )
-            # return the full item we just added
-            return db_item
+        # safety guard: check for existing item first
+        cur_item = await self.get_db_item_by_prov_mappings(item.provider_mappings)
+        if not cur_item:
+            match = {"name": item.name, "owner": item.owner}
+            if db_row := await self.mass.music.database.get_row(self.db_table, match):
+                assert db_row
+                cur_item = Playlist.from_db_row(db_row)
+                assert cur_item
+        if cur_item:
+            # update existing
+            return await self._update_db_item(cur_item.item_id, item)
+        # insert new item
+        item.timestamp_added = int(utc_timestamp())
+        item.timestamp_modified = int(utc_timestamp())
+        new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
+        db_id = new_item["item_id"]
+        # update/set provider_mappings table
+        await self._set_provider_mappings(db_id, item.provider_mappings)
+        self.logger.debug("added %s to database", item.name)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
+            )
+        # return the full item we just added
+        return db_item
 
     async def _update_db_item(
         self, item_id: str | int, item: Playlist, overwrite: bool = False

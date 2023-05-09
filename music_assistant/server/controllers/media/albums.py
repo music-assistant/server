@@ -99,28 +99,24 @@ class AlbumsController(MediaControllerBase[Album]):
         if item.provider == "database":
             db_item = await self._update_db_item(item.item_id, item)
         else:
-            db_item = await self._add_db_item(item)
+            # use the lock to prevent a race condition of the same item being added twice
+            async with self._db_add_lock:
+                db_item = await self._add_db_item(item)
         # also fetch the same album on all providers
         if not skip_metadata_lookup:
             await self._match(db_item)
-        # preload album tracks in db
+        # preload album tracks listing (do not load them in the db)
         for prov_mapping in db_item.provider_mappings:
-            for track in await self._get_provider_album_tracks(
+            await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
-            ):
-                if not await self.mass.music.tracks.get_db_item_by_prov_mappings(
-                    track.provider_mappings
-                ):
-                    track.album = db_item
-                    await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
+            )
         # return final db_item after all match/metadata actions
         return await self.get_db_item(db_item.item_id)
 
     async def update(self, item_id: str | int, update: Album, overwrite: bool = False) -> Album:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
-        async with self._db_add_lock:
-            return await self._update_db_item(item_id=db_id, item=update, overwrite=overwrite)
+        return await self._update_db_item(item_id=db_id, item=update, overwrite=overwrite)
 
     async def delete(self, item_id: str | int, recursive: bool = False) -> None:
         """Delete record from the database."""
@@ -196,61 +192,59 @@ class AlbumsController(MediaControllerBase[Album]):
         assert item.artists, f"Album {item.name} is missing artists"
         cur_item = None
         # safety guard: check for existing item first
-        # use the lock to prevent a race condition of the same item being added twice
-        async with self._db_add_lock:
-            cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-            if not cur_item and item.musicbrainz_id:
-                match = {"musicbrainz_id": item.musicbrainz_id}
-                if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                    cur_item = Album.from_db_row(db_row)
-            # try barcode/upc
-            if not cur_item and item.barcode:
-                for barcode in item.barcode:
-                    if search_result := await self.mass.music.database.search(
-                        self.db_table, barcode, "barcode"
-                    ):
-                        cur_item = Album.from_db_row(search_result[0])
-                        break
-            if not cur_item:
-                # fallback to search and match
-                match = {"sort_name": item.sort_name}
-                for row in await self.mass.music.database.get_rows(self.db_table, match):
-                    row_album = Album.from_db_row(row)
-                    if compare_album(row_album, item):
-                        cur_item = row_album
-                        break
-            if cur_item:
-                # update existing
-                return await self._update_db_item(cur_item.item_id, item)
+        cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        if not cur_item and item.musicbrainz_id:
+            match = {"musicbrainz_id": item.musicbrainz_id}
+            if db_row := await self.mass.music.database.get_row(self.db_table, match):
+                cur_item = Album.from_db_row(db_row)
+        # try barcode/upc
+        if not cur_item and item.barcode:
+            for barcode in item.barcode:
+                if search_result := await self.mass.music.database.search(
+                    self.db_table, barcode, "barcode"
+                ):
+                    cur_item = Album.from_db_row(search_result[0])
+                    break
+        if not cur_item:
+            # fallback to search and match
+            match = {"sort_name": item.sort_name}
+            for row in await self.mass.music.database.get_rows(self.db_table, match):
+                row_album = Album.from_db_row(row)
+                if compare_album(row_album, item):
+                    cur_item = row_album
+                    break
+        if cur_item:
+            # update existing
+            return await self._update_db_item(cur_item.item_id, item)
 
-            # insert new item
-            album_artists = await self._get_artist_mappings(item, cur_item)
-            sort_artist = album_artists[0].sort_name if album_artists else ""
-            new_item = await self.mass.music.database.insert(
-                self.db_table,
-                {
-                    **item.to_db_row(),
-                    "artists": serialize_to_json(album_artists) or None,
-                    "sort_artist": sort_artist,
-                    "timestamp_added": int(utc_timestamp()),
-                    "timestamp_modified": int(utc_timestamp()),
-                },
+        # insert new item
+        album_artists = await self._get_artist_mappings(item, cur_item)
+        sort_artist = album_artists[0].sort_name if album_artists else ""
+        new_item = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                **item.to_db_row(),
+                "artists": serialize_to_json(album_artists) or None,
+                "sort_artist": sort_artist,
+                "timestamp_added": int(utc_timestamp()),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
+        db_id = new_item["item_id"]
+        # update/set provider_mappings table
+        await self._set_provider_mappings(db_id, item.provider_mappings)
+        self.logger.debug("added %s to database", item.name)
+        # get full created object
+        db_item = await self.get_db_item(db_id)
+        # only signal event if we're not running a sync (to prevent a floodstorm of events)
+        if not self.mass.music.get_running_sync_tasks():
+            self.mass.signal_event(
+                EventType.MEDIA_ITEM_ADDED,
+                db_item.uri,
+                db_item,
             )
-            db_id = new_item["item_id"]
-            # update/set provider_mappings table
-            await self._set_provider_mappings(db_id, item.provider_mappings)
-            self.logger.debug("added %s to database", item.name)
-            # get full created object
-            db_item = await self.get_db_item(db_id)
-            # only signal event if we're not running a sync (to prevent a floodstorm of events)
-            if not self.mass.music.get_running_sync_tasks():
-                self.mass.signal_event(
-                    EventType.MEDIA_ITEM_ADDED,
-                    db_item.uri,
-                    db_item,
-                )
-            # return the full item we just added
-            return db_item
+        # return the full item we just added
+        return db_item
 
     async def _update_db_item(
         self, item_id: str | int, item: Album | ItemMapping, overwrite: bool = False
