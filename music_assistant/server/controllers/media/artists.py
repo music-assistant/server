@@ -285,30 +285,32 @@ class ArtistsController(MediaControllerBase[Artist]):
             if item.musicbrainz_id == VARIOUS_ARTISTS_ID:
                 item.name = VARIOUS_ARTISTS
         # safety guard: check for existing item first
-        if isinstance(item, ItemMapping):
-            cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        else:
-            cur_item = await self.get_db_item_by_prov_mappings(item.provider_mappings)
-        if not cur_item and (musicbrainz_id := getattr(item, "musicbrainz_id", None)):
+        if isinstance(item, ItemMapping) and (
+            cur_item := await self.get_db_item_by_prov_id(item.item_id, item.provider)
+        ):
+            # existing item found: update it
+            return await self._update_db_item(cur_item.item_id, item)
+        if cur_item := await self.get_db_item_by_prov_mappings(item.provider_mappings):
+            return await self._update_db_item(cur_item.item_id, item)
+        if musicbrainz_id := getattr(item, "musicbrainz_id", None):
             match = {"musicbrainz_id": musicbrainz_id}
             if db_row := await self.mass.music.database.get_row(self.db_table, match):
+                # existing item found: update it
                 cur_item = Artist.from_db_row(db_row)
-        if not cur_item:
-            # fallback to exact name match
-            # NOTE: we match an artist by name which could theoretically lead to collisions
-            # but the chance is so small it is not worth the additional overhead of grabbing
-            # the musicbrainz id upfront
-            match = {"sort_name": item.sort_name}
-            for row in await self.mass.music.database.get_rows(self.db_table, match):
-                row_artist = Artist.from_db_row(row)
-                if row_artist.sort_name == item.sort_name:
-                    cur_item = row_artist
-                    break
-            if cur_item:
-                # update existing
+                return await self._update_db_item(cur_item.item_id, item)
+        # fallback to exact name match
+        # NOTE: we match an artist by name which could theoretically lead to collisions
+        # but the chance is so small it is not worth the additional overhead of grabbing
+        # the musicbrainz id upfront
+        match = {"sort_name": item.sort_name}
+        for row in await self.mass.music.database.get_rows(self.db_table, match):
+            row_artist = Artist.from_db_row(row)
+            if row_artist.sort_name == item.sort_name:
+                cur_item = row_artist
+                # existing item found: update it
                 return await self._update_db_item(cur_item.item_id, item)
 
-        # insert item
+        # no existing item matched: insert item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
         # edge case: item is an ItemMapping,

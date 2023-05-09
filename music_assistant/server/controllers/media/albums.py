@@ -190,13 +190,17 @@ class AlbumsController(MediaControllerBase[Album]):
         """Add a new record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
         assert item.artists, f"Album {item.name} is missing artists"
-        cur_item = None
+
         # safety guard: check for existing item first
-        cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        if not cur_item and item.musicbrainz_id:
+        if cur_item := await self.get_db_item_by_prov_id(item.item_id, item.provider):
+            # existing item found: update it
+            return await self._update_db_item(cur_item.item_id, item)
+        if item.musicbrainz_id:
             match = {"musicbrainz_id": item.musicbrainz_id}
             if db_row := await self.mass.music.database.get_row(self.db_table, match):
                 cur_item = Album.from_db_row(db_row)
+                # existing item found: update it
+                return await self._update_db_item(cur_item.item_id, item)
         # try barcode/upc
         if not cur_item and item.barcode:
             for barcode in item.barcode:
@@ -204,18 +208,16 @@ class AlbumsController(MediaControllerBase[Album]):
                     self.db_table, barcode, "barcode"
                 ):
                     cur_item = Album.from_db_row(search_result[0])
-                    break
-        if not cur_item:
-            # fallback to search and match
-            match = {"sort_name": item.sort_name}
-            for row in await self.mass.music.database.get_rows(self.db_table, match):
-                row_album = Album.from_db_row(row)
-                if compare_album(row_album, item):
-                    cur_item = row_album
-                    break
-        if cur_item:
-            # update existing
-            return await self._update_db_item(cur_item.item_id, item)
+                    # existing item found: update it
+                    return await self._update_db_item(cur_item.item_id, item)
+        # fallback to search and match
+        match = {"sort_name": item.sort_name}
+        for row in await self.mass.music.database.get_rows(self.db_table, match):
+            row_album = Album.from_db_row(row)
+            if compare_album(row_album, item):
+                cur_item = row_album
+                # existing item found: update it
+                return await self._update_db_item(cur_item.item_id, item)
 
         # insert new item
         album_artists = await self._get_artist_mappings(item, cur_item)

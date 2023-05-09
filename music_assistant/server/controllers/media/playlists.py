@@ -201,15 +201,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Add a new record to the database."""
         assert item.provider_mappings, "Item is missing provider mapping(s)"
         # safety guard: check for existing item first
-        cur_item = await self.get_db_item_by_prov_mappings(item.provider_mappings)
-        if not cur_item:
-            match = {"name": item.name, "owner": item.owner}
-            if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                assert db_row
-                cur_item = Playlist.from_db_row(db_row)
-                assert cur_item
-        if cur_item:
-            # update existing
+        if cur_item := await self.get_db_item_by_prov_mappings(item.provider_mappings):
+            # existing item found: update it
+            return await self._update_db_item(cur_item.item_id, item)
+        # try name matching
+        match = {"name": item.name, "owner": item.owner}
+        if db_row := await self.mass.music.database.get_row(self.db_table, match):
+            cur_item = Playlist.from_db_row(db_row)
+            # existing item found: update it
             return await self._update_db_item(cur_item.item_id, item)
         # insert new item
         item.timestamp_added = int(utc_timestamp())

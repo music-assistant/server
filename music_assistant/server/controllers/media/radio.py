@@ -78,13 +78,14 @@ class RadioController(MediaControllerBase[Radio]):
         assert item.provider_mappings, "Item is missing provider mapping(s)"
         cur_item = None
         # safety guard: check for existing item first
-        cur_item = await self.get_db_item_by_prov_id(item.item_id, item.provider)
-        if not cur_item:
-            match = {"name": item.name}
-            if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                cur_item = Radio.from_db_row(db_row)
-        if cur_item:
-            # update existing
+        if cur_item := await self.get_db_item_by_prov_id(item.item_id, item.provider):
+            # existing item found: update it
+            return await self._update_db_item(cur_item.item_id, item)
+        # try name matching
+        match = {"name": item.name}
+        if db_row := await self.mass.music.database.get_row(self.db_table, match):
+            cur_item = Radio.from_db_row(db_row)
+            # existing item found: update it
             return await self._update_db_item(cur_item.item_id, item)
         # insert new item
         item.timestamp_added = int(utc_timestamp())
