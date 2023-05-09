@@ -257,8 +257,11 @@ class DeezerProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
-        for track in playlist.tracks:
-            yield self.parse_track(track=track, user_country=self.gw_client.user_country)
+        for count, track in enumerate(playlist.tracks, start=1):
+            track_parsed = self.parse_track(track=track, user_country=self.gw_client.user_country)
+            track_parsed.position = count
+            track_parsed.id = track.id
+            yield track_parsed
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -349,22 +352,15 @@ class DeezerProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ):
         """Remove track(s) to playlist."""
-        prov_track_ids = []
-        print(positions_to_remove)
-        playlist = await self.client.get_playlist(prov_playlist_id)
-        print(playlist.tracks)
-        for track in playlist.tracks:
-            print(track.position)
-            print("uhua")
-            print(track)
+        playlist_track_ids = []
+        async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
-                prov_track_ids.append(track.item_id)
-            if len(prov_track_ids) == len(positions_to_remove):
+                playlist_track_ids.append(track.id)
+            if len(playlist_track_ids) == len(positions_to_remove):
                 break
-        print(prov_track_ids)
-        yeah = [eval(i) for i in prov_track_ids]
-        print(yeah)
-        await self.client.remove_playlist_tracks(playlist_id=prov_playlist_id, tracks=yeah)
+        await self.client.remove_playlist_tracks(
+            playlist_id=prov_playlist_id, tracks=list(playlist_track_ids)
+        )
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
