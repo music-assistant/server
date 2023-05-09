@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import statistics
 from itertools import zip_longest
 from typing import TYPE_CHECKING
@@ -14,7 +15,6 @@ from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
-    CONF_DB_LIBRARY,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
@@ -24,7 +24,6 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
-    DEFAULT_DB_LIBRARY,
     ROOT_LOGGER_NAME,
     SCHEMA_VERSION,
 )
@@ -578,9 +577,9 @@ class MusicController:
 
     async def _setup_database(self):
         """Initialize database."""
-        db_url: str = self.mass.config.get(CONF_DB_LIBRARY, DEFAULT_DB_LIBRARY)
-        db_url = db_url.replace("[storage_path]", self.mass.storage_path)
-        self.database = DatabaseConnection(db_url)
+        db_path = os.path.join(self.mass.storage_path, "library.db")
+        self.database = DatabaseConnection(db_path)
+        await self.database.setup()
 
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()

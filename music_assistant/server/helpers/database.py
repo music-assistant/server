@@ -4,28 +4,26 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
-from databases import Database as Db
-from databases import DatabaseURL
-from sqlalchemy.sql import ClauseElement
+import aiosqlite
 
 
 class DatabaseConnection:
     """Class that holds the (connection to the) database with some convenience helper functions."""
 
-    def __init__(self, url: DatabaseURL):
+    _db: aiosqlite.Connection
+
+    def __init__(self, db_path: str):
         """Initialize class."""
-        self.url = url
-        # we maintain one global connection - otherwise we run into (dead)lock issues.
-        # https://github.com/encode/databases/issues/456
-        self._db = Db(self.url, timeout=360)
+        self.db_path = db_path
 
     async def setup(self) -> None:
         """Perform async initialization."""
-        await self._db.connect()
+        self._db = await aiosqlite.connect(self.db_path)
+        self._db.row_factory = aiosqlite.Row
 
     async def close(self) -> None:
         """Close db connection on exit."""
-        await self._db.disconnect()
+        await self._db.close()
 
     async def get_rows(
         self,
@@ -42,7 +40,7 @@ class DatabaseConnection:
         if order_by is not None:
             sql_query += f" ORDER BY {order_by}"
         sql_query += f" LIMIT {limit} OFFSET {offset}"
-        return await self._db.fetch_all(sql_query, match)
+        return await self._db.execute_fetchall(sql_query, match)
 
     async def get_rows_from_query(
         self,
@@ -53,7 +51,7 @@ class DatabaseConnection:
     ) -> list[Mapping]:
         """Get all rows for given custom query."""
         query = f"{query} LIMIT {limit} OFFSET {offset}"
-        return await self._db.fetch_all(query, params)
+        return await self._db.execute_fetchall(query, params)
 
     async def get_count_from_query(
         self,
@@ -62,8 +60,9 @@ class DatabaseConnection:
     ) -> int:
         """Get row count for given custom query."""
         query = f"SELECT count() FROM ({query})"
-        if result := await self._db.fetch_one(query, params):
-            return result[0]
+        async with self._db.execute(query, params) as cursor:
+            if result := await cursor.fetchone():
+                return result[0]
         return 0
 
     async def get_count(
@@ -72,23 +71,23 @@ class DatabaseConnection:
     ) -> int:
         """Get row count for given table."""
         query = f"SELECT count(*) FROM {table}"
-        if result := await self._db.fetch_one(query):
-            return result[0]
+        async with self._db.execute(query) as cursor:
+            if result := await cursor.fetchone():
+                return result[0]
         return 0
 
     async def search(self, table: str, search: str, column: str = "name") -> list[Mapping]:
         """Search table by column."""
         sql_query = f"SELECT * FROM {table} WHERE {column} LIKE :search"
         params = {"search": f"%{search}%"}
-        return await self._db.fetch_all(sql_query, params)
+        return await self._db.execute_fetchall(sql_query, params)
 
     async def get_row(self, table: str, match: dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
         sql_query += " AND ".join(f"{x} = :{x}" for x in match)
-        for item in await self.get_rows_from_query(sql_query, match):
-            return item
-        return await self._db.fetch_one(sql_query, match)
+        async with self._db.execute(sql_query, match) as cursor:
+            return await cursor.fetchone()
 
     async def insert(
         self,
@@ -104,6 +103,7 @@ class DatabaseConnection:
             sql_query = f'INSERT INTO {table}({",".join(keys)})'
         sql_query += f' VALUES ({",".join((f":{x}" for x in keys))})'
         await self.execute(sql_query, values)
+        await self._db.commit()
         # return inserted/replaced item
         lookup_vals = {key: value for key, value in values.items() if value not in (None, "")}
         return await self.get_row(table, lookup_vals)
@@ -123,6 +123,7 @@ class DatabaseConnection:
         sql_query = f'UPDATE {table} SET {",".join((f"{x}=:{x}" for x in keys))} WHERE '
         sql_query += " AND ".join(f"{x} = :{x}" for x in match)
         await self.execute(sql_query, {**match, **values})
+        await self._db.commit()
         # return updated item
         return await self.get_row(table, match)
 
@@ -136,14 +137,15 @@ class DatabaseConnection:
             sql_query += "WHERE " + query
         elif query:
             sql_query += query
-
         await self.execute(sql_query, match)
+        await self._db.commit()
 
     async def delete_where_query(self, table: str, query: str | None = None) -> None:
         """Delete data in given table using given where clausule."""
         sql_query = f"DELETE FROM {table} WHERE {query}"
         await self.execute(sql_query)
+        await self._db.commit()
 
-    async def execute(self, query: ClauseElement | str, values: dict = None) -> Any:
+    async def execute(self, query: str | str, values: dict = None) -> Any:
         """Execute command on the database."""
         return await self._db.execute(query, values)
