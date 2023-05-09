@@ -1,7 +1,6 @@
 """Base (ABC) MediaType specific controller."""
 from __future__ import annotations
 
-import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import AsyncGenerator
@@ -36,7 +35,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     media_type: MediaType
     item_cls: MediaItemType
     db_table: str
-    _db_add_lock: asyncio.Lock
 
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
@@ -449,7 +447,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return fallback_item
         raise MediaNotFoundError(
             f"{self.media_type.value}://{item_id} not "
-            "found on provider {provider_instance_id_or_domain}"
+            f"found on provider {provider_instance_id_or_domain}"
         )
 
     async def remove_prov_mapping(self, item_id: str | int, provider_instance_id: str) -> None:
@@ -529,44 +527,40 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> None:
         """Update the provider_items table for the media item."""
         db_id = int(item_id)  # ensure integer
-        # we need to use the (mediatype specific) lock here to prevent race conditions
-        async with self._db_add_lock:
-            # get current mapings (if any)
-            cur_mappings = set()
-            match = {"media_type": self.media_type.value, "item_id": db_id}
-            for db_row in await self.mass.music.database.get_rows(
-                DB_TABLE_PROVIDER_MAPPINGS, match
-            ):
-                cur_mappings.add(
-                    ProviderMapping(
-                        item_id=db_row["provider_item_id"],
-                        provider_domain=db_row["provider_domain"],
-                        provider_instance=db_row["provider_instance"],
-                    )
+        # get current mapings (if any)
+        cur_mappings = set()
+        match = {"media_type": self.media_type.value, "item_id": db_id}
+        for db_row in await self.mass.music.database.get_rows(DB_TABLE_PROVIDER_MAPPINGS, match):
+            cur_mappings.add(
+                ProviderMapping(
+                    item_id=db_row["provider_item_id"],
+                    provider_domain=db_row["provider_domain"],
+                    provider_instance=db_row["provider_instance"],
                 )
-            # delete removed mappings
-            for prov_mapping in cur_mappings:
-                if prov_mapping not in set(provider_mappings):
-                    await self.mass.music.database.delete(
-                        DB_TABLE_PROVIDER_MAPPINGS,
-                        {
-                            **match,
-                            "provider_domain": prov_mapping.provider_domain,
-                            "provider_instance": prov_mapping.provider_instance,
-                            "provider_item_id": prov_mapping.item_id,
-                        },
-                    )
-            # add entries
-            for provider_mapping in provider_mappings:
-                await self.mass.music.database.insert_or_replace(
+            )
+        # delete removed mappings
+        for prov_mapping in cur_mappings:
+            if prov_mapping not in set(provider_mappings):
+                await self.mass.music.database.delete(
                     DB_TABLE_PROVIDER_MAPPINGS,
                     {
                         **match,
-                        "provider_domain": provider_mapping.provider_domain,
-                        "provider_instance": provider_mapping.provider_instance,
-                        "provider_item_id": provider_mapping.item_id,
+                        "provider_domain": prov_mapping.provider_domain,
+                        "provider_instance": prov_mapping.provider_instance,
+                        "provider_item_id": prov_mapping.item_id,
                     },
                 )
+        # add entries
+        for provider_mapping in provider_mappings:
+            await self.mass.music.database.insert_or_replace(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {
+                    **match,
+                    "provider_domain": provider_mapping.provider_domain,
+                    "provider_instance": provider_mapping.provider_instance,
+                    "provider_item_id": provider_mapping.item_id,
+                },
+            )
 
     def _get_provider_mappings(
         self,
