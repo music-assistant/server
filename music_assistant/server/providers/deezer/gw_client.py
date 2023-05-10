@@ -5,6 +5,7 @@ cookie based on the api_token.
 """
 import datetime
 from http.cookies import BaseCookie, Morsel
+from json import dumps
 
 from aiohttp import ClientSession
 from yarl import URL
@@ -150,4 +151,44 @@ class GWClient:
         if error := result_json["data"][0].get("errors"):
             raise DeezerGWError("Received an error from API", error)
 
+        # print(await self.mark_track_played(track_id=track_id))
+
         return result_json["data"][0]["media"][0], song_data["results"]
+
+    async def mark_track_played(self, track_id):
+        """Mark a track played on Deezer. (DOES NOT WORK YET)."""
+        await self._gw_api_call(
+            "log.listen",
+            args=dumps(
+                {
+                    "next_media": {"media": {"id": track_id, "type": "song"}},
+                },
+            ),
+        )
+        return await self._gw_api_call(
+            "log.listen",
+            args=dumps(
+                {
+                    "params": {
+                        "media": {
+                            "format": "FLAC",
+                            "type": "song",
+                            "id": track_id,
+                        },
+                        "type": 0,
+                        "stat": {
+                            "seek": 0,
+                            "pause": 0,
+                            "sync": 0,
+                        },
+                        "lt": 0,
+                        "payload": {},
+                        "dev": {},
+                        "ls": {},
+                        "repeat_type": "repeat_all",
+                        "is_shuffle": False,
+                    },
+                    "next_media": {"media": {"id": track_id, "type": "song"}},
+                },
+            ),
+        )
