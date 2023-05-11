@@ -537,7 +537,7 @@ class SpotifyProvider(MusicProvider):
         if (
             self._auth_token
             and os.path.isdir(self._cache_dir)
-            and (self._auth_token["expiresAt"] > int(time.time()) + 20)
+            and (self._auth_token["expiresAt"] > int(time.time()) + 600)
         ):
             return self._auth_token
         tokeninfo, userinfo = None, self._sp_user

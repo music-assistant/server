@@ -3,7 +3,7 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b29"
+__version__: Final[str] = "2.0.0b30"
 
 SCHEMA_VERSION: Final[int] = 22
 
@@ -35,8 +35,8 @@ CONF_PLAYERS: Final[str] = "players"
 CONF_PATH: Final[str] = "path"
 CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
-CONF_VOLUME_NORMALISATION: Final[str] = "volume_normalisation"
-CONF_VOLUME_NORMALISATION_TARGET: Final[str] = "volume_normalisation_target"
+CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
+CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
 CONF_MAX_SAMPLE_RATE: Final[str] = "max_sample_rate"
 CONF_EQ_BASS: Final[str] = "eq_bass"
 CONF_EQ_MID: Final[str] = "eq_mid"
@@ -51,8 +51,6 @@ CONF_GROUPED_POWER_ON: Final[str] = "grouped_power_on"
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
 DEFAULT_PORT: Final[int] = 8095
-DEFAULT_DB_LIBRARY: Final[str] = "sqlite:///[storage_path]/library.db"
-DEFAULT_DB_CACHE: Final[str] = "sqlite:///[storage_path]/cache.db"
 
 # common db tables
 DB_TABLE_TRACK_LOUDNESS: Final[str] = "track_loudness"

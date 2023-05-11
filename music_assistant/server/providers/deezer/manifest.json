@@ -1,0 +1,9 @@
+{
+  "type": "music",
+  "domain": "deezer",
+  "name": "Deezer",
+  "description": "Support for the Deezer streaming provider in Music Assistant.",
+  "codeowners": ["@Un10ck3d",  "@micha91"],
+  "requirements": ["deezer-python==5.10.0", "pycryptodome==3.17"],
+  "multi_instance": true
+}

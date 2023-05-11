@@ -5,16 +5,15 @@ import asyncio
 import functools
 import json
 import logging
+import os
 import time
 from collections import OrderedDict
 from collections.abc import Iterator, MutableMapping
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.constants import (
-    CONF_DB_CACHE,
     DB_TABLE_CACHE,
     DB_TABLE_SETTINGS,
-    DEFAULT_DB_CACHE,
     ROOT_LOGGER_NAME,
     SCHEMA_VERSION,
 )
@@ -43,6 +42,7 @@ class CacheController:
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        await self.database.close()
 
     async def get(self, cache_key: str, checksum: str | None = None, default=None):
         """Get object from cache and return the results.
@@ -120,9 +120,9 @@ class CacheController:
 
     async def _setup_database(self):
         """Initialize database."""
-        db_url: str = self.mass.config.get(CONF_DB_CACHE, DEFAULT_DB_CACHE)
-        db_url = db_url.replace("[storage_path]", self.mass.storage_path)
-        self.database = DatabaseConnection(db_url)
+        db_path = os.path.join(self.mass.storage_path, "cache.db")
+        self.database = DatabaseConnection(db_path)
+        await self.database.setup()
 
         # always create db tables if they don't exist to prevent errors trying to access them later
         await self.__create_database_tables()

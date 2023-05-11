@@ -216,7 +216,7 @@ def compare_album(
         return left_album.musicbrainz_id == right_album.musicbrainz_id
 
     # fallback to comparing
-    if not compare_strings(left_album.name, right_album.name, False):
+    if not compare_strings(left_album.name, right_album.name, True):
         return False
     if not compare_version(left_album.version, right_album.version):
         return False
@@ -261,7 +261,7 @@ def compare_track(left_track: Track, right_track: Track, strict: bool = True):
     # track artist(s) must match
     if not compare_artists(left_track.artists, right_track.artists):
         return False
-    # track if both tracks are (not) explicit
+    # check if both tracks are (not) explicit
     if strict and not compare_explicit(left_track.metadata, right_track.metadata):
         return False
     # exact albumtrack match = 100% match
@@ -273,15 +273,25 @@ def compare_track(left_track: Track, right_track: Track, strict: bool = True):
         and left_track.track_number == right_track.track_number
     ):
         return True
-    # exact album match = 100% match
-    if left_track.albums and right_track.albums:
+    # check album match
+    if (
+        not (album_match_found := compare_album(left_track.album, right_track.album))
+        and left_track.albums
+        and right_track.albums
+    ):
         for left_album in left_track.albums:
             for right_album in right_track.albums:
                 if compare_album(left_album, right_album):
-                    return True
+                    album_match_found = True
+                    if (
+                        (left_album.disc_number or 1) == (right_album.disc_number or 1)
+                        and left_album.track_number
+                        and right_album.track_number
+                        and left_album.track_number == right_album.track_number
+                    ):
+                        # exact albumtrack match = 100% match
+                        return True
     # fallback: exact album match and (near-exact) track duration match
-    if abs(left_track.duration - right_track.duration) <= 3 and compare_album(
-        left_track.album, right_track.album
-    ):
+    if album_match_found and abs(left_track.duration - right_track.duration) <= 3:
         return True
     return False

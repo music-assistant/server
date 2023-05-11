@@ -14,6 +14,7 @@ from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Quality as TidalQuality
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
+from tidalapi.media import Lyrics as TidalLyrics
 
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name
@@ -273,36 +274,26 @@ class TidalProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        result = []
-        tracks = await get_album_tracks(tidal_session, prov_album_id)
-        for index, track_obj in enumerate(tracks, 1):
-            if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
-                track.position = index
-                result.append(track)
-        return result
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_album_tracks(tidal_session, prov_album_id)
+        ]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         tidal_session = await self._get_tidal_session()
-        result = []
-        albums = await get_artist_albums(tidal_session, prov_artist_id)
-        for album_obj in albums:
-            album = await self._parse_album(album_obj=album_obj)
-            result.append(album)
-        return result
+        return [
+            await self._parse_album(album_obj=album)
+            for album in await get_artist_albums(tidal_session, prov_artist_id)
+        ]
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        result = []
-        tracks = await get_artist_toptracks(tidal_session, prov_artist_id)
-        for index, track_obj in enumerate(tracks, 1):
-            if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
-                track.position = index
-                result.append(track)
-        return result
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_artist_toptracks(tidal_session, prov_artist_id)
+        ]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
@@ -320,13 +311,10 @@ class TidalProvider(MusicProvider):
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
-        similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
-        tracks = []
-        for track_obj in similar_tracks_obj:
-            if track_obj.available:
-                track = await self._parse_track(track_obj=track_obj)
-                tracks.append(track)
-        return tracks
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
+        ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType):
         """Add item to library."""
@@ -370,8 +358,7 @@ class TidalProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         tidal_session = await self._get_tidal_session()
         playlist_obj = await create_playlist(tidal_session, self._tidal_user_id, name)
-        playlist = await self._parse_playlist(playlist_obj=playlist_obj)
-        return playlist
+        return await self._parse_playlist(playlist_obj=playlist_obj)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -506,19 +493,18 @@ class TidalProvider(MusicProvider):
             )
         )
         # metadata
-        if full_details:
-            image_url = None
-            if artist_obj.name != "Various Artists":
-                try:
-                    image_url = await asyncio.to_thread(artist_obj.image(750))
-                except Exception:
-                    self.logger.info(f"Artist {artist_obj.id} has no available picture")
-            artist.metadata.images = [
-                MediaItemImage(
-                    ImageType.THUMB,
-                    image_url,
-                )
-            ]
+        if full_details and artist_obj.name != "Various Artists":
+            try:
+                image_url = await self._get_image_url(artist_obj, 750)
+                artist.metadata.images = [
+                    MediaItemImage(
+                        ImageType.THUMB,
+                        image_url,
+                    )
+                ]
+            except Exception:
+                self.logger.info(f"Artist {artist_obj.id} has no available picture")
+
         return artist
 
     async def _parse_album(self, album_obj: TidalAlbum, full_details: bool = False) -> Album:
@@ -554,17 +540,17 @@ class TidalProvider(MusicProvider):
         album.metadata.explicit = album_obj.explicit
         album.metadata.popularity = album_obj.popularity
         if full_details:
-            image_url = None
             try:
-                image_url = await asyncio.to_thread(album_obj.image(1280))
+                image_url = await self._get_image_url(album_obj, 1280)
+                album.metadata.images = [
+                    MediaItemImage(
+                        ImageType.THUMB,
+                        image_url,
+                    )
+                ]
             except Exception:
                 self.logger.info(f"Album {album_obj.id} has no available picture")
-            album.metadata.images = [
-                MediaItemImage(
-                    ImageType.THUMB,
-                    image_url,
-                )
-            ]
+
         return album
 
     async def _parse_track(self, track_obj: TidalTrack, full_details: bool = False) -> Track:
@@ -609,7 +595,7 @@ class TidalProvider(MusicProvider):
         track.metadata.copyright = track_obj.copyright
         if full_details:
             try:
-                if lyrics_obj := await asyncio.to_thread(track_obj.lyrics):
+                if lyrics_obj := await self._get_lyrics(track_obj):
                     track.metadata.lyrics = lyrics_obj.text
             except Exception:
                 self.logger.info(f"Track {track_obj.id} has no available lyrics")
@@ -642,16 +628,27 @@ class TidalProvider(MusicProvider):
         playlist.metadata.checksum = str(playlist_obj.last_updated)
         playlist.metadata.popularity = playlist_obj.popularity
         if full_details:
-            image_url = None
             try:
-                image_url = await asyncio.to_thread(playlist_obj.image(1080))
+                image_url = await self._get_image_url(playlist_obj, 1080)
+                playlist.metadata.images = [
+                    MediaItemImage(
+                        ImageType.THUMB,
+                        image_url,
+                    )
+                ]
             except Exception:
                 self.logger.info(f"Playlist {playlist_obj.id} has no available picture")
-            playlist.metadata.images = [
-                MediaItemImage(
-                    ImageType.THUMB,
-                    image_url,
-                )
-            ]
 
         return playlist
+
+    async def _get_image_url(self, item, size: int):
+        def inner() -> str:
+            return item.image(size)
+
+        return await asyncio.to_thread(inner)
+
+    async def _get_lyrics(self, item):
+        def inner() -> TidalLyrics:
+            return item.lyrics
+
+        return await asyncio.to_thread(inner)

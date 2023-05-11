@@ -18,8 +18,8 @@ from music_assistant.common.helpers.util import create_tempfile
 from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
 from music_assistant.constants import (
-    CONF_VOLUME_NORMALISATION,
-    CONF_VOLUME_NORMALISATION_TARGET,
+    CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.process import AsyncProcess, check_output
@@ -295,11 +295,11 @@ async def get_gain_correct(
 ) -> tuple[float | None, float | None]:
     """Get gain correction for given queue / track combination."""
     player_settings = mass.config.get_player_config(streamdetails.queue_id)
-    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALISATION):
+    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         return (None, None)
     if streamdetails.gain_correct is not None:
         return (streamdetails.loudness, streamdetails.gain_correct)
-    target_gain = player_settings.get_value(CONF_VOLUME_NORMALISATION_TARGET)
+    target_gain = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
     track_loudness = await mass.music.get_track_loudness(
         streamdetails.item_id, streamdetails.provider
     )
@@ -746,7 +746,7 @@ async def _get_ffmpeg_args(
             "Please install ffmpeg on your OS to enable playback.",
         )
 
-    major_version = int(version.split(".")[0])
+    major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
 
     # generic args
     generic_args = [
@@ -755,6 +755,8 @@ async def _get_ffmpeg_args(
         "-loglevel",
         "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,crypto,pipe",  # support nested protocols (e.g. within playlist)
     ]
     # collect input args
     input_args = []
