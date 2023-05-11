@@ -20,8 +20,8 @@ from music_assistant.constants import (
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
-    CONF_VOLUME_NORMALISATION,
-    CONF_VOLUME_NORMALISATION_TARGET,
+    CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_TARGET,
     SECURE_STRING_SUBSTITUTE,
 )
 
@@ -116,12 +116,14 @@ class ConfigEntry(DataClassDictMixin):
             if expected_type == int and isinstance(value, float):
                 self.value = int(value)
                 return self.value
-            if expected_type == int and isinstance(value, str) and value.isnumeric():
-                self.value = int(value)
-                return self.value
-            if expected_type == float and isinstance(value, str) and value.isnumeric():
-                self.value = float(value)
-                return self.value
+            for val_type in (int, float):
+                # convert int/float from string
+                if expected_type == val_type and isinstance(value, str):
+                    try:
+                        self.value = val_type(value)
+                        return self.value
+                    except ValueError:
+                        pass
             if self.type in UI_ONLY:
                 self.value = self.default_value
                 return self.value
@@ -327,8 +329,8 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     advanced=True,
 )
 
-CONF_ENTRY_VOLUME_NORMALISATION = ConfigEntry(
-    key=CONF_VOLUME_NORMALISATION,
+CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
+    key=CONF_VOLUME_NORMALIZATION,
     type=ConfigEntryType.BOOLEAN,
     label="Enable volume normalization (EBU-R128 based)",
     default_value=True,
@@ -336,14 +338,14 @@ CONF_ENTRY_VOLUME_NORMALISATION = ConfigEntry(
     "standard without affecting dynamic range",
 )
 
-CONF_ENTRY_VOLUME_NORMALISATION_TARGET = ConfigEntry(
-    key=CONF_VOLUME_NORMALISATION_TARGET,
+CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
+    key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
     range=(-30, 0),
     default_value=-14,
-    label="Target level for volume normalisation",
+    label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level, " "default is -14 LUFS",
-    depends_on=CONF_VOLUME_NORMALISATION,
+    depends_on=CONF_VOLUME_NORMALIZATION,
     advanced=True,
 )
 
@@ -407,9 +409,9 @@ CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
 )
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_VOLUME_NORMALISATION,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_VOLUME_NORMALISATION_TARGET,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,

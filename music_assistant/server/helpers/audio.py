@@ -18,8 +18,8 @@ from music_assistant.common.helpers.util import create_tempfile
 from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
 from music_assistant.constants import (
-    CONF_VOLUME_NORMALISATION,
-    CONF_VOLUME_NORMALISATION_TARGET,
+    CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.process import AsyncProcess, check_output
@@ -295,11 +295,11 @@ async def get_gain_correct(
 ) -> tuple[float | None, float | None]:
     """Get gain correction for given queue / track combination."""
     player_settings = mass.config.get_player_config(streamdetails.queue_id)
-    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALISATION):
+    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         return (None, None)
     if streamdetails.gain_correct is not None:
         return (streamdetails.loudness, streamdetails.gain_correct)
-    target_gain = player_settings.get_value(CONF_VOLUME_NORMALISATION_TARGET)
+    target_gain = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
     track_loudness = await mass.music.get_track_loudness(
         streamdetails.item_id, streamdetails.provider
     )
