@@ -143,6 +143,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
         self.gw_client = GWClient(self.mass.http_session, self.config.get_value(CONF_ACCESS_TOKEN))
         await self.gw_client.setup()
+        self.config.name = f"Deezer - {self.client.user.name}"
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
