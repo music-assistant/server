@@ -119,7 +119,7 @@ async def get_config_entries(
     )
 
 
-class DeezerProvider(MusicProvider):
+class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     """Deezer provider support."""
 
     client: DeezerClient
