@@ -342,7 +342,7 @@ class DeezerProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add tra ck(s) to playlist."""
         await self.client.add_playlist_tracks(
-            playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
+            playlist_id=prov_playlist_id, tracks=[int(i) for i in prov_track_ids]
         )
 
     async def remove_playlist_tracks(
