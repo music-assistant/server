@@ -443,10 +443,10 @@ class PlayerQueuesController:
             # track is already played for > 90% - skip to next
             resume_item = next_item
             resume_pos = 0
-        elif queue.current_index is not None and len(queue_items) > 0:
+        elif not resume_item and queue.current_index is not None and len(queue_items) > 0:
             resume_item = self.get_item(queue_id, queue.current_index)
             resume_pos = 0
-        elif queue.current_index is None and len(queue_items) > 0:
+        elif not resume_item and queue.current_index is None and len(queue_items) > 0:
             # items available in queue but no previous track, start at 0
             resume_item = self.get_item(queue_id, 0)
             resume_pos = 0
