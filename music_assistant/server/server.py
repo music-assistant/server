@@ -81,7 +81,7 @@ class MusicAssistant:
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
-            connector=TCPConnector(ssl=False),
+            connector=TCPConnector(ssl=False, enable_cleanup_closed=True),
         )
         # setup config controller first and fetch important config values
         await self.config.setup()
