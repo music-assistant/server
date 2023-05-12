@@ -84,12 +84,14 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
     """Async wrapper around 3 tidalapi album functions."""
 
     def inner() -> list[TidalAlbum]:
+        try:
+            artist_obj = TidalArtist(session, prov_artist_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
         all_albums = []
-        albums = TidalArtist(session, prov_artist_id).get_albums(limit=DEFAULT_LIMIT)
-        eps_singles = TidalArtist(session, prov_artist_id).get_albums_ep_singles(
-            limit=DEFAULT_LIMIT
-        )
-        compilations = TidalArtist(session, prov_artist_id).get_albums_other(limit=DEFAULT_LIMIT)
+        albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
+        eps_singles = artist_obj.get_albums_ep_singles(limit=DEFAULT_LIMIT)
+        compilations = artist_obj.get_albums_other(limit=DEFAULT_LIMIT)
         all_albums.extend(albums)
         all_albums.extend(eps_singles)
         all_albums.extend(compilations)
@@ -150,7 +152,11 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
     """Async wrapper around the tidalapi Track.get_url function."""
 
     def inner() -> dict[str, str]:
-        return TidalTrack(session, prov_track_id).get_url()
+        try:
+            track_obj = TidalTrack(session, prov_track_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+        return track_obj.get_url()
 
     return await asyncio.to_thread(inner)
 
@@ -159,7 +165,11 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
     """Async wrapper around the tidalapi Album.tracks function."""
 
     def inner() -> list[TidalTrack]:
-        return TidalAlbum(session, prov_album_id).tracks(limit=DEFAULT_LIMIT)
+        try:
+            album_obj = TidalAlbum(session, prov_album_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
+        return album_obj.tracks(limit=DEFAULT_LIMIT)
 
     return await asyncio.to_thread(inner)
 
@@ -205,7 +215,11 @@ async def get_playlist_tracks(
     """Async wrapper around the tidal Playlist.tracks function."""
 
     def inner() -> list[TidalTrack]:
-        return TidalPlaylist(session, prov_playlist_id).tracks(limit=limit, offset=offset)
+        try:
+            playlist_obj = TidalPlaylist(session, prov_playlist_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
+        return playlist_obj.tracks(limit=limit, offset=offset)
 
     return await asyncio.to_thread(inner)
 
@@ -239,7 +253,11 @@ async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -
     """Async wrapper around the tidal Track.get_similar_tracks function."""
 
     def inner() -> list[TidalTrack]:
-        return TidalTrack(session, media_id=prov_track_id).get_track_radio(limit)
+        try:
+            track_obj = TidalTrack(session, prov_track_id)
+        except HTTPError as err:
+            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+        return track_obj.get_track_radio(limit)
 
     return await asyncio.to_thread(inner)
 

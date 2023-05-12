@@ -274,26 +274,29 @@ class TidalProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        return [
-            await self._parse_track(track_obj=track)
-            for track in await get_album_tracks(tidal_session, prov_album_id)
-        ]
+        try:
+            album_tracks_obj = await get_album_tracks(tidal_session, prov_album_id)
+        except MediaNotFoundError as err:
+            raise err
+        return [await self._parse_track(track_obj=track) for track in album_tracks_obj]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         tidal_session = await self._get_tidal_session()
-        return [
-            await self._parse_album(album_obj=album)
-            for album in await get_artist_albums(tidal_session, prov_artist_id)
-        ]
+        try:
+            artist_albums_obj = await get_artist_albums(tidal_session, prov_artist_id)
+        except MediaNotFoundError as err:
+            raise err
+        return [await self._parse_album(album_obj=album) for album in artist_albums_obj]
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        return [
-            await self._parse_track(track_obj=track)
-            for track in await get_artist_toptracks(tidal_session, prov_artist_id)
-        ]
+        try:
+            artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
+        except MediaNotFoundError as err:
+            raise err
+        return [await self._parse_track(track_obj=track) for track in artist_toptracks_obj]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
@@ -311,10 +314,11 @@ class TidalProvider(MusicProvider):
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
-        return [
-            await self._parse_track(track_obj=track)
-            for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
-        ]
+        try:
+            similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
+        except MediaNotFoundError as err:
+            raise err
+        return [await self._parse_track(track_obj=track) for track in similar_tracks_obj]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType):
         """Add item to library."""
@@ -386,7 +390,7 @@ class TidalProvider(MusicProvider):
                 artist_obj=await get_artist(tidal_session, prov_artist_id), full_details=True
             )
         except MediaNotFoundError as err:
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+            raise err
         return artist
 
     async def get_album(self, prov_album_id: str) -> Album:
@@ -397,7 +401,7 @@ class TidalProvider(MusicProvider):
                 album_obj=await get_album(tidal_session, prov_album_id), full_details=True
             )
         except MediaNotFoundError as err:
-            raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
+            raise err
         return album
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -408,7 +412,7 @@ class TidalProvider(MusicProvider):
                 track_obj=await get_track(tidal_session, prov_track_id), full_details=True
             )
         except MediaNotFoundError as err:
-            raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+            raise err
         return track
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -419,7 +423,7 @@ class TidalProvider(MusicProvider):
                 playlist_obj=await get_playlist(tidal_session, prov_playlist_id), full_details=True
             )
         except MediaNotFoundError as err:
-            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
+            raise err
         return playlist
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
@@ -526,6 +530,7 @@ class TidalProvider(MusicProvider):
 
         album.upc = album_obj.universal_product_number
         album.year = int(album_obj.year)
+        available = album_obj.available
         album.add_provider_mapping(
             ProviderMapping(
                 item_id=album_id,
@@ -533,6 +538,7 @@ class TidalProvider(MusicProvider):
                 provider_instance=self.instance_id,
                 content_type=ContentType.FLAC,
                 url=f"http://www.tidal.com/album/{album_id}",
+                available=available,
             )
         )
         # metadata
