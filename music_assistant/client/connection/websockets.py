@@ -17,10 +17,12 @@ from music_assistant.client.exceptions import (
 )
 from music_assistant.common.helpers.json import json_dumps, json_loads
 
+from .base import Connection
+
 LOGGER = logging.getLogger(f"{__package__}.connection")
 
 
-class WebsocketsConnection:
+class WebsocketsConnection(Connection):
     """Websockets connection to a Music Assistant Server."""
 
     def __init__(self, ws_server_url: str, aiohttp_session: ClientSession) -> None:

@@ -6,7 +6,7 @@ import logging
 import uuid
 from collections.abc import Callable
 from types import TracebackType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.client.exceptions import ConnectionClosed, InvalidServerVersion, InvalidState
 from music_assistant.common.models.api import (
@@ -24,9 +24,11 @@ from music_assistant.common.models.errors import ERROR_MAP
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import SCHEMA_VERSION
 
-from .connection import Connection
 from .music import Music
 from .players import Players
+
+if TYPE_CHECKING:
+    from .connection.base import Connection
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = tuple[

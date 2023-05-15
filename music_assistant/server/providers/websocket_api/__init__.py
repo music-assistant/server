@@ -142,7 +142,14 @@ class WebsocketClientHandler:
 
         # send server(version) info when client connects
         self._send_message(
-            ServerInfoMessage(server_version=__version__, schema_version=API_SCHEMA_VERSION)
+            ServerInfoMessage(
+                server_id=self.mass.server_id,
+                server_version=__version__,
+                schema_version=API_SCHEMA_VERSION,
+                min_supported_schema_version=0,
+                websockets_api=True,
+                hass_api=False,
+            )
         )
 
         # forward all events to clients
