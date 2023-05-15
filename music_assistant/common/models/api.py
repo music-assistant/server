@@ -58,10 +58,29 @@ EventMessage = MassEvent
 class ServerInfoMessage(DataClassORJSONMixin):
     """Message sent by the server with it's info when a client connects."""
 
+    server_id: str
     server_version: str
     schema_version: int
+    min_supported_schema_version: int
+    websockets_api: bool
+    hass_api: bool
 
 
 MessageType = (
     CommandMessage | EventMessage | SuccessResultMessage | ErrorResultMessage | ServerInfoMessage
 )
+
+
+def parse_message(raw: dict) -> MessageType:
+    """Parse Message from raw dict object."""
+    if "event" in raw:
+        return EventMessage.from_dict(raw)
+    if "error_code" in raw:
+        return ErrorResultMessage.from_dict(raw)
+    if "result" in raw and "is_last_chunk" in raw:
+        return ChunkedResultMessage.from_dict(raw)
+    if "result" in raw:
+        return SuccessResultMessage.from_dict(raw)
+    if "sdk_version" in raw:
+        return ServerInfoMessage.from_dict(raw)
+    return CommandMessage.from_dict(raw)
