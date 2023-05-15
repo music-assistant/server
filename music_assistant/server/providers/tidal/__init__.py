@@ -274,29 +274,26 @@ class TidalProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        try:
-            album_tracks_obj = await get_album_tracks(tidal_session, prov_album_id)
-        except MediaNotFoundError as err:
-            raise err
-        return [await self._parse_track(track_obj=track) for track in album_tracks_obj]
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_album_tracks(tidal_session, prov_album_id)
+        ]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         tidal_session = await self._get_tidal_session()
-        try:
-            artist_albums_obj = await get_artist_albums(tidal_session, prov_artist_id)
-        except MediaNotFoundError as err:
-            raise err
-        return [await self._parse_album(album_obj=album) for album in artist_albums_obj]
+        return [
+            await self._parse_album(album_obj=album)
+            for album in await get_artist_albums(tidal_session, prov_artist_id)
+        ]
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        try:
-            artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
-        except MediaNotFoundError as err:
-            raise err
-        return [await self._parse_track(track_obj=track) for track in artist_toptracks_obj]
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_artist_toptracks(tidal_session, prov_artist_id)
+        ]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
@@ -314,11 +311,10 @@ class TidalProvider(MusicProvider):
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
-        try:
-            similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
-        except MediaNotFoundError as err:
-            raise err
-        return [await self._parse_track(track_obj=track) for track in similar_tracks_obj]
+        return [
+            await self._parse_track(track_obj=track)
+            for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
+        ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType):
         """Add item to library."""
@@ -385,46 +381,31 @@ class TidalProvider(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""
         tidal_session = await self._get_tidal_session()
-        try:
-            artist = await self._parse_artist(
-                artist_obj=await get_artist(tidal_session, prov_artist_id), full_details=True
-            )
-        except MediaNotFoundError as err:
-            raise err
-        return artist
+        return await self._parse_artist(
+            artist_obj=await get_artist(tidal_session, prov_artist_id),
+            full_details=True,
+        )
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details for given album id."""
         tidal_session = await self._get_tidal_session()
-        try:
-            album = await self._parse_album(
-                album_obj=await get_album(tidal_session, prov_album_id), full_details=True
-            )
-        except MediaNotFoundError as err:
-            raise err
-        return album
+        return await self._parse_album(
+            album_obj=await get_album(tidal_session, prov_album_id), full_details=True
+        )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
         tidal_session = await self._get_tidal_session()
-        try:
-            track = await self._parse_track(
-                track_obj=await get_track(tidal_session, prov_track_id), full_details=True
-            )
-        except MediaNotFoundError as err:
-            raise err
-        return track
+        return await self._parse_track(
+            track_obj=await get_track(tidal_session, prov_track_id), full_details=True
+        )
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details for given playlist id."""
         tidal_session = await self._get_tidal_session()
-        try:
-            playlist = await self._parse_playlist(
-                playlist_obj=await get_playlist(tidal_session, prov_playlist_id), full_details=True
-            )
-        except MediaNotFoundError as err:
-            raise err
-        return playlist
+        return await self._parse_playlist(
+            playlist_obj=await get_playlist(tidal_session, prov_playlist_id), full_details=True
+        )
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
