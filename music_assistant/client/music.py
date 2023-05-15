@@ -519,7 +519,7 @@ class Music:
         )
 
     async def get_sync_tasks(self) -> list[SyncTask]:
-        """Return any/all sync tasks that are in progres son the server."""
+        """Return any/all sync tasks that are in progress on the server."""
         return [
             SyncTask.from_dict(item) for item in await self.client.send_command("music/synctasks")
         ]

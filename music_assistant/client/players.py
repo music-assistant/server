@@ -119,7 +119,7 @@ class Players:
         """
         Send VOLUME_SET command to given playergroup.
 
-        Will send the new (average) volume level to group childs.
+        Will send the new (average) volume level to group child's.
         - player_id: player_id of the playergroup to handle the command.
         - volume_level: volume level (0..100) to set on the player.
         """
