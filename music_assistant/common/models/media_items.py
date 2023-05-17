@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from time import time
-from typing import Any
+from typing import Any, Self
 
 from mashumaro import DataClassDictMixin
 
@@ -472,6 +472,17 @@ class PagedItems(DataClassDictMixin):
     limit: int
     offset: int
     total: int | None = None
+
+    @classmethod
+    def parse(cls: Self, raw: dict[str, Any], item_type: type) -> PagedItems:
+        """Parse PagedItems object including correct item type."""
+        return PagedItems(
+            items=[item_type.from_dict(x) for x in raw["items"]],
+            count=raw["count"],
+            limit=raw["limit"],
+            offset=raw["offset"],
+            total=raw["total"],
+        )
 
 
 @dataclass

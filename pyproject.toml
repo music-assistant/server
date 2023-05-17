@@ -8,7 +8,7 @@ dynamic = ["version"]
 license     = {text = "Apache-2.0"}
 description = "Music Assistant"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.10"
 authors     = [
     {name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
 ]
