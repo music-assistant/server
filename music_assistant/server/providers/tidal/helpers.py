@@ -10,6 +10,7 @@ tidalapi: https://github.com/tamland/python-tidal
 """
 
 import asyncio
+import logging
 
 from requests import HTTPError
 from tidalapi import Album as TidalAlbum
@@ -23,8 +24,10 @@ from tidalapi import UserPlaylist as TidalUserPlaylist
 
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.constants import ROOT_LOGGER_NAME
 
 DEFAULT_LIMIT = 50
+LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.tidal.helpers")
 
 
 async def get_library_artists(
@@ -76,6 +79,8 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+            else:
+                LOGGER.error(f"HTTPError {err.response.status_code} for {prov_artist_id}")
         return artist_obj
 
     return await asyncio.to_thread(inner)
@@ -90,6 +95,8 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
+            else:
+                LOGGER.error(f"HTTPError {err.response.status_code} for {prov_artist_id}")
         all_albums = []
         albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
         eps_singles = artist_obj.get_albums_ep_singles(limit=DEFAULT_LIMIT)
@@ -133,6 +140,10 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
+            else:
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} when attempting to lookup Album with id: {prov_album_id}"
+                )
         return album_obj
 
     return await asyncio.to_thread(inner)
@@ -147,6 +158,10 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+            else:
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} when attempting to lookup Track with id: {prov_track_id}"
+                )
         return track_obj
 
     return await asyncio.to_thread(inner)
@@ -161,6 +176,10 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+            else:
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} when attempting to lookup Track with id: {prov_track_id}"
+                )
         return track_obj.get_url()
 
     return await asyncio.to_thread(inner)
@@ -175,6 +194,10 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
+            else:
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} when attempting to lookup Album with id: {prov_album_id}"
+                )
         return album_obj.tracks(limit=DEFAULT_LIMIT)
 
     return await asyncio.to_thread(inner)
@@ -211,6 +234,10 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
+            else:
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} when attempting to lookup Playlist with id: {prov_playlist_id}"
+                )
         return playlist_obj
 
     return await asyncio.to_thread(inner)
@@ -227,6 +254,10 @@ async def get_playlist_tracks(
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
+            else:
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} when attempting to lookup Playlist with id: {prov_playlist_id}"
+                )
         return playlist_obj.tracks(limit=limit, offset=offset)
 
     return await asyncio.to_thread(inner)
@@ -266,6 +297,10 @@ async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
+            else:
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} when attempting to lookup Track with id: {prov_track_id}"
+                )
         return track_obj.get_track_radio(limit)
 
     return await asyncio.to_thread(inner)
