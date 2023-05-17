@@ -4,8 +4,12 @@ from __future__ import annotations
 import asyncio
 import importlib
 import logging
+import platform
+import tempfile
 from functools import lru_cache
 from typing import TYPE_CHECKING
+
+import memory_tempfile
 
 if TYPE_CHECKING:
     from music_assistant.server.models import ProviderModuleType
@@ -37,3 +41,10 @@ async def get_provider_module(domain: str) -> ProviderModuleType:
         return importlib.import_module(f".{domain}", "music_assistant.server.providers")
 
     return await asyncio.to_thread(_get_provider_module, domain)
+
+
+def create_tempfile():
+    """Return a (named) temporary file."""
+    if platform.system() == "Linux":
+        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
+    return tempfile.NamedTemporaryFile(buffering=0)

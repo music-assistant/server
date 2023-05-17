@@ -62,8 +62,7 @@ class ServerInfoMessage(DataClassORJSONMixin):
     server_version: str
     schema_version: int
     min_supported_schema_version: int
-    websockets_api: bool
-    hass_api: bool
+    base_url: str
 
 
 MessageType = (

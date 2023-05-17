@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import urllib.parse
 import uuid
 from collections.abc import Callable
 from types import TracebackType
@@ -22,13 +23,15 @@ from music_assistant.common.models.api import (
 from music_assistant.common.models.enums import EventType
 from music_assistant.common.models.errors import ERROR_MAP
 from music_assistant.common.models.event import MassEvent
+from music_assistant.common.models.media_items import MediaItemImage
 from music_assistant.constants import SCHEMA_VERSION
 
+from .connection import WebsocketsConnection
 from .music import Music
 from .players import Players
 
 if TYPE_CHECKING:
-    from .connection.base import Connection
+    from aiohttp import ClientSession
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = tuple[
@@ -39,9 +42,10 @@ EventSubscriptionType = tuple[
 class MusicAssistantClient:
     """Manage a Music Assistant server remotely."""
 
-    def __init__(self, connection: Connection) -> None:
+    def __init__(self, server_url: str, aiohttp_session: ClientSession | None) -> None:
         """Initialize the Music Assistant client."""
-        self.connection = connection
+        self.server_url = server_url
+        self.connection = WebsocketsConnection(server_url, aiohttp_session)
         self.logger = logging.getLogger(__package__)
         self._result_futures: dict[str, asyncio.Future] = {}
         self._subscribers: list[EventSubscriptionType] = list()
@@ -66,6 +70,15 @@ class MusicAssistantClient:
     def music(self) -> Music:
         """Return Music handler."""
         return self._music
+
+    def get_image_url(self, image: MediaItemImage) -> str:
+        """Get (proxied) URL for MediaItemImage."""
+        if image.provider != "url":
+            # return imageproxy url for images that need to be resolved
+            # the original path is double encoded
+            encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
+            return f"{self.server_info.base_url}/imageproxy?path={encoded_url}&provider={image.provider}"  # noqa: E501
+        return image.path
 
     def subscribe(
         self,
@@ -183,10 +196,14 @@ class MusicAssistantClient:
         await self.connect()
 
         # fetch initial state
-        await self._players.fetch_state()
+        # we do this in a separate task to not block reading messages
+        async def fetch_initial_state():
+            await self._players.fetch_state()
 
-        if init_ready is not None:
-            init_ready.set()
+            if init_ready is not None:
+                init_ready.set()
+
+        asyncio.create_task(fetch_initial_state())
 
         try:
             # keep reading incoming messages
@@ -239,7 +256,7 @@ class MusicAssistantClient:
         # handle EventMessage
         if isinstance(msg, EventMessage):
             self.logger.debug("Received event: %s", msg)
-            self._handle_event(EventMessage)
+            self._handle_event(msg)
             return
 
         # Log anything we can't handle here
@@ -260,9 +277,9 @@ class MusicAssistantClient:
             if not (id_filter is None or event.object_id in id_filter):
                 continue
             if asyncio.iscoroutinefunction(cb_func):
-                asyncio.run_coroutine_threadsafe(cb_func(event), self.loop)
+                asyncio.run_coroutine_threadsafe(cb_func(event), self._loop)
             else:
-                self.loop.call_soon_threadsafe(cb_func, event)
+                self._loop.call_soon_threadsafe(cb_func, event)
 
     async def __aenter__(self) -> MusicAssistantClient:
         """Initialize and connect the connection to the Music Assistant Server."""

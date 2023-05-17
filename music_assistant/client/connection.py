@@ -17,18 +17,27 @@ from music_assistant.client.exceptions import (
 )
 from music_assistant.common.helpers.json import json_dumps, json_loads
 
-from .base import Connection
-
 LOGGER = logging.getLogger(f"{__package__}.connection")
 
 
-class WebsocketsConnection(Connection):
+def get_websocket_url(url: str) -> str:
+    """Extract Websocket URL from (base) Music Assistant URL."""
+    if not url or "://" not in url:
+        raise RuntimeError(f"{url} is not a valid url")
+    ws_url = url.replace("http", "ws")
+    if not ws_url.endswith("/ws"):
+        ws_url += "/ws"
+    return ws_url.replace("//ws", "/ws")
+
+
+class WebsocketsConnection:
     """Websockets connection to a Music Assistant Server."""
 
-    def __init__(self, ws_server_url: str, aiohttp_session: ClientSession) -> None:
+    def __init__(self, server_url: str, aiohttp_session: ClientSession | None) -> None:
         """Initialize."""
-        self.ws_server_url = ws_server_url
-        self._aiohttp_session = aiohttp_session
+        self.ws_server_url = get_websocket_url(server_url)
+        self._aiohttp_session_provided = aiohttp_session is not None
+        self._aiohttp_session = aiohttp_session or ClientSession()
         self._ws_client: ClientWebSocketResponse | None = None
 
     @property
@@ -38,6 +47,8 @@ class WebsocketsConnection(Connection):
 
     async def connect(self) -> dict[str, Any]:
         """Connect to the websocket server and return the first message (server info)."""
+        if self._aiohttp_session is None:
+            self._aiohttp_session = ClientSession()
         if self._ws_client is not None:
             raise InvalidState("Already connected")
 
@@ -63,6 +74,9 @@ class WebsocketsConnection(Connection):
         if self._ws_client is not None and not self._ws_client.closed:
             await self._ws_client.close()
         self._ws_client = None
+        if self._aiohttp_session and not self._aiohttp_session_provided:
+            await self._aiohttp_session.close()
+            self._aiohttp_session = None
 
     async def receive_message(self) -> dict[str, Any]:
         """Receive the next message from the server (or raise on error)."""

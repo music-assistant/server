@@ -1,6 +1,7 @@
 """Handle player related endpoints for Music Assistant."""
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import EventType, QueueOption, RepeatMode
@@ -44,6 +45,10 @@ class Players:
     def player_queues(self) -> list[PlayerQueue]:
         """Return all player queues."""
         return list(self._queues.values())
+
+    def __iter__(self) -> Iterator[Player]:
+        """Iterate over (available) players."""
+        return iter(self._players.values())
 
     def get_player(self, player_id: str) -> Player | None:
         """Return Player by ID (or None if not found)."""
@@ -294,9 +299,9 @@ class Players:
     def _handle_event(self, event: MassEvent) -> None:
         """Handle incoming player(queue) event."""
         if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_UPDATED):
-            self._players[event.object_id] = event.data
+            self._players[event.object_id] = Player.from_dict(event.data)
             return
         if event.event == EventType.PLAYER_REMOVED:
             self._players.pop(event.object_id, None)
         if event.event in (EventType.QUEUE_ADDED, EventType.QUEUE_UPDATED):
-            self._queues[event.object_id] = event.data
+            self._queues[event.object_id] = PlayerQueue.from_dict(event.data)

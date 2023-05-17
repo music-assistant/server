@@ -8,20 +8,18 @@ from os.path import abspath, dirname
 from pathlib import Path
 from sys import path
 
-import aiohttp
 import coloredlogs
 from aiorun import run
 
 path.insert(1, dirname(dirname(abspath(__file__))))
 
 from music_assistant.client.client import MusicAssistantClient  # noqa: E402
-from music_assistant.client.connection import WebsocketsConnection  # noqa: E402
 from music_assistant.server.server import MusicAssistant  # noqa: E402
 
 logging.basicConfig(level=logging.DEBUG)
 
 DEFAULT_PORT = 8095
-DEFAULT_URL = f"http://127.0.0.1:{DEFAULT_PORT}/ws"
+DEFAULT_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 DEFAULT_STORAGE_PATH = os.path.join(Path.home(), ".musicassistant")
 
 
@@ -63,11 +61,9 @@ if __name__ == "__main__":
         await server.start()
 
         # run the client
-        async with aiohttp.ClientSession() as session:
-            conn = WebsocketsConnection(DEFAULT_URL, session)
-            async with MusicAssistantClient(conn) as client:
-                # start listening
-                await client.start_listening()
+        async with MusicAssistantClient(DEFAULT_URL) as client:
+            # start listening
+            await client.start_listening()
 
     async def handle_stop(loop: asyncio.AbstractEventLoop):  # noqa: ARG001
         """Handle server stop."""

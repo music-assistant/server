@@ -12,12 +12,21 @@ from aiohttp import ClientSession, TCPConnector
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
 from music_assistant.common.helpers.util import get_ip, get_ip_pton
+from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
-from music_assistant.constants import CONF_PROVIDERS, CONF_SERVER_ID, CONF_WEB_IP, ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_PROVIDERS,
+    CONF_SERVER_ID,
+    CONF_WEB_IP,
+    MIN_SCHEMA_VERSION,
+    ROOT_LOGGER_NAME,
+    SCHEMA_VERSION,
+    VERSION,
+)
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata import MetaDataController
@@ -132,6 +141,17 @@ class MusicAssistant:
         if not self.config.initialized:
             return ""
         return self.config.get(CONF_SERVER_ID)  # type: ignore[no-any-return]
+
+    @api_command("info")
+    def get_server_info(self) -> ServerInfoMessage:
+        """Return Info of this server."""
+        return ServerInfoMessage(
+            server_id=self.server_id,
+            server_version=VERSION,
+            schema_version=SCHEMA_VERSION,
+            min_supported_schema_version=MIN_SCHEMA_VERSION,
+            base_url=self.webserver.base_url,
+        )
 
     @api_command("providers/available")
     def get_available_providers(self) -> list[ProviderManifest]:
@@ -465,7 +485,7 @@ class MusicAssistant:
             name=f"{server_id}.{zeroconf_type}",
             addresses=[get_ip_pton()],
             port=self.webserver.port,
-            properties={},
+            properties=self.get_server_info().to_dict(),
             server=f"mass_{server_id}.local.",
         )
         LOGGER.debug("Starting Zeroconf broadcast...")
