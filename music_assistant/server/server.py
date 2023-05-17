@@ -477,16 +477,16 @@ class MusicAssistant:
 
     def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
-        zeroconf_type = "_music-assistant._tcp.local."
+        zeroconf_type = "_mass._tcp.local."
         server_id = self.server_id
 
         info = ServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[get_ip_pton()],
+            addresses=[get_ip_pton(self.base_ip)],
             port=self.webserver.port,
             properties=self.get_server_info().to_dict(),
-            server=f"mass_{server_id}.local.",
+            server="mass.local.",
         )
         LOGGER.debug("Starting Zeroconf broadcast...")
         try:
