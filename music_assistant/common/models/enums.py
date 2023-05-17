@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Self, TypeVar
+from typing import Any, TypeVar
 
 # pylint:disable=ungrouped-imports
 try:
@@ -51,7 +51,7 @@ class MediaType(StrEnum):
 
     @classmethod
     @property
-    def ALL(cls: Self) -> tuple[MediaType, ...]:  # noqa: N802
+    def ALL(cls) -> tuple[MediaType, ...]:  # noqa: N802
         """Return all (default) MediaTypes as tuple."""
         return (
             MediaType.ARTIST,
