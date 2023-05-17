@@ -7,7 +7,7 @@ from typing import Any, TypeVar
 # pylint:disable=ungrouped-imports
 try:
     from enum import StrEnum
-except AttributeError:
+except (AttributeError, ImportError):
     # Python 3.10 compatibility for strenum
     _StrEnumSelfT = TypeVar("_StrEnumSelfT", bound="StrEnum")
 
