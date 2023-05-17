@@ -80,7 +80,9 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
             else:
-                LOGGER.error(f"HTTPError {err.response.status_code} for {prov_artist_id}")
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} for Artist with id: {prov_artist_id}"
+                )
         return artist_obj
 
     return await asyncio.to_thread(inner)
@@ -96,7 +98,9 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
             else:
-                LOGGER.error(f"HTTPError {err.response.status_code} for {prov_artist_id}")
+                LOGGER.error(
+                    f"HTTPError {err.response.status_code} for Artist with id: {prov_artist_id}"
+                )
         all_albums = []
         albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
         eps_singles = artist_obj.get_albums_ep_singles(limit=DEFAULT_LIMIT)
@@ -142,7 +146,7 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
             else:
                 LOGGER.error(
-                    f"HTTPError {err.response.status_code} when attempting to lookup Album with id: {prov_album_id}"
+                    f"HTTPError {err.response.status_code} for Album with id: {prov_album_id}"
                 )
         return album_obj
 
@@ -160,7 +164,7 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
             else:
                 LOGGER.error(
-                    f"HTTPError {err.response.status_code} when attempting to lookup Track with id: {prov_track_id}"
+                    f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
                 )
         return track_obj
 
@@ -178,7 +182,7 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
             else:
                 LOGGER.error(
-                    f"HTTPError {err.response.status_code} when attempting to lookup Track with id: {prov_track_id}"
+                    f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
                 )
         return track_obj.get_url()
 
@@ -196,7 +200,7 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
             else:
                 LOGGER.error(
-                    f"HTTPError {err.response.status_code} when attempting to lookup Album with id: {prov_album_id}"
+                    f"HTTPError {err.response.status_code} for Album with id: {prov_album_id}"
                 )
         return album_obj.tracks(limit=DEFAULT_LIMIT)
 
@@ -236,7 +240,7 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
             else:
                 LOGGER.error(
-                    f"HTTPError {err.response.status_code} when attempting to lookup Playlist with id: {prov_playlist_id}"
+                    f"HTTPError {err.response.status_code} for Playlist with id: {prov_playlist_id}"
                 )
         return playlist_obj
 
@@ -256,7 +260,7 @@ async def get_playlist_tracks(
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
             else:
                 LOGGER.error(
-                    f"HTTPError {err.response.status_code} when attempting to lookup Playlist with id: {prov_playlist_id}"
+                    f"HTTPError {err.response.status_code} for Playlist with id: {prov_playlist_id}"
                 )
         return playlist_obj.tracks(limit=limit, offset=offset)
 
@@ -299,7 +303,7 @@ async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
             else:
                 LOGGER.error(
-                    f"HTTPError {err.response.status_code} when attempting to lookup Track with id: {prov_track_id}"
+                    f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
                 )
         return track_obj.get_track_radio(limit)
 
