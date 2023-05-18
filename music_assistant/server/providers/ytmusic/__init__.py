@@ -127,7 +127,8 @@ async def get_config_entries(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Authentication token for Youtube Music",
-            description="You need to link Music Assistant to your Youtube Music account.",
+            description="You need to link Music Assistant to your Youtube Music account. "
+            "Please ignore the code on the page the next page and click 'Next'.",
             action=CONF_ACTION_AUTH,
             action_label="Authenticate on Youtube Music",
             value=values.get(CONF_AUTH_TOKEN) if values else None,
@@ -281,7 +282,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        if artist_obj := await get_artist(prov_artist_id=prov_artist_id):
+        if artist_obj := await get_artist(prov_artist_id=prov_artist_id, headers=self._headers):
             return await self._parse_artist(artist_obj=artist_obj)
         raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
@@ -747,7 +748,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def _is_valid_deciphered_url(self, url: str) -> bool:
         """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
-            return response.status == 200
+            return response.status != 403
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
