@@ -33,7 +33,7 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.tidal.helpers")
 
 
 def throttle(rate_limit: int, period: float = 1.0):
-    """Decorator to throttle the number of calls to a function."""
+    """Throttler decorator to limit the number of calls to a function."""
 
     def decorator(func):
         throttler = Throttler(rate_limit, period)
