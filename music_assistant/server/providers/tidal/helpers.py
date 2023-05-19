@@ -11,7 +11,9 @@ tidalapi: https://github.com/tamland/python-tidal
 
 import asyncio
 import logging
+from functools import wraps
 
+from asyncio_throttle import Throttler
 from requests import HTTPError
 from tidalapi import Album as TidalAlbum
 from tidalapi import Artist as TidalArtist
@@ -28,6 +30,22 @@ from music_assistant.constants import ROOT_LOGGER_NAME
 
 DEFAULT_LIMIT = 50
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.tidal.helpers")
+
+
+def throttle(rate_limit: int, period: float = 1.0):
+    """Decorator to throttle the number of calls to a function."""
+
+    def decorator(func):
+        throttler = Throttler(rate_limit, period)
+
+        @wraps(func)
+        async def wrapper(*args, **kwargs):
+            async with throttler:
+                return await func(*args, **kwargs)
+
+        return wrapper
+
+    return decorator
 
 
 async def get_library_artists(
@@ -70,12 +88,13 @@ async def library_items_add_remove(
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     """Async wrapper around the tidalapi Artist function."""
 
     def inner() -> TidalArtist:
         try:
-            artist_obj = TidalArtist(session, prov_artist_id)
+            return TidalArtist(session, prov_artist_id)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
@@ -83,17 +102,25 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Artist with id: {prov_artist_id}"
                 )
-        return artist_obj
 
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[TidalAlbum]:
     """Async wrapper around 3 tidalapi album functions."""
 
     def inner() -> list[TidalAlbum]:
         try:
             artist_obj = TidalArtist(session, prov_artist_id)
+            all_albums = []
+            albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
+            eps_singles = artist_obj.get_albums_ep_singles(limit=DEFAULT_LIMIT)
+            compilations = artist_obj.get_albums_other(limit=DEFAULT_LIMIT)
+            all_albums.extend(albums)
+            all_albums.extend(eps_singles)
+            all_albums.extend(compilations)
+            return all_albums
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
@@ -101,18 +128,11 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Artist with id: {prov_artist_id}"
                 )
-        all_albums = []
-        albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
-        eps_singles = artist_obj.get_albums_ep_singles(limit=DEFAULT_LIMIT)
-        compilations = artist_obj.get_albums_other(limit=DEFAULT_LIMIT)
-        all_albums.extend(albums)
-        all_albums.extend(eps_singles)
-        all_albums.extend(compilations)
-        return all_albums
 
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_artist_toptracks(
     session: TidalSession, prov_artist_id: str, limit: int = 10, offset: int = 0
 ) -> list[TidalTrack]:
@@ -135,12 +155,13 @@ async def get_library_albums(
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
     """Async wrapper around the tidalapi Album function."""
 
     def inner() -> TidalAlbum:
         try:
-            album_obj = TidalAlbum(session, prov_album_id)
+            return TidalAlbum(session, prov_album_id)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
@@ -148,17 +169,17 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Album with id: {prov_album_id}"
                 )
-        return album_obj
 
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     """Async wrapper around the tidalapi Track function."""
 
     def inner() -> TidalTrack:
         try:
-            track_obj = TidalTrack(session, prov_track_id)
+            return TidalTrack(session, prov_track_id)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
@@ -166,17 +187,17 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
                 )
-        return track_obj
 
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, str]:
     """Async wrapper around the tidalapi Track.get_url function."""
 
     def inner() -> dict[str, str]:
         try:
-            track_obj = TidalTrack(session, prov_track_id)
+            return TidalTrack(session, prov_track_id).get_url()
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
@@ -184,17 +205,17 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
                 )
-        return track_obj.get_url()
 
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Album.tracks function."""
 
     def inner() -> list[TidalTrack]:
         try:
-            album_obj = TidalAlbum(session, prov_album_id)
+            return TidalAlbum(session, prov_album_id).tracks(limit=DEFAULT_LIMIT)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
@@ -202,7 +223,6 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Album with id: {prov_album_id}"
                 )
-        return album_obj.tracks(limit=DEFAULT_LIMIT)
 
     return await asyncio.to_thread(inner)
 
@@ -229,12 +249,13 @@ async def get_library_playlists(
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPlaylist:
     """Async wrapper around the tidal Playlist function."""
 
     def inner() -> TidalPlaylist:
         try:
-            playlist_obj = TidalPlaylist(session, prov_playlist_id)
+            return TidalPlaylist(session, prov_playlist_id)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
@@ -242,11 +263,11 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Playlist with id: {prov_playlist_id}"
                 )
-        return playlist_obj
 
     return await asyncio.to_thread(inner)
 
 
+@throttle(rate_limit=1, period=0.1)
 async def get_playlist_tracks(
     session: TidalSession, prov_playlist_id: str, limit: int = DEFAULT_LIMIT, offset: int = 0
 ) -> list[TidalTrack]:
@@ -254,7 +275,7 @@ async def get_playlist_tracks(
 
     def inner() -> list[TidalTrack]:
         try:
-            playlist_obj = TidalPlaylist(session, prov_playlist_id)
+            return TidalPlaylist(session, prov_playlist_id).tracks(limit=limit, offset=offset)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
@@ -262,7 +283,6 @@ async def get_playlist_tracks(
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Playlist with id: {prov_playlist_id}"
                 )
-        return playlist_obj.tracks(limit=limit, offset=offset)
 
     return await asyncio.to_thread(inner)
 
@@ -297,7 +317,7 @@ async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -
 
     def inner() -> list[TidalTrack]:
         try:
-            track_obj = TidalTrack(session, prov_track_id)
+            return TidalTrack(session, prov_track_id).get_track_radio(limit)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
@@ -305,7 +325,6 @@ async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -
                 LOGGER.error(
                     f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
                 )
-        return track_obj.get_track_radio(limit)
 
     return await asyncio.to_thread(inner)
 
