@@ -11,9 +11,7 @@ tidalapi: https://github.com/tamland/python-tidal
 
 import asyncio
 import logging
-from functools import wraps
 
-from asyncio_throttle import Throttler
 from requests import HTTPError
 from tidalapi import Album as TidalAlbum
 from tidalapi import Artist as TidalArtist
@@ -30,22 +28,6 @@ from music_assistant.constants import ROOT_LOGGER_NAME
 
 DEFAULT_LIMIT = 50
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.tidal.helpers")
-
-
-def throttle(rate_limit: int, period: float = 1.0):
-    """Throttler decorator to limit the number of calls to a function."""
-
-    def decorator(func):
-        throttler = Throttler(rate_limit, period)
-
-        @wraps(func)
-        async def wrapper(*args, **kwargs):
-            async with throttler:
-                return await func(*args, **kwargs)
-
-        return wrapper
-
-    return decorator
 
 
 async def get_library_artists(
@@ -88,7 +70,6 @@ async def library_items_add_remove(
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     """Async wrapper around the tidalapi Artist function."""
 
@@ -106,7 +87,6 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[TidalAlbum]:
     """Async wrapper around 3 tidalapi album functions."""
 
@@ -132,7 +112,6 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_artist_toptracks(
     session: TidalSession, prov_artist_id: str, limit: int = 10, offset: int = 0
 ) -> list[TidalTrack]:
@@ -155,7 +134,6 @@ async def get_library_albums(
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
     """Async wrapper around the tidalapi Album function."""
 
@@ -173,7 +151,6 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     """Async wrapper around the tidalapi Track function."""
 
@@ -191,7 +168,6 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, str]:
     """Async wrapper around the tidalapi Track.get_url function."""
 
@@ -209,7 +185,6 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Album.tracks function."""
 
@@ -249,7 +224,6 @@ async def get_library_playlists(
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPlaylist:
     """Async wrapper around the tidal Playlist function."""
 
@@ -267,7 +241,6 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
     return await asyncio.to_thread(inner)
 
 
-@throttle(rate_limit=1, period=0.1)
 async def get_playlist_tracks(
     session: TidalSession, prov_playlist_id: str, limit: int = DEFAULT_LIMIT, offset: int = 0
 ) -> list[TidalTrack]:
