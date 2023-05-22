@@ -80,9 +80,7 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Artist with id: {prov_artist_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -105,9 +103,7 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Artist with id: {prov_artist_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -144,9 +140,7 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Album with id: {prov_album_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -161,9 +155,7 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -178,9 +170,7 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -195,9 +185,7 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Album with id: {prov_album_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -234,9 +222,7 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Playlist with id: {prov_playlist_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -253,9 +239,7 @@ async def get_playlist_tracks(
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Playlist with id: {prov_playlist_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
@@ -295,9 +279,7 @@ async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
             else:
-                LOGGER.error(
-                    f"HTTPError {err.response.status_code} for Track with id: {prov_track_id}"
-                )
+                raise err
 
     return await asyncio.to_thread(inner)
 
