@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -53,6 +54,12 @@ LOGGER = logging.getLogger(ROOT_LOGGER_NAME)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
 
+ENABLE_HTTP_CLEANUP_CLOSED = not (3, 11, 1) <= sys.version_info < (3, 11, 4)
+# Enabling cleanup closed on python 3.11.1+ leaks memory relatively quickly
+# see https://github.com/aio-libs/aiohttp/issues/7252
+# aiohttp interacts poorly with https://github.com/python/cpython/pull/98540
+# The issue was fixed in 3.11.4 via https://github.com/python/cpython/pull/104485
+
 
 class MusicAssistant:
     """Main MusicAssistant (Server) object."""
@@ -90,7 +97,12 @@ class MusicAssistant:
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
-            connector=TCPConnector(ssl=False, enable_cleanup_closed=True),
+            connector=TCPConnector(
+                ssl=False,
+                enable_cleanup_closed=ENABLE_HTTP_CLEANUP_CLOSED,
+                limit=4096,
+                limit_per_host=100,
+            ),
         )
         # setup config controller first and fetch important config values
         await self.config.setup()
