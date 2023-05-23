@@ -79,8 +79,7 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -102,8 +101,7 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -139,8 +137,7 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -154,8 +151,7 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -169,8 +165,7 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -184,8 +179,7 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Album {prov_album_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -221,8 +215,7 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -238,8 +231,7 @@ async def get_playlist_tracks(
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
@@ -278,8 +270,7 @@ async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
-            else:
-                raise err
+            raise err
 
     return await asyncio.to_thread(inner)
 
