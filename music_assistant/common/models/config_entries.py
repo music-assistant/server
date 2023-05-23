@@ -5,7 +5,7 @@ import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
 from types import NoneType
-from typing import Any, Self
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -157,10 +157,10 @@ class Config(DataClassDictMixin):
 
     @classmethod
     def parse(
-        cls: Self,
+        cls,
         config_entries: Iterable[ConfigEntry],
         raw: dict[str, Any],
-    ) -> Self:
+    ) -> Config:
         """Parse Config from the raw values (as stored in persistent storage)."""
         conf = cls.from_dict({**raw, "values": {}})
         for entry in config_entries:

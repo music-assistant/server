@@ -16,18 +16,13 @@ from music_assistant.common.models.api import (
     CommandMessage,
     ErrorResultMessage,
     MessageType,
-    ServerInfoMessage,
     SuccessResultMessage,
 )
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
-from music_assistant.constants import ROOT_LOGGER_NAME, __version__
-from music_assistant.server.helpers.api import (
-    API_SCHEMA_VERSION,
-    APICommandHandler,
-    parse_arguments,
-)
+from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.server.models.plugin import PluginProvider
 
 if TYPE_CHECKING:
@@ -141,9 +136,7 @@ class WebsocketClientHandler:
         self._writer_task = asyncio.create_task(self._writer())
 
         # send server(version) info when client connects
-        self._send_message(
-            ServerInfoMessage(server_version=__version__, schema_version=API_SCHEMA_VERSION)
-        )
+        self._send_message(self.mass.get_server_info())
 
         # forward all events to clients
         def handle_event(event: MassEvent) -> None:

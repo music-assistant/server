@@ -370,7 +370,7 @@ class MusicController:
     async def refresh_item(
         self,
         media_item: MediaItemType,
-    ):
+    ) -> MediaItemType | None:
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
         try:
             return await self.get_item(
@@ -397,7 +397,7 @@ class MusicController:
             result = searchresult.radio
         for item in result:
             if item.available:
-                await self.get_item(
+                return await self.get_item(
                     item.media_type, item.item_id, item.provider, lazy=False, add_to_db=True
                 )
         return None

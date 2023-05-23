@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 import aiofiles
 from aiohttp import ClientTimeout
 
-from music_assistant.common.helpers.util import create_tempfile
 from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
 from music_assistant.constants import (
@@ -22,7 +21,9 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
-from music_assistant.server.helpers.process import AsyncProcess, check_output
+
+from .process import AsyncProcess, check_output
+from .util import create_tempfile
 
 if TYPE_CHECKING:
     from music_assistant.common.models.player_queue import QueueItem

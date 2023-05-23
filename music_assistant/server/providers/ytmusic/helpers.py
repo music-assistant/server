@@ -24,11 +24,11 @@ from ytmusicapi.constants import (
 from music_assistant.server.helpers.auth import AuthenticationHelper
 
 
-async def get_artist(prov_artist_id: str) -> dict[str, str]:
+async def get_artist(prov_artist_id: str, headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_artist function."""
 
     def _get_artist():
-        ytm = ytmusicapi.YTMusic()
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         try:
             artist = ytm.get_artist(channelId=prov_artist_id)
             # ChannelId can sometimes be different and original ID is not part of the response
