@@ -473,6 +473,17 @@ class PagedItems(DataClassDictMixin):
     offset: int
     total: int | None = None
 
+    @classmethod
+    def parse(cls, raw: dict[str, Any], item_type: type) -> PagedItems:
+        """Parse PagedItems object including correct item type."""
+        return PagedItems(
+            items=[item_type.from_dict(x) for x in raw["items"]],
+            count=raw["count"],
+            limit=raw["limit"],
+            offset=raw["offset"],
+            total=raw["total"],
+        )
+
 
 @dataclass
 class SearchResults(DataClassDictMixin):

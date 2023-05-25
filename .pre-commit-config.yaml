@@ -10,7 +10,7 @@ repos:
           - --branch=main
       - id: debug-statements
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: 'v0.0.267'
+    rev: 'v0.0.269'
     hooks:
       - id: ruff
   - repo: https://github.com/psf/black
@@ -30,21 +30,21 @@ repos:
         additional_dependencies:
           - tomli
 
-  - repo: local
-    hooks:
-      - id: pylint
-        name: pylint
-        entry: script/run-in-env.sh pylint -j 0
-        language: script
-        types: [python]
-        files: ^hass_client/.+\.py$
+  # - repo: local
+  #   hooks:
+  #     - id: pylint
+  #       name: pylint
+  #       entry: script/run-in-env.sh pylint -j 0
+  #       language: script
+  #       types: [python]
+  #       files: ^music_assistant/.+\.py$
 
-      - id: mypy
-        name: mypy
-        entry: script/run-in-env.sh mypy
-        language: script
-        types: [python]
-        files: ^hass_client/.+\.py$
+  #     - id: mypy
+  #       name: mypy
+  #       entry: script/run-in-env.sh mypy
+  #       language: script
+  #       types: [python]
+  #       files: ^music_assistant/.+\.py$
 
   - repo: local
     hooks:

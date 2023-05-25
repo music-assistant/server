@@ -1,7 +1,11 @@
 """Several helper/utils to compare objects."""
 from __future__ import annotations
 
-from music_assistant.common.helpers.util import create_safe_string, create_sort_name
+import re
+
+import unidecode
+
+from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -10,6 +14,13 @@ from music_assistant.common.models.media_items import (
     MediaItemMetadata,
     Track,
 )
+
+
+def create_safe_string(input_str: str) -> str:
+    """Return clean lowered string for compare actions."""
+    input_str = input_str.lower().strip()
+    unaccented_string = unidecode.unidecode(input_str)
+    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string)
 
 
 def loose_compare_strings(base: str, alt: str) -> bool:
