@@ -315,7 +315,7 @@ class ConfigController:
     def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a player."""
         cache_key = f"player_conf_value_{player_id}.{key}"
-        if cached_value := self._value_cache.get(cache_key) is not None:
+        if (cached_value := self._value_cache.get(cache_key)) and cached_value is not None:
             return cached_value
         conf = self.get_player_config(player_id)
         val = (
