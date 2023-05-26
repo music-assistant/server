@@ -119,7 +119,7 @@ async def get_config_entries(
     )
 
 
-class DeezerProvider(MusicProvider):
+class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     """Deezer provider support."""
 
     client: DeezerClient
@@ -129,7 +129,7 @@ class DeezerProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
-        self._throttler = Throttler(rate_limit=4, period=1)
+        self._throttler = Throttler(rate_limit=50, period=5)
         self.creds = Credential(
             app_id=DEEZER_APP_ID,
             app_secret=DEEZER_APP_SECRET,
@@ -274,7 +274,7 @@ class DeezerProvider(MusicProvider):
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top 25 tracks of an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
-        top_tracks = (await self.client.get_artist_top(artist=artist))[:25]
+        top_tracks = await self.client.get_artist_top(artist=artist, limit=25)
         return [
             self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in top_tracks
@@ -345,7 +345,7 @@ class DeezerProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add tra ck(s) to playlist."""
         await self.client.add_playlist_tracks(
-            playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
+            playlist_id=prov_playlist_id, tracks=[int(i) for i in prov_track_ids]
         )
 
     async def remove_playlist_tracks(
@@ -547,7 +547,7 @@ class DeezerProvider(MusicProvider):
         """Search for tracks and parse them."""
         deezer_tracks = await self.client.search_track(query=query, limit=limit)
         return [
-            self.parse_track(track, user_country)
+            self.parse_track(track=track, user_country=user_country)
             for track in deezer_tracks
             if self.track_available(track, user_country)
         ]
