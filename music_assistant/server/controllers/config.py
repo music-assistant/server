@@ -54,6 +54,7 @@ class ConfigController:
         self._data: dict[str, Any] = {}
         self.filename = os.path.join(self.mass.storage_path, "settings.json")
         self._timer_handle: asyncio.TimerHandle | None = None
+        self._value_cache: dict[str, ConfigValueType] = {}
 
     async def setup(self) -> None:
         """Async initialize of controller."""
@@ -171,6 +172,22 @@ class ConfigController:
             )
             return ProviderConfig.parse(config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
+
+    @api_command("config/providers/get_value")
+    def get_provider_config_value(self, instance_id: str, key: str) -> ConfigValueType:
+        """Return single configentry value for a provider."""
+        cache_key = f"prov_conf_value_{instance_id}.{key}"
+        if cached_value := self._value_cache.get(cache_key) is not None:
+            return cached_value
+        conf = self.get_provider_config(instance_id)
+        val = (
+            conf.values[key].value
+            if conf.values[key].value is not None
+            else conf.values[key].default_value
+        )
+        # store value in cache because this method can potentially be called very often
+        self._value_cache[cache_key] = val
+        return val
 
     @api_command("config/providers/get_entries")
     async def get_provider_config_entries(
@@ -297,13 +314,18 @@ class ConfigController:
     @api_command("config/players/get_value")
     def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a player."""
+        cache_key = f"player_conf_value_{player_id}.{key}"
+        if cached_value := self._value_cache.get(cache_key) is not None:
+            return cached_value
         conf = self.get_player_config(player_id)
-        # always create a copy to prevent we're altering the base object
-        return (
+        val = (
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
         )
+        # store value in cache because this method can potentially be called very often
+        self._value_cache[cache_key] = val
+        return val
 
     @api_command("config/players/save")
     def save_player_config(
@@ -407,6 +429,7 @@ class ConfigController:
 
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""
+        self._value_cache = {}
         if self._timer_handle is not None:
             self._timer_handle.cancel()
             self._timer_handle = None
