@@ -20,8 +20,6 @@ GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
 class DeezerGWError(BaseException):
     """Exception type for GWClient related exceptions."""
 
-    pass
-
 
 class GWClient:
     """The GWClient class can be used to perform actions not being of the official API."""
@@ -100,12 +98,12 @@ class GWClient:
         csrf_token = self._gw_csrf_token if use_csrf_token else "null"
         if params is None:
             params = {}
-        p = {"api_version": "1.0", "api_token": csrf_token, "input": "3", "method": method}
-        p.update(params)
+        parameters = {"api_version": "1.0", "api_token": csrf_token, "input": "3", "method": method}
+        parameters |= params
         result = await self.session.request(
             http_method,
             GW_LIGHT_URL,
-            params=p,
+            params=parameters,
             timeout=30,
             json=args,
             headers={"User-Agent": USER_AGENT_HEADER},

@@ -278,11 +278,11 @@ class DeezerClient:
 
         return await asyncio.to_thread(_get_albums_by_artist)
 
-    async def get_artist_top(self, artist: deezer.Artist) -> deezer.PaginatedList:
+    async def get_artist_top(self, artist: deezer.Artist, limit: int = 25) -> deezer.PaginatedList:
         """Get top tracks by an artist."""
 
         def _get_artist_top():
-            return artist.get_top()
+            return artist.get_top()[:limit]
 
         return await asyncio.to_thread(_get_artist_top)
 
