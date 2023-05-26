@@ -127,6 +127,13 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     creds: Credential
     _throttler: Throttler
 
+    @property
+    def name(self) -> str:
+        """Return (custom) friendly name for this provider instance."""
+        if client := getattr(self, "client", None):
+            return f"Deezer - {client.user.name}"
+        return super().name
+
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
         self._throttler = Throttler(rate_limit=50, period=5)
