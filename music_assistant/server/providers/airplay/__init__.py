@@ -1,7 +1,7 @@
 """Airplay Player provider.
 
 This is more like a "virtual" player provider, running on top of slimproto.
-It uses the amazing work of Philippe44 who created a bridge from airplay to slimoproto.
+It uses the amazing work of Philippe44 who created a bridge from airplay to slimproto.
 https://github.com/philippe44/LMS-Raop
 """
 from __future__ import annotations

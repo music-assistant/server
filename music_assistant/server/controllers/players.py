@@ -321,11 +321,20 @@ class PlayerController:
         if player.powered == powered:
             return
         # stop player at power off
-        if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+        if (
+            not powered
+            and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+            and not player.synced_to
+        ):
             await self.cmd_stop(player_id)
         # unsync player at power off
-        if not powered and player.synced_to is not None:
-            await self.cmd_unsync(player_id)
+        if not powered:
+            if player.synced_to is not None:
+                await self.cmd_unsync(player_id)
+            for child in self._get_child_players(player):
+                if not child.synced_to:
+                    continue
+                await self.cmd_unsync(child.player_id)
         if PlayerFeature.POWER not in player.supported_features:
             player.powered = powered
             self.update(player_id)
