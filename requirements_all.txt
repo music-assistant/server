@@ -11,7 +11,7 @@ async-upnp-client==0.33.2
 asyncio-throttle==1.0.2
 coloredlogs==15.0.1
 cryptography==40.0.2
-deezer-python==5.10.0
+deezer-python==5.12.0
 faust-cchardet>=2.1.18
 git+https://github.com/gieljnssns/python-radios.git@main
 git+https://github.com/jozefKruszynski/python-tidal.git@v0.7.1
