@@ -497,6 +497,11 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.channels = int(stream_format.get("audioChannels"))
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
             stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
+        if not stream_details:
+            self.logger.debug(
+                f"Returning NULL stream details for stream_format {stream_format}, "
+                "track_obj {track_obj}. "
+            )
         return stream_details
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
@@ -726,7 +731,7 @@ class YoutubeMusicProvider(MusicProvider):
             raise Exception("Unable to identify the signatureTimestamp.")
         return int(match.group(1))
 
-    async def _parse_stream_url(self, stream_format: dict, item_id: str, retry: bool = True) -> str:
+    async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
         """Figure out the stream URL to use based on the YT track object."""
         url = None
         if stream_format.get("signatureCipher"):
@@ -739,20 +744,29 @@ class YoutubeMusicProvider(MusicProvider):
                 ciphered_signature=cipher_parts["s"], item_id=item_id
             )
             url = cipher_parts["url"] + "&sig=" + signature
-            # Verify if URL is playable. If not, obtain a new cipher and try again.
             if not await self._is_valid_deciphered_url(url=url):
-                if not retry:
-                    raise UnplayableMediaError(
-                        f"Cannot obtain a valid URL for item '{item_id}' after renewing cipher."
-                    )
-                self.logger.debug("Cipher expired. Obtaining new Cipher.")
-                self._cipher = None
-                return await self._parse_stream_url(
-                    stream_format=stream_format, item_id=item_id, retry=False
-                )
+                raise UnplayableMediaError(f"Obtained invalid URL for item '{item_id}'.")
+            # Disable caching for now.
+            # Verify if URL is playable. If not, obtain a new cipher and try again.
+            # if not await self._is_valid_deciphered_url(url=url):
+            #     if retry > 50:
+            #         raise UnplayableMediaError(
+            #             f"Cannot obtain a valid URL for item '{item_id}' after renewing
+            #               cipher {retry} times."
+            #         )
+            #     self.logger.debug("Cipher expired. Obtaining new Cipher.")
+            #     self._cipher = None
+            #     return await self._parse_stream_url(
+            #         stream_format=stream_format, item_id=item_id, retry=retry + 1
+            #     )
         elif stream_format.get("url"):
             # Non secured URL
             url = stream_format.get("url")
+        else:
+            # TODO: Remove, this is for debugging purposes
+            self.logger.warning(
+                f"Something went wrong. No URL found for stream format {stream_format}"
+            )
         return url
 
     async def _decipher_signature(self, ciphered_signature: str, item_id: str):
@@ -766,13 +780,21 @@ class YoutubeMusicProvider(MusicProvider):
             cipher = pytube.cipher.Cipher(js=ytm_js)
             return cipher
 
-        if not self._cipher:
-            self._cipher = await asyncio.to_thread(_decipher)
-        return self._cipher.get_signature(ciphered_signature)
+        cipher = await asyncio.to_thread(_decipher)
+        return cipher.get_signature(ciphered_signature)
+
+        # if not self._cipher:
+        #     self.logger.debug("Grabbing a new cipher.")
+        #     self._cipher = await asyncio.to_thread(_decipher)
+        #     self.logger.debug(f"Cipher is {self._cipher}")
+        # return self._cipher.get_signature(ciphered_signature)
 
     async def _is_valid_deciphered_url(self, url: str) -> bool:
         """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
+            # TODO: Remove, this is for debugging purposes
+            if response.status != 403:
+                self.logger.warn(f"Deciphered URL HTTP status: {response.status}")
             return response.status != 403
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
