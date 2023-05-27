@@ -9,6 +9,8 @@ from http.cookies import BaseCookie, Morsel
 from aiohttp import ClientSession
 from yarl import URL
 
+from music_assistant.common.models.media_items import StreamDetails
+
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
     "Chrome/79.0.3945.130 Safari/537.36"
@@ -109,6 +111,10 @@ class GWClient:
             headers={"User-Agent": USER_AGENT_HEADER},
         )
         result_json = await result.json()
+
+        if method == "log.listen":
+            print(result_json)
+
         if result_json["error"]:
             if retry:
                 await self._update_user_data()
@@ -149,3 +155,42 @@ class GWClient:
             raise DeezerGWError("Received an error from API", error)
 
         return result_json["data"][0]["media"][0], song_data["results"]
+
+    async def log_listen(
+        self, next_track: str | None = None, last_track: StreamDetails | None = None
+    ):
+        """Log the next and/or previous track of the current playback queue."""
+        if not (next_track or last_track):
+            raise DeezerGWError("last or current track information must be provided.")
+
+        payload = {}
+
+        if next_track:
+            payload["next_media"] = {"media": {"id": next_track, "type": "song"}}
+
+        if last_track:
+            payload["params"] = {
+                "media": {
+                    "id": last_track.item_id,
+                    "type": "song",
+                    "format": last_track.data["format"],
+                },
+                "type": 1,
+                "stat": {
+                    "seek": 1 if last_track.seconds_skipped else 0,
+                    "pause": 0,
+                    "sync": 0,
+                    "next": bool(next_track),
+                },
+                "lt": int(last_track.seconds_streamed),
+                "ctxt": {"t": "search_page", "id": last_track.item_id},
+                "dev": {"v": "10020230525142740", "t": 0},
+                "ls": [],
+                "ts_listen": int(last_track.data["start_ts"]),
+                "is_shuffle": False,
+                "stream_id": str(last_track.data["stream_id"]),
+            }
+
+        print(payload)
+
+        await self._gw_api_call("log.listen", args=payload)

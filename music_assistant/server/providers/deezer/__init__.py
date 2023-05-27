@@ -1,5 +1,7 @@
 """Deezer music provider support for MusicAssistant."""
+import datetime
 import hashlib
+import uuid
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from math import ceil
@@ -395,9 +397,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 content_type=ContentType.try_parse(url_details["format"].split("_")[0])
             ),
             duration=int(song_data["DURATION"]),
-            data=url,
+            data={"url": url, "format": url_details["format"]},
             expires=url_details["exp"],
             size=int(song_data[f"FILESIZE_{url_details['format']}"]),
+            callback=self.log_listen_cb,
         )
 
     async def get_audio_stream(
@@ -415,8 +418,11 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             headers["Range"] = f"bytes={skip_bytes}-"
 
         buffer = bytearray()
+        streamdetails.data["start_ts"] = datetime.datetime.utcnow().timestamp()
+        streamdetails.data["stream_id"] = uuid.uuid1()
+        await self.gw_client.log_listen(streamdetails.item_id)
         async with self.mass.http_session.get(
-            streamdetails.data, headers=headers, timeout=timeout
+            streamdetails.data["url"], headers=headers, timeout=timeout
         ) as resp:
             async for chunk in resp.content.iter_chunked(2048):
                 buffer += chunk
@@ -428,6 +434,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     chunk_index += 1
                     del buffer[:2048]
         yield bytes(buffer)
+
+    async def log_listen_cb(self, stream_details):
+        """Log the end of a track playback."""
+        await self.gw_client.log_listen(None, stream_details)
 
     ### PARSING METADATA FUNCTIONS ###
 
