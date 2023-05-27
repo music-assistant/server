@@ -793,7 +793,7 @@ class YoutubeMusicProvider(MusicProvider):
         """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
             # TODO: Remove, this is for debugging purposes
-            if response.status != 403:
+            if response.status != 200:
                 self.logger.warn(f"Deciphered URL HTTP status: {response.status}")
             return response.status != 403
 
