@@ -169,6 +169,7 @@ class YoutubeMusicProvider(MusicProvider):
     _cookies = None
     _signature_timestamp = 0
     _cipher = None
+    _testest = True
 
     async def handle_setup(self) -> None:
         """Set up the YTMusic provider."""
@@ -469,7 +470,7 @@ class YoutubeMusicProvider(MusicProvider):
             return tracks
         return []
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, retry=True) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         data = {
             "playbackContext": {
@@ -480,6 +481,14 @@ class YoutubeMusicProvider(MusicProvider):
         track_obj = await self._post_data("player", data=data)
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
+        if not await self._is_valid_deciphered_url(url=url):
+            if not retry:
+                raise UnplayableMediaError(f"Could not resolve a valid URL for item '{item_id}'.")
+            self.logger.debug(
+                "Invalid playback URL encountered. Retrying with new signature timestamp."
+            )
+            self._signature_timestamp = await self._get_signature_timestamp()
+            return await self.get_stream_details(item_id=item_id, retry=False)
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -744,8 +753,6 @@ class YoutubeMusicProvider(MusicProvider):
                 ciphered_signature=cipher_parts["s"], item_id=item_id
             )
             url = cipher_parts["url"] + "&sig=" + signature
-            if not await self._is_valid_deciphered_url(url=url):
-                raise UnplayableMediaError(f"Obtained invalid URL for item '{item_id}'.")
             # Disable caching for now.
             # Verify if URL is playable. If not, obtain a new cipher and try again.
             # if not await self._is_valid_deciphered_url(url=url):
@@ -780,21 +787,18 @@ class YoutubeMusicProvider(MusicProvider):
             cipher = pytube.cipher.Cipher(js=ytm_js)
             return cipher
 
-        cipher = await asyncio.to_thread(_decipher)
-        return cipher.get_signature(ciphered_signature)
-
-        # if not self._cipher:
-        #     self.logger.debug("Grabbing a new cipher.")
-        #     self._cipher = await asyncio.to_thread(_decipher)
-        #     self.logger.debug(f"Cipher is {self._cipher}")
-        # return self._cipher.get_signature(ciphered_signature)
+        if not self._cipher:
+            self._cipher = await asyncio.to_thread(_decipher)
+        return self._cipher.get_signature(ciphered_signature)
 
     async def _is_valid_deciphered_url(self, url: str) -> bool:
         """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
-            # TODO: Remove, this is for debugging purposes
+            # TODO: Remove after 403 issue has been verified as fixed
             if response.status != 200:
-                self.logger.warn(f"Deciphered URL HTTP status: {response.status}")
+                self.logger.debug(
+                    f"Deciphered URL HTTP status: {response.status} - {response.reason}"
+                )
             return response.status != 403
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
@@ -816,8 +820,8 @@ class YoutubeMusicProvider(MusicProvider):
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
         """Parse and sort a list of thumbnails and return the highest quality."""
-        thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
-        return [MediaItemImage(ImageType.THUMB, thumb["url"])]
+        thumbs = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)
+        return [MediaItemImage(ImageType.THUMB, thumb["url"]) for thumb in thumbs]
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:
