@@ -169,7 +169,6 @@ class YoutubeMusicProvider(MusicProvider):
     _cookies = None
     _signature_timestamp = 0
     _cipher = None
-    _testest = True
 
     async def handle_setup(self) -> None:
         """Set up the YTMusic provider."""
@@ -806,8 +805,8 @@ class YoutubeMusicProvider(MusicProvider):
     @classmethod
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
         """Parse and sort a list of thumbnails and return the highest quality."""
-        thumbs = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)
-        return [MediaItemImage(ImageType.THUMB, thumb["url"]) for thumb in thumbs]
+        thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
+        return [MediaItemImage(ImageType.THUMB, thumb["url"])]
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:
