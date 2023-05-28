@@ -781,9 +781,7 @@ class YoutubeMusicProvider(MusicProvider):
         async with self.mass.http_session.head(url) as response:
             # TODO: Remove after 403 issue has been verified as fixed
             if response.status != 200:
-                self.logger.debug(
-                    f"Deciphered URL HTTP status: {response.status} - {response.reason}"
-                )
+                self.logger.debug(f"Deciphered URL HTTP status: {response.status}")
             return response.status != 403
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
