@@ -67,6 +67,8 @@ class WebserverController:
         index_path = os.path.join(frontend_dir, "index.html")
         handler = partial(self.serve_static, index_path)
         self.webapp.router.add_get("/", handler)
+        # add info
+        self.webapp.router.add_get("/info", self._handle_server_info)
         # register catch-all route to handle our custom paths
         self.webapp.router.add_route("*", "/{tail:.*}", self._handle_catch_all)
         await self._apprunner.setup()
@@ -120,3 +122,7 @@ class WebserverController:
             request.headers,
         )
         return web.Response(status=404)
+
+    async def _handle_server_info(self, request: web.Request) -> web.Response:  # noqa: ARG002
+        """Handle request for server info."""
+        return web.json_response(self.mass.get_server_info().to_dict())

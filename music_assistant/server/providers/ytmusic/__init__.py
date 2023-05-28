@@ -753,25 +753,11 @@ class YoutubeMusicProvider(MusicProvider):
                 ciphered_signature=cipher_parts["s"], item_id=item_id
             )
             url = cipher_parts["url"] + "&sig=" + signature
-            # Disable caching for now.
-            # Verify if URL is playable. If not, obtain a new cipher and try again.
-            # if not await self._is_valid_deciphered_url(url=url):
-            #     if retry > 50:
-            #         raise UnplayableMediaError(
-            #             f"Cannot obtain a valid URL for item '{item_id}' after renewing
-            #               cipher {retry} times."
-            #         )
-            #     self.logger.debug("Cipher expired. Obtaining new Cipher.")
-            #     self._cipher = None
-            #     return await self._parse_stream_url(
-            #         stream_format=stream_format, item_id=item_id, retry=retry + 1
-            #     )
         elif stream_format.get("url"):
             # Non secured URL
             url = stream_format.get("url")
         else:
-            # TODO: Remove, this is for debugging purposes
-            self.logger.warning(
+            self.logger.debug(
                 f"Something went wrong. No URL found for stream format {stream_format}"
             )
         return url

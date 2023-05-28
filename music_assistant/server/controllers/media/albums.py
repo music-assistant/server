@@ -107,6 +107,8 @@ class AlbumsController(MediaControllerBase[Album]):
             await self._match(db_item)
         # preload album tracks listing (do not load them in the db)
         for prov_mapping in db_item.provider_mappings:
+            if not prov_mapping.available:
+                continue
             await self._get_provider_album_tracks(
                 prov_mapping.item_id, prov_mapping.provider_instance
             )

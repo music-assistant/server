@@ -26,7 +26,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_GROUPED_POWER_ON
+from music_assistant.constants import CONF_GROUPED_POWER_ON, CONF_PROVIDERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -47,8 +47,9 @@ CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO = ConfigEntry.from_dict(
     }
 )
 CONF_ENTRY_FORCED_FLOW_MODE = ConfigEntry.from_dict(
-    {**CONF_ENTRY_FLOW_MODE.to_dict(), "hidden": True, "default_value": True, "value": True}
+    {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True}
 )
+SUPPORTS_NATIVE_SYNC = ("sonos",)
 # ruff: noqa: ARG002
 
 
@@ -97,10 +98,11 @@ class UniversalGroupProvider(PlayerProvider):
     """Base/builtin provider for universally grouping players."""
 
     prev_sync_leaders: tuple[str] | None = None
+    optimistic_state: PlayerState | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-        self.player = Player(
+        self.player = player = Player(
             player_id=self.instance_id,
             provider=self.domain,
             type=PlayerType.GROUP,
@@ -119,10 +121,13 @@ class UniversalGroupProvider(PlayerProvider):
             active_source=self.instance_id,
             group_childs=self.config.get_value(CONF_GROUP_MEMBERS),
         )
-        self.mass.players.register_or_update(self.player)
+        self.mass.players.register_or_update(player)
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
+        # cleanup player config if provider is removed
+        if self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}") is not None:
+            return
         self.mass.players.remove(self.instance_id)
 
     def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
@@ -136,6 +141,7 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
+        self.optimistic_state = PlayerState.IDLE
         # forward command to player and any connected sync child's
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
@@ -145,6 +151,7 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
+        self.optimistic_state = PlayerState.PLAYING
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
                 tg.create_task(self.mass.players.cmd_play(member.player_id))
@@ -172,8 +179,7 @@ class UniversalGroupProvider(PlayerProvider):
         await self.cmd_stop(player_id)
         # power ON
         await self.cmd_power(player_id, True)
-        # issue sync command (just in case)
-        await self._sync_players()
+        self.optimistic_state = PlayerState.PLAYING
         # forward command to all (powered) group child's
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
@@ -190,34 +196,37 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
+        self.optimistic_state = PlayerState.PAUSED
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
                 tg.create_task(self.mass.players.cmd_pause(member.player_id))
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
-        if self.player.powered == powered:
-            return  # nothing to do
         group_power_on = self.mass.config.get_player_config_value(player_id, CONF_GROUPED_POWER_ON)
-        if powered and not group_power_on:
-            return  # nothing to do
 
         async def set_child_power(child_player: Player) -> None:
             await self.mass.players.cmd_power(child_player.player_id, powered)
             # set optimistic state on child player to prevent race conditions in other actions
             child_player.powered = powered
 
-        async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                only_powered=not powered, skip_sync_childs=False
-            ):
-                tg.create_task(set_child_power(member))
+        if not powered or group_power_on:
+            # turn on/off child players
+            async with asyncio.TaskGroup() as tg:
+                for member in self._get_active_members(
+                    only_powered=not powered, skip_sync_childs=False
+                ):
+                    if member.powered == member:
+                        continue
+                    tg.create_task(set_child_power(member))
 
         self.player.powered = powered
         self.mass.players.update(self.instance_id)
         if powered:
             # sync all players on power on
             await self._sync_players()
+        else:
+            self.optimistic_state = PlayerState.OFF
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -255,17 +264,39 @@ class UniversalGroupProvider(PlayerProvider):
 
     def on_child_state(self, player_id: str, child_player: Player, changed_keys: set[str]) -> None:
         """Call when the state of a child player updates."""
-        # TODO: handle a sync leader powerin off
         powered_players = self._get_active_members(True, False)
         if "powered" in changed_keys:
-            if child_player.powered and self.player.state == PlayerState.PLAYING:
-                # a child player turned ON while the group player is already playing
-                # we need to resync/resume
-                self.mass.create_task(self.mass.players.queues.resume, player_id)
-            elif not child_player.powered and len(powered_players) == 0:
+            if not child_player.powered and len(powered_players) == 0:
                 # the last player of a group turned off
                 # turn off the group
                 self.mass.create_task(self.cmd_power, player_id, False)
+            # ruff: noqa: SIM114
+            elif child_player.powered and self.optimistic_state == PlayerState.PLAYING:
+                # a child player turned ON while the group player is already playing
+                # we need to resync/resume
+                if (
+                    child_player.provider in SUPPORTS_NATIVE_SYNC
+                    and self.player.state == PlayerState.PLAYING
+                    and (
+                        sync_leader := next(
+                            (x for x in child_player.can_sync_with if x in self.prev_sync_leaders),
+                            None,
+                        )
+                    )
+                ):
+                    # prevent resume when ecosystem supports native sync
+                    # and one of its players is already playing
+                    self.mass.create_task(self.mass.players.cmd_sync, player_id, sync_leader)
+                else:
+                    self.mass.create_task(self.mass.players.queues.resume, player_id)
+            elif (
+                not child_player.powered
+                and self.optimistic_state == PlayerState.PLAYING
+                and child_player.player_id in self.prev_sync_leaders
+            ):
+                # a sync master player turned OFF while the group player
+                # should still be playing - we need to resync/resume
+                self.mass.create_task(self.mass.players.queues.resume, player_id)
         self.update_attributes()
         self.mass.players.update(player_id, skip_forward=True)
 
