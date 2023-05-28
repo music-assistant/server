@@ -1,8 +1,5 @@
 """Custom errors and exceptions."""
 
-# mapping from error_code to Exception class
-ERROR_MAP: dict[int, type] = {}
-
 
 class MusicAssistantError(Exception):
     """Custom Exception for all errors."""
@@ -13,6 +10,10 @@ class MusicAssistantError(Exception):
         """Register a subclass."""
         super().__init_subclass__(*args, **kwargs)
         ERROR_MAP[cls.error_code] = cls
+
+
+# mapping from error_code to Exception class
+ERROR_MAP: dict[int, type] = {0: MusicAssistantError}
 
 
 class ProviderUnavailableError(MusicAssistantError):
