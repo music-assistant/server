@@ -319,6 +319,13 @@ class LmsCli(PluginProvider):
             return
         if subcommand == "muting":
             return int(player.volume_muted)
+        self.logger.warning(
+            "No handler for mixer/%s (player: %s - args: %s - kwargs: %s)",
+            subcommand,
+            player_id,
+            str(args),
+            str(kwargs),
+        )
 
     def _handle_time(self, player_id: str, number: str | int) -> int | None:
         """Handle player `time` command."""
@@ -420,6 +427,43 @@ class LmsCli(PluginProvider):
             self.mass.create_task(self.mass.players.queues.pause, player_id)
         else:
             self.mass.create_task(self.mass.players.queues.play, player_id)
+
+    def _handle_button(
+        self,
+        player_id: str,
+        subcommand: str,
+        *args,
+        **kwargs,
+    ) -> int | None:
+        """Handle player 'button' command."""
+        player = self.mass.players.get(player_id)
+        assert player is not None
+
+        if subcommand == "volup":
+            self.mass.create_task(self.mass.players.cmd_volume_up, player_id)
+            return
+        if subcommand == "voldown":
+            self.mass.create_task(self.mass.players.cmd_volume_down, player_id)
+            return
+        if subcommand == "power":
+            self.mass.create_task(self.mass.players.cmd_power, player_id, not player.powered)
+            return
+        # queue related button commands
+        queue = self.mass.players.queues.get_active_queue(player_id)
+        assert queue is not None
+        if subcommand == "fwd":
+            self.mass.create_task(self.mass.players.queues.next, player_id)
+            return
+        if subcommand == "rew":
+            self.mass.create_task(self.mass.players.queues.previous, player_id)
+            return
+        self.logger.warning(
+            "No handler for button/%s (player: %s - args: %s - kwargs: %s)",
+            subcommand,
+            player_id,
+            str(args),
+            str(kwargs),
+        )
 
 
 def dict_to_strings(source: dict) -> list[str]:
