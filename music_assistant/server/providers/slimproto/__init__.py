@@ -25,7 +25,6 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -33,6 +32,8 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+
+CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
@@ -71,14 +72,6 @@ SLIM_PLAYER_CONFIG_ENTRIES = (
         label="Correct synchronization delay",
         description="If this player is playing audio synced with other players "
         "and you always hear the audio too late on this player, you can shift the audio a bit.",
-        advanced=True,
-    ),
-    ConfigEntry(
-        key=CONF_PLAYER_VOLUME,
-        type=ConfigEntryType.INTEGER,
-        default_value=DEFAULT_PLAYER_VOLUME,
-        label="Default startup volume",
-        description="Default volume level to set/use when initializing the player.",
         advanced=True,
     ),
 )
@@ -159,11 +152,12 @@ class SlimprotoProvider(PlayerProvider):
             event_type: SlimEventType, client: SlimClient, data: Any = None  # noqa: ARG001
         ):
             if event_type == SlimEventType.PLAYER_DISCONNECTED:
-                self._handle_disconnected(client)
+                self.mass.create_task(self._handle_disconnected(client))
                 return
 
             if event_type == SlimEventType.PLAYER_CONNECTED:
-                self._handle_connected(client)
+                self.mass.create_task(self._handle_connected(client))
+                return
 
             if event_type == SlimEventType.PLAYER_DECODER_READY:
                 self.mass.create_task(self._handle_decoder_ready(client))
@@ -307,12 +301,19 @@ class SlimprotoProvider(PlayerProvider):
         """Send POWER command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.power(powered)
-        # TODO: unsync client at poweroff if synced
+            # store last state in cache
+            await self.mass.cache.set(
+                f"{CACHE_KEY_PREV_STATE}.{player_id}", (powered, client.volume_level)
+            )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.volume_set(volume_level)
+            # store last state in cache
+            await self.mass.cache.set(
+                f"{CACHE_KEY_PREV_STATE}.{player_id}", (client.powered, volume_level)
+            )
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -504,31 +505,38 @@ class SlimprotoProvider(PlayerProvider):
         except QueueEmpty:
             pass
 
-    def _handle_connected(self, client: SlimClient) -> None:
+    async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
         player_id = client.player_id
-        prev = self._socket_clients.pop(player_id, None)
-        if prev is not None:
-            # player reconnected while we did not yet cleanup the old socket
-            prev.disconnect()
+        # deny duplicate requests
+        if self._socket_clients.pop(player_id, None):
+            raise RuntimeError(f"Duplicate connection for the same player: {client.player_id}")
         self._socket_clients[player_id] = client
-        if prev is None:
-            # update existing players so they can update their `can_sync_with` field
-            for client in self._socket_clients.values():
-                self._handle_player_update(client)
-        # handle init/startup volume
-        init_volume = self.mass.config.get(
-            f"{CONF_PLAYERS}/{player_id}/{CONF_PLAYER_VOLUME}", DEFAULT_PLAYER_VOLUME
-        )
-        self.mass.create_task(client.volume_set(init_volume))
+        # update all attributes
+        self._handle_player_update(client)
+        # update existing players so they can update their `can_sync_with` field
+        for item in self._socket_clients.values():
+            if item.player_id == player_id:
+                continue
+            self._handle_player_update(item)
+        # restore volume and power state
+        if last_state := await self.mass.cache.get(f"{CACHE_KEY_PREV_STATE}.{player_id}"):
+            init_volume = last_state[0]
+            init_power = last_state[1]
+        else:
+            init_volume = DEFAULT_PLAYER_VOLUME
+            init_power = False
+        await client.power(init_power)
+        await client.volume_set(init_volume)
 
-    def _handle_disconnected(self, client: SlimClient) -> None:
+    async def _handle_disconnected(self, client: SlimClient) -> None:
         """Handle a client disconnected event."""
         player_id = client.player_id
-        prev = self._socket_clients.pop(player_id, None)
-        if prev is None:
-            # already cleaned up
-            return
+        if client := self._socket_clients.pop(player_id, None):
+            # store last state in cache
+            await self.mass.cache.set(
+                f"{CACHE_KEY_PREV_STATE}.{player_id}", (client.powered, client.volume_level)
+            )
         if player := self.mass.players.get(player_id):
             player.available = False
             self.mass.players.update(player_id)
