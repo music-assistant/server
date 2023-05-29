@@ -14,7 +14,11 @@ from typing import TYPE_CHECKING
 
 import aiofiles
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_OUTPUT_CODEC,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -42,7 +46,7 @@ PLAYER_CONFIG_ENTRIES = (
         key="read_ahead",
         type=ConfigEntryType.INTEGER,
         range=(0, 2000),
-        default_value=500,
+        default_value=1000,
         label="Read ahead buffer",
         description="Sets the number of milliseconds of audio buffer in the player. "
         "This is important to absorb network throughput jitter. "
@@ -67,6 +71,9 @@ PLAYER_CONFIG_ENTRIES = (
         description="Save some network bandwidth by sending the audio as "
         "(lossless) ALAC at the cost of a bit CPU.",
         advanced=True,
+    ),
+    ConfigEntry.from_dict(
+        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "pcm", "hidden": True}
     ),
 )
 
