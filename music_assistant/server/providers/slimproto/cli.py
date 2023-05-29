@@ -11,7 +11,6 @@ from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.util import select_free_port
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import PlayerState
-from music_assistant.server.models.plugin import PluginProvider
 
 from .models import (
     CommandErrorMessage,
@@ -29,6 +28,8 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+
+    from . import SlimprotoProvider
 
 
 # ruff: noqa: ARG002, E501
@@ -93,12 +94,18 @@ def parse_args(raw_values: list[int | str]) -> tuple[ArgsType, KwargsType]:
     return (args, kwargs)
 
 
-class LmsCli(PluginProvider):
+class LmsCli:
     """Basic LMS CLI (json rpc and telnet) implementation, (partly) compatible with Logitech Media Server."""
 
     cli_port: int = 9090
 
-    async def handle_setup(self) -> None:
+    def __init__(self, slimproto: SlimprotoProvider) -> None:
+        """Initialize."""
+        self.slimproto = slimproto
+        self.logger = self.slimproto.logger.getChild("cli")
+        self.mass = self.slimproto.mass
+
+    async def setup(self) -> None:
         """Handle async initialization of the plugin."""
         self.logger.info("Registering jsonrpc endpoints on the webserver")
         self.mass.webserver.register_route("/jsonrpc.js", self._handle_jsonrpc)

@@ -8,6 +8,5 @@
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1123",
   "multi_instance": false,
   "builtin": false,
-  "load_by_default": true,
-  "depends_on": "lms_cli"
+  "load_by_default": true
 }

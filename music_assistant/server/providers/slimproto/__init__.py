@@ -31,6 +31,8 @@ from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
 
+from .cli import LmsCli
+
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
@@ -101,22 +103,24 @@ class SlimprotoProvider(PlayerProvider):
     _socket_clients: dict[str, SlimClient]
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
     _virtual_providers: dict[str, tuple[Callable, Callable]]
+    _cli: LmsCli
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}
         self._virtual_providers = {}
+        self._cli = LmsCli(self)
+        await self._cli.setup()
         # autodiscovery of the slimproto server does not work
         # when the port is not the default (3483) so we hardcode it for now
         slimproto_port = 3483
-        cli_port = cli_prov.cli_port if (cli_prov := self.mass.get_provider("lms_cli")) else None
         self.logger.info("Starting SLIMProto server on port %s", slimproto_port)
         self._socket_servers = (
             # start slimproto server
             await asyncio.start_server(self._create_client, "0.0.0.0", slimproto_port),
             # setup discovery
-            await start_discovery(slimproto_port, cli_port, self.mass.webserver.port),
+            await start_discovery(slimproto_port, self._cli.cli_port, self.mass.webserver.port),
         )
 
     async def unload(self) -> None:
@@ -128,6 +132,8 @@ class SlimprotoProvider(PlayerProvider):
         if hasattr(self, "_socket_servers"):
             for _server in self._socket_servers:
                 _server.close()
+        if hasattr(self, "_cli"):
+            await self._cli.unload()
         self._socket_servers = None
 
     async def _create_client(
