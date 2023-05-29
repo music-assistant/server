@@ -510,7 +510,7 @@ class ConfigController:
             # check if there are no other providers dependent of this provider
             for prov in self.mass.get_available_providers():
                 if prov.depends_on == config.domain and self.mass.get_provider(prov.domain):
-                    raise RuntimeError(f"Provider {prov.name} depends on {config.name}.")
+                    raise RuntimeError(f"Provider {prov.name} depends on {config.domain}.")
             await self.mass.unload_provider(config.instance_id)
         # load succeeded, save new config
         config.last_error = None
