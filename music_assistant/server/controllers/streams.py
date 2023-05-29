@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
+    CONF_OUTPUT_CODEC,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
@@ -216,9 +217,9 @@ class StreamsController:
         player_id: str,
         seek_position: int = 0,
         fade_in: bool = False,
-        content_type: ContentType = ContentType.WAV,
         auto_start_runner: bool = True,
         flow_mode: bool = False,
+        output_codec: ContentType | None = None,
     ) -> str:
         """Resolve the stream URL for the given QueueItem.
 
@@ -232,9 +233,9 @@ class StreamsController:
           call resolve for every child player.
         - seek_position: start playing from this specific position.
         - fade_in: fade in the music at start (e.g. at resume).
-        - content_type: Encode the stream in the given format.
         - auto_start_runner: Start the audio stream in advance (stream track now).
         - flow_mode: enable flow mode where the queue tracks are streamed as continuous stream.
+        - output_codec: Encode the stream in the given format (None for auto select).
         """
         # check if there is already a pending job
         for stream_job in self.stream_jobs.values():
@@ -282,7 +283,9 @@ class StreamsController:
             stream_job.start()
 
         # generate player-specific URL for the stream job
-        fmt = content_type.value
+        if output_codec is None:
+            output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
+        fmt = output_codec.value
         url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url
 

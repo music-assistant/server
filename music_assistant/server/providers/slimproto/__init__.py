@@ -14,7 +14,11 @@ from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_OUTPUT_CODEC,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -62,19 +66,6 @@ class SyncPlayPoint:
 CONF_SYNC_ADJUST = "sync_adjust"
 CONF_PLAYER_VOLUME = "player_volume"
 DEFAULT_PLAYER_VOLUME = 20
-
-SLIM_PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_SYNC_ADJUST,
-        type=ConfigEntryType.INTEGER,
-        range=(0, 1500),
-        default_value=0,
-        label="Correct synchronization delay",
-        description="If this player is playing audio synced with other players "
-        "and you always hear the audio too late on this player, you can shift the audio a bit.",
-        advanced=True,
-    ),
-)
 
 
 async def setup(
@@ -182,7 +173,34 @@ class SlimprotoProvider(PlayerProvider):
 
     def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        return SLIM_PLAYER_CONFIG_ENTRIES
+        # pick default codec based on capabilities
+        default_codec = ContentType.PCM
+        if client := self._socket_clients.get(player_id):
+            for fmt, fmt_type in (
+                ("flc", ContentType.FLAC),
+                ("pcm", ContentType.PCM),
+                ("mp3", ContentType.MP3),
+            ):
+                if fmt in client.supported_codecs:
+                    default_codec = fmt_type
+                    break
+
+        return (
+            ConfigEntry(
+                key=CONF_SYNC_ADJUST,
+                type=ConfigEntryType.INTEGER,
+                range=(0, 1500),
+                default_value=0,
+                label="Correct synchronization delay",
+                description="If this player is playing audio synced with other players "
+                "and you always hear the audio too late on this player, "
+                "you can shift the audio a bit.",
+                advanced=True,
+            ),
+            ConfigEntry.from_dict(
+                {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": default_codec}
+            ),
+        )
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -256,30 +274,17 @@ class SlimprotoProvider(PlayerProvider):
     ) -> None:
         """Handle PlayMedia on slimproto player(s)."""
         player_id = client.player_id
-        # pick codec based on capabilities
-        codec_map = (
-            ("flc", ContentType.FLAC),
-            ("pcm", ContentType.PCM),
-            ("mp3", ContentType.MP3),
-        )
-        for fmt, fmt_type in codec_map:
-            if fmt in client.supported_codecs:
-                content_type = fmt_type
-                break
-        else:
-            self.logger.debug("Could not auto determine supported codec, fallback to PCM")
-            content_type = ContentType.PCM
+
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=player_id,
             seek_position=seek_position,
             fade_in=fade_in,
-            content_type=content_type,
             flow_mode=flow_mode,
         )
         await client.play_url(
             url=url,
-            mime_type=f"audio/{content_type.value}",
+            mime_type=f"audio/{url.split('.')[-1]}",
             metadata={"item_id": queue_item.queue_item_id},
             send_flush=send_flush,
             transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
