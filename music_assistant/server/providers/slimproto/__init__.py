@@ -508,9 +508,11 @@ class SlimprotoProvider(PlayerProvider):
     async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
         player_id = client.player_id
-        # deny duplicate requests
-        if self._socket_clients.pop(player_id, None):
-            raise RuntimeError(f"Duplicate connection for the same player: {client.player_id}")
+        if existing := self._socket_clients.pop(player_id, None):
+            # race condition: new socket client connected while
+            # the old one has not yet been cleaned up
+            existing.disconnect()
+
         self._socket_clients[player_id] = client
         # update all attributes
         self._handle_player_update(client)
@@ -521,8 +523,8 @@ class SlimprotoProvider(PlayerProvider):
             self._handle_player_update(item)
         # restore volume and power state
         if last_state := await self.mass.cache.get(f"{CACHE_KEY_PREV_STATE}.{player_id}"):
-            init_volume = last_state[0]
-            init_power = last_state[1]
+            init_power = last_state[0]
+            init_volume = last_state[1]
         else:
             init_volume = DEFAULT_PLAYER_VOLUME
             init_power = False
