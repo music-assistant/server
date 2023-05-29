@@ -284,7 +284,9 @@ class StreamsController:
 
         # generate player-specific URL for the stream job
         if output_codec is None:
-            output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
+            output_codec = ContentType(
+                self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
+            )
         fmt = output_codec.value
         url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
         return url

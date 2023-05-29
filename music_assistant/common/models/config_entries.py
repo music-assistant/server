@@ -293,6 +293,7 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
         ConfigValueOption("AAC (lossy, superior quality)", "aac"),
         ConfigValueOption("MP3 (lossy, average quality)", "mp3"),
         ConfigValueOption("WAV (lossless, huge file size)", "wav"),
+        ConfigValueOption("PCM (lossless, huge file size)", "pcm"),
     ],
     default_value="flac",
     description="Define the codec that is sent to the player when streaming audio. "
