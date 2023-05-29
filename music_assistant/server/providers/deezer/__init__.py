@@ -2,6 +2,7 @@
 import hashlib
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from math import ceil
 
 import deezer
@@ -44,7 +45,6 @@ from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
 
 from .gw_client import GWClient
-from .helpers import Credential, DeezerClient
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -66,6 +66,22 @@ SUPPORTED_FEATURES = (
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.RECOMMENDATIONS,
 )
+
+
+@dataclass
+class Credential:
+    """Class for storing credentials."""
+
+    def __init__(self, app_id: int, app_secret: str, access_token: str):
+        """Set the correct things."""
+        self.app_id = app_id
+        self.app_secret = app_secret
+        self.access_token = access_token
+
+    app_id: int
+    app_secret: str
+    access_token: str
+
 
 CONF_ACCESS_TOKEN = "access_token"
 CONF_ACTION_AUTH = "auth"
@@ -122,7 +138,7 @@ async def get_config_entries(
 class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     """Deezer provider support."""
 
-    client: DeezerClient
+    client: deezer.Client
     gw_client: GWClient
     creds: Credential
     _throttler: Throttler
@@ -143,8 +159,11 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             access_token=self.config.get_value(CONF_ACCESS_TOKEN),  # type: ignore
         )
         try:
-            deezer_client = await DeezerClient.get_deezer_client(self=None, creds=self.creds)
-            self.client = DeezerClient(creds=self.creds, client=deezer_client)
+            self.client = deezer.Client(
+                app_id=self.creds.app_id,
+                app_secret=self.creds.app_secret,
+                access_token=self.creds.access_token,
+            )
         except Exception as error:
             raise LoginFailed("Invalid login credentials") from error
 
