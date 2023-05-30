@@ -57,6 +57,7 @@ RUN set -x \
         libsox3 \
         sox \
         cifs-utils \
+        libnfs-utils \
     # cleanup
     && rm -rf /tmp/* \
     && rm -rf /var/lib/apt/lists/*
