@@ -263,7 +263,6 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
                     prov_media.item_id
                 )
-                LOGGER.debug(f"Got streamdetails from music provider: {streamdetails}")
                 streamdetails.content_type = ContentType(streamdetails.content_type)
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
