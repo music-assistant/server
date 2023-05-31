@@ -238,7 +238,7 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
     """
     streamdetails = None
     if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
-        LOGGER.debug(f"Using cached streamdetails for {queue_item}")
+        LOGGER.debug(f"Using cached streamdetails for {queue_item.uri}")
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = None
         queue_item.streamdetails.seconds_streamed = None
