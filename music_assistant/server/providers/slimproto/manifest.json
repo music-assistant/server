@@ -4,7 +4,7 @@
   "name": "Slimproto",
   "description": "Support for slimproto based players (e.g. squeezebox, squeezelite).",
   "codeowners": ["@music-assistant"],
-  "requirements": ["aioslimproto==2.2.1"],
+  "requirements": ["aioslimproto==2.2.2"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1123",
   "multi_instance": false,
   "builtin": false,
