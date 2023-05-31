@@ -30,7 +30,7 @@ class CommandMessage(TypedDict):
 
     id: int | str
     method: str
-    params: list[str | int | list[str | int]]
+    params: tuple[str, list[str | int]]
 
 
 class CommandResultMessage(CommandMessage):
@@ -51,6 +51,14 @@ class CommandErrorMessage(CommandMessage, TypedDict):
 
     id: int | str | None
     error: ErrorDetails
+
+
+class CometDResponse(TypedDict):
+    """CometD Response Message."""
+
+    channel: str
+    id: str
+    data: dict[str, Any]
 
 
 PlayerItem = TypedDict(
@@ -225,3 +233,25 @@ def player_status_from_mass(
             for index, item in enumerate(queue_items)
         ],
     }
+
+
+ServerStatusResponse = TypedDict(
+    "ServerStatusMessage",
+    {
+        "ip": str,
+        "httpport": str,
+        "version": str,
+        "uuid": str,
+        "info total genres": int,
+        "sn player count": int,
+        "lastscan": str,
+        "info total duration": int,
+        "info total albums": int,
+        "info total songs": int,
+        "info total artists": int,
+        "players_loop": list[PlayerItem],
+        "player count": int,
+        "other player count": int,
+        "other_players_loop": list[PlayerItem],
+    },
+)

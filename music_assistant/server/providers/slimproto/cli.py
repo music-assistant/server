@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import asyncio
+import time
 import urllib.parse
 from typing import TYPE_CHECKING, Any
 
+import shortuuid
 from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
@@ -13,12 +15,13 @@ from music_assistant.common.models.config_entries import ConfigEntry, ConfigValu
 from music_assistant.common.models.enums import PlayerState
 
 from .models import (
+    CometDResponse,
     CommandErrorMessage,
     CommandMessage,
-    CommandResultMessage,
     PlayerItem,
     PlayersResponse,
     PlayerStatusResponse,
+    ServerStatusResponse,
     player_item_from_mass,
     player_status_from_mass,
 )
@@ -104,6 +107,8 @@ class LmsCli:
         self.slimproto = slimproto
         self.logger = self.slimproto.logger.getChild("cli")
         self.mass = self.slimproto.mass
+        self._cometd_clients: dict[str, asyncio.Queue[CometDResponse]] = {}
+        self._player_map: dict[str, str] = {}
 
     async def setup(self) -> None:
         """Handle async initialization of the plugin."""
@@ -195,52 +200,182 @@ class LmsCli:
             self.logger.debug("Client disconnected from Telnet CLI")
 
     async def _handle_jsonrpc(self, request: web.Request) -> web.Response:
-        """Handle request for image proxy."""
+        """Handle request on JSON-RPC endpoint."""
         command_msg: CommandMessage = await request.json(loads=json_loads)
         self.logger.debug("Received request: %s", command_msg)
-
-        if command_msg["method"] == "slim.request":
-            # Slim request handler
-            # {"method":"slim.request","id":1,"params":["aa:aa:ca:5a:94:4c",["status","-", 2, "tags:xcfldatgrKN"]]}
-            player_id = command_msg["params"][0]
-            command = str(command_msg["params"][1][0])
-            args, kwargs = parse_args(command_msg["params"][1][1:])
-
-            if handler := getattr(self, f"_handle_{command}", None):
-                # run handler for command
-                self.logger.debug(
-                    "Handling JSON-RPC-request (player: %s command: %s - args: %s - kwargs: %s)",
-                    player_id,
-                    command,
-                    str(args),
-                    str(kwargs),
-                )
-                cmd_result = handler(player_id, *args, **kwargs)
-                if asyncio.iscoroutine(cmd_result):
-                    cmd_result = await cmd_result
-
-                if cmd_result is None:
-                    cmd_result = {}
-                elif not isinstance(cmd_result, dict):
-                    # individual values are returned with underscore ?!
-                    cmd_result = {f"_{command}": cmd_result}
-                result: CommandResultMessage = {
-                    **command_msg,
-                    "result": cmd_result,
-                }
-            else:
-                # no handler found
-                self.logger.warning("No handler for %s", command)
-                result: CommandErrorMessage = {
-                    **command_msg,
-                    "error": {"code": -1, "message": "Invalid command"},
-                }
-            # return the response to the client
-            return web.json_response(result, dumps=json_dumps)
+        cmd_result = await self._handle_command(command_msg["params"][0], command_msg["params"][1])
+        if cmd_result is None:
+            result: CommandErrorMessage = {
+                **command_msg,
+                "error": {"code": -1, "message": "Invalid command"},
+            }
+        else:
+            result: CommandErrorMessage = {
+                **command_msg,
+                "error": {"code": -1, "message": "Invalid command"},
+            }
+        # return the response to the client
+        return web.json_response(result, dumps=json_dumps)
 
     async def _handle_cometd(self, request: web.Request) -> web.Response:
-        """Handle request for image proxy."""
-        return web.Response(status=404)
+        """
+        Handle CometD request on the json CLI.
+
+        https://github.com/Logitech/slimserver/blob/public/8.4/Slim/Web/Cometd.pm
+        """
+        # ruff: noqa: PLR0915
+        responses = []
+        is_subscribe_connection = False
+        clientid = ""
+        json_msg: list[dict[str, Any]] = await request.json()
+        # cometd message is an array of commands/messages
+        for cometd_msg in json_msg:
+            channel = cometd_msg.get("channel")
+            # try to figure out clientid
+            if not clientid and cometd_msg.get("clientId"):
+                clientid = cometd_msg["clientId"]
+            elif not clientid and cometd_msg.get("data", {}).get("response"):
+                clientid = cometd_msg["data"]["response"].split("/")[1]
+            # messageid is optional but if provided we must pass it along
+            msgid = cometd_msg.get("id", "")
+            response = {
+                "channel": channel,
+                "successful": True,
+                "id": msgid,
+                "clientId": clientid,
+            }
+            self._cometd_clients.setdefault(clientid, asyncio.Queue())
+
+            if channel == "/meta/handshake":
+                # handshake message
+                response["version"] = "1.0"
+                response["clientId"] = shortuuid.uuid()
+                response["supportedConnectionTypes"] = ["streaming"]
+                response["advice"] = {
+                    "reconnect": "retry",
+                    "timeout": 60000,
+                    "interval": 0,
+                }
+
+            elif channel in ("/meta/connect", "/meta/reconnect"):
+                # (re)connect message
+                self.logger.debug("CometD Client (re-)connected: %s", clientid)
+                response["timestamp"] = time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime())
+                response["advice"] = {"interval": 5000}
+
+            elif channel == "/meta/subscribe":
+                is_subscribe_connection = True
+                response["subscription"] = cometd_msg.get("subscription")
+
+            elif channel in ("/slim/request", "/slim/subscribe"):
+                # async request (similar to json rpc call)
+                result = await self._handle_command(
+                    cometd_msg["data"]["request"][0], cometd_msg["data"]["request"][1]
+                )
+                # create mapping table which client is subscribing to which player
+                if player_id := cometd_msg["data"]["request"][0]:
+                    # create mapping table which client is subscribing to which player
+                    self._player_map[clientid] = player_id
+
+                # the result is posted on the client queue
+                await self._cometd_clients[clientid].put(
+                    {
+                        "channel": cometd_msg["data"]["response"],
+                        "id": msgid,
+                        "data": result,
+                        "ext": {"priority": ""},
+                    }
+                )
+            else:
+                self.logger.warning("Unhandled CometD channel %s", channel)
+
+            # always reply with the (default) response to every message
+            responses.append(response)
+
+        # regular command/handshake messages are just replied and connection closed
+        if not is_subscribe_connection:
+            return web.json_response(responses)
+
+        # the subscription connection is kept open and events are streamed to the client
+        resp = web.StreamResponse(
+            status=200,
+            reason="OK",
+        )
+        resp.enable_chunked_encoding()
+        await resp.prepare(request)
+        await resp.write(json_dumps(responses).encode("iso-8859-1"))
+
+        # as some sort of heartbeat, the server- and playerstatus is sent every 30 seconds
+        loop = asyncio.get_running_loop()
+
+        async def send_status():
+            if clientid not in self._cometd_clients:
+                return
+
+            player = self.mass.players.get(self._player_map.get(clientid))
+            await self._cometd_clients[clientid].put(
+                {
+                    "channel": f"/{clientid}/slim/serverstatus",
+                    "id": "1",
+                    "data": await self._handle_serverstatus("", []),
+                }
+            )
+            if player is not None:
+                await self._cometd_clients[clientid].put(
+                    {
+                        "channel": f"/{clientid}/slim/status",
+                        "id": "1",
+                        "data": await self._handle_status(player.player_id, []),
+                    }
+                )
+
+            # reschedule self
+            loop.call_later(30, loop.create_task, send_status())
+
+        loop.create_task(send_status())
+
+        # keep delivering messages to the client until it disconnects
+        try:
+            # keep sending messages/events from the client's queue
+            while clientid in self._cometd_clients and not resp.task.done():
+                msg = await self._cometd_clients[clientid].get()
+                # make sure we always send an array of messages
+                data = json_dumps([msg]).encode("iso-8859-1")
+                await resp.write(data)
+        except ConnectionResetError:
+            pass
+        finally:
+            self._cometd_clients.pop(clientid, None)
+            self.logger.debug("CometD Client disconnected: %s", clientid)
+        return resp
+
+    async def _handle_command(self, player_id: str, params: list[str | int]) -> Any:
+        """Handle command for either JSON or CometD request."""
+        # Slim request handler
+        # {"method":"slim.request","id":1,"params":["aa:aa:ca:5a:94:4c",["status","-", 2, "tags:xcfldatgrKN"]]}
+        command = str(params[0])
+        args, kwargs = parse_args(params[1:])
+        if handler := getattr(self, f"_handle_{command}", None):
+            # run handler for command
+            self.logger.debug(
+                "Handling JSON-RPC-request (player: %s command: %s - args: %s - kwargs: %s)",
+                player_id,
+                command,
+                str(args),
+                str(kwargs),
+            )
+            cmd_result = handler(player_id, *args, **kwargs)
+            if asyncio.iscoroutine(cmd_result):
+                cmd_result = await cmd_result
+            if cmd_result is None:
+                cmd_result = {}
+            elif not isinstance(cmd_result, dict):
+                # individual values are returned with underscore ?!
+                cmd_result = {f"_{command}": cmd_result}
+            return cmd_result
+        # no handler found
+        self.logger.warning("No handler for %s", str(params))
+        return None
 
     def _handle_players(
         self,
@@ -287,6 +422,63 @@ class LmsCli:
         return player_status_from_mass(
             self.mass, player=player, queue=queue, queue_items=queue_items
         )
+
+    async def _handle_serverstatus(
+        self,
+        player_id: str,
+        *args,
+        start_index: int = 0,
+        limit: int = 2,
+        tags: str = "xcfldatgrKN",
+        **kwargs,
+    ) -> ServerStatusResponse:
+        """Handle server status command."""
+        players: list[PlayerItem] = []
+        for index, mass_player in enumerate(self.mass.players.all()):
+            if isinstance(start_index, int) and index < start_index:
+                continue
+            if len(players) > limit:
+                break
+            players.append(player_item_from_mass(start_index + index, mass_player))
+        return ServerStatusResponse(
+            {
+                "ip": self.mass.base_ip,
+                "httpport": str(self.mass.webserver.port),
+                "version": "7.9",
+                "uuid": self.mass.server_id,
+                # TODO: set these vars ?
+                "info total duration": 0,
+                "info total genres": 0,
+                "sn player count": 0,
+                "lastscan": "0",
+                "info total albums": 0,
+                "info total songs": 0,
+                "info total artists": 0,
+                "players_loop": players,
+                "player count": len(players),
+                "other player count": 0,
+                "other_players_loop": [],
+            }
+        )
+
+    async def _handle_firmwareupgrade(
+        self,
+        player_id: str,
+        *args,
+        **kwargs,
+    ) -> ServerStatusResponse:
+        """Handle firmwareupgrade command."""
+        return {"firmwareUpgrade": 0}
+
+    async def _handle_artworkspec(
+        self,
+        player_id: str,
+        *args,
+        **kwargs,
+    ) -> ServerStatusResponse:
+        """Handle firmwareupgrade command."""
+        # https://github.com/Logitech/slimserver/blob/e9c2f88e7ca60b3648b66116240f3f5fe6ca3188/Slim/Control/Commands.pm#L224
+        return None
 
     def _handle_mixer(
         self,
