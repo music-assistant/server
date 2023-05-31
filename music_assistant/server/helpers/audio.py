@@ -238,6 +238,7 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
     """
     streamdetails = None
     if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
+        LOGGER.debug(f"Using cached streamdetails for {queue_item}")
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = None
         queue_item.streamdetails.seconds_streamed = None
@@ -251,15 +252,18 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
             full_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
         ):
             if not prov_media.available:
+                LOGGER.debug(f"Skipping unavailable {prov_media}")
                 continue
             # get streamdetails from provider
             music_prov = mass.get_provider(prov_media.provider_instance)
             if not music_prov:
+                LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
                     prov_media.item_id
                 )
+                LOGGER.debug(f"Got streamdetails from music provider: {streamdetails}")
                 streamdetails.content_type = ContentType(streamdetails.content_type)
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
