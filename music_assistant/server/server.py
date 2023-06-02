@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
@@ -12,12 +13,21 @@ from aiohttp import ClientSession, TCPConnector
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
 from music_assistant.common.helpers.util import get_ip, get_ip_pton
+from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
-from music_assistant.constants import CONF_PROVIDERS, CONF_SERVER_ID, CONF_WEB_IP, ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_PROVIDERS,
+    CONF_SERVER_ID,
+    CONF_WEB_IP,
+    MIN_SCHEMA_VERSION,
+    ROOT_LOGGER_NAME,
+    SCHEMA_VERSION,
+    VERSION,
+)
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata import MetaDataController
@@ -43,6 +53,12 @@ LOGGER = logging.getLogger(ROOT_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
+
+ENABLE_HTTP_CLEANUP_CLOSED = not (3, 11, 1) <= sys.version_info < (3, 11, 4)
+# Enabling cleanup closed on python 3.11.1+ leaks memory relatively quickly
+# see https://github.com/aio-libs/aiohttp/issues/7252
+# aiohttp interacts poorly with https://github.com/python/cpython/pull/98540
+# The issue was fixed in 3.11.4 via https://github.com/python/cpython/pull/104485
 
 
 class MusicAssistant:
@@ -81,7 +97,12 @@ class MusicAssistant:
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
-            connector=TCPConnector(ssl=False),
+            connector=TCPConnector(
+                ssl=False,
+                enable_cleanup_closed=ENABLE_HTTP_CLEANUP_CLOSED,
+                limit=4096,
+                limit_per_host=100,
+            ),
         )
         # setup config controller first and fetch important config values
         await self.config.setup()
@@ -132,6 +153,17 @@ class MusicAssistant:
         if not self.config.initialized:
             return ""
         return self.config.get(CONF_SERVER_ID)  # type: ignore[no-any-return]
+
+    @api_command("info")
+    def get_server_info(self) -> ServerInfoMessage:
+        """Return Info of this server."""
+        return ServerInfoMessage(
+            server_id=self.server_id,
+            server_version=VERSION,
+            schema_version=SCHEMA_VERSION,
+            min_supported_schema_version=MIN_SCHEMA_VERSION,
+            base_url=self.webserver.base_url,
+        )
 
     @api_command("providers/available")
     def get_available_providers(self) -> list[ProviderManifest]:
@@ -457,16 +489,16 @@ class MusicAssistant:
 
     def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
-        zeroconf_type = "_music-assistant._tcp.local."
+        zeroconf_type = "_mass._tcp.local."
         server_id = self.server_id
 
         info = ServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[get_ip_pton()],
+            addresses=[get_ip_pton(self.base_ip)],
             port=self.webserver.port,
-            properties={},
-            server=f"mass_{server_id}.local.",
+            properties=self.get_server_info().to_dict(),
+            server="mass.local.",
         )
         LOGGER.debug("Starting Zeroconf broadcast...")
         try:

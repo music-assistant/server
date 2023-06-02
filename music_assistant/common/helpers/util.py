@@ -3,15 +3,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-import platform
-import re
 import socket
-import tempfile
 from collections.abc import Callable
 from typing import Any, TypeVar
-
-import memory_tempfile
-import unidecode
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -48,13 +42,6 @@ def try_parse_bool(possible_bool: Any) -> str:
     if isinstance(possible_bool, bool):
         return possible_bool
     return possible_bool in ["true", "True", "1", "on", "ON", 1]
-
-
-def create_safe_string(input_str: str) -> str:
-    """Return clean lowered string for compare actions."""
-    input_str = input_str.lower().strip()
-    unaccented_string = unidecode.unidecode(input_str)
-    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string)
 
 
 def create_sort_name(input_str: str) -> str:
@@ -191,13 +178,13 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-def get_ip_pton():
+def get_ip_pton(ip_string: str = get_ip()):
     """Return socket pton for local ip."""
     # pylint:disable=no-member
     try:
-        return socket.inet_pton(socket.AF_INET, get_ip())
+        return socket.inet_pton(socket.AF_INET, ip_string)
     except OSError:
-        return socket.inet_pton(socket.AF_INET6, get_ip())
+        return socket.inet_pton(socket.AF_INET6, ip_string)
 
 
 def get_folder_size(folderpath):
@@ -236,13 +223,6 @@ def merge_tuples(base: tuple, new: tuple) -> tuple:
 def merge_lists(base: list, new: list) -> list:
     """Merge 2 lists."""
     return list(x for x in base if x not in new) + list(new)
-
-
-def create_tempfile():
-    """Return a (named) temporary file."""
-    if platform.system() == "Linux":
-        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
-    return tempfile.NamedTemporaryFile(buffering=0)
 
 
 def get_changed_keys(

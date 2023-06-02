@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, AsyncGenerator  # noqa: UP035
 from urllib.parse import unquote
 
 import pytube
-import ytmusicapi
 
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name
@@ -36,7 +35,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.constants import CONF_USERNAME
+from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -53,6 +52,8 @@ from .helpers import (
     library_add_remove_album,
     library_add_remove_artist,
     library_add_remove_playlist,
+    login_oauth,
+    refresh_oauth_token,
     search,
 )
 
@@ -64,10 +65,19 @@ if TYPE_CHECKING:
 
 
 CONF_COOKIE = "cookie"
+CONF_ACTION_AUTH = "auth"
+CONF_AUTH_TOKEN = "auth_token"
+CONF_REFRESH_TOKEN = "refresh_token"
+CONF_TOKEN_TYPE = "token_type"
+CONF_EXPIRY_TIME = "expiry_time"
 
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
+# Youtube Music has the very unique id of "LM" for the likes playlist
+# when this playlist ID is detected, we make the id unique to the user
+# by adding the user's instance id to it
+YT_YOUR_LIKES_PLAYLIST_ID = "LM"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 
 SUPPORTED_FEATURES = (
@@ -97,7 +107,7 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,
+    instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -108,18 +118,45 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # ruff: noqa: ARG001
+    if action == CONF_ACTION_AUTH:
+        async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
+            token = await login_oauth(auth_helper)
+            values[CONF_AUTH_TOKEN] = token["access_token"]
+            values[CONF_REFRESH_TOKEN] = token["refresh_token"]
+            values[CONF_EXPIRY_TIME] = token["expires_in"]
+            values[CONF_TOKEN_TYPE] = token["token_type"]
+    # return the collected config entries
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_AUTH_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Authentication token for Youtube Music",
+            description="You need to link Music Assistant to your Youtube Music account. "
+            "Please ignore the code on the page the next page and click 'Next'.",
+            action=CONF_ACTION_AUTH,
+            action_label="Authenticate on Youtube Music",
+            value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
         ConfigEntry(
-            key=CONF_COOKIE,
+            key=CONF_REFRESH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Login Cookie",
-            required=True,
-            description="The Login cookie you grabbed from an existing session, "
-            "see the documentation.",
+            label=CONF_REFRESH_TOKEN,
+            hidden=True,
+            value=values.get(CONF_REFRESH_TOKEN) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_EXPIRY_TIME,
+            type=ConfigEntryType.INTEGER,
+            label="Expiry time of auth token for Youtube Music",
+            hidden=True,
+            value=values.get(CONF_EXPIRY_TIME) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_TOKEN_TYPE,
+            type=ConfigEntryType.STRING,
+            label="The token type required to create headers",
+            hidden=True,
+            value=values.get(CONF_TOKEN_TYPE) if values else None,
         ),
     )
 
@@ -135,9 +172,9 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the YTMusic provider."""
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_COOKIE):
+        if not self.config.get_value(CONF_AUTH_TOKEN):
             raise LoginFailed("Invalid login credentials")
-        await self._initialize_headers(cookie=self.config.get_value(CONF_COOKIE))
+        await self._initialize_headers()
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
         self._signature_timestamp = await self._get_signature_timestamp()
@@ -185,32 +222,36 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Youtube Music."""
+        await self._check_oauth_token()
         artists_obj = await get_library_artists(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+            headers=self._headers,
         )
         for artist in artists_obj:
             yield await self._parse_artist(artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Youtube Music."""
+        await self._check_oauth_token()
         albums_obj = await get_library_albums(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+            headers=self._headers,
         )
         for album in albums_obj:
             yield await self._parse_album(album, album["browseId"])
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
+        await self._check_oauth_token()
         playlists_obj = await get_library_playlists(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+            headers=self._headers,
         )
         for playlist in playlists_obj:
             yield await self._parse_playlist(playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
+        await self._check_oauth_token()
         tracks_obj = await get_library_tracks(
-            headers=self._headers, username=self.config.get_value(CONF_USERNAME)
+            headers=self._headers,
         )
         for track in tracks_obj:
             # Library tracks sometimes do not have a valid artist id
@@ -245,7 +286,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
-        if artist_obj := await get_artist(prov_artist_id=prov_artist_id):
+        if artist_obj := await get_artist(prov_artist_id=prov_artist_id, headers=self._headers):
             return await self._parse_artist(artist_obj=artist_obj)
         raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
@@ -257,21 +298,25 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        if playlist_obj := await get_playlist(
-            prov_playlist_id=prov_playlist_id,
-            headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
-        ):
+        await self._check_oauth_token()
+        playlist_id = (
+            YT_YOUR_LIKES_PLAYLIST_ID
+            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
+            else prov_playlist_id
+        )
+        if playlist_obj := await get_playlist(prov_playlist_id=playlist_id, headers=self._headers):
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        raise MediaNotFoundError(f"Item {playlist_id} not found")
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id,
-            headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
+        await self._check_oauth_token()
+        playlist_id = (
+            YT_YOUR_LIKES_PLAYLIST_ID
+            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
+            else prov_playlist_id
         )
+        playlist_obj = await get_playlist(prov_playlist_id=playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return
         for index, track in enumerate(playlist_obj["tracks"]):
@@ -291,7 +336,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
-        artist_obj = await get_artist(prov_artist_id=prov_artist_id)
+        artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if "albums" in artist_obj and "results" in artist_obj["albums"]:
             albums = []
             for album_obj in artist_obj["albums"]["results"]:
@@ -305,7 +350,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
-        artist_obj = await get_artist(prov_artist_id=prov_artist_id)
+        artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
             playlist_tracks = [
@@ -316,27 +361,19 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def library_add(self, prov_item_id, media_type: MediaType) -> None:
         """Add an item to the library."""
+        await self._check_oauth_token()
         result = False
         if media_type == MediaType.ARTIST:
             result = await library_add_remove_artist(
-                headers=self._headers,
-                prov_artist_id=prov_item_id,
-                add=True,
-                username=self.config.get_value(CONF_USERNAME),
+                headers=self._headers, prov_artist_id=prov_item_id, add=True
             )
         elif media_type == MediaType.ALBUM:
             result = await library_add_remove_album(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=True,
-                username=self.config.get_value(CONF_USERNAME),
+                headers=self._headers, prov_item_id=prov_item_id, add=True
             )
         elif media_type == MediaType.PLAYLIST:
             result = await library_add_remove_playlist(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=True,
-                username=self.config.get_value(CONF_USERNAME),
+                headers=self._headers, prov_item_id=prov_item_id, add=True
             )
         elif media_type == MediaType.TRACK:
             raise NotImplementedError
@@ -344,27 +381,19 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def library_remove(self, prov_item_id, media_type: MediaType):
         """Remove an item from the library."""
+        await self._check_oauth_token()
         result = False
         if media_type == MediaType.ARTIST:
             result = await library_add_remove_artist(
-                headers=self._headers,
-                prov_artist_id=prov_item_id,
-                add=False,
-                username=self.config.get_value(CONF_USERNAME),
+                headers=self._headers, prov_artist_id=prov_item_id, add=False
             )
         elif media_type == MediaType.ALBUM:
             result = await library_add_remove_album(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=False,
-                username=self.config.get_value(CONF_USERNAME),
+                headers=self._headers, prov_item_id=prov_item_id, add=False
             )
         elif media_type == MediaType.PLAYLIST:
             result = await library_add_remove_playlist(
-                headers=self._headers,
-                prov_item_id=prov_item_id,
-                add=False,
-                username=self.config.get_value(CONF_USERNAME),
+                headers=self._headers, prov_item_id=prov_item_id, add=False
             )
         elif media_type == MediaType.TRACK:
             raise NotImplementedError
@@ -372,23 +401,30 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
+        await self._check_oauth_token()
+        playlist_id = (
+            YT_YOUR_LIKES_PLAYLIST_ID
+            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
+            else prov_playlist_id
+        )
         return await add_remove_playlist_tracks(
             headers=self._headers,
-            prov_playlist_id=prov_playlist_id,
+            prov_playlist_id=playlist_id,
             prov_track_ids=prov_track_ids,
             add=True,
-            username=self.config.get_value(CONF_USERNAME),
         )
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        playlist_obj = await get_playlist(
-            prov_playlist_id=prov_playlist_id,
-            headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
+        await self._check_oauth_token()
+        playlist_id = (
+            YT_YOUR_LIKES_PLAYLIST_ID
+            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
+            else prov_playlist_id
         )
+        playlist_obj = await get_playlist(prov_playlist_id=playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return None
         tracks_to_delete = []
@@ -406,15 +442,14 @@ class YoutubeMusicProvider(MusicProvider):
             prov_playlist_id=prov_playlist_id,
             prov_track_ids=tracks_to_delete,
             add=False,
-            username=self.config.get_value(CONF_USERNAME),
         )
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
+        await self._check_oauth_token()
         result = []
         result = await get_song_radio_tracks(
             headers=self._headers,
-            username=self.config.get_value(CONF_USERNAME),
             prov_item_id=prov_track_id,
             limit=limit,
         )
@@ -434,7 +469,7 @@ class YoutubeMusicProvider(MusicProvider):
             return tracks
         return []
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, retry=True) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         data = {
             "playbackContext": {
@@ -445,6 +480,14 @@ class YoutubeMusicProvider(MusicProvider):
         track_obj = await self._post_data("player", data=data)
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
+        if not await self._is_valid_deciphered_url(url=url):
+            if not retry:
+                raise UnplayableMediaError(f"Could not resolve a valid URL for item '{item_id}'.")
+            self.logger.debug(
+                "Invalid playback URL encountered. Retrying with new signature timestamp."
+            )
+            self._signature_timestamp = await self._get_signature_timestamp()
+            return await self.get_stream_details(item_id=item_id, retry=False)
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -462,9 +505,16 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.channels = int(stream_format.get("audioChannels"))
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
             stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
+        if not stream_details:
+            self.logger.debug(
+                f"Returning NULL stream details for stream_format {stream_format}, "
+                "track_obj {track_obj}. "
+            )
         return stream_details
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
+        """Post data to the given endpoint."""
+        await self._check_oauth_token()
         url = f"{YTM_BASE_URL}{endpoint}"
         data.update(self._context)
         async with self.mass.http_session.post(
@@ -477,13 +527,27 @@ class YoutubeMusicProvider(MusicProvider):
             return await response.json()
 
     async def _get_data(self, url: str, params: dict = None):
+        """Get data from the given URL."""
+        await self._check_oauth_token()
         async with self.mass.http_session.get(
             url, headers=self._headers, params=params, cookies=self._cookies
         ) as response:
             return await response.text()
 
-    async def _initialize_headers(self, cookie: str) -> dict[str, str]:
+    async def _check_oauth_token(self) -> None:
+        """Verify the OAuth token is valid and refresh if needed."""
+        if self.config.get_value(CONF_EXPIRY_TIME) < time():
+            token = await refresh_oauth_token(
+                self.mass.http_session, self.config.get_value(CONF_REFRESH_TOKEN)
+            )
+            self.config.update({CONF_AUTH_TOKEN: token["access_token"]})
+            self.config.update({CONF_EXPIRY_TIME: time() + token["expires_in"]})
+            self.config.update({CONF_TOKEN_TYPE: token["token_type"]})
+            await self._initialize_headers()
+
+    async def _initialize_headers(self) -> dict[str, str]:
         """Return headers to include in the requests."""
+        auth = f"{self.config.get_value(CONF_TOKEN_TYPE)} {self.config.get_value(CONF_AUTH_TOKEN)}"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:72.0) Gecko/20100101 Firefox/72.0",  # noqa: E501
             "Accept": "*/*",
@@ -491,11 +555,9 @@ class YoutubeMusicProvider(MusicProvider):
             "Content-Type": "application/json",
             "X-Goog-AuthUser": "0",
             "x-origin": "https://music.youtube.com",
-            "Cookie": cookie,
+            "X-Goog-Request-Time": str(int(time())),
+            "Authorization": auth,
         }
-        sapisid = ytmusicapi.helpers.sapisid_from_cookie(cookie)
-        origin = headers.get("origin", headers.get("x-origin"))
-        headers["Authorization"] = ytmusicapi.helpers.get_authorization(sapisid + " " + origin)
         self._headers = headers
 
     async def _initialize_context(self) -> dict[str, str]:
@@ -582,9 +644,12 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        playlist = Playlist(
-            item_id=playlist_obj["id"], provider=self.domain, name=playlist_obj["title"]
+        playlist_id = (
+            f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
+            if playlist_obj["id"] == YT_YOUR_LIKES_PLAYLIST_ID
+            else playlist_obj["id"]
         )
+        playlist = Playlist(item_id=playlist_id, provider=self.domain, name=playlist_obj["title"])
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
@@ -595,7 +660,7 @@ class YoutubeMusicProvider(MusicProvider):
         playlist.is_editable = is_editable
         playlist.add_provider_mapping(
             ProviderMapping(
-                item_id=playlist_obj["id"],
+                item_id=playlist_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
             )
@@ -674,7 +739,7 @@ class YoutubeMusicProvider(MusicProvider):
             raise Exception("Unable to identify the signatureTimestamp.")
         return int(match.group(1))
 
-    async def _parse_stream_url(self, stream_format: dict, item_id: str, retry: bool = True) -> str:
+    async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
         """Figure out the stream URL to use based on the YT track object."""
         url = None
         if stream_format.get("signatureCipher"):
@@ -687,20 +752,13 @@ class YoutubeMusicProvider(MusicProvider):
                 ciphered_signature=cipher_parts["s"], item_id=item_id
             )
             url = cipher_parts["url"] + "&sig=" + signature
-            # Verify if URL is playable. If not, obtain a new cipher and try again.
-            if not await self._is_valid_deciphered_url(url=url):
-                if not retry:
-                    raise UnplayableMediaError(
-                        f"Cannot obtain a valid URL for item '{item_id}' after renewing cipher."
-                    )
-                self.logger.debug("Cipher expired. Obtaining new Cipher.")
-                self._cipher = None
-                return await self._parse_stream_url(
-                    stream_format=stream_format, item_id=item_id, retry=False
-                )
         elif stream_format.get("url"):
             # Non secured URL
             url = stream_format.get("url")
+        else:
+            self.logger.debug(
+                f"Something went wrong. No URL found for stream format {stream_format}"
+            )
         return url
 
     async def _decipher_signature(self, ciphered_signature: str, item_id: str):
@@ -721,7 +779,10 @@ class YoutubeMusicProvider(MusicProvider):
     async def _is_valid_deciphered_url(self, url: str) -> bool:
         """Verify whether the URL has been deciphered using a valid cipher."""
         async with self.mass.http_session.head(url) as response:
-            return response.status == 200
+            # TODO: Remove after 403 issue has been verified as fixed
+            if response.status != 200:
+                self.logger.debug(f"Deciphered URL HTTP status: {response.status}")
+            return response.status != 403
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(

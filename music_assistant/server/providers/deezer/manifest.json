@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "deezer",
+  "name": "Deezer",
+  "description": "Support for the Deezer streaming provider in Music Assistant.",
+  "codeowners": ["@Un10ck3d",  "@micha91"],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1245",
+  "requirements": ["deezer-python==5.12.0", "pycryptodome==3.18.0"],
+  "multi_instance": true
+}

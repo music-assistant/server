@@ -14,15 +14,16 @@ from typing import TYPE_CHECKING
 import aiofiles
 from aiohttp import ClientTimeout
 
-from music_assistant.common.helpers.util import create_tempfile
 from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
 from music_assistant.constants import (
-    CONF_VOLUME_NORMALISATION,
-    CONF_VOLUME_NORMALISATION_TARGET,
+    CONF_VOLUME_NORMALIZATION,
+    CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
-from music_assistant.server.helpers.process import AsyncProcess, check_output
+
+from .process import AsyncProcess, check_output
+from .util import create_tempfile
 
 if TYPE_CHECKING:
     from music_assistant.common.models.player_queue import QueueItem
@@ -237,6 +238,7 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
     """
     streamdetails = None
     if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
+        LOGGER.debug(f"Using cached streamdetails for {queue_item.uri}")
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = None
         queue_item.streamdetails.seconds_streamed = None
@@ -250,10 +252,12 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
             full_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
         ):
             if not prov_media.available:
+                LOGGER.debug(f"Skipping unavailable {prov_media}")
                 continue
             # get streamdetails from provider
             music_prov = mass.get_provider(prov_media.provider_instance)
             if not music_prov:
+                LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
@@ -295,11 +299,11 @@ async def get_gain_correct(
 ) -> tuple[float | None, float | None]:
     """Get gain correction for given queue / track combination."""
     player_settings = mass.config.get_player_config(streamdetails.queue_id)
-    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALISATION):
+    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         return (None, None)
     if streamdetails.gain_correct is not None:
         return (streamdetails.loudness, streamdetails.gain_correct)
-    target_gain = player_settings.get_value(CONF_VOLUME_NORMALISATION_TARGET)
+    target_gain = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
     track_loudness = await mass.music.get_track_loudness(
         streamdetails.item_id, streamdetails.provider
     )
@@ -746,7 +750,7 @@ async def _get_ffmpeg_args(
             "Please install ffmpeg on your OS to enable playback.",
         )
 
-    major_version = int(version.split(".")[0])
+    major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
 
     # generic args
     generic_args = [
@@ -755,6 +759,8 @@ async def _get_ffmpeg_args(
         "-loglevel",
         "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,crypto,pipe,fd",  # support nested protocols (e.g. within playlist)
     ]
     # collect input args
     input_args = []

@@ -420,7 +420,7 @@ class SlimprotoProvider(PlayerProvider):
         player = self.mass.players.get(client.player_id)
         sync_master_id = player.synced_to
 
-        # elapsed time change on the time will be auto picked up
+        # elapsed time change on the player will be auto picked up
         # by the player manager.
         player.elapsed_time = client.elapsed_seconds
         player.elapsed_time_last_updated = time.time()
@@ -557,9 +557,7 @@ class SlimprotoProvider(PlayerProvider):
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds."""
-        sync_delay = self.mass.config.get(
-            f"{CONF_PLAYERS}/{client.player_id}/{CONF_SYNC_ADJUST}", 0
-        )
+        sync_delay = self.mass.config.get_player_config_value(client.player_id, CONF_SYNC_ADJUST)
         if sync_delay != 0:
             return client.elapsed_milliseconds - sync_delay
         return client.elapsed_milliseconds
