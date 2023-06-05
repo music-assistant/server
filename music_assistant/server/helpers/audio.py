@@ -14,7 +14,6 @@ from typing import TYPE_CHECKING
 import aiofiles
 from aiohttp import ClientTimeout
 
-from music_assistant.common.helpers.util import create_tempfile
 from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
 from music_assistant.constants import (
@@ -22,7 +21,9 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
-from music_assistant.server.helpers.process import AsyncProcess, check_output
+
+from .process import AsyncProcess, check_output
+from .util import create_tempfile
 
 if TYPE_CHECKING:
     from music_assistant.common.models.player_queue import QueueItem
@@ -237,6 +238,7 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
     """
     streamdetails = None
     if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
+        LOGGER.debug(f"Using cached streamdetails for {queue_item.uri}")
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = None
         queue_item.streamdetails.seconds_streamed = None
@@ -250,10 +252,12 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
             full_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
         ):
             if not prov_media.available:
+                LOGGER.debug(f"Skipping unavailable {prov_media}")
                 continue
             # get streamdetails from provider
             music_prov = mass.get_provider(prov_media.provider_instance)
             if not music_prov:
+                LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
@@ -756,7 +760,7 @@ async def _get_ffmpeg_args(
         "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
         "-protocol_whitelist",
-        "file,http,https,tcp,tls,crypto,pipe",  # support nested protocols (e.g. within playlist)
+        "file,http,https,tcp,tls,crypto,pipe,fd",  # support nested protocols (e.g. within playlist)
     ]
     # collect input args
     input_args = []

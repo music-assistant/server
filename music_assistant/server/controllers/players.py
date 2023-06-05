@@ -321,11 +321,20 @@ class PlayerController:
         if player.powered == powered:
             return
         # stop player at power off
-        if not powered and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+        if (
+            not powered
+            and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
+            and not player.synced_to
+        ):
             await self.cmd_stop(player_id)
         # unsync player at power off
-        if not powered and player.synced_to is not None:
-            await self.cmd_unsync(player_id)
+        if not powered:
+            if player.synced_to is not None:
+                await self.cmd_unsync(player_id)
+            for child in self._get_child_players(player):
+                if not child.synced_to:
+                    continue
+                await self.cmd_unsync(child.player_id)
         if PlayerFeature.POWER not in player.supported_features:
             player.powered = powered
             self.update(player_id)
@@ -352,6 +361,24 @@ class PlayerController:
             return
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_volume_set(player_id, volume_level)
+
+    @api_command("players/cmd/volume_up")
+    async def cmd_volume_up(self, player_id: str) -> None:
+        """Send VOLUME_UP command to given player.
+
+        - player_id: player_id of the player to handle the command.
+        """
+        new_volume = min(100, self._players[player_id].volume_level + 5)
+        await self.cmd_volume_set(player_id, new_volume)
+
+    @api_command("players/cmd/volume_down")
+    async def cmd_volume_down(self, player_id: str) -> None:
+        """Send VOLUME_DOWN command to given player.
+
+        - player_id: player_id of the player to handle the command.
+        """
+        new_volume = max(0, self._players[player_id].volume_level - 5)
+        await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
     async def cmd_group_volume(self, player_id: str, volume_level: int) -> None:

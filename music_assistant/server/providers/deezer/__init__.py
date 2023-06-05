@@ -119,7 +119,7 @@ async def get_config_entries(
     )
 
 
-class DeezerProvider(MusicProvider):
+class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     """Deezer provider support."""
 
     client: DeezerClient
@@ -127,9 +127,16 @@ class DeezerProvider(MusicProvider):
     creds: Credential
     _throttler: Throttler
 
+    @property
+    def name(self) -> str:
+        """Return (custom) friendly name for this provider instance."""
+        if client := getattr(self, "client", None):
+            return f"Deezer - {client.user.name}"
+        return super().name
+
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
-        self._throttler = Throttler(rate_limit=4, period=1)
+        self._throttler = Throttler(rate_limit=50, period=5)
         self.creds = Credential(
             app_id=DEEZER_APP_ID,
             app_secret=DEEZER_APP_SECRET,
@@ -217,8 +224,7 @@ class DeezerProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
         for track in await self.client.get_user_tracks():
-            if self.track_available(track, self.gw_client.user_country):
-                yield self.parse_track(track=track, user_country=self.gw_client.user_country)
+            yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -251,7 +257,6 @@ class DeezerProvider(MusicProvider):
         return [
             self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in album.tracks
-            if self.track_available(track, self.gw_client.user_country)
         ]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
@@ -274,11 +279,10 @@ class DeezerProvider(MusicProvider):
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get top 25 tracks of an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
-        top_tracks = (await self.client.get_artist_top(artist=artist))[:25]
+        top_tracks = await self.client.get_artist_top(artist=artist, limit=25)
         return [
             self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in top_tracks
-            if self.track_available(track, self.gw_client.user_country)
         ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -345,7 +349,7 @@ class DeezerProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add tra ck(s) to playlist."""
         await self.client.add_playlist_tracks(
-            playlist_id=prov_playlist_id, tracks=[eval(i) for i in prov_track_ids]
+            playlist_id=prov_playlist_id, tracks=[int(i) for i in prov_track_ids]
         )
 
     async def remove_playlist_tracks(
@@ -534,7 +538,7 @@ class DeezerProvider(MusicProvider):
                     item_id=str(track.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    available=user_country in track.available_countries,
+                    available=self.track_available(track, user_country),
                 )
             },
             metadata=self.parse_metadata_track(track=track),
@@ -546,11 +550,7 @@ class DeezerProvider(MusicProvider):
     ) -> list[Track]:
         """Search for tracks and parse them."""
         deezer_tracks = await self.client.search_track(query=query, limit=limit)
-        return [
-            self.parse_track(track, user_country)
-            for track in deezer_tracks
-            if self.track_available(track, user_country)
-        ]
+        return [self.parse_track(track, user_country) for track in deezer_tracks]
 
     async def search_and_parse_artists(self, query: str, limit: int = 5) -> list[Artist]:
         """Search for artists and parse them."""
