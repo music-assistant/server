@@ -199,8 +199,7 @@ class RadioBrowserProvider(MusicProvider):
                     name="",
                     label=country.name,
                 )
-                # When folder icons become available.
-                # folder.metadata.images = [MediaItemImage(ImageType.THUMB, country.favicon)]
+                folder.metadata.images = [MediaItemImage(ImageType.THUMB, country.favicon)]
                 sub_items.append(folder)
             return BrowseFolder(
                 item_id="country",
