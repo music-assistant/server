@@ -43,7 +43,7 @@ server = [
   "orjson==3.8.14",
   "shortuuid==1.0.11",
   "zeroconf==0.63.0",
-  "cryptography==41.0.0"
+  "cryptography==41.0.1"
 ]
 test = [
   "black==23.3.0",
