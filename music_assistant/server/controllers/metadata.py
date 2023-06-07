@@ -306,13 +306,13 @@ class MetaDataController:
 
         return None
 
-    def get_image_url(self, image: MediaItemImage) -> str:
+    def get_image_url(self, image: MediaItemImage, size: int = 0) -> str:
         """Get (proxied) URL for MediaItemImage."""
         if image.provider != "url":
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
-            return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}&provider={image.provider}"  # noqa: E501
+            return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}"  # noqa: E501
         return image.path
 
     async def get_thumbnail(

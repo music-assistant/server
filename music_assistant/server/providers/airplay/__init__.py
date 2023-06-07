@@ -138,10 +138,10 @@ class AirplayProvider(PlayerProvider):
         self._closing = True
         await self._stop_bridge()
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         slimproto_prov = self.mass.get_provider("slimproto")
-        base_entries = slimproto_prov.get_player_config_entries(player_id)
+        base_entries = await slimproto_prov.get_player_config_entries(player_id)
         return tuple(base_entries + PLAYER_CONFIG_ENTRIES)
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:

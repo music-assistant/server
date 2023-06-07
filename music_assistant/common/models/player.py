@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -92,6 +93,10 @@ class Player(DataClassDictMixin):
     # display_name: return final/corrected name of the player
     # always prefers any overridden name from settings
     display_name: str = ""
+
+    # extra_data: any additional data to store on the player object
+    # and pass along freely
+    extra_data: dict[str, Any] = field(default_factory=dict)
 
     @property
     def corrected_elapsed_time(self) -> float:

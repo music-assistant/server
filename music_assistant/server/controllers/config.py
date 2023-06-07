@@ -278,11 +278,11 @@ class ConfigController:
         await self.mass.load_provider(config)
 
     @api_command("config/players")
-    def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
+    async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
         available_providers = {x.domain for x in self.mass.providers}
         return [
-            self.get_player_config(player_id)
+            await self.get_player_config(player_id)
             for player_id, raw_conf in self.get(CONF_PLAYERS).items()
             # filter out unavailable providers
             if raw_conf["provider"] in available_providers
@@ -291,11 +291,11 @@ class ConfigController:
         ]
 
     @api_command("config/players/get")
-    def get_player_config(self, player_id: str) -> PlayerConfig:
+    async def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
-                prov_entries = prov.get_player_config_entries(player_id)
+                prov_entries = await prov.get_player_config_entries(player_id)
                 if player := self.mass.players.get(player_id, False):
                     raw_conf["default_name"] = player.display_name
             else:
@@ -312,12 +312,12 @@ class ConfigController:
         raise KeyError(f"No config found for player id {player_id}")
 
     @api_command("config/players/get_value")
-    def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
+    async def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a player."""
         cache_key = f"player_conf_value_{player_id}.{key}"
         if (cached_value := self._value_cache.get(cache_key)) and cached_value is not None:
             return cached_value
-        conf = self.get_player_config(player_id)
+        conf = await self.get_player_config(player_id)
         val = (
             conf.values[key].value
             if conf.values[key].value is not None
@@ -327,12 +327,22 @@ class ConfigController:
         self._value_cache[cache_key] = val
         return val
 
+    def get_raw_player_config_value(
+        self, player_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return (raw) single configentry value for a player.
+
+        Note that this only returns the stored value without any validation or default.
+        """
+        return self.get(f"{CONF_PLAYERS}/{player_id}/values/{key}", default)
+
     @api_command("config/players/save")
-    def save_player_config(
+    async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
-        config = self.get_player_config(player_id)
+        config = await self.get_player_config(player_id)
         changed_keys = config.update(values)
 
         if not changed_keys:
@@ -358,7 +368,7 @@ class ConfigController:
             if provider := self.mass.get_provider(config.provider):
                 provider.on_player_config_changed(config, changed_keys)
         # return full player config (just in case)
-        return self.get_player_config(player_id)
+        return await self.get_player_config(player_id)
 
     @api_command("config/players/remove")
     async def remove_player_config(self, player_id: str) -> None:

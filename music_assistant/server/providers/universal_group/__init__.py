@@ -130,7 +130,7 @@ class UniversalGroupProvider(PlayerProvider):
             return
         self.mass.players.remove(self.instance_id)
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return (
             CONF_ENTRY_HIDE_GROUP_MEMBERS,
@@ -203,7 +203,9 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
-        group_power_on = self.mass.config.get_player_config_value(player_id, CONF_GROUPED_POWER_ON)
+        group_power_on = await self.mass.config.get_player_config_value(
+            player_id, CONF_GROUPED_POWER_ON
+        )
 
         async def set_child_power(child_player: Player) -> None:
             await self.mass.players.cmd_power(child_player.player_id, powered)

@@ -21,7 +21,7 @@ class PlayerProvider(Provider):
     Player Provider implementations should inherit from this base model.
     """
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return tuple()
 

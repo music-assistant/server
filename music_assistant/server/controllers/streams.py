@@ -285,7 +285,7 @@ class StreamsController:
         # generate player-specific URL for the stream job
         if output_codec is None:
             output_codec = ContentType(
-                self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
+                await self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
             )
         fmt = output_codec.value
         url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
@@ -334,7 +334,7 @@ class StreamsController:
             # resolve generic pcm type
             output_format = ContentType.from_bit_depth(output_bit_depth)
         if output_format.is_pcm() or output_format == ContentType.WAV:
-            output_channels = self.mass.config.get_player_config_value(
+            output_channels = await self.mass.config.get_player_config_value(
                 player_id, CONF_OUTPUT_CHANNELS
             )
             channels = 1 if output_channels != "stereo" else 2
@@ -398,7 +398,7 @@ class StreamsController:
         LOGGER.debug("Start serving audio stream %s to %s", stream_id, player.name)
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
-        ffmpeg_args = self._get_player_ffmpeg_args(
+        ffmpeg_args = await self._get_player_ffmpeg_args(
             player,
             input_sample_rate=stream_job.pcm_sample_rate,
             input_bit_depth=stream_job.pcm_bit_depth,
@@ -627,7 +627,7 @@ class StreamsController:
             await resp.write(chunk)
         return resp
 
-    def _get_player_ffmpeg_args(
+    async def _get_player_ffmpeg_args(
         self,
         player: Player,
         input_sample_rate: int,
@@ -636,7 +636,7 @@ class StreamsController:
         output_sample_rate: int,
     ) -> list[str]:
         """Get player specific arguments for the given (pcm) input and output details."""
-        player_conf = self.mass.config.get_player_config(player.player_id)
+        player_conf = await self.mass.config.get_player_config(player.player_id)
         conf_channels = player_conf.get_value(CONF_OUTPUT_CHANNELS)
         # generic args
         generic_args = [

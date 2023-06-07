@@ -189,8 +189,8 @@ class PlayerController:
         # handle automatic hiding of group child's feature
         for group_player in self._get_player_groups(player_id):
             try:
-                hide_group_childs = self.mass.config.get_player_config_value(
-                    group_player.player_id, CONF_HIDE_GROUP_CHILDS
+                hide_group_childs = self.mass.config.get_raw_player_config_value(
+                    group_player.player_id, CONF_HIDE_GROUP_CHILDS, "active"
                 )
             except KeyError:
                 continue
@@ -207,7 +207,7 @@ class PlayerController:
         changed_keys = get_changed_keys(
             prev_state,
             new_state,
-            ignore_keys=["elapsed_time", "elapsed_time_last_updated"],
+            ignore_keys=["elapsed_time", "elapsed_time_last_updated", "seq_no"],
         )
         self._prev_states[player_id] = new_state
 

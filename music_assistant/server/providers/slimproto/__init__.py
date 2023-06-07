@@ -17,6 +17,7 @@ from aioslimproto.discovery import start_discovery
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
+    ConfigValueOption,
     ConfigValueType,
 )
 from music_assistant.common.models.enums import (
@@ -177,7 +178,7 @@ class SlimprotoProvider(PlayerProvider):
         # construct SlimClient from socket client
         SlimClient(reader, writer, client_callback)
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # pick default codec based on capabilities
         default_codec = ContentType.PCM
@@ -191,7 +192,38 @@ class SlimprotoProvider(PlayerProvider):
                     default_codec = fmt_type
                     break
 
-        return (
+        # create preset entries (for players that support it)
+        preset_entries = tuple()
+        if not (client and client.device_model in self._virtual_providers):
+            presets = []
+            async for playlist in self.mass.music.playlists.iter_db_items(True):
+                presets.append(ConfigValueOption(playlist.name, playlist.uri))
+            async for radio in self.mass.music.radio.iter_db_items(True):
+                presets.append(ConfigValueOption(radio.name, radio.uri))
+            # dynamically extend the amount of presets when needed
+            if self.mass.config.get_raw_player_config_value(player_id, "preset_15"):
+                preset_count = 20
+            elif self.mass.config.get_raw_player_config_value(player_id, "preset_10"):
+                preset_count = 15
+            elif self.mass.config.get_raw_player_config_value(player_id, "preset_5"):
+                preset_count = 10
+            else:
+                preset_count = 5
+            preset_entries = tuple(
+                ConfigEntry(
+                    key=f"preset_{index}",
+                    type=ConfigEntryType.STRING,
+                    options=presets,
+                    label=f"Preset {index}",
+                    description="Assign a playable item to the player's preset. "
+                    "Only supported on real squeezebox hardware or jive(lite) based emulators.",
+                    advanced=False,
+                    required=False,
+                )
+                for index in range(1, preset_count + 1)
+            )
+
+        return preset_entries + (
             ConfigEntry(
                 key=CONF_SYNC_ADJUST,
                 type=ConfigEntryType.INTEGER,
@@ -312,6 +344,9 @@ class SlimprotoProvider(PlayerProvider):
         """Send POWER command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.power(powered)
+            if player := self.mass.players.get(player_id, raise_unavailable=False):
+                player.powered = powered
+                self.mass.players.update(player_id)
             # store last state in cache
             await self.mass.cache.set(
                 f"{CACHE_KEY_PREV_STATE}.{player_id}", (powered, client.volume_level)
@@ -383,7 +418,8 @@ class SlimprotoProvider(PlayerProvider):
                 type=PlayerType.PLAYER,
                 name=client.name,
                 available=True,
-                powered=client.powered,
+                # powered=client.powered,
+                powered=False,
                 device_info=DeviceInfo(
                     model=client.device_model,
                     address=client.device_address,
@@ -410,10 +446,11 @@ class SlimprotoProvider(PlayerProvider):
             client.current_metadata["item_id"] if client.current_metadata else None
         )
         player.name = client.name
-        player.powered = client.powered
+        # player.powered = client.powered
         player.state = STATE_MAP[client.state]
         player.volume_level = client.volume_level
-        player.volume_muted = client.muted
+        # player.volume_muted = client.muted
+        player.volume_muted = client.powered and client.muted
         # set all existing player ids in `can_sync_with` field
         player.can_sync_with = tuple(
             x.player_id for x in self._socket_clients.values() if x.player_id != player_id
@@ -578,7 +615,9 @@ class SlimprotoProvider(PlayerProvider):
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds."""
-        sync_delay = self.mass.config.get_player_config_value(client.player_id, CONF_SYNC_ADJUST)
+        sync_delay = self.mass.config.get_raw_player_config_value(
+            client.player_id, CONF_SYNC_ADJUST, 0
+        )
         if sync_delay != 0:
             return client.elapsed_milliseconds - sync_delay
         return client.elapsed_milliseconds

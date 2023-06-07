@@ -156,7 +156,7 @@ class ChromecastProvider(PlayerProvider):
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         cast_player = self.castplayers.get(player_id)
         entries = BASE_PLAYER_CONFIG_ENTRIES
@@ -531,7 +531,7 @@ class ChromecastProvider(PlayerProvider):
     async def _launch_app(self, castplayer: CastPlayer) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
-        if use_alt_app := self.mass.config.get_player_config_value(
+        if use_alt_app := await self.mass.config.get_player_config_value(
             castplayer.player_id, CONF_ALT_APP
         ):
             app_id = pychromecast.config.APP_BUBBLEUPNP

@@ -217,7 +217,7 @@ class Config(DataClassDictMixin):
         for key, new_val in update.items():
             if key in root_values:
                 continue
-            cur_val = self.values[key].value
+            cur_val = self.values[key].value if key in self.values else None
             # parse entry to do type validation
             parsed_val = self.values[key].parse_value(new_val)
             if cur_val != parsed_val:
