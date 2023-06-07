@@ -22,7 +22,7 @@ import shortuuid
 from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
-from music_assistant.common.helpers.util import select_free_port
+from music_assistant.common.helpers.util import empty_queue, select_free_port
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import EventType, PlayerState, QueueOption, RepeatMode
 from music_assistant.common.models.errors import MusicAssistantError
@@ -1225,28 +1225,21 @@ class LmsCli:
     async def _do_periodic(self) -> None:
         """Execute periodic sending of state and cleanup."""
         while True:
+            # cleanup orphaned clients
             disconnected_clients = set()
             for cometd_client in self._cometd_clients.values():
-                if (time.time() - cometd_client.last_seen) > 70:
+                if (time.time() - cometd_client.last_seen) > 80:
                     disconnected_clients.add(cometd_client.client_id)
                     continue
-
-                for sub_key, sub in cometd_client.slim_subscriptions.items():
-                    result = await self._handle_request(sub["data"]["request"])
-                    await cometd_client.queue.put(
-                        {
-                            "channel": sub["data"]["response"],
-                            "id": sub["id"],
-                            "data": result,
-                            "ext": {"priority": sub["data"].get("priority")},
-                        }
-                    )
-            # cleanup orphaned clients
             for clientid in disconnected_clients:
                 client = self._cometd_clients.pop(clientid)
-                client.queue = None
-                del client
+                empty_queue(client.queue)
                 self.logger.debug("Cleaned up disconnected CometD Client: %s", clientid)
+            # handle client subscriptions
+            for cometd_client in self._cometd_clients.values():
+                for sub in cometd_client.slim_subscriptions.values():
+                    self._handle_cometd_request(cometd_client, sub)
+
             await asyncio.sleep(60)
 
     async def _get_preset_items(self, player_id: str) -> list[tuple[int, SlimMediaItem]]:
