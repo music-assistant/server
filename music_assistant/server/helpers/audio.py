@@ -298,7 +298,7 @@ async def get_gain_correct(
     mass: MusicAssistant, streamdetails: StreamDetails
 ) -> tuple[float | None, float | None]:
     """Get gain correction for given queue / track combination."""
-    player_settings = mass.config.get_player_config(streamdetails.queue_id)
+    player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         return (None, None)
     if streamdetails.gain_correct is not None:

@@ -11,6 +11,7 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.constants import (
+    CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -217,7 +218,7 @@ class Config(DataClassDictMixin):
         for key, new_val in update.items():
             if key in root_values:
                 continue
-            cur_val = self.values[key].value
+            cur_val = self.values[key].value if key in self.values else None
             # parse entry to do type validation
             parsed_val = self.values[key].parse_value(new_val)
             if cur_val != parsed_val:
@@ -293,6 +294,7 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
         ConfigValueOption("AAC (lossy, superior quality)", "aac"),
         ConfigValueOption("MP3 (lossy, average quality)", "mp3"),
         ConfigValueOption("WAV (lossless, huge file size)", "wav"),
+        ConfigValueOption("PCM (lossless, huge file size)", "pcm"),
     ],
     default_value="flac",
     description="Define the codec that is sent to the player when streaming audio. "
@@ -394,6 +396,16 @@ CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
     advanced=False,
 )
 
+CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
+    key=CONF_CROSSFADE_DURATION,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 12),
+    default_value=8,
+    label="Crossfade duration",
+    description="Duration in seconds of the crossfade between tracks (if enabled)",
+    advanced=True,
+)
+
 CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
     key=CONF_GROUPED_POWER_ON,
     type=ConfigEntryType.BOOLEAN,
@@ -411,6 +423,7 @@ CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,

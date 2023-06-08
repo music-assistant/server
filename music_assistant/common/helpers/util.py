@@ -148,8 +148,8 @@ def is_port_in_use(port: int) -> bool:
     """Check if port is in use."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
         try:
-            return _sock.connect_ex(("localhost", port)) == 0
-        except socket.gaierror:
+            _sock.bind(("127.0.0.1", port))
+        except OSError:
             return True
 
 
@@ -242,7 +242,7 @@ def get_changed_keys(
         if key not in dict1:
             changed_keys.add(key)
         elif isinstance(value, dict):
-            changed_keys.update(get_changed_keys(dict1[key], value))
+            changed_keys.update(get_changed_keys(dict1[key], value, ignore_keys))
         elif dict1[key] != value:
             changed_keys.add(key)
     return changed_keys

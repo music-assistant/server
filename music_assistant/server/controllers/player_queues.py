@@ -77,9 +77,9 @@ class PlayerQueuesController:
     @api_command("players/queue/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
-        player = self.mass.players.get(player_id)
-        if queue := self.get(player.active_source):
-            return queue
+        if player := self.mass.players.get(player_id):  # noqa: SIM102
+            if queue := self.get(player.active_source):
+                return queue
         return self.get(player_id)
 
     # Queue commands
@@ -482,7 +482,7 @@ class PlayerQueuesController:
         await self.mass.players.cmd_power(queue_id, True)
         # execute the play_media command on the player(s)
         player_prov = self.mass.players.get_player_provider(queue_id)
-        flow_mode = self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
+        flow_mode = await self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
         queue.flow_mode = flow_mode
         await player_prov.cmd_play_media(
             queue_id,

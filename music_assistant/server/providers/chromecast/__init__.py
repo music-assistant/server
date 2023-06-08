@@ -21,13 +21,11 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_HIDE_GROUP_MEMBERS,
-    CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueType,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     MediaType,
     PlayerFeature,
     PlayerState,
@@ -36,7 +34,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_OUTPUT_CODEC, CONF_PLAYERS, MASS_LOGO_ONLINE
+from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -65,7 +63,6 @@ BASE_PLAYER_CONFIG_ENTRIES = (
         "the playback experience but may not work on non-Google hardware.",
         advanced=True,
     ),
-    CONF_ENTRY_OUTPUT_CODEC,
 )
 
 
@@ -159,7 +156,7 @@ class ChromecastProvider(PlayerProvider):
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         cast_player = self.castplayers.get(player_id)
         entries = BASE_PLAYER_CONFIG_ENTRIES
@@ -198,13 +195,11 @@ class ChromecastProvider(PlayerProvider):
     ) -> None:
         """Send PLAY MEDIA command to given player."""
         castplayer = self.castplayers[player_id]
-        output_codec = self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             player_id=player_id,
             seek_position=seek_position,
             fade_in=fade_in,
-            content_type=ContentType(output_codec),
             flow_mode=flow_mode,
         )
         castplayer.flow_mode_active = flow_mode
@@ -214,7 +209,7 @@ class ChromecastProvider(PlayerProvider):
             await asyncio.to_thread(
                 castplayer.cc.play_media,
                 url,
-                content_type="audio/flac",
+                content_type=f"audio/{url.split('.')[-1]}",
                 title="Music Assistant",
                 thumb=MASS_LOGO_ONLINE,
                 media_info={
@@ -518,7 +513,6 @@ class ChromecastProvider(PlayerProvider):
         url = await self.mass.streams.resolve_stream_url(
             queue_item=next_item,
             player_id=castplayer.player_id,
-            content_type=ContentType.FLAC,
             auto_start_runner=False,
         )
         cc_queue_items = [self._create_queue_item(next_item, url)]
@@ -537,7 +531,7 @@ class ChromecastProvider(PlayerProvider):
     async def _launch_app(self, castplayer: CastPlayer) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
-        if use_alt_app := self.mass.config.get_player_config_value(
+        if use_alt_app := await self.mass.config.get_player_config_value(
             castplayer.player_id, CONF_ALT_APP
         ):
             app_id = pychromecast.config.APP_BUBBLEUPNP

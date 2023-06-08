@@ -19,6 +19,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
+    CONF_OUTPUT_CODEC,
     ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.audio import (
@@ -216,9 +217,9 @@ class StreamsController:
         player_id: str,
         seek_position: int = 0,
         fade_in: bool = False,
-        content_type: ContentType = ContentType.WAV,
         auto_start_runner: bool = True,
         flow_mode: bool = False,
+        output_codec: ContentType | None = None,
     ) -> str:
         """Resolve the stream URL for the given QueueItem.
 
@@ -232,9 +233,9 @@ class StreamsController:
           call resolve for every child player.
         - seek_position: start playing from this specific position.
         - fade_in: fade in the music at start (e.g. at resume).
-        - content_type: Encode the stream in the given format.
         - auto_start_runner: Start the audio stream in advance (stream track now).
         - flow_mode: enable flow mode where the queue tracks are streamed as continuous stream.
+        - output_codec: Encode the stream in the given format (None for auto select).
         """
         # check if there is already a pending job
         for stream_job in self.stream_jobs.values():
@@ -282,8 +283,26 @@ class StreamsController:
             stream_job.start()
 
         # generate player-specific URL for the stream job
-        fmt = content_type.value
+        if output_codec is None:
+            output_codec = ContentType(
+                await self.mass.config.get_player_config_value(player_id, CONF_OUTPUT_CODEC)
+            )
+        fmt = output_codec.value
         url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
+        # handle pcm
+        if output_codec.is_pcm():
+            player = self.mass.players.get(player_id)
+            output_sample_rate = min(stream_job.pcm_sample_rate, player.max_sample_rate)
+            player_max_bit_depth = 32 if player.supports_24bit else 16
+            output_bit_depth = min(stream_job.pcm_bit_depth, player_max_bit_depth)
+            output_channels = await self.mass.config.get_player_config_value(
+                player_id, CONF_OUTPUT_CHANNELS
+            )
+            channels = 1 if output_channels != "stereo" else 2
+            url += (
+                f";codec=pcm;rate={output_sample_rate};"
+                f"bitrate={output_bit_depth};channels={channels}"
+            )
         return url
 
     def get_preview_url(self, provider_instance_id_or_domain: str, track_id: str) -> str:
@@ -329,7 +348,7 @@ class StreamsController:
             # resolve generic pcm type
             output_format = ContentType.from_bit_depth(output_bit_depth)
         if output_format.is_pcm() or output_format == ContentType.WAV:
-            output_channels = self.mass.config.get_player_config_value(
+            output_channels = await self.mass.config.get_player_config_value(
                 player_id, CONF_OUTPUT_CHANNELS
             )
             channels = 1 if output_channels != "stereo" else 2
@@ -393,7 +412,7 @@ class StreamsController:
         LOGGER.debug("Start serving audio stream %s to %s", stream_id, player.name)
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
-        ffmpeg_args = self._get_player_ffmpeg_args(
+        ffmpeg_args = await self._get_player_ffmpeg_args(
             player,
             input_sample_rate=stream_job.pcm_sample_rate,
             input_bit_depth=stream_job.pcm_bit_depth,
@@ -622,7 +641,7 @@ class StreamsController:
             await resp.write(chunk)
         return resp
 
-    def _get_player_ffmpeg_args(
+    async def _get_player_ffmpeg_args(
         self,
         player: Player,
         input_sample_rate: int,
@@ -631,7 +650,7 @@ class StreamsController:
         output_sample_rate: int,
     ) -> list[str]:
         """Get player specific arguments for the given (pcm) input and output details."""
-        player_conf = self.mass.config.get_player_config(player.player_id)
+        player_conf = await self.mass.config.get_player_config(player.player_id)
         conf_channels = player_conf.get_value(CONF_OUTPUT_CHANNELS)
         # generic args
         generic_args = [
