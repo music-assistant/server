@@ -263,7 +263,7 @@ class LmsCli:
         # return the response to the client
         return web.json_response(result, dumps=json_dumps)
 
-    async def _handle_cometd(self, request: web.Request) -> web.Response:
+    async def _handle_cometd(self, request: web.Request) -> web.Response:  # noqa: PLR0912
         """
         Handle CometD request on the json CLI.
 
@@ -488,6 +488,13 @@ class LmsCli:
                         "successful": True,
                     }
                 )
+        # append any remaining messages from the queue
+        while True:
+            try:
+                msg = cometd_client.queue.get_nowait()
+                response.append(msg)
+            except asyncio.QueueEmpty:
+                break
         # send response
         headers = {
             "Server": "Logitech Media Server (7.9.9 - 1667251155)",

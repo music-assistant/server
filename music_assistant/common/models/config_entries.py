@@ -11,6 +11,7 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.constants import (
+    CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -393,6 +394,16 @@ CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
     description="Hide the individual player entry for the members of this group "
     "in the user interface.",
     advanced=False,
+)
+
+CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
+    key=CONF_CROSSFADE_DURATION,
+    type=ConfigEntryType.INTEGER,
+    range=(0, 12),
+    default_value=8,
+    label="Crossfade duration",
+    description="Duration in seconds of the crossfade between tracks (if enabled)",
+    advanced=True,
 )
 
 CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(

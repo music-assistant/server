@@ -289,6 +289,20 @@ class StreamsController:
             )
         fmt = output_codec.value
         url = f"{self.mass.webserver.base_url}/stream/{player_id}/{queue_item.queue_item_id}/{stream_job.stream_id}.{fmt}"  # noqa: E501
+        # handle pcm
+        if output_codec.is_pcm():
+            player = self.mass.players.get(player_id)
+            output_sample_rate = min(stream_job.pcm_sample_rate, player.max_sample_rate)
+            player_max_bit_depth = 32 if player.supports_24bit else 16
+            output_bit_depth = min(stream_job.pcm_bit_depth, player_max_bit_depth)
+            output_channels = await self.mass.config.get_player_config_value(
+                player_id, CONF_OUTPUT_CHANNELS
+            )
+            channels = 1 if output_channels != "stereo" else 2
+            url += (
+                f";codec=pcm;rate={output_sample_rate};"
+                f"bitrate={output_bit_depth};channels={channels}"
+            )
         return url
 
     def get_preview_url(self, provider_instance_id_or_domain: str, track_id: str) -> str:

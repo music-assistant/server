@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import statistics
 import time
 from collections import deque
 from collections.abc import Callable, Generator
@@ -15,6 +16,7 @@ from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueOption,
@@ -30,6 +32,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_CROSSFADE_DURATION
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .cli import LmsCli
@@ -45,12 +48,14 @@ CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
 MAX_DEVIATION_ADJUST = 20000  # 10 seconds
-MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
+MIN_REQ_PLAYPOINTS = 2  # we need at least 8 measurements
+MIN_REQ_MILLISECONDS = 500
 
 # TODO: Implement display support
 
 STATE_MAP = {
     SlimPlayerState.BUFFERING: PlayerState.PLAYING,
+    SlimPlayerState.BUFFER_READY: PlayerState.PLAYING,
     SlimPlayerState.PAUSED: PlayerState.PAUSED,
     SlimPlayerState.PLAYING: PlayerState.PLAYING,
     SlimPlayerState.STOPPED: PlayerState.IDLE,
@@ -67,7 +72,6 @@ class SyncPlayPoint:
 
 
 CONF_SYNC_ADJUST = "sync_adjust"
-CONF_PLAYER_VOLUME = "player_volume"
 DEFAULT_PLAYER_VOLUME = 20
 
 
@@ -121,7 +125,14 @@ class SlimprotoProvider(PlayerProvider):
             # start slimproto server
             await asyncio.start_server(self._create_client, "0.0.0.0", slimproto_port),
             # setup discovery
-            await start_discovery(slimproto_port, self._cli.cli_port, self.mass.webserver.port),
+            await start_discovery(
+                self.mass.base_ip,
+                slimproto_port,
+                self._cli.cli_port,
+                self.mass.webserver.port,
+                "Music Assistant",
+                self.mass.server_id,
+            ),
         )
 
     async def unload(self) -> None:
@@ -161,6 +172,10 @@ class SlimprotoProvider(PlayerProvider):
                 self.mass.create_task(self._handle_decoder_ready(client))
                 return
 
+            if event_type == SlimEventType.PLAYER_BUFFER_READY:
+                self.mass.create_task(self._handle_buffer_ready(client))
+                return
+
             if event_type == SlimEventType.PLAYER_HEARTBEAT:
                 self._handle_player_heartbeat(client)
                 return
@@ -178,7 +193,7 @@ class SlimprotoProvider(PlayerProvider):
         # construct SlimClient from socket client
         SlimClient(reader, writer, client_callback)
 
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         # pick default codec based on capabilities
         default_codec = ContentType.PCM
@@ -235,6 +250,7 @@ class SlimprotoProvider(PlayerProvider):
                 "you can shift the audio a bit.",
                 advanced=True,
             ),
+            CONF_ENTRY_CROSSFADE_DURATION,
             ConfigEntry.from_dict(
                 {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": default_codec}
             ),
@@ -253,13 +269,15 @@ class SlimprotoProvider(PlayerProvider):
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
         # forward command to player and any connected sync child's
-        for client in self._get_sync_clients(player_id):
-            if client.state not in (
-                SlimPlayerState.PAUSED,
-                SlimPlayerState.BUFFERING,
-            ):
-                continue
-            await client.play()
+        async with asyncio.TaskGroup() as tg:
+            for client in self._get_sync_clients(player_id):
+                if client.state not in (
+                    SlimPlayerState.PAUSED,
+                    SlimPlayerState.BUFFERING,
+                    SlimPlayerState.BUFFER_READY,
+                ):
+                    continue
+                tg.create_task(client.play())
 
     async def cmd_play_media(
         self,
@@ -320,33 +338,43 @@ class SlimprotoProvider(PlayerProvider):
             fade_in=fade_in,
             flow_mode=flow_mode,
         )
+        if crossfade:
+            transition_duration = await self.mass.config.get_player_config_value(
+                player_id, CONF_CROSSFADE_DURATION
+            )
+        else:
+            transition_duration = 0
+
         await client.play_url(
             url=url,
             mime_type=f"audio/{url.split('.')[-1]}",
-            metadata={"item_id": queue_item.queue_item_id},
+            metadata={"item_id": queue_item.queue_item_id, "title": queue_item.name},
             send_flush=send_flush,
             transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
-            transition_duration=10 if crossfade else 0,
+            transition_duration=transition_duration,
+            autostart=False,
         )
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         # forward command to player and any connected sync child's
-        for client in self._get_sync_clients(player_id):
-            if client.state not in (
-                SlimPlayerState.PLAYING,
-                SlimPlayerState.BUFFERING,
-            ):
-                continue
-            await client.pause()
+        async with asyncio.TaskGroup() as tg:
+            for client in self._get_sync_clients(player_id):
+                if client.state not in (
+                    SlimPlayerState.PLAYING,
+                    SlimPlayerState.BUFFERING,
+                    SlimPlayerState.BUFFER_READY,
+                ):
+                    continue
+                tg.create_task(client.pause())
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.power(powered)
-            if player := self.mass.players.get(player_id, raise_unavailable=False):
-                player.powered = powered
-                self.mass.players.update(player_id)
+            # if player := self.mass.players.get(player_id, raise_unavailable=False):
+            #     player.powered = powered
+            #     self.mass.players.update(player_id)
             # store last state in cache
             await self.mass.cache.set(
                 f"{CACHE_KEY_PREV_STATE}.{player_id}", (powered, client.volume_level)
@@ -376,7 +404,7 @@ class SlimprotoProvider(PlayerProvider):
         child_player.synced_to = parent_player.player_id
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
-        if parent_player.state == PlayerState.PLAYING:
+        if parent_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             # playback needs to be restarted to get all players in sync
             # TODO: If there is any need, we could make this smarter where the new
             # sync child waits for the next track.
@@ -418,8 +446,7 @@ class SlimprotoProvider(PlayerProvider):
                 type=PlayerType.PLAYER,
                 name=client.name,
                 available=True,
-                # powered=client.powered,
-                powered=False,
+                powered=client.powered,
                 device_info=DeviceInfo(
                     model=client.device_model,
                     address=client.device_address,
@@ -446,7 +473,7 @@ class SlimprotoProvider(PlayerProvider):
             client.current_metadata["item_id"] if client.current_metadata else None
         )
         player.name = client.name
-        # player.powered = client.powered
+        player.powered = client.powered
         player.state = STATE_MAP[client.state]
         player.volume_level = client.volume_level
         # player.volume_muted = client.muted
@@ -462,8 +489,8 @@ class SlimprotoProvider(PlayerProvider):
 
     def _handle_player_heartbeat(self, client: SlimClient) -> None:
         """Process SlimClient elapsed_time update."""
-        if client.state != SlimPlayerState.PLAYING:
-            # ignore server heartbeats
+        if client.state == SlimPlayerState.STOPPED:
+            # ignore server heartbeats when stopped
             return
 
         player = self.mass.players.get(client.player_id)
@@ -483,18 +510,25 @@ class SlimprotoProvider(PlayerProvider):
 
         sync_master = self._socket_clients[sync_master_id]
 
+        if sync_master.state != SlimPlayerState.PLAYING:
+            return
+        if client.state != SlimPlayerState.PLAYING:
+            return
+
         # we collect a few playpoints of the player to determine
         # average lag/drift so we can adjust accordingly
-        sync_playpoints = self._sync_playpoints.setdefault(
-            client.player_id, deque(maxlen=MIN_REQ_PLAYPOINTS)
-        )
+        sync_playpoints = self._sync_playpoints.setdefault(client.player_id, deque(maxlen=5))
 
         # make sure client has loaded the same track as sync master
         client_item_id = client.current_metadata["item_id"] if client.current_metadata else None
+        prev_item_id = client._next_metadata["item_id"] if client._next_metadata else None
         master_item_id = (
             sync_master.current_metadata["item_id"] if sync_master.current_metadata else None
         )
         if client_item_id != master_item_id:
+            return
+        if client_item_id and prev_item_id and client_item_id != prev_item_id:
+            # transitioning
             sync_playpoints.clear()
             return
 
@@ -522,9 +556,8 @@ class SlimprotoProvider(PlayerProvider):
         if len(sync_playpoints) < MIN_REQ_PLAYPOINTS:
             return
 
-        # if we have enough playpoints, get the average value
-        prev_diffs = [x.diff for x in sync_playpoints]
-        avg_diff = sum(prev_diffs) / len(prev_diffs)
+        # get the average diff
+        avg_diff = statistics.fmean(sync_playpoints)
         delta = abs(avg_diff)
 
         if delta < MIN_DEVIATION_ADJUST:
@@ -545,6 +578,8 @@ class SlimprotoProvider(PlayerProvider):
         """Handle decoder ready event, player is ready for the next track."""
         if not client.current_metadata:
             return
+        if client.state == SlimPlayerState.STOPPED:
+            return
         try:
             next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]
@@ -552,6 +587,29 @@ class SlimprotoProvider(PlayerProvider):
             await self._handle_play_media(client, next_item, send_flush=False, crossfade=crossfade)
         except QueueEmpty:
             pass
+
+    async def _handle_buffer_ready(self, client: SlimClient) -> None:
+        """Handle buffer ready event, player has buffered a (new) track."""
+        player = self.mass.players.get(client.player_id)
+        if player.synced_to:
+            # unpause of sync child is handled by sync master
+            return
+        if not player.group_childs:
+            # not a sync group, continue
+            await client.play()
+        count = 0
+        while count < 20:
+            childs_total = 0
+            childs_ready = 0
+            for sync_child in self._get_sync_clients(player.player_id):
+                childs_total += 1
+                if sync_child.state == SlimPlayerState.BUFFER_READY:
+                    childs_ready += 1
+            if childs_total == childs_ready:
+                break
+            await asyncio.sleep(0.2)
+        # all childs ready (or timeout) - start play
+        await self.cmd_play(player.player_id)
 
     async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
