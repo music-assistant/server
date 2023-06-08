@@ -71,7 +71,7 @@ def create_didl_metadata(
         f"<upnp:duration>{queue_item.duration}</upnp:duration>"
         "<upnp:playlistTitle>Music Assistant</upnp:playlistTitle>"
         f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"
-        f"<upnp:albumArtURI>{image_url}</upnp:albumArtURI>"
+        f"<upnp:albumArtURI>{_escape_str(image_url)}</upnp:albumArtURI>"
         f"<upnp:class>{item_class}</upnp:class>"
         f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
         f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
