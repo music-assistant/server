@@ -608,7 +608,7 @@ class SlimprotoProvider(PlayerProvider):
             if childs_total == childs_ready:
                 break
             await asyncio.sleep(0.2)
-        # all childs ready (or timeout) - start play
+        # all child's ready (or timeout) - start play
         await self.cmd_play(player.player_id)
 
     async def _handle_connected(self, client: SlimClient) -> None:
