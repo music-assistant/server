@@ -272,10 +272,10 @@ class ConfigController:
         self.set(conf_key, value)
 
     @api_command("config/providers/reload")
-    async def reload_provider(self, instance_id: str) -> None:
+    async def reload_provider(self, instance_id: str, config: ProviderConfig | None) -> None:
         """Reload provider."""
         config = await self.get_provider_config(instance_id)
-        await self.mass.load_provider(config)
+        await self._load_provider_config(config)
 
     @api_command("config/players")
     async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
@@ -514,13 +514,13 @@ class ConfigController:
             return config
         # try to load the provider first to catch errors before we save it.
         if config.enabled:
-            await self.mass.load_provider(config)
+            await self._load_provider_config(config)
         else:
             # disable provider
-            # check if there are no other providers dependent of this provider
-            for prov in self.mass.get_available_providers():
-                if prov.depends_on == config.domain and self.mass.get_provider(prov.domain):
-                    raise RuntimeError(f"Provider {prov.name} depends on {config.domain}.")
+            # also unload any other providers dependent of this provider
+            for dep_prov in self.mass.providers:
+                if dep_prov.manifest.depends_on == config.domain:
+                    await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
         # load succeeded, save new config
         config.last_error = None
@@ -584,3 +584,18 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
         return config
+
+    async def _load_provider_config(self, config: ProviderConfig) -> None:
+        """Load given provider config."""
+        # check if there are no other providers dependent of this provider
+        deps = set()
+        for dep_prov in self.mass.providers:
+            if dep_prov.manifest.depends_on == config.domain:
+                deps.add(dep_prov.instance_id)
+                await self.mass.unload_provider(dep_prov.instance_id)
+        # (re)load the provider
+        await self.mass.load_provider(config)
+        # reload any dependants
+        for dep in deps:
+            conf = await self.get_provider_config(dep)
+            await self.mass.load_provider(conf)

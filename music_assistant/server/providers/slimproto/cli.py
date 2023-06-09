@@ -138,27 +138,32 @@ class LmsCli:
     _unsub_callback: Callable | None = None
     _periodic_task: asyncio.Task | None = None
 
-    def __init__(self, slimproto: SlimprotoProvider) -> None:
+    def __init__(
+        self, slimproto: SlimprotoProvider, enable_telnet: bool, enable_json: bool
+    ) -> None:
         """Initialize."""
         self.slimproto = slimproto
+        self.enable_telnet = enable_telnet
+        self.enable_json = enable_json
         self.logger = self.slimproto.logger.getChild("cli")
         self.mass = self.slimproto.mass
         self._cometd_clients: dict[str, CometDClient] = {}
 
     async def setup(self) -> None:
         """Handle async initialization of the plugin."""
-        self.logger.info("Registering jsonrpc endpoints on the webserver")
-        self.mass.webserver.register_route("/jsonrpc.js", self._handle_jsonrpc)
-        self.mass.webserver.register_route("/cometd", self._handle_cometd)
-        # setup (telnet) cli for players requesting basic info on that port
-        self.cli_port = await select_free_port(9090, 9190)
-        self.logger.info("Starting (telnet) CLI on port %s", self.cli_port)
-        await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port)
-        self._unsub_callback = self.mass.subscribe(
-            self._on_mass_event,
-            (EventType.PLAYER_UPDATED, EventType.QUEUE_UPDATED),
-        )
-        self._periodic_task = self.mass.create_task(self._do_periodic())
+        if self.enable_json:
+            self.logger.info("Registering jsonrpc endpoints on the webserver")
+            self.mass.webserver.register_route("/jsonrpc.js", self._handle_jsonrpc)
+            self.mass.webserver.register_route("/cometd", self._handle_cometd)
+            self._unsub_callback = self.mass.subscribe(
+                self._on_mass_event,
+                (EventType.PLAYER_UPDATED, EventType.QUEUE_UPDATED),
+            )
+            self._periodic_task = self.mass.create_task(self._do_periodic())
+        if self.enable_telnet:
+            self.cli_port = await select_free_port(9090, 9190)
+            self.logger.info("Starting (telnet) CLI on port %s", self.cli_port)
+            await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port)
 
     async def unload(self) -> None:
         """
@@ -167,6 +172,7 @@ class LmsCli:
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         self.mass.webserver.unregister_route("/jsonrpc.js")
+        self.mass.webserver.unregister_route("/cometd")
         if self._unsub_callback:
             self._unsub_callback()
             self._unsub_callback = None

@@ -22,7 +22,6 @@ from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
     CONF_PROVIDERS,
     CONF_SERVER_ID,
-    CONF_WEB_IP,
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
     SCHEMA_VERSION,
@@ -106,7 +105,6 @@ class MusicAssistant:
         )
         # setup config controller first and fetch important config values
         await self.config.setup()
-        self.base_ip = self.config.get(CONF_WEB_IP, self.base_ip)
         LOGGER.info(
             "Starting Music Assistant Server (%s) - autodetected IP-address: %s",
             self.server_id,
@@ -392,8 +390,12 @@ class MusicAssistant:
                 if sync_task.provider_instance == instance_id:
                     sync_task.task.cancel()
                     await sync_task.task
+            # check if there are no other providers dependent of this provider
+            for dep_prov in self.providers:
+                if dep_prov.manifest.depends_on == provider.domain:
+                    await self.unload_provider(dep_prov.instance_id)
             await provider.unload()
-            self._providers.pop(instance_id)
+            self._providers.pop(instance_id, None)
             self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:
