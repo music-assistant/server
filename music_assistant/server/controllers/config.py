@@ -517,11 +517,10 @@ class ConfigController:
             await self._load_provider_config(config)
         else:
             # disable provider
-            # check if there are no other providers dependent of this provider
-            # if so, unload them as well
-            for prov in self.mass.providers:
-                if prov.manifest.depends_on == config.domain:
-                    await self.mass.unload_provider(prov.instance_id)
+            # also unload any other providers dependent of this provider
+            for dep_prov in self.mass.providers:
+                if dep_prov.manifest.depends_on == config.domain:
+                    await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
         # load succeeded, save new config
         config.last_error = None
@@ -590,10 +589,10 @@ class ConfigController:
         """Load given provider config."""
         # check if there are no other providers dependent of this provider
         deps = set()
-        for prov in self.mass.providers:
-            if prov.manifest.depends_on == config.domain and self.mass.get_provider(prov.domain):
-                deps.add(prov.instance_id)
-                await self.mass.unload_provider(prov.instance_id)
+        for dep_prov in self.mass.providers:
+            if dep_prov.manifest.depends_on == config.domain:
+                deps.add(dep_prov.instance_id)
+                await self.mass.unload_provider(dep_prov.instance_id)
         # (re)load the provider
         await self.mass.load_provider(config)
         # reload any dependants

@@ -391,11 +391,11 @@ class MusicAssistant:
                     sync_task.task.cancel()
                     await sync_task.task
             # check if there are no other providers dependent of this provider
-            for prov in self.providers:
-                if prov.manifest.depends_on == provider.domain:
-                    raise RuntimeError(f"Provider {prov.name} depends on {provider.domain}.")
+            for dep_prov in self.providers:
+                if dep_prov.manifest.depends_on == provider.domain:
+                    await self.unload_provider(dep_prov.instance_id)
             await provider.unload()
-            self._providers.pop(instance_id)
+            self._providers.pop(instance_id, None)
             self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:

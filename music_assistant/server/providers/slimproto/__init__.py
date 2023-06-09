@@ -112,8 +112,9 @@ async def get_config_entries(
             "The default is 3483 and using a different port is not supported by "
             "hardware squeezebox players. Only adjust this port if you want to "
             "use other slimproto based servers side by side with software players, "
-            "such as squeezelite or the Airplay provider in Music Assistant "
-            "(which relies on slimproto)",
+            "such as squeezelite.\n\n"
+            "NOTE that the Airplay provider in MA (which relies on slimproto), does not seem "
+            "to support a different slimproto port.",
             advanced=True,
         ),
         ConfigEntry(
@@ -156,7 +157,7 @@ async def get_config_entries(
             description="Broadcast discovery packets for slimproto clients to automatically "
             "discover and connect to this server. \n\n"
             "You may want to disable this feature if you are running multiple slimproto servers "
-            "on your network and/or you dont want clients to auto connect to this server.",
+            "on your network and/or you don't want clients to auto connect to this server.",
             advanced=True,
         ),
     )
@@ -506,6 +507,13 @@ class SlimprotoProvider(PlayerProvider):
             register_callback,
             update_callback,
         )
+
+    def unregister_virtual_provider(
+        self,
+        player_model: str,
+    ) -> None:
+        """Unregister a virtual provider."""
+        self._virtual_providers.pop(player_model, None)
 
     def _handle_player_update(self, client: SlimClient) -> None:
         """Process SlimClient update/add to Player controller."""

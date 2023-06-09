@@ -136,6 +136,8 @@ class AirplayProvider(PlayerProvider):
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         self._closing = True
+        if slimproto_prov := self.mass.get_provider("slimproto"):
+            slimproto_prov.unregister_virtual_provider("RaopBridge")
         await self._stop_bridge()
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
@@ -323,6 +325,8 @@ class AirplayProvider(PlayerProvider):
             # filter out apple tv's for now until we fix auth
             "-m",
             "apple-tv,appletv",
+            # enable terminate on exit otherwise exists are soooo slooooowwww
+            "-k",
         ]
         start_success = False
         while True:
@@ -347,8 +351,10 @@ class AirplayProvider(PlayerProvider):
         """Stop the bridge process."""
         if self._bridge_proc:
             try:
+                self.logger.debug("Stopping bridge process...")
                 self._bridge_proc.terminate()
                 await self._bridge_proc.wait()
+                self.logger.debug("Bridge process stopped.")
             except ProcessLookupError:
                 pass
 
