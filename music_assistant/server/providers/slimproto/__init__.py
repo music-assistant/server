@@ -29,10 +29,10 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
 )
-from music_assistant.common.models.errors import QueueEmpty
+from music_assistant.common.models.errors import QueueEmpty, SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE_DURATION
+from music_assistant.constants import CONF_CROSSFADE_DURATION, CONF_PORT
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .cli import LmsCli
@@ -72,7 +72,11 @@ class SyncPlayPoint:
 
 
 CONF_SYNC_ADJUST = "sync_adjust"
+CONF_CLI_TELNET = "cli_telnet"
+CONF_CLI_JSON = "cli_json"
+CONF_DISCOVERY = "discovery"
 DEFAULT_PLAYER_VOLUME = 20
+DEFAULT_SLIMPROTO_PORT = 3483
 
 
 async def setup(
@@ -98,42 +102,112 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            key=CONF_PORT,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_SLIMPROTO_PORT,
+            label="Slimproto port",
+            description="The TCP/UDP port to run the slimproto sockets server. "
+            "The default is 3483 and using a different port is not supported by "
+            "hardware squeezebox players. Only adjust this port if you want to "
+            "use other slimproto based servers side by side with software players, "
+            "such as squeezelite or the Airplay provider in Music Assistant "
+            "(which relies on slimproto)",
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_CLI_TELNET,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Enable classic Squeezebox Telnet CLI",
+            description="Some slimproto based players require the presence of the telnet CLI "
+            " to request more information. For example the Airplay provider "
+            "(which relies on slimproto) uses this to fetch the album cover and other metadata."
+            "By default this Telnet CLI is hosted on port 9090 but another port will be chosen if "
+            "that port is already taken. \n\n"
+            "Commands allowed on this interface are very limited and just enough to satisfy "
+            "player compatibility, so security risks are minimized to practically zero."
+            "You may safely disable this option if you have no players that rely on this feature "
+            "or you dont care about the additional metadata.",
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_CLI_JSON,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Enable JSON-RPC API",
+            description="Some slimproto based players require the presence of the JSON-RPC "
+            "API from LMS to request more information. For example to fetch the album cover "
+            "and other metadata. "
+            "This JSON-RPC API is compatible with Logitech Media Server but not all commands "
+            "are implemented. Just enough to satisfy player compatibility. \n\n"
+            "This API is hosted on the webserver responsible for streaming to players and thus "
+            "accessible on your local network but security impact should be minimal. "
+            "You may safely disable this option if you have no players that rely on this feature "
+            "or you dont care about the additional metadata.",
+            advanced=True,
+        ),
+        ConfigEntry(
+            key=CONF_DISCOVERY,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=True,
+            label="Enable Discovery server",
+            description="Broadcast discovery packets for slimproto clients to automatically "
+            "discover and connect to this server. \n\n"
+            "You may want to disable this feature if you are running multiple slimproto servers "
+            "on your network and/or you dont want clients to auto connect to this server.",
+            advanced=True,
+        ),
+    )
 
 
 class SlimprotoProvider(PlayerProvider):
     """Base/builtin provider for players using the SLIM protocol (aka slimproto)."""
 
-    _socket_servers: tuple[asyncio.Server | asyncio.BaseTransport]
+    _socket_servers: list[asyncio.Server | asyncio.BaseTransport]
     _socket_clients: dict[str, SlimClient]
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
     _virtual_providers: dict[str, tuple[Callable, Callable]]
     _cli: LmsCli
+    port: int = DEFAULT_SLIMPROTO_PORT
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}
         self._virtual_providers = {}
-        self._cli = LmsCli(self)
-        await self._cli.setup()
-        # autodiscovery of the slimproto server does not work
-        # when the port is not the default (3483) so we hardcode it for now
-        slimproto_port = 3483
-        self.logger.info("Starting SLIMProto server on port %s", slimproto_port)
-        self._socket_servers = (
-            # start slimproto server
-            await asyncio.start_server(self._create_client, "0.0.0.0", slimproto_port),
-            # setup discovery
-            await start_discovery(
-                self.mass.base_ip,
-                slimproto_port,
-                self._cli.cli_port,
-                self.mass.webserver.port,
-                "Music Assistant",
-                self.mass.server_id,
-            ),
-        )
+        self.port = self.config.get_value(CONF_PORT)
+        # start slimproto socket server
+        try:
+            self._socket_servers = [
+                await asyncio.start_server(self._create_client, "0.0.0.0", self.port)
+            ]
+            self.logger.info("Started SLIMProto server on port %s", self.port)
+        except OSError:
+            raise SetupFailedError(
+                f"Unable to start the Slimproto server - is port {self.port} already taken ?"
+            )
+
+        # start CLI interface(s)
+        enable_telnet = self.config.get_value(CONF_CLI_TELNET)
+        enable_json = self.config.get_value(CONF_CLI_JSON)
+        if enable_json or enable_telnet:
+            self._cli = LmsCli(self, enable_telnet, enable_json)
+            await self._cli.setup()
+
+        # start discovery
+        if self.config.get_value(CONF_DISCOVERY):
+            self._socket_servers.append(
+                await start_discovery(
+                    self.mass.base_ip,
+                    self.port,
+                    self._cli.cli_port if enable_telnet else None,
+                    self.mass.webserver.port if enable_json else None,
+                    "Music Assistant",
+                    self.mass.server_id,
+                )
+            )
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
@@ -146,7 +220,7 @@ class SlimprotoProvider(PlayerProvider):
                 _server.close()
         if hasattr(self, "_cli"):
             await self._cli.unload()
-        self._socket_servers = None
+        self._socket_servers = []
 
     async def _create_client(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter

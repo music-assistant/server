@@ -28,10 +28,8 @@ FALLBACK_DURATION: Final[int] = 172800
 
 # config keys
 CONF_SERVER_ID: Final[str] = "server_id"
-CONF_WEB_IP: Final[str] = "webserver.ip"
-CONF_WEB_PORT: Final[str] = "webserver.port"
-CONF_DB_LIBRARY: Final[str] = "database.library"
-CONF_DB_CACHE: Final[str] = "database.cache"
+CONF_IP_ADDRESS: Final[str] = "ip_address"
+CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
 CONF_PATH: Final[str] = "path"

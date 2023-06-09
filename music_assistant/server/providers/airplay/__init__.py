@@ -131,7 +131,7 @@ class AirplayProvider(PlayerProvider):
         )
         await self._check_config_xml()
         # start running the bridge
-        asyncio.create_task(self._bridge_process_runner())
+        asyncio.create_task(self._bridge_process_runner(slimproto_prov))
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
@@ -304,7 +304,7 @@ class AirplayProvider(PlayerProvider):
             f"Unable to locate RaopBridge for {platform.system()} ({platform.machine()})"
         )
 
-    async def _bridge_process_runner(self) -> None:
+    async def _bridge_process_runner(self, slimproto_prov: SlimprotoProvider) -> None:
         """Run the bridge binary in the background."""
         self.logger.debug(
             "Starting Airplay bridge using config file %s",
@@ -313,16 +313,16 @@ class AirplayProvider(PlayerProvider):
         args = [
             self._bridge_bin,
             "-s",
-            "localhost",
+            f"localhost:{slimproto_prov.port}",
             "-x",
             self._config_file,
             "-I",
             "-Z",
             "-d",
             "all=warn",
-            # filter out macbooks and apple tv's
+            # filter out apple tv's for now until we fix auth
             "-m",
-            "macbook,apple-tv,appletv",
+            "apple-tv,appletv",
         ]
         start_success = False
         while True:
