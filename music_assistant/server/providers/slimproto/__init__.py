@@ -690,7 +690,10 @@ class SlimprotoProvider(PlayerProvider):
                 break
             await asyncio.sleep(0.2)
         # all child's ready (or timeout) - start play
-        await self.cmd_play(player.player_id)
+        async with asyncio.TaskGroup() as tg:
+            for client in self._get_sync_clients(player.player_id):
+                timestamp = client.jiffies + 100
+                tg.create_task(client.send_strm(b"u", replay_gain=int(timestamp)))
 
     async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
