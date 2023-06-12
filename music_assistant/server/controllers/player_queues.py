@@ -5,7 +5,7 @@ import logging
 import random
 import time
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.enums import (
@@ -517,7 +517,9 @@ class PlayerQueuesController:
         # always call update to calculate state etc
         self.on_player_update(player, {})
 
-    def on_player_update(self, player: Player, changed_keys: set[str]) -> None:
+    def on_player_update(
+        self, player: Player, changed_values: dict[str, tuple[Any, Any]]  # noqa: ARG002
+    ) -> None:
         """Call when a PlayerQueue needs to be updated (e.g. when player updates)."""
         if player.player_id not in self._queues:
             # race condition

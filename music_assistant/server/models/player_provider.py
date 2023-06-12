@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -141,7 +141,9 @@ class PlayerProvider(Provider):
         If the player does not need any polling, simply do not override this method.
         """
 
-    def on_child_state(self, player_id: str, child_player: Player, changed_keys: set[str]) -> None:
+    def on_child_state(
+        self, player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
         """Call when the state of a child player updates."""
         # default implementation: simply update the state of the group player
         self.mass.players.update(player_id, skip_forward=True)

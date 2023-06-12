@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
-from music_assistant.common.helpers.util import get_changed_keys
+from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.enums import (
     EventType,
     PlayerFeature,
@@ -186,25 +186,10 @@ class PlayerController:
             player.state = PlayerState.IDLE
         elif not player.powered:
             player.state = PlayerState.OFF
-        # handle automatic hiding of group child's feature
-        for group_player in self._get_player_groups(player_id):
-            try:
-                hide_group_childs = self.mass.config.get_raw_player_config_value(
-                    group_player.player_id, CONF_HIDE_GROUP_CHILDS, "active"
-                )
-            except KeyError:
-                continue
-            if hide_group_childs == "always":
-                player.hidden_by.add(group_player.player_id)
-            elif group_player.powered:
-                if hide_group_childs == "active":
-                    player.hidden_by.add(group_player.player_id)
-            elif group_player.player_id in player.hidden_by:
-                player.hidden_by.remove(group_player.player_id)
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
-        changed_keys = get_changed_keys(
+        changed_values = get_changed_values(
             prev_state,
             new_state,
             ignore_keys=["elapsed_time", "elapsed_time_last_updated", "seq_no"],
@@ -216,9 +201,9 @@ class PlayerController:
             return
 
         # always signal update to the playerqueue
-        self.queues.on_player_update(player, changed_keys)
+        self.queues.on_player_update(player, changed_values)
 
-        if len(changed_keys) == 0 and not force_update:
+        if len(changed_values) == 0 and not force_update:
             return
 
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -227,15 +212,25 @@ class PlayerController:
             return
         if player.type == PlayerType.GROUP:
             # update group player child's when parent updates
-            for child_player_id in player.group_childs:
-                if child_player_id == player_id:
+            hide_group_childs = self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_HIDE_GROUP_CHILDS, "active"
+            )
+            for child_player in self._get_child_players(player):
+                if child_player.player_id == player.player_id:
                     continue
-                self.update(child_player_id, skip_forward=True)
+                # handle 'hide group childs' feature here
+                if hide_group_childs == "always":  # noqa: SIM114
+                    child_player.hidden_by.add(player.player_id)
+                elif player.powered and hide_group_childs == "active":
+                    child_player.hidden_by.add(player.player_id)
+                elif not player.powered and player.player_id in child_player.hidden_by:
+                    child_player.hidden_by.remove(player.player_id)
+                self.update(child_player.player_id, skip_forward=True)
 
         # update group player(s) when child updates
         for group_player in self._get_player_groups(player_id):
             player_prov = self.get_player_provider(group_player.player_id)
-            player_prov.on_child_state(group_player.player_id, player, changed_keys)
+            player_prov.on_child_state(group_player.player_id, player, changed_values)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -460,6 +455,7 @@ class PlayerController:
         if child_player.state == PlayerState.PLAYING:
             await self.cmd_stop(player_id)
         # all checks passed, forward command to the player provider
+        child_player.hidden_by.add(target_player)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
 
@@ -484,6 +480,8 @@ class PlayerController:
             return
 
         # all checks passed, forward command to the player provider
+        if player.synced_to in player.hidden_by:
+            player.hidden_by.remove(player.synced_to)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
 
@@ -504,7 +502,7 @@ class PlayerController:
 
     def _get_player_groups(self, player_id: str) -> tuple[Player, ...]:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
-        return tuple(x for x in self if player_id in x.group_childs)
+        return tuple(x for x in self if x.type == PlayerType.GROUP and player_id in x.group_childs)
 
     def _get_active_source(self, player: Player) -> str:
         """Return the active_source id for given player."""

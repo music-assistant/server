@@ -483,7 +483,8 @@ class SlimprotoProvider(PlayerProvider):
             # playback needs to be restarted to get all players in sync
             # TODO: If there is any need, we could make this smarter where the new
             # sync child waits for the next track.
-            await self.mass.players.queues.resume(parent_player.player_id)
+            active_queue = self.mass.players.queues.get_active_queue(parent_player.player_id)
+            await self.mass.players.queues.resume(active_queue.queue_id)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player."""
