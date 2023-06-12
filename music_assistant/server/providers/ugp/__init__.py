@@ -7,7 +7,7 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_FLOW_MODE,
@@ -26,7 +26,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_GROUPED_POWER_ON, CONF_PROVIDERS
+from music_assistant.constants import CONF_GROUPED_POWER_ON
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -49,7 +49,6 @@ CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO = ConfigEntry.from_dict(
 CONF_ENTRY_FORCED_FLOW_MODE = ConfigEntry.from_dict(
     {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True}
 )
-SUPPORTS_NATIVE_SYNC = ("sonos",)
 # ruff: noqa: ARG002
 
 
@@ -76,59 +75,79 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    all_players = tuple(
-        ConfigValueOption(x.display_name, x.player_id)
-        for x in mass.players.all(True, True, False)
-        if x.player_id != instance_id
-    )
-    return (
+    # dynamically extend the amount of entries when needed
+    if values.get("ugp_15"):
+        player_count = 20
+    elif values.get("ugp_10"):
+        player_count = 15
+    elif values.get("ugp_5"):
+        player_count = 10
+    else:
+        player_count = 5
+    player_entries = tuple(
         ConfigEntry(
-            key=CONF_GROUP_MEMBERS,
+            key=f"ugp_{index}",
             type=ConfigEntryType.STRING,
-            label="Group members",
+            label=f"Group player {index}: Group members",
             default_value=[],
-            options=all_players,
+            options=tuple(
+                ConfigValueOption(x.display_name, x.player_id)
+                for x in mass.players.all(True, True, False)
+                if x.player_id != f"ugp_{index}"
+            ),
             description="Select all players you want to be part of this group",
             multi_value=True,
-        ),
+            required=False,
+        )
+        for index in range(1, player_count + 1)
     )
+    return player_entries
 
 
 class UniversalGroupProvider(PlayerProvider):
     """Base/builtin provider for universally grouping players."""
 
-    prev_sync_leaders: tuple[str] | None = None
-    optimistic_state: PlayerState | None = None
+    prev_sync_leaders: dict[str, tuple[str]] | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-        self.player = player = Player(
-            player_id=self.instance_id,
-            provider=self.domain,
-            type=PlayerType.GROUP,
-            name=self.name,
-            available=True,
-            powered=False,
-            device_info=DeviceInfo(model=self.manifest.name, manufacturer="Music Assistant"),
-            # TODO: derive playerfeatures from (all) underlying child players
-            supported_features=(
-                PlayerFeature.POWER,
-                PlayerFeature.PAUSE,
-                PlayerFeature.VOLUME_SET,
-                PlayerFeature.VOLUME_MUTE,
-                PlayerFeature.SET_MEMBERS,
-            ),
-            active_source=self.instance_id,
-            group_childs=self.config.get_value(CONF_GROUP_MEMBERS),
-        )
-        self.mass.players.register_or_update(player)
+        self.prev_sync_leaders = {}
 
-    async def unload(self) -> None:
-        """Handle close/cleanup of the provider."""
-        # cleanup player config if provider is removed
-        if self.mass.config.get(f"{CONF_PROVIDERS}/{self.instance_id}") is not None:
-            return
-        self.mass.players.remove(self.instance_id)
+        for index in range(1, 100):
+            conf_key = f"ugp_{index}"
+            try:
+                player_conf = self.config.get_value(conf_key)
+            except KeyError:
+                break
+            if player_conf == []:
+                # cleanup player config if player config is removed/reset
+                self.mass.players.remove(conf_key)
+                continue
+            elif not player_conf:
+                continue
+
+            player = Player(
+                player_id=conf_key,
+                provider=self.domain,
+                type=PlayerType.GROUP,
+                name=f"{self.name}: {index}",
+                available=True,
+                powered=False,
+                device_info=DeviceInfo(model=self.manifest.name, manufacturer="Music Assistant"),
+                # TODO: derive playerfeatures from (all) underlying child players?
+                supported_features=(
+                    PlayerFeature.POWER,
+                    PlayerFeature.PAUSE,
+                    PlayerFeature.VOLUME_SET,
+                    PlayerFeature.VOLUME_MUTE,
+                    PlayerFeature.SET_MEMBERS,
+                ),
+                active_source=conf_key,
+                group_childs=player_conf,
+            )
+            player.extra_data["optimistic_state"] = PlayerState.IDLE
+            self.prev_sync_leaders[conf_key] = None
+            self.mass.players.register_or_update(player)
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -141,19 +160,25 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
-        self.optimistic_state = PlayerState.IDLE
+        group_player = self.mass.players.get(player_id)
+        group_player.extra_data["optimistic_state"] = PlayerState.IDLE
         # forward command to player and any connected sync child's
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
+            for member in self._get_active_members(
+                player_id, only_powered=True, skip_sync_childs=True
+            ):
                 if member.state == PlayerState.IDLE:
                     continue
                 tg.create_task(self.mass.players.cmd_stop(member.player_id))
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
-        self.optimistic_state = PlayerState.PLAYING
+        group_player = self.mass.players.get(player_id)
+        group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
+            for member in self._get_active_members(
+                player_id, only_powered=True, skip_sync_childs=True
+            ):
                 tg.create_task(self.mass.players.cmd_play(member.player_id))
 
     async def cmd_play_media(
@@ -179,10 +204,13 @@ class UniversalGroupProvider(PlayerProvider):
         await self.cmd_stop(player_id)
         # power ON
         await self.cmd_power(player_id, True)
-        self.optimistic_state = PlayerState.PLAYING
+        group_player = self.mass.players.get(player_id)
+        group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
         # forward command to all (powered) group child's
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
+            for member in self._get_active_members(
+                player_id, only_powered=True, skip_sync_childs=True
+            ):
                 player_prov = self.mass.players.get_player_provider(member.player_id)
                 tg.create_task(
                     player_prov.cmd_play_media(
@@ -196,9 +224,12 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
-        self.optimistic_state = PlayerState.PAUSED
+        group_player = self.mass.players.get(player_id)
+        group_player.extra_data["optimistic_state"] = PlayerState.PAUSED
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(only_powered=True, skip_sync_childs=True):
+            for member in self._get_active_members(
+                player_id, only_powered=True, skip_sync_childs=True
+            ):
                 tg.create_task(self.mass.players.cmd_pause(member.player_id))
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
@@ -206,6 +237,7 @@ class UniversalGroupProvider(PlayerProvider):
         group_power_on = await self.mass.config.get_player_config_value(
             player_id, CONF_GROUPED_POWER_ON
         )
+        group_player = self.mass.players.get(player_id)
 
         async def set_child_power(child_player: Player) -> None:
             await self.mass.players.cmd_power(child_player.player_id, powered)
@@ -216,35 +248,40 @@ class UniversalGroupProvider(PlayerProvider):
             # turn on/off child players
             async with asyncio.TaskGroup() as tg:
                 for member in self._get_active_members(
-                    only_powered=not powered, skip_sync_childs=False
+                    player_id, only_powered=not powered, skip_sync_childs=False
                 ):
                     if member.powered == member:
                         continue
                     tg.create_task(set_child_power(member))
 
-        self.player.powered = powered
-        self.mass.players.update(self.instance_id)
+        group_player.powered = powered
+        group_player.extra_data["optimistic_state"] = PlayerState.IDLE
+        self.mass.players.update(player_id)
         if powered:
             # sync all players on power on
-            await self._sync_players()
+            await self._sync_players(player_id)
         else:
-            self.optimistic_state = PlayerState.OFF
+            group_player.extra_data["optimistic_state"] = PlayerState.OFF
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
+        # group volume is already handled in the player manager
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
-        self.update_attributes()
+        self.update_attributes(player_id)
         self.mass.players.update(player_id, skip_forward=True)
 
-    def update_attributes(self) -> None:
+    def update_attributes(self, player_id: str) -> None:
         """Update player attributes."""
-        all_members = self._get_active_members(only_powered=False, skip_sync_childs=False)
-        self.player.group_childs = list(x.player_id for x in all_members)
+        group_player = self.mass.players.get(player_id)
+        all_members = self._get_active_members(
+            player_id, only_powered=False, skip_sync_childs=False
+        )
+        group_player.group_childs = list(x.player_id for x in all_members)
         # read the state from the first powered child player
         for member in all_members:
             if member.synced_to:
@@ -253,61 +290,70 @@ class UniversalGroupProvider(PlayerProvider):
                 continue
             if member.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
                 continue
-            self.player.current_item_id = member.current_item_id
-            self.player.current_url = member.current_url
-            self.player.elapsed_time = member.elapsed_time
-            self.player.elapsed_time_last_updated = member.elapsed_time_last_updated
-            self.player.state = member.state
+            group_player.current_item_id = member.current_item_id
+            group_player.current_url = member.current_url
+            group_player.elapsed_time = member.elapsed_time
+            group_player.elapsed_time_last_updated = member.elapsed_time_last_updated
+            group_player.state = member.state
             break
         else:
-            self.player.state = PlayerState.IDLE
-            self.player.current_item_id = None
-            self.player.current_url = None
+            group_player.state = PlayerState.IDLE
+            group_player.current_item_id = None
+            group_player.current_url = None
 
-    def on_child_state(self, player_id: str, child_player: Player, changed_keys: set[str]) -> None:
+    def on_child_state(
+        self, player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
+    ) -> None:
         """Call when the state of a child player updates."""
-        powered_players = self._get_active_members(True, False)
-        if "powered" in changed_keys:
-            if not child_player.powered and len(powered_players) == 0:
-                # the last player of a group turned off
-                # turn off the group
+        self.update_attributes(player_id)
+        group_player = self.mass.players.get(player_id)
+        self.mass.players.update(player_id, skip_forward=True)
+        if "powered" in changed_values and (prev_power := changed_values["powered"][0]) != (
+            new_power := changed_values["powered"][1]
+        ):
+            powered_players = self._get_active_members(player_id, True, False)
+            if group_player.powered and prev_power is True and len(powered_players) == 0:
+                # the last player of a group turned off, turn off the group
                 self.mass.create_task(self.cmd_power, player_id, False)
             # ruff: noqa: SIM114
-            elif child_player.powered and self.optimistic_state == PlayerState.PLAYING:
+            elif (
+                new_power is True
+                and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+            ):
                 # a child player turned ON while the group player is already playing
                 # we need to resync/resume
-                if (
-                    child_player.provider in SUPPORTS_NATIVE_SYNC
-                    and self.player.state == PlayerState.PLAYING
-                    and (
-                        sync_leader := next(
-                            (x for x in child_player.can_sync_with if x in self.prev_sync_leaders),
-                            None,
-                        )
+                if group_player.state == PlayerState.PLAYING and (
+                    sync_leader := next(
+                        (
+                            x
+                            for x in child_player.can_sync_with
+                            if x in self.prev_sync_leaders[player_id]
+                        ),
+                        None,
                     )
                 ):
-                    # prevent resume when ecosystem supports native sync
+                    # prevent resume when player platform supports sync
                     # and one of its players is already playing
-                    self.mass.create_task(self.mass.players.cmd_sync, player_id, sync_leader)
+                    self.mass.create_task(
+                        self.mass.players.cmd_sync, child_player.player_id, sync_leader
+                    )
                 else:
                     self.mass.create_task(self.mass.players.queues.resume, player_id)
             elif (
                 not child_player.powered
-                and self.optimistic_state == PlayerState.PLAYING
-                and child_player.player_id in self.prev_sync_leaders
+                and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+                and child_player.player_id in self.prev_sync_leaders[player_id]
             ):
                 # a sync master player turned OFF while the group player
                 # should still be playing - we need to resync/resume
                 self.mass.create_task(self.mass.players.queues.resume, player_id)
-        self.update_attributes()
-        self.mass.players.update(player_id, skip_forward=True)
 
     def _get_active_members(
-        self, only_powered: bool = False, skip_sync_childs: bool = True
+        self, player_id: str, only_powered: bool = False, skip_sync_childs: bool = True
     ) -> list[Player]:
         """Get (child) players attached to a grouped player."""
         child_players: list[Player] = []
-        conf_members: list[str] = self.config.get_value(CONF_GROUP_MEMBERS)
+        conf_members: list[str] = self.config.get_value(player_id)
         ignore_ids = set()
         for child_id in conf_members:
             if child_player := self.mass.players.get(child_id, False):
@@ -315,11 +361,11 @@ class UniversalGroupProvider(PlayerProvider):
                     continue
                 if child_player.synced_to and skip_sync_childs:
                     continue
-                allowed_sources = [child_player.player_id, self.instance_id] + conf_members
+                allowed_sources = [child_player.player_id, player_id] + conf_members
                 if child_player.active_source not in allowed_sources:
                     # edge case: the child player has another group already active!
                     continue
-                if child_player.synced_to and child_player.synced_to not in conf_members:
+                if child_player.synced_to and child_player.synced_to not in allowed_sources:
                     # edge case: the child player is already synced to another player
                     continue
                 child_players.append(child_player)
@@ -331,11 +377,11 @@ class UniversalGroupProvider(PlayerProvider):
                     )
         return [x for x in child_players if x.player_id not in ignore_ids]
 
-    async def _sync_players(self) -> None:
+    async def _sync_players(self, player_id: str) -> None:
         """Sync all (possible) players."""
         sync_leaders = set()
         # TODO: sort members on sync master priority attribute ?
-        for member in self._get_active_members(only_powered=True):
+        for member in self._get_active_members(player_id, only_powered=True):
             if member.synced_to is not None:
                 continue
             if not member.can_sync_with:
@@ -350,4 +396,4 @@ class UniversalGroupProvider(PlayerProvider):
                 continue
             # pick this member as new sync leader
             sync_leaders.add(member.player_id)
-        self.prev_sync_leaders = tuple(sync_leaders)
+        self.prev_sync_leaders[player_id] = tuple(sync_leaders)

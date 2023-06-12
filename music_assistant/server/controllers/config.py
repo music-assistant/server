@@ -360,6 +360,9 @@ class ConfigController:
         # signal update to the player manager
         with suppress(PlayerUnavailableError, AttributeError):
             player = self.mass.players.get(config.player_id)
+            if config.enabled:
+                player_prov = self.mass.players.get_player_provider(player_id)
+                await player_prov.poll_player(player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id, force_update=True)
 

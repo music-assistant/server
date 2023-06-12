@@ -6,7 +6,7 @@ import logging
 from collections.abc import Iterator
 from typing import TYPE_CHECKING, cast
 
-from music_assistant.common.helpers.util import get_changed_keys
+from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.enums import (
     EventType,
     PlayerFeature,
@@ -189,7 +189,7 @@ class PlayerController:
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
-        changed_keys = get_changed_keys(
+        changed_values = get_changed_values(
             prev_state,
             new_state,
             ignore_keys=["elapsed_time", "elapsed_time_last_updated", "seq_no"],
@@ -201,9 +201,9 @@ class PlayerController:
             return
 
         # always signal update to the playerqueue
-        self.queues.on_player_update(player, changed_keys)
+        self.queues.on_player_update(player, changed_values)
 
-        if len(changed_keys) == 0 and not force_update:
+        if len(changed_values) == 0 and not force_update:
             return
 
         self.mass.signal_event(EventType.PLAYER_UPDATED, object_id=player_id, data=player)
@@ -230,7 +230,7 @@ class PlayerController:
         # update group player(s) when child updates
         for group_player in self._get_player_groups(player_id):
             player_prov = self.get_player_provider(group_player.player_id)
-            player_prov.on_child_state(group_player.player_id, player, changed_keys)
+            player_prov.on_child_state(group_player.player_id, player, changed_values)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -480,7 +480,8 @@ class PlayerController:
             return
 
         # all checks passed, forward command to the player provider
-        player.hidden_by.remove(player.synced_to)
+        if player.synced_to in player.hidden_by:
+            player.hidden_by.remove(player.synced_to)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
 

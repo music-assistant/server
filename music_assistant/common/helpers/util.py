@@ -231,21 +231,36 @@ def get_changed_keys(
     ignore_keys: list[str] | None = None,
 ) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
+    return get_changed_values(dict1, dict2, ignore_keys).keys()
+
+
+def get_changed_values(
+    dict1: dict[str, Any],
+    dict2: dict[str, Any],
+    ignore_keys: list[str] | None = None,
+) -> dict[str, tuple[Any, Any]]:
+    """
+    Compare 2 dicts and return dict of changed values.
+
+    dict key is the changed key, value is tuple of old and new values.
+    """
+    if not dict1 and not dict2:
+        return {}
     if not dict1:
-        return set(dict2.keys())
+        return {key: (None, value) for key, value in dict2.items()}
     if not dict2:
-        return set(dict1.keys())
-    changed_keys = set()
+        return {key: (None, value) for key, value in dict1.items()}
+    changed_values = {}
     for key, value in dict2.items():
         if ignore_keys and key in ignore_keys:
             continue
         if key not in dict1:
-            changed_keys.add(key)
+            changed_values[key] = (None, value)
         elif isinstance(value, dict):
-            changed_keys.update(get_changed_keys(dict1[key], value, ignore_keys))
+            changed_values.update(get_changed_values(dict1[key], value, ignore_keys))
         elif dict1[key] != value:
-            changed_keys.add(key)
-    return changed_keys
+            changed_values[key] = (dict1[key], value)
+    return changed_values
 
 
 def empty_queue(q: asyncio.Queue) -> None:
