@@ -186,21 +186,6 @@ class PlayerController:
             player.state = PlayerState.IDLE
         elif not player.powered:
             player.state = PlayerState.OFF
-        # handle automatic hiding of group child's feature
-        for group_player in self._get_player_groups(player_id):
-            try:
-                hide_group_childs = self.mass.config.get_raw_player_config_value(
-                    group_player.player_id, CONF_HIDE_GROUP_CHILDS, "active"
-                )
-            except KeyError:
-                continue
-            if hide_group_childs == "always":
-                player.hidden_by.add(group_player.player_id)
-            elif group_player.powered:
-                if hide_group_childs == "active":
-                    player.hidden_by.add(group_player.player_id)
-            elif group_player.player_id in player.hidden_by:
-                player.hidden_by.remove(group_player.player_id)
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
@@ -227,10 +212,20 @@ class PlayerController:
             return
         if player.type == PlayerType.GROUP:
             # update group player child's when parent updates
-            for child_player_id in player.group_childs:
-                if child_player_id == player_id:
+            hide_group_childs = self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_HIDE_GROUP_CHILDS, "active"
+            )
+            for child_player in self._get_child_players(player):
+                if child_player.player_id == player.player_id:
                     continue
-                self.update(child_player_id, skip_forward=True)
+                # handle 'hide group childs' feature here
+                if hide_group_childs == "always":  # noqa: SIM114
+                    child_player.hidden_by.add(player.player_id)
+                elif player.powered and hide_group_childs == "active":
+                    child_player.hidden_by.add(player.player_id)
+                elif not player.powered and player.player_id in child_player.hidden_by:
+                    child_player.hidden_by.remove(player.player_id)
+                self.update(child_player.player_id, skip_forward=True)
 
         # update group player(s) when child updates
         for group_player in self._get_player_groups(player_id):
