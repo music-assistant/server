@@ -460,6 +460,7 @@ class PlayerController:
         if child_player.state == PlayerState.PLAYING:
             await self.cmd_stop(player_id)
         # all checks passed, forward command to the player provider
+        child_player.hidden_by.add(target_player)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
 
@@ -484,6 +485,7 @@ class PlayerController:
             return
 
         # all checks passed, forward command to the player provider
+        player.hidden_by.remove(player.synced_to)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
 
@@ -504,7 +506,7 @@ class PlayerController:
 
     def _get_player_groups(self, player_id: str) -> tuple[Player, ...]:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
-        return tuple(x for x in self if player_id in x.group_childs)
+        return tuple(x for x in self if x.type == PlayerType.GROUP and player_id in x.group_childs)
 
     def _get_active_source(self, player: Player) -> str:
         """Return the active_source id for given player."""
