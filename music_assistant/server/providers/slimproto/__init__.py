@@ -603,22 +603,21 @@ class SlimprotoProvider(PlayerProvider):
 
         # make sure client has loaded the same track as sync master
         client_item_id = client.current_metadata["item_id"] if client.current_metadata else None
-        prev_item_id = client._next_metadata["item_id"] if client._next_metadata else None
         master_item_id = (
             sync_master.current_metadata["item_id"] if sync_master.current_metadata else None
         )
         if client_item_id != master_item_id:
             return
-        if client_item_id and prev_item_id and client_item_id != prev_item_id:
-            # transitioning
-            sync_playpoints.clear()
+        # ignore sync when player is transitioning to a new track (next metadata is loaded)
+        next_item_id = client._next_metadata["item_id"] if client._next_metadata else None
+        if next_item_id and client_item_id != next_item_id:
             return
 
         last_playpoint = sync_playpoints[-1] if sync_playpoints else None
         if last_playpoint and (time.time() - last_playpoint.timestamp) > 10:
             # last playpoint is too old, invalidate
             sync_playpoints.clear()
-        if last_playpoint and last_playpoint.item_id != client.current_metadata["item_id"]:
+        if last_playpoint and last_playpoint.item_id != client_item_id:
             # item has changed, invalidate
             sync_playpoints.clear()
 
@@ -633,13 +632,13 @@ class SlimprotoProvider(PlayerProvider):
             return
 
         # we can now append the current playpoint to our list
-        sync_playpoints.append(SyncPlayPoint(time.time(), client.current_metadata["item_id"], diff))
+        sync_playpoints.append(SyncPlayPoint(time.time(), client_item_id, diff))
 
         if len(sync_playpoints) < MIN_REQ_PLAYPOINTS:
             return
 
         # get the average diff
-        avg_diff = statistics.fmean(sync_playpoints)
+        avg_diff = statistics.fmean(x.diff for x in sync_playpoints)
         delta = abs(avg_diff)
 
         if delta < MIN_DEVIATION_ADJUST:
@@ -691,7 +690,10 @@ class SlimprotoProvider(PlayerProvider):
                 break
             await asyncio.sleep(0.2)
         # all child's ready (or timeout) - start play
-        await self.cmd_play(player.player_id)
+        async with asyncio.TaskGroup() as tg:
+            for client in self._get_sync_clients(player.player_id):
+                timestamp = client.jiffies + 100
+                tg.create_task(client.send_strm(b"u", replay_gain=int(timestamp)))
 
     async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
