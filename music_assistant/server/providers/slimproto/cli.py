@@ -1285,7 +1285,7 @@ def dict_to_strings(source: dict) -> list[str]:
                 else:
                     result.append(str(subval))
         elif isinstance(value, dict):
-            result += dict_to_strings(subval)
+            result += dict_to_strings(value)
         else:
             result.append(f"{key}:{str(value)}")
     return result
