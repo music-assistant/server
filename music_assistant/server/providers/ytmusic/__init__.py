@@ -264,12 +264,14 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
+        await self._check_oauth_token()
         if album_obj := await get_album(prov_album_id=prov_album_id):
             return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
         raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
+        await self._check_oauth_token()
         album_obj = await get_album(prov_album_id=prov_album_id)
         if not album_obj.get("tracks"):
             return []
@@ -286,12 +288,14 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
+        await self._check_oauth_token()
         if artist_obj := await get_artist(prov_artist_id=prov_artist_id, headers=self._headers):
             return await self._parse_artist(artist_obj=artist_obj)
         raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
+        await self._check_oauth_token()
         if track_obj := await get_track(prov_track_id=prov_track_id):
             return await self._parse_track(track_obj)
         raise MediaNotFoundError(f"Item {prov_track_id} not found")
@@ -336,6 +340,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
+        await self._check_oauth_token()
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if "albums" in artist_obj and "results" in artist_obj["albums"]:
             albums = []
@@ -350,6 +355,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
+        await self._check_oauth_token()
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
