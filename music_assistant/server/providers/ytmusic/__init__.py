@@ -493,6 +493,7 @@ class YoutubeMusicProvider(MusicProvider):
                 "Invalid playback URL encountered. Retrying with new signature timestamp."
             )
             self._signature_timestamp = await self._get_signature_timestamp()
+            self._cipher = None
             return await self.get_stream_details(item_id=item_id, retry=False)
         stream_details = StreamDetails(
             provider=self.instance_id,
@@ -779,6 +780,7 @@ class YoutubeMusicProvider(MusicProvider):
             return cipher
 
         if not self._cipher:
+            self.logger.debug("Creating a new cipher")
             self._cipher = await asyncio.to_thread(_decipher)
         return self._cipher.get_signature(ciphered_signature)
 
