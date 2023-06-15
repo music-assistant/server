@@ -319,7 +319,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ]
         limit = min(limit, len(playlist_tracks))
         # use set to prevent duplicates
-        final_items = set()
+        final_items = []
         # to account for playlists with mixed content we grab suggestions from a few
         # random playlist tracks to prevent getting too many tracks of one of the
         # source playlist's genres.
@@ -327,17 +327,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # grab 5 random tracks from the playlist
             base_tracks = random.sample(playlist_tracks, 5)
             # add the source/base playlist tracks to the final list...
-            final_items.update(base_tracks)
+            final_items.extend(base_tracks)
             # get 5 suggestions for one of the base tracks
             base_track = next(x for x in base_tracks if x.available)
             similar_tracks = await provider.get_similar_tracks(
                 prov_track_id=base_track.item_id, limit=5
             )
-            final_items.update(x for x in similar_tracks if x.available)
-
+            final_items.extend(x for x in similar_tracks if x.available)
+        # Remove duplicate tracks
+        radio_items = {track.sort_name: track for track in final_items}.values()
         # NOTE: In theory we can return a few more items than limit here
         # Shuffle the final items list
-        return random.sample(list(final_items), len(final_items))
+        return random.sample(radio_items, len(radio_items))
 
     async def _get_dynamic_tracks(
         self, media_item: Playlist, limit: int = 25  # noqa: ARG002
