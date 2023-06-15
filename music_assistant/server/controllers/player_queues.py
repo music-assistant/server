@@ -98,7 +98,7 @@ class PlayerQueuesController:
 
         queue.shuffle_enabled = shuffle_enabled
         queue_items = self._queue_items[queue_id]
-        cur_index = queue.index_in_buffer
+        cur_index = queue.index_in_buffer or queue.current_index
         if cur_index is not None:
             next_index = cur_index + 1
             next_items = queue_items[next_index:]
@@ -262,6 +262,7 @@ class PlayerQueuesController:
             if queue.current_index is None:
                 queue.current_index = 0
                 queue.current_item = self.get_item(queue_id, 0)
+                queue.items = len(queue_items)
                 self.signal_update(queue_id)
 
     @api_command("players/queue/move_item")
@@ -705,6 +706,7 @@ class PlayerQueuesController:
     def update_items(self, queue_id: str, queue_items: list[QueueItem]) -> None:
         """Update the existing queue items, mostly caused by reordering."""
         self._queue_items[queue_id] = queue_items
+        self._queues[queue_id].items = len(self._queue_items[queue_id])
         self.signal_update(queue_id, True)
 
     # Helper methods
