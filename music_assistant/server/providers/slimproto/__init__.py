@@ -6,6 +6,7 @@ import statistics
 import time
 from collections import deque
 from collections.abc import Callable, Generator
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -502,7 +503,8 @@ class SlimprotoProvider(PlayerProvider):
         if child_player.state == PlayerState.PLAYING:
             await self.cmd_stop(child_player.player_id)
         child_player.synced_to = None
-        parent_player.group_childs.remove(child_player.player_id)
+        with suppress(ValueError):
+            parent_player.group_childs.remove(child_player.player_id)
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
 
