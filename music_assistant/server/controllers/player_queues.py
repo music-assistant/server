@@ -651,7 +651,6 @@ class PlayerQueuesController:
             except MediaNotFoundError:
                 # No stream details found, skip this QueueItem
                 idx += 1
-                continue
         queue.index_in_buffer = next_index
         # work out crossfade
         crossfade = queue.crossfade_enabled
