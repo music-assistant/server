@@ -28,8 +28,11 @@ from music_assistant.common.models.enums import EventType, PlayerState, QueueOpt
 from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.media_items import MediaItemType
+from music_assistant.common.models.queue_item import QueueItem
 
 from .models import (
+    PLAYMODE_MAP,
+    REPEATMODE_MAP,
     CometDResponse,
     CommandErrorMessage,
     CommandMessage,
@@ -38,18 +41,16 @@ from .models import (
     PlayersResponse,
     PlayerStatusResponse,
     ServerStatusResponse,
-    SlimMediaItem,
+    SlimMenuItem,
     SlimSubscribeMessage,
-    get_media_details_from_mass,
+    menu_item_from_media_item,
+    menu_item_from_queue_item,
     player_item_from_mass,
-    player_status_from_mass,
+    playlist_item_from_mass,
 )
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
-    from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.models import ProviderInstanceType
 
     from . import SlimprotoProvider
 
@@ -71,15 +72,6 @@ class CometDClient:
     first_event: CometDResponse | None = None
     meta_subscriptions: set[str] = field(default_factory=set)
     slim_subscriptions: dict[str, SlimSubscribeMessage] = field(default_factory=dict)
-
-
-async def setup(
-    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-) -> ProviderInstanceType:
-    """Initialize provider(instance) with given configuration."""
-    prov = LmsCli(mass, manifest, config)
-    await prov.handle_setup()
-    return prov
 
 
 async def get_config_entries(
@@ -609,6 +601,8 @@ class LmsCli:
         player_id: str,
         offset: int | str = "-",
         limit: int = 2,
+        menu: str = "",
+        useContextMenu: int | bool = False,  # noqa: N803
         tags: str = "xcfldatgrKN",
         **kwargs,
     ) -> PlayerStatusResponse:
@@ -619,7 +613,7 @@ class LmsCli:
         queue = self.mass.players.queues.get_active_queue(player_id)
         assert queue is not None
         start_index = queue.current_index or 0 if offset == "-" else offset
-        queue_items = []
+        queue_items: list[QueueItem] = []
         index = 0
         async for item in self.mass.players.queues.items(queue.queue_id):
             if index >= start_index:
@@ -627,16 +621,108 @@ class LmsCli:
             if len(queue_items) == limit:
                 break
             index += 1
-        # we ignore the tags, just always send all info
-        presets = await self._get_preset_items(player_id)
-        return player_status_from_mass(
-            self.mass,
-            player=player,
-            queue=queue,
-            queue_items=queue_items,
-            offset=offset,
-            presets=presets,
-        )
+        # base details
+        result = {
+            "player_name": player.display_name,
+            "player_connected": int(player.available),
+            "player_needs_upgrade": False,
+            "player_is_upgrading": False,
+            "power": int(player.powered),
+            "signalstrength": 0,
+            "waitingToPlay": 0,  # TODO?
+        }
+        # additional details if player powered
+        if player.powered:
+            result = {
+                **result,
+                "mode": PLAYMODE_MAP[queue.state],
+                "remote": 1,
+                "current_title": "Music Assistant",
+                "time": queue.elapsed_time,
+                "rate": 1,
+                "duration": queue.current_item.duration if queue.current_item else 0,
+                "sleep": 0,
+                "will_sleep_in": 0,
+                "sync_master": player.synced_to,
+                "sync_slaves": ",".join(player.group_childs),
+                "mixer volume": player.volume_level,
+                "playlist repeat": REPEATMODE_MAP[queue.repeat_mode],
+                "playlist shuffle": int(queue.shuffle_enabled),
+                "playlist_timestamp": queue.elapsed_time_last_updated,
+                "playlist_cur_index": queue.current_index,
+                "playlist_tracks": queue.items,
+                "seq_no": player.extra_data.get("seq_no", 0),
+                "player_ip": player.device_info.address,
+                "digital_volume_control": 1,
+                "can_seek": 1,
+                "playlist mode": "off",
+                "playlist_loop": [
+                    playlist_item_from_mass(
+                        self.mass,
+                        item,
+                        queue.current_index + index,
+                        queue.current_index == (queue.current_index + index),
+                    )
+                    for index, item in enumerate(queue_items)
+                ],
+            }
+        # additional details if menu requested
+        if menu == "menu":
+            # in menu-mode the regular playlist_loop is replaced by item_loop
+            result.pop("playlist_loop", None)
+            presets = await self._get_preset_items(player_id)
+            preset_data: list[dict] = []
+            preset_loop: list[int] = []
+            for _, media_item in presets:
+                preset_data.append(
+                    {
+                        "URL": media_item["params"]["uri"],
+                        "text": media_item["track"],
+                        "type": "audio",
+                    }
+                )
+                preset_loop.append(1)
+            while len(preset_loop) < 10:
+                preset_data.append({})
+                preset_loop.append(0)
+            result = {
+                **result,
+                "alarm_state": "none",
+                "alarm_snooze_seconds": 540,
+                "alarm_timeout_seconds": 3600,
+                "count": len(queue_items),
+                "offset": offset,
+                "base": {
+                    "actions": {
+                        "more": {
+                            "itemsParams": "params",
+                            "window": {"isContextMenu": 1},
+                            "cmd": ["contextmenu"],
+                            "player": 0,
+                            "params": {"context": "playlist", "menu": "track"},
+                        }
+                    }
+                },
+                "preset_loop": preset_loop,
+                "preset_data": preset_data,
+                "item_loop": [
+                    menu_item_from_queue_item(
+                        self.mass,
+                        item,
+                        queue.current_index + index,
+                        queue.current_index == (queue.current_index + index),
+                    )
+                    for index, item in enumerate(queue_items)
+                ],
+            }
+        # additional details if contextmenu requested
+        if bool(useContextMenu):
+            result = {
+                **result,
+                # TODO ?!,
+            }
+
+        return result
 
     async def _handle_serverstatus(
         self,
@@ -646,6 +732,8 @@ class LmsCli:
         **kwargs,
     ) -> ServerStatusResponse:
         """Handle server status command."""
+        if start_index == "-":
+            start_index = 0
         players: list[PlayerItem] = []
         for index, mass_player in enumerate(self.mass.players.all()):
             if isinstance(start_index, int) and index < start_index:
@@ -658,8 +746,7 @@ class LmsCli:
                 "httpport": self.mass.webserver.port,
                 "ip": self.mass.base_ip,
                 "version": "7.999.999",
-                # "uuid": self.mass.server_id,
-                "uuid": "aioslimproto",
+                "uuid": self.mass.server_id,
                 # TODO: set these vars ?
                 "info total duration": 0,
                 "info total genres": 0,
@@ -1161,7 +1248,7 @@ class LmsCli:
             "window": {"windowStyle": "icon_list"},
             "item_loop": [
                 {
-                    **get_media_details_from_mass(self.mass, item),
+                    **menu_item_from_media_item(self.mass, item, include_actions=True),
                     "presetParams": {
                         "favorites_title": item.name,
                         "favorites_url": item.uri,
@@ -1211,29 +1298,15 @@ class LmsCli:
         return {"date_epoch": int(time.time()), "date": "0000-00-00T00:00:00+00:00"}
 
     async def _on_mass_event(self, event: MassEvent) -> None:
-        """Handle incoming Mass Event."""
+        """Forward ."""
         player_id = event.object_id
         if not player_id:
             return
         for client in self._cometd_clients.values():
-            if sub := client.slim_subscriptions.get(f"/{client.client_id}/slim/serverstatus"):
-                await client.queue.put(
-                    {
-                        "channel": sub["data"]["response"],
-                        "id": sub["id"],
-                        "data": await self._handle_serverstatus(player_id),
-                    }
-                )
             if sub := client.slim_subscriptions.get(
                 f"/{client.client_id}/slim/playerstatus/{player_id}"
             ):
-                await client.queue.put(
-                    {
-                        "channel": sub["data"]["response"],
-                        "id": sub["id"],
-                        "data": await self._handle_status(player_id),
-                    }
-                )
+                self._handle_cometd_request(client, sub)
 
     async def _do_periodic(self) -> None:
         """Execute periodic sending of state and cleanup."""
@@ -1255,7 +1328,7 @@ class LmsCli:
 
             await asyncio.sleep(60)
 
-    async def _get_preset_items(self, player_id: str) -> list[tuple[int, SlimMediaItem]]:
+    async def _get_preset_items(self, player_id: str) -> list[tuple[int, SlimMenuItem]]:
         """Return all presets for a player."""
         preset_items: list[tuple[int, MediaItemType]] = []
         for preset_index in range(1, 100):
@@ -1264,7 +1337,7 @@ class LmsCli:
             ):
                 with contextlib.suppress(MusicAssistantError):
                     media_item = await self.mass.music.get_item_by_uri(preset_conf)
-                    slim_media_item = get_media_details_from_mass(self.mass, media_item)
+                    slim_media_item = menu_item_from_media_item(self.mass, media_item, True)
                     preset_items.append((preset_index, slim_media_item))
             else:
                 break
