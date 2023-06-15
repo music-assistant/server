@@ -98,7 +98,7 @@ class PlayerQueuesController:
 
         queue.shuffle_enabled = shuffle_enabled
         queue_items = self._queue_items[queue_id]
-        cur_index = queue.index_in_buffer
+        cur_index = queue.index_in_buffer or queue.current_index
         if cur_index is not None:
             next_index = cur_index + 1
             next_items = queue_items[next_index:]
