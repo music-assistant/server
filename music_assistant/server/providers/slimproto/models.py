@@ -8,7 +8,6 @@ from music_assistant.common.models.media_items import MediaItemType
 
 if TYPE_CHECKING:
     from music_assistant.common.models.player import Player
-    from music_assistant.common.models.player_queue import PlayerQueue
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
 
@@ -152,22 +151,95 @@ def playlist_item_from_mass(
     mass: MusicAssistant, queue_item: QueueItem, index: int = 0, is_cur_index: bool = False
 ) -> PlaylistItem:
     """Parse PlaylistItem for the Json RPC interface from MA QueueItem."""
+    if (
+        is_cur_index
+        and queue_item.streamdetails
+        and queue_item.streamdetails.stream_title
+        and " - " in queue_item.streamdetails.stream_title
+    ):
+        # radio with remote stream title present
+        # artist and title parsed from stream title
+        artist, title = queue_item.streamdetails.stream_title.split(" - ")
+        album = queue_item.name
+    elif queue_item.media_item and queue_item.media_item.media_type == MediaType.TRACK:
+        # track with all metadata
+        artist = queue_item.media_item.artists[0].name if queue_item.media_item.artists else ""
+        album = queue_item.media_item.album.name if queue_item.media_item.album else ""
+        title = queue_item.media_item.name
+    elif queue_item.media_item and queue_item.media_item.metadata.description:
+        # (radio) item with description field
+        album = queue_item.media_item.metadata.description
+        artist = ""
+        title = queue_item.media_item.name
+    else:
+        title = queue_item.name
+        artist = ""
+        album = queue_item.media_type.value
+    return {
+        "playlist index": index,
+        "id": "-187651250107376",
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "remote": 1,
+        "artwork_url": mass.metadata.get_image_url(queue_item.image, 512)
+        if queue_item.image
+        else "",
+        "coverid": "-187651250107376",
+        "duration": queue_item.duration,
+        "bitrate": "",
+    }
+
+
+MenuItemParams = TypedDict(
+    "MediaItemParams",
+    {
+        "track_id": str | int,
+        "playlist_index": int,
+    },
+)
+
+
+class SlimMenuItem(TypedDict):
+    """Representation of MediaItem details."""
+
+    style: str
+    track: str
+    album: str
+    trackType: str  # noqa: N815
+    icon: str
+    artist: str
+    text: str
+    params: MenuItemParams
+    type: str
+    actions: dict  # optional
+
+
+def menu_item_from_queue_item(
+    mass: MusicAssistant, queue_item: QueueItem, index: int = 0, is_cur_index: bool = False
+) -> SlimMenuItem:
+    """Parse SlimMenuItem from MA QueueItem."""
     if queue_item.media_item:
         # media item
-        media_details = get_media_details_from_mass(mass, queue_item.media_item)
+        media_details = menu_item_from_media_item(mass, queue_item.media_item)
+        media_details["params"]["playlist_index"] = index
     else:
         # fallback/generic queue item
-        media_details = {
-            "text": queue_item.name,
-            "style": "itemplay",
-            "trackType": "radio",
-            "icon": mass.metadata.get_image_url(queue_item.image, 512) if queue_item.image else "",
-            "params": {
+        media_details = SlimMenuItem(
+            style="itemplay",
+            track=queue_item.name,
+            album="",
+            trackType="radio",
+            icon=mass.metadata.get_image_url(queue_item.image, 512) if queue_item.image else "",
+            artist="",
+            text=queue_item.name,
+            params={
                 "playlist_index": index,
                 "item_id": queue_item.queue_item_id,
                 "uri": queue_item.uri,
             },
-        }
+            type=queue_item.media_type,
+        )
     if (
         is_cur_index
         and queue_item.streamdetails
@@ -181,29 +253,13 @@ def playlist_item_from_mass(
         media_details["track"] = track
         media_details["album"] = queue_item.name
         media_details["text"] = f"{track}\n{artist} - {queue_item.name}"
-    # remove default item actions
-    media_details.pop("actions")
-    media_details["params"]["playlist_index"] = index
     return media_details
 
 
-class SlimMediaItem(TypedDict):
-    """Representation of MediaItem details."""
-
-    style: str
-    track: str
-    album: str
-    trackType: str  # noqa: N815
-    icon: str
-    artist: str
-    text: str
-    params: dict
-    type: str
-    actions: dict
-
-
-def get_media_details_from_mass(mass: MusicAssistant, media_item: MediaItemType) -> SlimMediaItem:
-    """Get media item details formatted to display on Squeezebox hardware."""
+def menu_item_from_media_item(
+    mass: MusicAssistant, media_item: MediaItemType, include_actions: bool = False
+) -> PlaylistItem:
+    """Parse (menu) MediaItem from MA MediaItem."""
     if media_item.media_type == MediaType.TRACK:
         # track with all metadata
         artist = media_item.artists[0].name if media_item.artists else ""
@@ -245,16 +301,23 @@ def get_media_details_from_mass(mass: MusicAssistant, media_item: MediaItemType)
             "player": 0,
             "cmd": ["browselibrary", "items"],
         }
-    details = SlimMediaItem(
+    details = SlimMenuItem(
         track=title,
         album=album,
         trackType="radio",
         icon=image_url,
         artist=artist,
         text=text,
-        params={"item_id": media_item.item_id, "uri": media_item.uri},
+        params={
+            "track_id": media_item.item_id,
+            "item_id": media_item.item_id,
+            "uri": media_item.uri,
+        },
         type=media_item.media_type.value,
-        actions={
+    )
+    # optionally include actions
+    if include_actions:
+        details["actions"] = {
             "go": go_action,
             "add": {
                 "player": 0,
@@ -294,8 +357,7 @@ def get_media_details_from_mass(mass: MusicAssistant, media_item: MediaItemType)
                 "cmd": ["playlistcontrol"],
                 "nextWindow": "refresh",
             },
-        },
-    )
+        }
     if media_item.media_type in (MediaType.TRACK, MediaType.RADIO):
         details["style"] = "itemplay"
         details["nextWindow"] = "nowPlaying"
@@ -328,95 +390,11 @@ PlayerStatusResponse = TypedDict(
         "can_seek": int,
         "signalstrength": int,
         "rate": int,
+        "uuid": str,
         "playlist_tracks": int,
         "item_loop": list[PlaylistItem],
-        "uuid": str,
     },
 )
-
-
-def player_status_from_mass(
-    mass: MusicAssistant,
-    player: Player,
-    queue: PlayerQueue,
-    queue_items: list[QueueItem],
-    offset: int | str,
-    presets: list[tuple[int, SlimMediaItem]],
-) -> PlayerStatusResponse:
-    """Parse PlayerStatusResponse for the Json RPC interface from MA info."""
-    if queue.current_item:
-        cur_item = playlist_item_from_mass(mass, queue.current_item, queue.current_index, True)
-        remote_meta = {
-            **cur_item,
-            "id": cur_item["params"]["item_id"],
-            "title": cur_item["text"],
-            "artwork_url": cur_item["icon"],
-            "coverid": cur_item["params"]["item_id"],
-            "remote": 1,
-        }
-    else:
-        remote_meta = None
-    # handle preset data
-    preset_data: list[dict] = []
-    preset_loop: list[int] = []
-    for _, media_item in presets:
-        preset_data.append(
-            {
-                "URL": media_item["params"]["uri"],
-                "text": media_item["track"],
-                "type": "audio",
-            }
-        )
-        preset_loop.append(1)
-    while len(preset_loop) < 10:
-        preset_data.append({})
-        preset_loop.append(0)
-    return {
-        "alarm_next": 0,
-        "playlist repeat": REPEATMODE_MAP[queue.repeat_mode],
-        "signalstrength": 0,
-        "remoteMeta": remote_meta,
-        "rate": 1,
-        "player_name": player.display_name,
-        "preset_loop": preset_loop,
-        "mode": PLAYMODE_MAP[queue.state],
-        "playlist_cur_index": queue.current_index,
-        "playlist shuffle": int(queue.shuffle_enabled),
-        "time": queue.elapsed_time,
-        "alarm_version": 2,
-        "mixer volume": player.volume_level,
-        "player_connected": int(player.available),
-        "sync_slaves": ",".join(player.group_childs),
-        "playlist_tracks": queue.items,
-        # "count": queue.items,
-        # some players have trouble grabbing a very large list so limit it for now
-        "count": len(queue_items),
-        "base": {"actions": {}},
-        "seq_no": player.extra_data.get("seq_no", 0),
-        "player_ip": player.device_info.address,
-        "alarm_state": "none",
-        "duration": queue.current_item.duration if queue.current_item else 0,
-        "alarm_snooze_seconds": 540,
-        "digital_volume_control": 1,
-        "power": int(player.powered),
-        "playlist_timestamp": queue.elapsed_time_last_updated,
-        "offset": offset,
-        "can_seek": 1,
-        "alarm_timeout_seconds": 3600,
-        "current_title": None,
-        "remote": 1,
-        "preset_data": preset_data,
-        "playlist mode": "off",
-        "item_loop": [
-            playlist_item_from_mass(
-                mass,
-                item,
-                queue.current_index + index,
-                queue.current_index == (queue.current_index + index),
-            )
-            for index, item in enumerate(queue_items)
-        ],
-    }
 
 
 ServerStatusResponse = TypedDict(
