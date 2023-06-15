@@ -79,6 +79,10 @@ class PlayerQueuesController:
     def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
         if player := self.mass.players.get(player_id):  # noqa: SIM102
+            # account for player that is synced (sync child)
+            if player.synced_to:
+                return self.get_active_queue(player.synced_to)
+            # active_source may be filled with other queue id
             if queue := self.get(player.active_source):
                 return queue
         return self.get(player_id)

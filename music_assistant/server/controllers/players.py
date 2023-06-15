@@ -168,6 +168,8 @@ class PlayerController:
         self, player_id: str, skip_forward: bool = False, force_update: bool = False
     ) -> None:
         """Update player state."""
+        if self.mass.closing:
+            return
         if player_id not in self._players:
             return
         player = self._players[player_id]
@@ -229,7 +231,11 @@ class PlayerController:
 
         # update group player(s) when child updates
         for group_player in self._get_player_groups(player_id):
+            if not group_player.available:
+                continue
             player_prov = self.get_player_provider(group_player.player_id)
+            if not player_prov:
+                continue
             player_prov.on_child_state(group_player.player_id, player, changed_values)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
