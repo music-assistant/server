@@ -639,7 +639,7 @@ class PlayerQueuesController:
             if not cur_item or not next_item:
                 raise QueueEmpty("No more tracks left in the queue.")
             try:
-                # Check of the QueueItem is playable. For example, YT Music returns Radio Items
+                # Check if the QueueItem is playable. For example, YT Music returns Radio Items
                 # that are not playable which will stop playback.
                 next_item.streamdetails = await get_stream_details(
                     mass=self.mass, queue_item=next_item
