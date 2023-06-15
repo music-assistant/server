@@ -475,7 +475,7 @@ class YoutubeMusicProvider(MusicProvider):
             return tracks
         return []
 
-    async def get_stream_details(self, item_id: str, retry=True) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, retry=0) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         data = {
             "playbackContext": {
@@ -487,14 +487,18 @@ class YoutubeMusicProvider(MusicProvider):
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):
-            if not retry:
+            if retry > 4:
+                self.logger.warn(
+                    f"Could not resolve a valid URL for item '{item_id}'. "
+                    "Are you playing music on another device using the same account?"
+                )
                 raise UnplayableMediaError(f"Could not resolve a valid URL for item '{item_id}'.")
             self.logger.debug(
                 "Invalid playback URL encountered. Retrying with new signature timestamp."
             )
-            self._signature_timestamp = await self._get_signature_timestamp()
             self._cipher = None
-            return await self.get_stream_details(item_id=item_id, retry=False)
+            self._signature_timestamp = await self._get_signature_timestamp()
+            return await self.get_stream_details(item_id=item_id, retry=retry + 1)
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -512,11 +516,6 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.channels = int(stream_format.get("audioChannels"))
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
             stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
-        if not stream_details:
-            self.logger.debug(
-                f"Returning NULL stream details for stream_format {stream_format}, "
-                "track_obj {track_obj}. "
-            )
         return stream_details
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002

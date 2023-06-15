@@ -22,6 +22,7 @@ from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_FLOW_MODE, FALLBACK_DURATION, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
+from music_assistant.server.helpers.audio import get_stream_details
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -631,10 +632,26 @@ class PlayerQueuesController:
         queue = self.get_active_queue(queue_or_player_id)
         cur_index = self.index_by_id(queue.queue_id, current_item_id)
         cur_item = self.get_item(queue.queue_id, cur_index)
-        next_index = self.get_next_index(queue.queue_id, cur_index)
-        next_item = self.get_item(queue.queue_id, next_index)
-        if not cur_item or not next_item:
-            raise QueueEmpty("No more tracks left in the queue.")
+        idx = 0
+        while True:
+            next_index = self.get_next_index(queue.queue_id, cur_index + idx)
+            next_item = self.get_item(queue.queue_id, next_index)
+            if not cur_item or not next_item:
+                raise QueueEmpty("No more tracks left in the queue.")
+            try:
+                # Check of the QueueItem is playable. For example, YT Music returns Radio Items
+                # that are not playable which will stop playback.
+                next_item.streamdetails = await get_stream_details(
+                    mass=self.mass, queue_item=next_item
+                )
+                # Lazy load the full MediaItem for the QueueItem, making sure to get the
+                # maximum quality of thumbs
+                next_item.media_item = await self.mass.music.get_item_by_uri(next_item.uri)
+                break
+            except MediaNotFoundError:
+                # No stream details found, skip this QueueItem
+                LOGGER.warning("Skipping QueueItem because it cannot be played.")  # TODO remove log
+                continue
         queue.index_in_buffer = next_index
         # work out crossfade
         crossfade = queue.crossfade_enabled
