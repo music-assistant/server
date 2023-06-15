@@ -172,14 +172,14 @@ class MetaDataController:
         # retrieve genres from tracks
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
-        image_urls = set()
+        images = set()
         try:
             playlist_genres: dict[str, int] = {}
             async for track in self.mass.music.playlists.tracks(
                 playlist.item_id, playlist.provider
             ):
                 if not playlist.image and track.image:
-                    image_urls.add(track.image.path)
+                    images.add(track.image)
                 if track.media_type != MediaType.TRACK:
                     # filter out radio items
                     continue
@@ -202,12 +202,12 @@ class MetaDataController:
             playlist.metadata.genres.update(playlist_genres_filtered)
 
             # create collage thumb/fanart from playlist tracks
-            if image_urls:
+            if images:
                 if playlist.image and self.mass.storage_path in playlist.image:
                     img_path = playlist.image
                 else:
                     img_path = os.path.join(self.mass.storage_path, f"{uuid4().hex}.png")
-                    img_data = await create_collage(self.mass, list(image_urls))
+                    img_data = await create_collage(self.mass, list(images))
                 async with aiofiles.open(img_path, "wb") as _file:
                     await _file.write(img_data)
                 playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, True)]

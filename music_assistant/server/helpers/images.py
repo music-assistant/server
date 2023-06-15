@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING
 import aiofiles
 from PIL import Image
 
+from music_assistant.common.models.media_items import MediaItemImage
 from music_assistant.server.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
@@ -49,7 +50,7 @@ async def get_image_thumb(
     return await asyncio.to_thread(_create_image)
 
 
-async def create_collage(mass: MusicAssistant, images: list[str]) -> bytes:
+async def create_collage(mass: MusicAssistant, images: list[MediaItemImage]) -> bytes:
     """Create a basic collage image from multiple image urls."""
 
     def _new_collage():
@@ -65,7 +66,8 @@ async def create_collage(mass: MusicAssistant, images: list[str]) -> bytes:
 
     for x_co in range(0, 1500, 500):
         for y_co in range(0, 1500, 500):
-            img_data = await get_image_data(mass, random.choice(images))
+            img = random.choice(images)
+            img_data = await get_image_data(mass, img.path, img.provider)
             await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
 
     def _save_collage():
