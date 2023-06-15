@@ -650,7 +650,7 @@ class PlayerQueuesController:
                 break
             except MediaNotFoundError:
                 # No stream details found, skip this QueueItem
-                LOGGER.warning("Skipping QueueItem because it cannot be played.")  # TODO remove log
+                idx += 1
                 continue
         queue.index_in_buffer = next_index
         # work out crossfade

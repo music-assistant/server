@@ -338,7 +338,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         radio_items = {track.sort_name: track for track in final_items}.values()
         # NOTE: In theory we can return a few more items than limit here
         # Shuffle the final items list
-        return random.sample(list(radio_items), len(radio_items))
+        return random.sample(radio_items, len(radio_items))
 
     async def _get_dynamic_tracks(
         self, media_item: Playlist, limit: int = 25  # noqa: ARG002
