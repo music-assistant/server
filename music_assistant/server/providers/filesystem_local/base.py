@@ -451,7 +451,7 @@ class FileSystemProviderBase(MusicProvider):
             async for chunk in self.read_file_content(prov_playlist_id):
                 playlist_data += chunk
             encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-            playlist_data = playlist_data.decode(encoding_details["encoding"])
+            playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = await parse_m3u(playlist_data)
@@ -492,7 +492,7 @@ class FileSystemProviderBase(MusicProvider):
         async for chunk in self.read_file_content(prov_playlist_id):
             playlist_data += chunk
         encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-        playlist_data = playlist_data.decode(encoding_details["encoding"])
+        playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
         for uri in prov_track_ids:
             playlist_data += f"\n{uri}"
 
@@ -513,7 +513,7 @@ class FileSystemProviderBase(MusicProvider):
         async for chunk in self.read_file_content(prov_playlist_id):
             playlist_data += chunk
         encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-        playlist_data = playlist_data.decode(encoding_details["encoding"])
+        playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
 
         if ext in ("m3u", "m3u8"):
             playlist_lines = await parse_m3u(playlist_data)
