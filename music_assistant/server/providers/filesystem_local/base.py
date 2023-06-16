@@ -472,14 +472,25 @@ class FileSystemProviderBase(MusicProvider):
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""
         try:
-            # try to treat uri as (relative) filename
-            if "://" not in line:
-                for filename in (line, os.path.join(playlist_path, line)):
-                    if not await self.exists(filename):
-                        continue
-                    return await self.get_track(filename)
-            # fallback to generic uri parsing
-            return await self.mass.music.get_item_by_uri(line)
+            if "://" in line:
+                # handle as generic uri
+                return await self.mass.music.get_item_by_uri(line)
+
+            # if a relative path was given in an upper level from the playlist,
+            # try to resolve it
+            for parentpart in ("../", "..\\"):
+                while line.startswith(parentpart):
+                    if len(playlist_path) < 3:
+                        break  # guard
+                    playlist_path = parentpart[:-3]
+                    line = line[3:]
+
+            # try to resolve the filename
+            for filename in (line, os.path.join(playlist_path, line)):
+                with contextlib.suppress(FileNotFoundError):
+                    item = await self.resolve(filename)
+                    return await self._parse_track(item)
+
         except MusicAssistantError as err:
             self.logger.warning("Could not parse uri/file %s to track: %s", line, str(err))
             return None
