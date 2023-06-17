@@ -74,10 +74,6 @@ CONF_EXPIRY_TIME = "expiry_time"
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
-# Youtube Music has the very unique id of "LM" for the likes playlist
-# when this playlist ID is detected, we make the id unique to the user
-# by adding the user's instance id to it
-YT_YOUR_LIKES_PLAYLIST_ID = "LM"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 
 SUPPORTED_FEATURES = (
@@ -296,31 +292,23 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         await self._check_oauth_token()
-        if track_obj := await get_track(prov_track_id=prov_track_id):
+        if track_obj := await get_track(prov_track_id=prov_track_id, headers=self._headers):
             return await self._parse_track(track_obj)
         raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
-        if playlist_obj := await get_playlist(prov_playlist_id=playlist_id, headers=self._headers):
+        if playlist_obj := await get_playlist(
+            prov_playlist_id=prov_playlist_id, headers=self._headers
+        ):
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {playlist_id} not found")
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
-        playlist_obj = await get_playlist(prov_playlist_id=playlist_id, headers=self._headers)
+        playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return
         for index, track in enumerate(playlist_obj["tracks"]):
@@ -408,14 +396,9 @@ class YoutubeMusicProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
         return await add_remove_playlist_tracks(
             headers=self._headers,
-            prov_playlist_id=playlist_id,
+            prov_playlist_id=prov_playlist_id,
             prov_track_ids=prov_track_ids,
             add=True,
         )
@@ -425,12 +408,7 @@ class YoutubeMusicProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
-        playlist_obj = await get_playlist(prov_playlist_id=playlist_id, headers=self._headers)
+        playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return None
         tracks_to_delete = []
@@ -650,12 +628,12 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        playlist_id = (
-            f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            if playlist_obj["id"] == YT_YOUR_LIKES_PLAYLIST_ID
-            else playlist_obj["id"]
+        playlist_id = playlist_obj["id"]
+        # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
+        # So use the instance as provider
+        playlist = Playlist(
+            item_id=playlist_id, provider=self.instance_id, name=playlist_obj["title"]
         )
-        playlist = Playlist(item_id=playlist_id, provider=self.domain, name=playlist_obj["title"])
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
@@ -688,7 +666,7 @@ class YoutubeMusicProvider(MusicProvider):
         if not track_obj.get("videoId"):
             raise InvalidDataError("Track is missing videoId")
         track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
-        if "artists" in track_obj:
+        if "artists" in track_obj and track_obj["artists"]:
             track.artists = [
                 self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
