@@ -75,6 +75,24 @@ YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
+# Playlist ID's are not unique across instances for lists like 'Liked videos', 'SuperMix' etc.
+# So we need to add a delimiter to make them unique
+YT_PLAYLIST_ID_DELIMITER = "🎵"
+YT_PERSONAL_PLAYLISTS = (
+    "LM",  # Liked songs
+    "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
+    "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
+    "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
+    "RDTMAK5uy_k5UUl0lmrrfrjMpsT0CoMpdcBz1ruAO1k",  # My Mix 3
+    "RDTMAK5uy_nTsa0Irmcu2li2-qHBoZxtrpG9HuC3k_Q",  # My Mix 4
+    "RDTMAK5uy_lfZhS7zmIcmUhsKtkWylKzc0EN0LW90-s",  # My Mix 5
+    "RDTMAK5uy_k78ni6Y4fyyl0r2eiKkBEICh9Q5wJdfXk",  # My Mix 6
+    "RDTMAK5uy_lfhhWWw9v71CPrR7MRMHgZzbH6Vku9iJc",  # My Mix 7
+    "RDTMAK5uy_n_5IN6hzAOwdCnM8D8rzrs3vDl12UcZpA",  # Discover Mix
+    "RDTMAK5uy_lr0LWzGrq6FU9GIxWvFHTRPQD2LHMqlFA",  # New Release Mix
+    "RDTMAK5uy_nilrsVWxrKskY0ZUpVZ3zpB0u4LwWTVJ4",  # Replay Mix
+    "RDTMAK5uy_mZtXeU08kxXJOUhL0ETdAuZTh1z7aAFAo",  # Archive Mix
+)
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -299,6 +317,9 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         await self._check_oauth_token()
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
         if playlist_obj := await get_playlist(
             prov_playlist_id=prov_playlist_id, headers=self._headers
         ):
@@ -308,6 +329,9 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         await self._check_oauth_token()
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
         playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return
@@ -396,6 +420,9 @@ class YoutubeMusicProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         await self._check_oauth_token()
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
         return await add_remove_playlist_tracks(
             headers=self._headers,
             prov_playlist_id=prov_playlist_id,
@@ -408,6 +435,9 @@ class YoutubeMusicProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         await self._check_oauth_token()
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
         playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return None
@@ -629,11 +659,13 @@ class YoutubeMusicProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
         playlist_id = playlist_obj["id"]
+        playlist_name = playlist_obj["title"]
         # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
-        # So use the instance as provider
-        playlist = Playlist(
-            item_id=playlist_id, provider=self.instance_id, name=playlist_obj["title"]
-        )
+        # So suffix with the instance id to make them unique
+        if playlist_id in YT_PERSONAL_PLAYLISTS:
+            playlist_id = f"{playlist_id}{YT_PLAYLIST_ID_DELIMITER}{self.instance_id}"
+            playlist_name = f"{playlist_name} ({self.name})"
+        playlist = Playlist(item_id=playlist_id, provider=self.domain, name=playlist_name)
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
