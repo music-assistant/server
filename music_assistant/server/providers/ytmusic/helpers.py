@@ -63,11 +63,11 @@ async def get_playlist(prov_playlist_id: str, headers: dict[str, str]) -> dict[s
     return await asyncio.to_thread(_get_playlist)
 
 
-async def get_track(prov_track_id: str) -> dict[str, str]:
+async def get_track(prov_track_id: str, headers: dict[str, str]) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_song():
-        ytm = ytmusicapi.YTMusic()
+        ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         track_obj = ytm.get_song(videoId=prov_track_id)
         track = {}
         track["videoId"] = track_obj["videoDetails"]["videoId"]
@@ -216,7 +216,9 @@ async def get_song_radio_tracks(
     def _get_song_radio_tracks():
         ytm = ytmusicapi.YTMusic(auth=json.dumps(headers))
         playlist_id = f"RDAMVM{prov_item_id}"
-        result = ytm.get_watch_playlist(videoId=prov_item_id, playlistId=playlist_id, limit=limit)
+        result = ytm.get_watch_playlist(
+            videoId=prov_item_id, playlistId=playlist_id, limit=limit, radio=True
+        )
         # Replace inconsistensies for easier parsing
         for track in result["tracks"]:
             if track.get("thumbnail"):

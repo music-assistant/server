@@ -65,13 +65,12 @@ class MusicAssistant:
 
     loop: asyncio.AbstractEventLoop
     http_session: ClientSession
+    zeroconf: Zeroconf
 
     def __init__(self, storage_path: str) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
         self.base_ip = get_ip()
-        # shared zeroconf instance
-        self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
@@ -93,6 +92,8 @@ class MusicAssistant:
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+        # create shared zeroconf instance
+        self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,

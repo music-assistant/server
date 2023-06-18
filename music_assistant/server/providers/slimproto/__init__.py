@@ -6,6 +6,7 @@ import statistics
 import time
 from collections import deque
 from collections.abc import Callable, Generator
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -383,15 +384,20 @@ class SlimprotoProvider(PlayerProvider):
             await self._socket_clients[player_id].power(True)
 
         # forward command to player and any connected sync child's
-        for client in self._get_sync_clients(player_id):
-            await self._handle_play_media(
-                client,
-                queue_item=queue_item,
-                seek_position=seek_position,
-                fade_in=fade_in,
-                send_flush=True,
-                flow_mode=flow_mode,
-            )
+        sync_clients = [x for x in self._get_sync_clients(player_id)]
+        async with asyncio.TaskGroup() as tg:
+            for client in sync_clients:
+                tg.create_task(
+                    self._handle_play_media(
+                        client,
+                        queue_item=queue_item,
+                        seek_position=seek_position,
+                        fade_in=fade_in,
+                        send_flush=True,
+                        flow_mode=flow_mode,
+                        auto_play=len(sync_clients) == 1,
+                    )
+                )
 
     async def _handle_play_media(
         self,
@@ -402,6 +408,7 @@ class SlimprotoProvider(PlayerProvider):
         send_flush: bool = True,
         crossfade: bool = False,
         flow_mode: bool = False,
+        auto_play: bool = False,
     ) -> None:
         """Handle PlayMedia on slimproto player(s)."""
         player_id = client.player_id
@@ -427,7 +434,10 @@ class SlimprotoProvider(PlayerProvider):
             send_flush=send_flush,
             transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
             transition_duration=transition_duration,
-            autostart=False,
+            # if autoplay=False playback will not start automatically
+            # instead 'buffer ready' will be called when the buffer is full
+            # to coordinate a start of multiple synced players
+            autostart=auto_play,
         )
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -482,7 +492,7 @@ class SlimprotoProvider(PlayerProvider):
         if parent_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             # playback needs to be restarted to get all players in sync
             # TODO: If there is any need, we could make this smarter where the new
-            # sync child waits for the next track.
+            # sync child waits for the next track (or pcm chunk even).
             active_queue = self.mass.players.queues.get_active_queue(parent_player.player_id)
             await self.mass.players.queues.resume(active_queue.queue_id)
 
@@ -493,7 +503,8 @@ class SlimprotoProvider(PlayerProvider):
         if child_player.state == PlayerState.PLAYING:
             await self.cmd_stop(child_player.player_id)
         child_player.synced_to = None
-        parent_player.group_childs.remove(child_player.player_id)
+        with suppress(ValueError):
+            parent_player.group_childs.remove(child_player.player_id)
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
 
@@ -660,13 +671,27 @@ class SlimprotoProvider(PlayerProvider):
         """Handle decoder ready event, player is ready for the next track."""
         if not client.current_metadata:
             return
+        player = self.mass.players.get(client.player_id)
+        if player.synced_to:
+            # handled by sync master
+            return
         if client.state == SlimPlayerState.STOPPED:
             return
         try:
             next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
                 client.player_id, client.current_metadata["item_id"]
             )
-            await self._handle_play_media(client, next_item, send_flush=False, crossfade=crossfade)
+            async with asyncio.TaskGroup() as tg:
+                for client in self._get_sync_clients(client.player_id):
+                    tg.create_task(
+                        self._handle_play_media(
+                            client,
+                            queue_item=next_item,
+                            send_flush=False,
+                            crossfade=crossfade,
+                            auto_play=True,
+                        )
+                    )
         except QueueEmpty:
             pass
 
@@ -679,8 +704,9 @@ class SlimprotoProvider(PlayerProvider):
         if not player.group_childs:
             # not a sync group, continue
             await client.play()
+            return
         count = 0
-        while count < 20:
+        while count < 40:
             childs_total = 0
             childs_ready = 0
             for sync_child in self._get_sync_clients(player.player_id):
@@ -689,7 +715,7 @@ class SlimprotoProvider(PlayerProvider):
                     childs_ready += 1
             if childs_total == childs_ready:
                 break
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
         # all child's ready (or timeout) - start play
         async with asyncio.TaskGroup() as tg:
             for client in self._get_sync_clients(player.player_id):
@@ -724,6 +750,8 @@ class SlimprotoProvider(PlayerProvider):
 
     async def _handle_disconnected(self, client: SlimClient) -> None:
         """Handle a client disconnected event."""
+        if self.mass.closing:
+            return
         player_id = client.player_id
         if client := self._socket_clients.pop(player_id, None):
             # store last state in cache
@@ -751,9 +779,6 @@ class SlimprotoProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
         for child_id in [player.player_id] + player.group_childs:
             if client := self._socket_clients.get(child_id):
-                if not player_id and not client.powered:
-                    # only powered child's
-                    continue
                 yield client
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:

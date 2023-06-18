@@ -67,7 +67,7 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
 )
 
 TRACK_EXTENSIONS = ("mp3", "m4a", "m4b", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
-PLAYLIST_EXTENSIONS = ("m3u", "pls")
+PLAYLIST_EXTENSIONS = ("m3u", "pls", "m3u8")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
 SEEKABLE_FILES = (ContentType.MP3, ContentType.WAV, ContentType.FLAC)
@@ -451,7 +451,7 @@ class FileSystemProviderBase(MusicProvider):
             async for chunk in self.read_file_content(prov_playlist_id):
                 playlist_data += chunk
             encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-            playlist_data = playlist_data.decode(encoding_details["encoding"])
+            playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = await parse_m3u(playlist_data)
@@ -472,14 +472,25 @@ class FileSystemProviderBase(MusicProvider):
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | Radio | None:
         """Try to parse a track from a playlist line."""
         try:
-            # try to treat uri as (relative) filename
-            if "://" not in line:
-                for filename in (line, os.path.join(playlist_path, line)):
-                    if not await self.exists(filename):
-                        continue
-                    return await self.get_track(filename)
-            # fallback to generic uri parsing
-            return await self.mass.music.get_item_by_uri(line)
+            if "://" in line:
+                # handle as generic uri
+                return await self.mass.music.get_item_by_uri(line)
+
+            # if a relative path was given in an upper level from the playlist,
+            # try to resolve it
+            for parentpart in ("../", "..\\"):
+                while line.startswith(parentpart):
+                    if len(playlist_path) < 3:
+                        break  # guard
+                    playlist_path = parentpart[:-3]
+                    line = line[3:]
+
+            # try to resolve the filename
+            for filename in (line, os.path.join(playlist_path, line)):
+                with contextlib.suppress(FileNotFoundError):
+                    item = await self.resolve(filename)
+                    return await self._parse_track(item)
+
         except MusicAssistantError as err:
             self.logger.warning("Could not parse uri/file %s to track: %s", line, str(err))
             return None
@@ -492,7 +503,7 @@ class FileSystemProviderBase(MusicProvider):
         async for chunk in self.read_file_content(prov_playlist_id):
             playlist_data += chunk
         encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-        playlist_data = playlist_data.decode(encoding_details["encoding"])
+        playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
         for uri in prov_track_ids:
             playlist_data += f"\n{uri}"
 
@@ -513,7 +524,7 @@ class FileSystemProviderBase(MusicProvider):
         async for chunk in self.read_file_content(prov_playlist_id):
             playlist_data += chunk
         encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-        playlist_data = playlist_data.decode(encoding_details["encoding"])
+        playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
 
         if ext in ("m3u", "m3u8"):
             playlist_lines = await parse_m3u(playlist_data)
