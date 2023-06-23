@@ -292,7 +292,11 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         await self._check_oauth_token()
-        if track_obj := await get_track(prov_track_id=prov_track_id, headers=self._headers):
+        if track_obj := await get_track(
+            prov_track_id=prov_track_id,
+            headers=self._headers,
+            signature_timestamp=self._signature_timestamp,
+        ):
             return await self._parse_track(track_obj)
         raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
@@ -455,13 +459,19 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, retry=0) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        data = {
-            "playbackContext": {
-                "contentPlaybackContext": {"signatureTimestamp": self._signature_timestamp}
-            },
-            "video_id": item_id,
-        }
-        track_obj = await self._post_data("player", data=data)
+        # Misschien dit vervangen met api.get_song()? https://github.com/KoljaWindeler/ytube_music_player/blob/main/custom_components/ytube_music_player/media_player.py#L1493
+        # data = {
+        #     "playbackContext": {
+        #         "contentPlaybackContext": {"signatureTimestamp": self._signature_timestamp}
+        #     },
+        #     "video_id": item_id,
+        # }
+        # track_obj = await self._post_data("player", data=data)
+        track_obj = await get_track(
+            prov_track_id=item_id,
+            headers=self._headers,
+            signature_timestamp=self._signature_timestamp,
+        )
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):
