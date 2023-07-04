@@ -420,7 +420,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         buffer = bytearray()
         streamdetails.data["start_ts"] = datetime.datetime.utcnow().timestamp()
         streamdetails.data["stream_id"] = uuid.uuid1()
-        await self.gw_client.log_listen(streamdetails.item_id)
+        self.mass.create_task(self.gw_client.log_listen(next_track=streamdetails.item_id))
         async with self.mass.http_session.get(
             streamdetails.data["url"], headers=headers, timeout=timeout
         ) as resp:
@@ -437,7 +437,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     async def log_listen_cb(self, stream_details):
         """Log the end of a track playback."""
-        await self.gw_client.log_listen(None, stream_details)
+        await self.gw_client.log_listen(last_track=stream_details)
 
     ### PARSING METADATA FUNCTIONS ###
 
