@@ -29,6 +29,7 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
+from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .media.albums import AlbumsController
@@ -44,7 +45,7 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 SYNC_INTERVAL = 3 * 3600
 
 
-class MusicController:
+class MusicController(CoreController):
     """Several helpers around the musicproviders."""
 
     database: DatabaseConnection | None = None

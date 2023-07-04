@@ -486,16 +486,25 @@ class PlayerQueuesController:
         queue.index_in_buffer = index
         # power on player if needed
         await self.mass.players.cmd_power(queue_id, True)
-        # execute the play_media command on the player(s)
+        # execute the play_media command on the player
         player_prov = self.mass.players.get_player_provider(queue_id)
-        flow_mode = await self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
-        queue.flow_mode = flow_mode
-        await player_prov.cmd_play_media(
-            queue_id,
+        # resolve stream url
+        queue.flow_mode = await self.mass.config.get_player_config_value(
+            queue.queue_id, CONF_FLOW_MODE
+        )
+        url = await self.mass.streams.resolve_stream_url(
+            queue_id=queue_id,
             queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
-            flow_mode=flow_mode,
+            flow_mode=queue.flow_mode,
+        )
+        await player_prov.cmd_play_url(
+            player_id=queue_id,
+            url=url,
+            # set queue_item to None if we're sending a flow mode url
+            # as the metadata is rather useless then
+            queue_item=None if queue.flow_mode else queue_item,
         )
 
     # Interaction with player
@@ -542,6 +551,7 @@ class PlayerQueuesController:
         queue.active = player.active_source == queue.queue_id
         if queue.active:
             queue.state = player.state
+            queue.flow_mode = player.current_url and "/flow/" in player.current_url
             # update current item from player report
             player_item_index = self.index_by_id(queue_id, player.current_item_id)
             if player_item_index is None:
@@ -622,25 +632,22 @@ class PlayerQueuesController:
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def player_ready_for_next_track(
-        self, queue_or_player_id: str, current_item_id: str
-    ) -> tuple[QueueItem, bool]:
-        """Call when a player is ready to load the next track into the buffer.
+    async def preload_next_url(
+        self, queue_id: str, current_item_id: str
+    ) -> tuple[str, QueueItem, bool]:
+        """Call when a player wants to load the next track/url into the buffer.
 
-        The result is a tuple of the next QueueItem to Play,
+        The result is a tuple of the next url + QueueItem to Play,
         and a bool if the player should crossfade (if supported).
         Raises QueueEmpty if there are no more tracks left.
-
-        NOTE: The player(s) should resolve the stream URL for the QueueItem,
-        just like with the play_media call.
         """
-        queue = self.get_active_queue(queue_or_player_id)
-        cur_index = self.index_by_id(queue.queue_id, current_item_id)
-        cur_item = self.get_item(queue.queue_id, cur_index)
+        queue = self.get(queue_id)
+        cur_index = self.index_by_id(queue_id, current_item_id)
+        cur_item = self.get_item(queue_id, cur_index)
         idx = 0
         while True:
-            next_index = self.get_next_index(queue.queue_id, cur_index + idx)
-            next_item = self.get_item(queue.queue_id, next_index)
+            next_index = self.get_next_index(queue_id, cur_index + idx)
+            next_item = self.get_item(queue_id, next_index)
             if not cur_item or not next_item:
                 raise QueueEmpty("No more tracks left in the queue.")
             try:
@@ -667,7 +674,11 @@ class PlayerQueuesController:
             # disable crossfade if playing tracks from same album
             # TODO: make this a bit more intelligent.
             crossfade = False
-        return (next_item, crossfade)
+        url = await self.mass.streams.resolve_stream_url(
+            queue_id=queue_id,
+            queue_item=next_item,
+        )
+        return (url, next_item, crossfade)
 
     # Main queue manipulation methods
 
@@ -847,9 +858,9 @@ class PlayerQueuesController:
         return queue_index, track_time
 
     def _get_player_item_index(self, queue_id: str, url: str) -> str | None:
-        """Parse QueueItem ID from Player's current url."""
-        if url and self.mass.webserver.base_url in url and "/stream/" in url:
+        """Parse (start) QueueItem ID from Player's current url."""
+        if url and self.mass.streams.base_url in url and queue_id in url:
             # try to extract the item id from the uri
-            current_item_id = url.rsplit("/")[-2]
+            current_item_id = url.rsplit("/")[-1].split(".")[0]
             return self.index_by_id(queue_id, current_item_id)
         return None

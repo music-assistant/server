@@ -26,6 +26,7 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
@@ -378,7 +379,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            content_type=ContentType.try_parse(url_details["format"].split("_")[0]),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(url_details["format"].split("_")[0])
+            ),
             duration=int(song_data["DURATION"]),
             data=url,
             expires=url_details["exp"],

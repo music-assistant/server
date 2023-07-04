@@ -26,6 +26,7 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     BrowseFolder,
     ContentType,
     ImageType,
@@ -560,12 +561,14 @@ class FileSystemProviderBase(MusicProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=prov_mapping.content_type,
+            audio_format=AudioFormat(
+                content_type=prov_mapping.content_type,
+                sample_rate=prov_mapping.sample_rate,
+                bit_depth=prov_mapping.bit_depth,
+            ),
             media_type=MediaType.TRACK,
             duration=db_item.duration,
             size=file_item.file_size,
-            sample_rate=prov_mapping.sample_rate,
-            bit_depth=prov_mapping.bit_depth,
             direct=file_item.local_path,
             can_seek=prov_mapping.content_type in SEEKABLE_FILES,
         )

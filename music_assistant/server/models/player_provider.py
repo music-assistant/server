@@ -53,25 +53,21 @@ class PlayerProvider(Provider):
         """
 
     @abstractmethod
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player.
+        """Send PLAY URL command to given player.
 
-        This is called when the Queue wants the player to start playing a specific QueueItem.
-        The player implementation can decide how to process the request, such as playing
-        queue items one-by-one or enqueue all/some items.
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
 
             - player_id: player_id of the player to handle the command.
-            - queue_item: the QueueItem to start playing on the player.
-            - seek_position: start playing from this specific position.
-            - fade_in: fade in the music at start (e.g. at resume).
-            - flow_mode: enable flow mode where the queue tracks are streamed as continuous stream.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:

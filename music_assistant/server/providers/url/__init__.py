@@ -9,6 +9,7 @@ from music_assistant.common.models.config_entries import ConfigEntry, ConfigValu
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Artist,
+    AudioFormat,
     MediaItemImage,
     MediaItemType,
     ProviderMapping,
@@ -181,10 +182,12 @@ class URLProvider(MusicProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=ContentType.try_parse(media_info.format),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(media_info.format),
+                sample_rate=media_info.sample_rate,
+                bit_depth=media_info.bits_per_sample,
+            ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            sample_rate=media_info.sample_rate,
-            bit_depth=media_info.bits_per_sample,
             direct=None if is_radio and not mpeg_dash_stream else url,
             data=url,
         )

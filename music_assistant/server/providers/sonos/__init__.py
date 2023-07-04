@@ -15,13 +15,7 @@ from soco.events_base import SubscriptionBase
 from soco.groups import ZoneGroup
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import (
-    ContentType,
-    MediaType,
-    PlayerFeature,
-    PlayerState,
-    PlayerType,
-)
+from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -78,7 +72,7 @@ class SonosPlayer:
     soco: soco.SoCo
     player: Player
     is_stereo_pair: bool = False
-    next_item: str | None = None
+    next_url: str | None = None
     elapsed_time: int = 0
     current_item_id: str | None = None
     radio_mode_started: float | None = None
@@ -266,15 +260,22 @@ class SonosPlayerProvider(PlayerProvider):
             return
         await asyncio.to_thread(sonos_player.soco.play)
 
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player."""
+        """Send PLAY URL command to given player.
+
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
+
+            - player_id: player_id of the player to handle the command.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+        """
         sonos_player = self.sonosplayers[player_id]
         if not sonos_player.soco.is_coordinator:
             self.logger.debug(
@@ -283,34 +284,21 @@ class SonosPlayerProvider(PlayerProvider):
             )
             return
         # always stop and clear queue first
-        sonos_player.next_item = None
+        sonos_player.next_url = None
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        radio_mode = (
-            flow_mode or not queue_item.duration or queue_item.media_type == MediaType.RADIO
-        )
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=queue_item,
-            player_id=sonos_player.player_id,
-            seek_position=seek_position,
-            fade_in=fade_in,
-            flow_mode=flow_mode,
-            output_codec=ContentType.MP3 if radio_mode else None,
+        radio_mode = queue_item is not None and (
+            not queue_item.duration or queue_item.media_type == MediaType.RADIO
         )
         if radio_mode:
             sonos_player.radio_mode_started = time.time()
             url = url.replace("http", "x-rincon-mp3radio")
-            metadata = create_didl_metadata(self.mass, url, queue_item, flow_mode)
-            # sonos does multiple get requests if no duration is known
-            # our stream engine does not like that, hence the workaround
-            self.mass.streams.workaround_players.add(sonos_player.player_id)
+            metadata = create_didl_metadata(self.mass, url, queue_item)
             await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
         else:
             sonos_player.radio_mode_started = None
-            await self._enqueue_item(
-                sonos_player, queue_item=queue_item, url=url, flow_mode=flow_mode
-            )
+            await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
             await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -536,15 +524,15 @@ class SonosPlayerProvider(PlayerProvider):
         if not self.mass.players.queues.get_item(sonos_player.player_id, current_queue_item_id):
             return  # guard
         try:
-            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
+            next_url, next_item, crossfade = await self.mass.players.queues.preload_next_url(
                 sonos_player.player_id, current_queue_item_id
             )
         except QueueEmpty:
             return
 
-        if sonos_player.next_item == next_item.queue_item_id:
+        if sonos_player.next_url == next_url:
             return  # already set ?!
-        sonos_player.next_item = next_item.queue_item_id
+        sonos_player.next_url = next_url
 
         # set crossfade according to queue mode
         if sonos_player.soco.cross_fade != crossfade:
@@ -556,25 +544,16 @@ class SonosPlayerProvider(PlayerProvider):
             await asyncio.to_thread(set_crossfade)
 
         # send queue item to sonos queue
-        is_radio = next_item.media_type != MediaType.TRACK
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=next_item,
-            player_id=sonos_player.player_id,
-            # Sonos pre-caches pretty aggressively so do not yet start the runner
-            auto_start_runner=False,
-            output_codec=ContentType.MP3 if is_radio else None,
-        )
-        await self._enqueue_item(sonos_player, queue_item=next_item, url=url)
+        await self._enqueue_item(sonos_player, url=next_url, queue_item=next_item)
 
     async def _enqueue_item(
         self,
         sonos_player: SonosPlayer,
-        queue_item: QueueItem,
         url: str,
-        flow_mode: bool = False,
+        queue_item: QueueItem | None = None,
     ) -> None:
         """Enqueue a queue item to the Sonos player Queue."""
-        metadata = create_didl_metadata(self.mass, url, queue_item, flow_mode)
+        metadata = create_didl_metadata(self.mass, url, queue_item)
         await asyncio.to_thread(
             sonos_player.soco.avTransport.AddURIToQueue,
             [
@@ -586,11 +565,9 @@ class SonosPlayerProvider(PlayerProvider):
             ],
             timeout=60,
         )
-        if sonos_player.player_id in self.mass.streams.workaround_players:
-            self.mass.streams.workaround_players.remove(sonos_player.player_id)
         self.logger.debug(
             "Enqued track (%s) to player %s",
-            queue_item.name,
+            queue_item.name if queue_item else url,
             sonos_player.player.display_name,
         )
 
@@ -623,8 +600,8 @@ class SonosPlayerProvider(PlayerProvider):
         # enqueue next item if needed
         if sonos_player.player.state == PlayerState.PLAYING and (
             prev_item_id != sonos_player.current_item_id
-            or not sonos_player.next_item
-            or sonos_player.next_item == sonos_player.current_item_id
+            or not sonos_player.next_url
+            or sonos_player.next_url == sonos_player.player.current_url
         ):
             self.mass.create_task(
                 self._enqueue_next_track(sonos_player, sonos_player.current_item_id)

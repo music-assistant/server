@@ -12,6 +12,7 @@ from music_assistant.common.models.config_entries import ConfigEntry, ConfigValu
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -201,6 +202,9 @@ class TuneInProvider(MusicProvider):
                 provider=self.instance_id,
                 item_id=item_id,
                 content_type=ContentType.UNKNOWN,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
                 media_type=MediaType.RADIO,
                 data=item_id,
             )
@@ -221,7 +225,9 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
-                content_type=ContentType(stream["media_type"]),
+                audio_format=AudioFormat(
+                    content_type=ContentType(stream["media_type"]),
+                ),
                 media_type=MediaType.RADIO,
                 data=url,
                 expires=time() + 24 * 3600,

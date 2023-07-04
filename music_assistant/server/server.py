@@ -12,7 +12,7 @@ from uuid import uuid4
 from aiohttp import ClientSession, TCPConnector
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
-from music_assistant.common.helpers.util import get_ip, get_ip_pton
+from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
@@ -66,28 +66,24 @@ class MusicAssistant:
     loop: asyncio.AbstractEventLoop
     http_session: ClientSession
     zeroconf: Zeroconf
+    config: ConfigController
+    webserver: WebserverController
+    cache: CacheController
+    metadata: MetaDataController
+    music: MusicController
+    players: PlayerController
+    streams: StreamsController
 
     def __init__(self, storage_path: str) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
-        self.base_ip = get_ip()
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
         self._available_providers: dict[str, ProviderManifest] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
-        # init core controllers
-        self.config = ConfigController(self)
-        self.webserver = WebserverController(self)
-        self.cache = CacheController(self)
-        self.metadata = MetaDataController(self)
-        self.music = MusicController(self)
-        self.players = PlayerController(self)
-        self.streams = StreamsController(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
-        # register all api commands (methods with decorator)
-        self._register_api_commands()
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
@@ -105,13 +101,21 @@ class MusicAssistant:
             ),
         )
         # setup config controller first and fetch important config values
+        self.config = ConfigController(self)
         await self.config.setup()
         LOGGER.info(
-            "Starting Music Assistant Server (%s) - autodetected IP-address: %s",
+            "Starting Music Assistant Server (%s)",
             self.server_id,
-            self.base_ip,
         )
         # setup other core controllers
+        self.cache = CacheController(self)
+        self.webserver = WebserverController(self)
+        self.metadata = MetaDataController(self)
+        self.music = MusicController(self)
+        self.players = PlayerController(self)
+        self.streams = StreamsController(self)
+        # register all api commands (methods with decorator)
+        self._register_api_commands()
         await self.cache.setup()
         await self.webserver.setup()
         await self.music.setup()
@@ -321,7 +325,8 @@ class MusicAssistant:
         handler: Callable,
     ) -> None:
         """Dynamically register a command on the API."""
-        assert command not in self.command_handlers, "Command already registered"
+        if command in self.command_handlers:
+            raise RuntimeError(f"Command {command} is already registered")
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
     async def load_provider(self, conf: ProviderConfig) -> None:  # noqa: C901
@@ -498,8 +503,8 @@ class MusicAssistant:
         info = ServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[get_ip_pton(self.base_ip)],
-            port=self.webserver.port,
+            addresses=[get_ip_pton(self.streams.publish_ip)],
+            port=self.streams.publish_port,
             properties=self.get_server_info().to_dict(),
             server="mass.local.",
         )

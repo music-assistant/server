@@ -19,6 +19,7 @@ from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -372,10 +373,12 @@ class QobuzProvider(MusicProvider):
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
-            content_type=content_type,
+            audio_format=AudioFormat(
+                content_type=content_type,
+                sample_rate=int(streamdata["sampling_rate"] * 1000),
+                bit_depth=streamdata["bit_depth"],
+            ),
             duration=streamdata["duration"],
-            sample_rate=int(streamdata["sampling_rate"] * 1000),
-            bit_depth=streamdata["bit_depth"],
             data=streamdata,  # we need these details for reporting playback
             expires=time.time() + 3600,  # not sure about the real allowed value
             direct=streamdata["url"],

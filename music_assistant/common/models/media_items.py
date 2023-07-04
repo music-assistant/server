@@ -512,6 +512,22 @@ def media_from_dict(media_item: dict) -> MediaItemType:
 
 
 @dataclass
+class AudioFormat(DataClassDictMixin):
+    """Model for AudioFormat details."""
+
+    content_type: ContentType
+    sample_rate: int = 44100
+    bit_depth: int = 16
+    channels: int = 2
+    output_format_str: str = ""
+
+    def __post_init__(self):
+        """Execute actions after init."""
+        if not self.output_format_str:
+            self.output_format_str = self.content_type.value
+
+
+@dataclass
 class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
@@ -523,11 +539,9 @@ class StreamDetails(DataClassDictMixin):
     # mandatory fields
     provider: str
     item_id: str
-    content_type: ContentType
+    audio_format: AudioFormat
     media_type: MediaType = MediaType.TRACK
-    sample_rate: int = 44100
-    bit_depth: int = 16
-    channels: int = 2
+
     # stream_title: radio streams can optionally set this field
     stream_title: str | None = None
     # duration of the item to stream, copied from media_item if omitted

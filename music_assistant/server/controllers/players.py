@@ -23,6 +23,7 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.player import Player
 from music_assistant.constants import CONF_HIDE_GROUP_CHILDS, CONF_PLAYERS, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
+from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .player_queues import PlayerQueuesController
@@ -33,7 +34,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
 
-class PlayerController:
+class PlayerController(CoreController):
     """Controller holding all logic to control registered players."""
 
     def __init__(self, mass: MusicAssistant) -> None:
@@ -527,7 +528,7 @@ class PlayerController:
                     return group_player.player_id
         # guess source from player's current url
         if player.current_url and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            if self.mass.webserver.base_url in player.current_url:
+            if self.mass.streams.base_url in player.current_url:
                 return player.player_id
             if ":" in player.current_url:
                 # extract source from uri/url

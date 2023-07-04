@@ -119,7 +119,7 @@ class DLNAPlayer:
     # Track BOOTID in SSDP advertisements for device changes
     bootid: int | None = None
     last_seen: float = field(default_factory=time.time)
-    next_item: str | None = None
+    next_url: str | None = None
     supports_next_uri = True
     end_of_track_reached = False
 
@@ -224,7 +224,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        self.mass.webserver.unregister_route("/notify", "NOTIFY")
+        self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
         async with asyncio.TaskGroup() as tg:
             for dlna_player in self.dlnaplayers.values():
                 tg.create_task(self._device_disconnect(dlna_player))
@@ -241,7 +241,7 @@ class DLNAPlayerProvider(PlayerProvider):
         """Send STOP command to given player."""
         dlna_player = self.dlnaplayers[player_id]
         dlna_player.end_of_track_reached = False
-        dlna_player.next_item = None
+        dlna_player.next_url = None
         assert dlna_player.device is not None
         await dlna_player.device.async_stop()
 
@@ -253,29 +253,29 @@ class DLNAPlayerProvider(PlayerProvider):
         await dlna_player.device.async_play()
 
     @catch_request_errors
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player."""
+        """Send PLAY URL command to given player.
+
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
+
+            - player_id: player_id of the player to handle the command.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+        """
         dlna_player = self.dlnaplayers[player_id]
 
         # always clear queue (by sending stop) first
         if dlna_player.device.can_stop:
             await self.cmd_stop(player_id)
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=queue_item,
-            player_id=dlna_player.udn,
-            seek_position=seek_position,
-            fade_in=fade_in,
-            flow_mode=flow_mode,
-        )
 
-        didl_metadata = create_didl_metadata(self.mass, url, queue_item, flow_mode)
+        didl_metadata = create_didl_metadata(self.mass, url, queue_item)
         await dlna_player.device.async_set_transport_uri(url, queue_item.name, didl_metadata)
         # Play it
         await dlna_player.device.async_wait_for_can_play(10)
@@ -535,44 +535,37 @@ class DLNAPlayerProvider(PlayerProvider):
         self, dlna_player: DLNAPlayer, current_queue_item_id: str
     ) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
-        if not current_queue_item_id:
-            return  # guard
-        if not self.mass.players.queues.get_item(dlna_player.udn, current_queue_item_id):
-            return  # guard
         try:
-            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
+            (
+                next_url,
+                next_item,
+                _,
+            ) = await self.mass.players.queues.preload_next_url(
                 dlna_player.udn, current_queue_item_id
             )
         except QueueEmpty:
             return
 
-        if dlna_player.next_item == next_item.queue_item_id:
+        if dlna_player.next_url == next_url:
             return  # already set ?!
-        dlna_player.next_item = next_item.queue_item_id
+        dlna_player.next_url = next_url
 
         # no need to try setting the next url if we already know the player does not support it
         if not dlna_player.supports_next_uri:
             return
 
         # send queue item to dlna queue
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=next_item,
-            player_id=dlna_player.udn,
-            # DLNA pre-caches pretty aggressively so do not yet start the runner
-            auto_start_runner=False,
-        )
-        didl_metadata = create_didl_metadata(self.mass, url, next_item)
+        didl_metadata = create_didl_metadata(self.mass, next_url, next_item)
+        title = next_item.name if next_item else "Music Assistant"
         try:
-            await dlna_player.device.async_set_next_transport_uri(
-                url, next_item.name, didl_metadata
-            )
+            await dlna_player.device.async_set_next_transport_uri(next_url, title, didl_metadata)
         except UpnpError:
             dlna_player.supports_next_uri = False
             self.logger.info("Player does not support next uri")
 
         self.logger.debug(
             "Enqued next track (%s) to player %s",
-            next_item.name,
+            title,
             dlna_player.player.display_name,
         )
 
@@ -596,8 +589,8 @@ class DLNAPlayerProvider(PlayerProvider):
         # enqueue next item if needed
         if dlna_player.player.state == PlayerState.PLAYING and (
             prev_item_id != current_item_id
-            or not dlna_player.next_item
-            or dlna_player.next_item == current_item_id
+            or not dlna_player.next_url
+            or dlna_player.next_url == current_url
         ):
             self.mass.create_task(self._enqueue_next_track(dlna_player, current_item_id))
         # if player does not support next uri, manual play it
@@ -605,9 +598,9 @@ class DLNAPlayerProvider(PlayerProvider):
             not dlna_player.supports_next_uri
             and prev_state == PlayerState.PLAYING
             and current_state == PlayerState.IDLE
-            and dlna_player.next_item
+            and dlna_player.next_url
             and dlna_player.end_of_track_reached
         ):
-            await self.mass.players.queues.play_index(dlna_player.udn, dlna_player.next_item)
+            await self.cmd_play_url(dlna_player.udn, dlna_player.next_url)
             dlna_player.end_of_track_reached = False
-            dlna_player.next_item = None
+            dlna_player.next_url = None

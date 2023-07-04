@@ -18,6 +18,7 @@ from music_assistant.constants import (
     SCHEMA_VERSION,
 )
 from music_assistant.server.helpers.database import DatabaseConnection
+from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
@@ -25,7 +26,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 
 
-class CacheController:
+class CacheController(CoreController):
     """Basic cache controller using both memory and database."""
 
     database: DatabaseConnection | None = None

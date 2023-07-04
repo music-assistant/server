@@ -23,6 +23,7 @@ from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -355,7 +356,9 @@ class SpotifyProvider(MusicProvider):
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
-            content_type=ContentType.OGG,
+            audio_format=AudioFormat(
+                content_type=ContentType.OGG,
+            ),
             duration=track.duration,
         )
 

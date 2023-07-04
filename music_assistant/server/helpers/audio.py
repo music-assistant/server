@@ -15,7 +15,12 @@ import aiofiles
 from aiohttp import ClientTimeout
 
 from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
-from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
+from music_assistant.common.models.media_items import (
+    AudioFormat,
+    ContentType,
+    MediaType,
+    StreamDetails,
+)
 from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
@@ -379,12 +384,12 @@ async def get_media_stream(
     streamdetails: StreamDetails,
     seek_position: int = 0,
     fade_in: bool = False,
-    sample_rate: int | None = None,
-    bit_depth: int | None = None,
+    output_format: AudioFormat | None = None,
     strip_silence_begin: bool = False,
     strip_silence_end: bool = True,
 ) -> AsyncGenerator[bytes, None]:
-    """Get the (PCM) audio stream for the given streamdetails.
+    """
+    Get the (raw PCM) audio stream for the given streamdetails.
 
     Other than stripping silence at end and beginning and optional
     volume normalization this is the pure, unaltered audio data as PCM chunks.
@@ -394,11 +399,11 @@ async def get_media_stream(
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     if is_radio or seek_position:
         strip_silence_begin = False
-
-    sample_rate = sample_rate or streamdetails.sample_rate
-    bit_depth = bit_depth or streamdetails.bit_depth
+    # use audio format from streamdetails if no override is given
+    if output_format is None:
+        output_format = streamdetails.audio_format
     # chunk size = 2 seconds of pcm audio
-    pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
+    pcm_sample_size = int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
     chunk_size = pcm_sample_size * (1 if is_radio else 2)
     expected_chunks = int((streamdetails.duration or 0) / 2)
     if expected_chunks < 60:
@@ -408,8 +413,8 @@ async def get_media_stream(
     seek_pos = seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
     args = await _get_ffmpeg_args(
         streamdetails=streamdetails,
-        sample_rate=sample_rate,
-        bit_depth=bit_depth,
+        sample_rate=output_format.sample_rate,
+        bit_depth=output_format.bit_depth,
         # only use ffmpeg seeking if the provider stream does not support seeking
         seek_position=seek_pos,
         fade_in=fade_in,
@@ -445,8 +450,8 @@ async def get_media_stream(
                     stripped_audio = await strip_silence(
                         mass,
                         prev_chunk + chunk,
-                        sample_rate=sample_rate,
-                        bit_depth=bit_depth,
+                        sample_rate=output_format.sample_rate,
+                        bit_depth=output_format.bit_depth,
                     )
                     yield stripped_audio
                     bytes_sent += len(stripped_audio)
@@ -470,8 +475,8 @@ async def get_media_stream(
                 stripped_audio = await strip_silence(
                     mass,
                     prev_chunk,
-                    sample_rate=sample_rate,
-                    bit_depth=bit_depth,
+                    sample_rate=output_format.sample_rate,
+                    bit_depth=output_format.bit_depth,
                     reverse=True,
                 )
                 yield stripped_audio

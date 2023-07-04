@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
+from urllib.parse import parse_qsl, urlparse
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_FLOW_MODE,
@@ -181,24 +182,21 @@ class UniversalGroupProvider(PlayerProvider):
             ):
                 tg.create_task(self.mass.players.cmd_play(member.player_id))
 
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player.
+        """Send PLAY URL command to given player.
 
-        This is called when the Queue wants the player to start playing a specific QueueItem.
-        The player implementation can decide how to process the request, such as playing
-        queue items one-by-one or enqueue all/some items.
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
 
             - player_id: player_id of the player to handle the command.
-            - queue_item: the QueueItem to start playing on the player.
-            - seek_position: start playing from this specific position.
-            - fade_in: fade in the music at start (e.g. at resume).
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
         # send stop first
         await self.cmd_stop(player_id)
@@ -206,20 +204,36 @@ class UniversalGroupProvider(PlayerProvider):
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
         group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
+
+        # we need to form/join a multiclient stream job
+        if group_player.active_source == group_player.player_id:
+            # parse original params from the regular stream url
+            parsed_url = urlparse(url)
+            start_queue_item_id = parsed_url.path.split("/")[-1].split(".")[0]
+            params = parse_qsl(parsed_url.query)
+            stream_job = await self.mass.streams.create_multi_client_stream_job(
+                queue_id=group_player.player_id,
+                start_queue_item_id=start_queue_item_id,
+                seek_position=int(params.get("seek_position", 0)),
+                fade_in=bool(params.get("fade_in", 0)),
+            )
+        elif group_player.active_source in self.mass.streams.multi_client_jobs:
+            # join existing multiclient stream job (from parent group)
+            stream_job = self.mass.streams.multi_client_jobs[group_player.active_source]
+        else:
+            # edge case: regular url requested not related to the queue ?!
+            stream_job = None
+
         # forward command to all (powered) group child's
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(
                 player_id, only_powered=True, skip_sync_childs=True
             ):
                 player_prov = self.mass.players.get_player_provider(member.player_id)
+                if stream_job:
+                    url = await stream_job.resolve_stream_url(member.player_id)
                 tg.create_task(
-                    player_prov.cmd_play_media(
-                        member.player_id,
-                        queue_item=queue_item,
-                        seek_position=seek_position,
-                        fade_in=fade_in,
-                        flow_mode=flow_mode,
-                    )
+                    player_prov.cmd_play_url(member.player_id, url=url, queue_item=queue_item)
                 )
 
     async def cmd_pause(self, player_id: str) -> None:

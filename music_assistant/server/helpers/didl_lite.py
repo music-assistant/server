@@ -15,27 +15,23 @@ if TYPE_CHECKING:
 
 
 def create_didl_metadata(
-    mass: MusicAssistant, url: str, queue_item: QueueItem, flow_mode: bool = False
+    mass: MusicAssistant, url: str, queue_item: QueueItem | None = None
 ) -> str:
-    """Create DIDL metadata string from url and QueueItem."""
+    """Create DIDL metadata string from url and (optional) QueueItem."""
     ext = url.split(".")[-1]
-    is_radio = queue_item.media_type != MediaType.TRACK or not queue_item.duration
-    image_url = mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
-
-    if flow_mode:
+    if queue_item is None:
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
-            f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
             f"<dc:title>Music Assistant</dc:title>"
             f"<upnp:albumArtURI>{MASS_LOGO_ONLINE}</upnp:albumArtURI>"
-            f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
             f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{url}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
-
+    is_radio = queue_item.media_type != MediaType.TRACK or not queue_item.duration
+    image_url = mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
     if is_radio:
         # radio or other non-track item
         return (
