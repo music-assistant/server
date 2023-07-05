@@ -207,7 +207,7 @@ class ChromecastProvider(PlayerProvider):
             await asyncio.to_thread(
                 castplayer.cc.play_media,
                 url,
-                content_type=f"audio/{url.split('.')[-1]}",
+                content_type=f'audio/{url.split(".")[-1].split("?")[0]}',
                 title="Music Assistant",
                 thumb=MASS_LOGO_ONLINE,
                 media_info={
@@ -401,13 +401,13 @@ class ChromecastProvider(PlayerProvider):
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.STEREO_PAIR
-            castplayer.player.group_childs = []
+            castplayer.player.group_childs = set()
         # handle cast groups
         if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.GROUP
-            castplayer.player.group_childs = [
+            castplayer.player.group_childs = {
                 str(UUID(x)) for x in castplayer.mz_controller.members
-            ]
+            }
             castplayer.player.supported_features = (
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
@@ -419,7 +419,6 @@ class ChromecastProvider(PlayerProvider):
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus):
         """Handle updated MediaStatus."""
         castplayer.logger.debug("Received media status update: %s", status.player_state)
-        prev_item_id = castplayer.player.current_item_id
         # player state
         if status.player_is_playing:
             castplayer.player.state = PlayerState.PLAYING
@@ -436,20 +435,14 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.elapsed_time = status.current_time
 
         # current media
-        queue_item_id = status.media_custom_data.get("queue_item_id")
-        castplayer.player.current_item_id = queue_item_id
         castplayer.player.current_url = status.content_id
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
         # enqueue next item if needed
         if castplayer.player.state == PlayerState.PLAYING and (
-            prev_item_id != castplayer.player.current_item_id
-            or not castplayer.next_url
-            or castplayer.next_url == castplayer.player.current_url
+            not castplayer.next_url or castplayer.next_url == castplayer.player.current_url
         ):
-            asyncio.run_coroutine_threadsafe(
-                self._enqueue_next_track(castplayer, queue_item_id), self.mass.loop
-            )
+            asyncio.run_coroutine_threadsafe(self._enqueue_next_track(castplayer), self.mass.loop)
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
@@ -483,11 +476,11 @@ class ChromecastProvider(PlayerProvider):
 
     ### Helpers / utils
 
-    async def _enqueue_next_track(self, castplayer: CastPlayer, current_queue_item_id: str) -> None:
+    async def _enqueue_next_track(self, castplayer: CastPlayer) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
         try:
             next_url, next_item, _ = await self.mass.players.queues.preload_next_url(
-                castplayer.player_id, current_queue_item_id
+                castplayer.player_id
             )
         except QueueEmpty:
             return
@@ -501,7 +494,7 @@ class ChromecastProvider(PlayerProvider):
             await asyncio.to_thread(
                 castplayer.cc.play_media,
                 next_url,
-                content_type=f"audio/{next_url.split('.')[-1]}",
+                content_type=f'audio/{next_url.split(".")[-1].split("?")[0]}',
                 title="Music Assistant",
                 thumb=MASS_LOGO_ONLINE,
                 enqueue=True,

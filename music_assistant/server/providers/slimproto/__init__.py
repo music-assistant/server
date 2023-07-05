@@ -493,7 +493,7 @@ class SlimprotoProvider(PlayerProvider):
         assert child_player
         parent_player = self.mass.players.get(target_player)
         assert parent_player
-        parent_player.group_childs.append(child_player.player_id)
+        parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
@@ -511,7 +511,7 @@ class SlimprotoProvider(PlayerProvider):
         if child_player.state == PlayerState.PLAYING:
             await self.cmd_stop(child_player.player_id)
         child_player.synced_to = None
-        with suppress(ValueError):
+        with suppress(KeyError):
             parent_player.group_childs.remove(child_player.player_id)
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
@@ -563,6 +563,8 @@ class SlimprotoProvider(PlayerProvider):
                 ),
                 max_sample_rate=int(client.max_sample_rate),
             )
+            # always add player itself to group child's
+            player.group_childs.add(player_id)
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback
                 virtual_provider_info[0](player)
@@ -571,9 +573,6 @@ class SlimprotoProvider(PlayerProvider):
         # update player state on player events
         player.available = True
         player.current_url = client.current_url
-        player.current_item_id = (
-            client.current_metadata["item_id"] if client.current_metadata else None
-        )
         player.name = client.name
         player.powered = client.powered
         player.state = STATE_MAP[client.state]
@@ -689,7 +688,7 @@ class SlimprotoProvider(PlayerProvider):
             return
         try:
             next_url, next_item, crossfade = await self.mass.players.queues.preload_next_url(
-                client.player_id, client.current_metadata["item_id"]
+                client.player_id
             )
             async with asyncio.TaskGroup() as tg:
                 for client in self._get_sync_clients(client.player_id):
@@ -712,7 +711,7 @@ class SlimprotoProvider(PlayerProvider):
         if player.synced_to:
             # unpause of sync child is handled by sync master
             return
-        if not player.group_childs:
+        if len(player.group_childs) <= 1:
             # not a sync group, continue
             await client.play()
             return
@@ -788,7 +787,7 @@ class SlimprotoProvider(PlayerProvider):
     def _get_sync_clients(self, player_id: str) -> Generator[SlimClient]:
         """Get all sync clients for a player."""
         player = self.mass.players.get(player_id)
-        for child_id in [player.player_id] + player.group_childs:
+        for child_id in player.group_childs:
             if client := self._socket_clients.get(child_id):
                 yield client
 

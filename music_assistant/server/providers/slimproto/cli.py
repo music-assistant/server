@@ -644,7 +644,7 @@ class LmsCli:
                 "sleep": 0,
                 "will_sleep_in": 0,
                 "sync_master": player.synced_to,
-                "sync_slaves": ",".join(player.group_childs),
+                "sync_slaves": ",".join(x for x in player.group_childs if x != player_id),
                 "mixer volume": player.volume_level,
                 "playlist repeat": REPEATMODE_MAP[queue.repeat_mode],
                 "playlist shuffle": int(queue.shuffle_enabled),

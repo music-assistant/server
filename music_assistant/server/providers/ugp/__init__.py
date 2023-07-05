@@ -302,7 +302,6 @@ class UniversalGroupProvider(PlayerProvider):
                 continue
             if member.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
                 continue
-            group_player.current_item_id = member.current_item_id
             group_player.current_url = member.current_url
             group_player.elapsed_time = member.elapsed_time
             group_player.elapsed_time_last_updated = member.elapsed_time_last_updated
@@ -310,7 +309,6 @@ class UniversalGroupProvider(PlayerProvider):
             break
         else:
             group_player.state = PlayerState.IDLE
-            group_player.current_item_id = None
             group_player.current_url = None
 
     def on_child_state(

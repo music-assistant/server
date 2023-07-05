@@ -533,13 +533,13 @@ class PlayerController(CoreController):
             if ":" in player.current_url:
                 # extract source from uri/url
                 return player.current_url.split(":")[0]
-            return player.current_item_id or player.current_url
+            return player.current_url
         # defaults to the player's own player id
         return player.player_id
 
     def _get_group_volume_level(self, player: Player) -> int:
         """Calculate a group volume from the grouped members."""
-        if not player.group_childs:
+        if len(player.group_childs) <= 1:
             # player is not a group
             return player.volume_level
         # calculate group volume from all (turned on) players
@@ -560,13 +560,14 @@ class PlayerController(CoreController):
     ) -> list[Player]:
         """Get (child) players attached to a grouped player."""
         child_players: list[Player] = []
-        if not player.group_childs:
-            # player is not a group
-            return child_players
-        if player.type != PlayerType.GROUP:
+        if player.type != PlayerType.GROUP:  # noqa: SIM102
             # if the player is not a dedicated player group,
-            # it is the master in a sync group and thus always present as child player
-            child_players.append(player)
+            # it is the master in a sync group and should be always present as child player
+            if player.player_id not in player.group_childs:
+                player.group_childs.add(player.player_id)
+            if len(player.group_childs) == 1:
+                # player is not synced
+                return child_players
         for child_id in player.group_childs:
             if child_player := self.get(child_id, False):
                 if not (not only_powered or child_player.powered):

@@ -502,7 +502,7 @@ class PlayerQueuesController:
             stream_job = await self.mass.streams.create_multi_client_stream_job(
                 queue_id=queue_id,
                 start_queue_item=queue_item,
-                seek_position=seek_position,
+                seek_position=int(seek_position),
                 fade_in=fade_in,
             )
             await player_prov.cmd_handle_stream_job(player_id=queue_id, stream_job=stream_job)
@@ -514,7 +514,7 @@ class PlayerQueuesController:
             url = await self.mass.streams.resolve_stream_url(
                 queue_id=queue_id,
                 queue_item=queue_item,
-                seek_position=seek_position,
+                seek_position=int(seek_position),
                 fade_in=fade_in,
                 flow_mode=queue.flow_mode,
             )
@@ -570,12 +570,8 @@ class PlayerQueuesController:
         queue.active = player.active_source == queue.queue_id
         if queue.active:
             queue.state = player.state
-            queue.flow_mode = player.current_url and "/flow/" in player.current_url
             # update current item from player report
-            player_item_index = self.index_by_id(queue_id, player.current_item_id)
-            if player_item_index is None:
-                # try grabbing the item id from the url
-                player_item_index = self._get_player_item_index(queue_id, player.current_url)
+            player_item_index = self._get_player_item_index(queue_id, player.current_url)
             if player_item_index is not None:
                 if queue.flow_mode:
                     # flow mode active, calculate current item
@@ -652,7 +648,7 @@ class PlayerQueuesController:
         self._queue_items.pop(player_id, None)
 
     async def preload_next_url(
-        self, queue_id: str, current_item_id: str
+        self, queue_id: str, current_item_id: str | None = None
     ) -> tuple[str, QueueItem, bool]:
         """Call when a player wants to load the next track/url into the buffer.
 
@@ -661,7 +657,10 @@ class PlayerQueuesController:
         Raises QueueEmpty if there are no more tracks left.
         """
         queue = self.get(queue_id)
-        cur_index = self.index_by_id(queue_id, current_item_id)
+        if current_item_id:
+            cur_index = self.index_by_id(queue_id, current_item_id) or 0
+        else:
+            cur_index = queue.index_in_buffer or queue.current_index or 0
         cur_item = self.get_item(queue_id, cur_index)
         idx = 0
         while True:

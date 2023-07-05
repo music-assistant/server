@@ -675,23 +675,25 @@ async def get_preview_stream(
 
 async def get_silence(
     duration: int,
-    output_fmt: ContentType = ContentType.WAV,
-    sample_rate: int = 44100,
-    bit_depth: int = 16,
+    output_format: AudioFormat,
 ) -> AsyncGenerator[bytes, None]:
     """Create stream of silence, encoded to format of choice."""
-    # wav silence = just zero's
-    if output_fmt == ContentType.WAV:
+    if output_format.content_type.is_pcm():
+        # pcm = just zeros
+        for _ in range(0, duration):
+            yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
+        return
+    if output_format.content_type == ContentType.WAV:
+        # wav silence = wave header + zero's
         yield create_wave_header(
-            samplerate=sample_rate,
+            samplerate=output_format.sample_rate,
             channels=2,
-            bitspersample=bit_depth,
+            bitspersample=output_format.bit_depth,
             duration=duration,
         )
         for _ in range(0, duration):
-            yield b"\0" * int(sample_rate * (bit_depth / 8) * 2)
+            yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
         return
-
     # use ffmpeg for all other encodings
     args = [
         "ffmpeg",
@@ -701,11 +703,11 @@ async def get_silence(
         "-f",
         "lavfi",
         "-i",
-        f"anullsrc=r={sample_rate}:cl={'stereo'}",
+        f"anullsrc=r={output_format.sample_rate}:cl={'stereo'}",
         "-t",
         str(duration),
         "-f",
-        output_fmt.value,
+        output_format.output_fmt.value,
         "-",
     ]
     async with AsyncProcess(args) as ffmpeg_proc:
@@ -760,7 +762,12 @@ async def _get_ffmpeg_args(
         "file,http,https,tcp,tls,crypto,pipe,fd",  # support nested protocols (e.g. within playlist)
     ]
     # collect input args
-    input_args = []
+    input_args = [
+        "-ac",
+        str(streamdetails.audio_format.channels),
+        "-channel_layout",
+        "mono" if streamdetails.audio_format.channels == 1 else "stereo",
+    ]
     if seek_position:
         input_args += ["-ss", str(seek_position)]
     if streamdetails.direct:
@@ -784,12 +791,15 @@ async def _get_ffmpeg_args(
                     "5xx",
                 ]
 
-        input_args += ["-ac", str(streamdetails.audio_format.channels), "-i", streamdetails.direct]
+        input_args += ["-i", streamdetails.direct]
     else:
         # the input is received from pipe/stdin
         if streamdetails.audio_format.content_type != ContentType.UNKNOWN:
             input_args += ["-f", streamdetails.audio_format.content_type.value]
-        input_args += ["-ac", str(streamdetails.audio_format.channels), "-i", "-"]
+        input_args += [
+            "-i",
+            "-",
+        ]
 
     # collect output args
     output_args = [

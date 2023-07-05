@@ -120,6 +120,7 @@ class DLNAPlayer:
     bootid: int | None = None
     last_seen: float = field(default_factory=time.time)
     next_url: str | None = None
+    next_item: QueueItem | None = None
     supports_next_uri = True
     end_of_track_reached = False
 
@@ -140,7 +141,6 @@ class DLNAPlayer:
                 self.player.elapsed_time_last_updated = (
                     self.device.media_position_updated_at.timestamp()
                 )
-            self.player.current_item_id = self.device._get_current_track_meta_data("queue_item_id")
             if self.device.media_duration and self.player.corrected_elapsed_time:
                 self.end_of_track_reached = (
                     self.device.media_duration - self.player.corrected_elapsed_time
@@ -531,24 +531,21 @@ class DLNAPlayerProvider(PlayerProvider):
         dlna_player.last_seen = time.time()
         self.mass.create_task(self._update_player(dlna_player))
 
-    async def _enqueue_next_track(
-        self, dlna_player: DLNAPlayer, current_queue_item_id: str
-    ) -> None:
+    async def _enqueue_next_track(self, dlna_player: DLNAPlayer) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
         try:
             (
                 next_url,
                 next_item,
                 _,
-            ) = await self.mass.players.queues.preload_next_url(
-                dlna_player.udn, current_queue_item_id
-            )
+            ) = await self.mass.players.queues.preload_next_url(dlna_player.udn)
         except QueueEmpty:
             return
 
         if dlna_player.next_url == next_url:
             return  # already set ?!
         dlna_player.next_url = next_url
+        dlna_player.next_item = next_item
 
         # no need to try setting the next url if we already know the player does not support it
         if not dlna_player.supports_next_uri:
@@ -571,11 +568,9 @@ class DLNAPlayerProvider(PlayerProvider):
 
     async def _update_player(self, dlna_player: DLNAPlayer) -> None:
         """Update DLNA Player."""
-        prev_item_id = dlna_player.player.current_item_id
         prev_url = dlna_player.player.current_url
         prev_state = dlna_player.player.state
         dlna_player.update_attributes()
-        current_item_id = dlna_player.player.current_item_id
         current_url = dlna_player.player.current_url
         current_state = dlna_player.player.state
 
@@ -588,11 +583,9 @@ class DLNAPlayerProvider(PlayerProvider):
 
         # enqueue next item if needed
         if dlna_player.player.state == PlayerState.PLAYING and (
-            prev_item_id != current_item_id
-            or not dlna_player.next_url
-            or dlna_player.next_url == current_url
+            not dlna_player.next_url or dlna_player.next_url == current_url
         ):
-            self.mass.create_task(self._enqueue_next_track(dlna_player, current_item_id))
+            self.mass.create_task(self._enqueue_next_track(dlna_player))
         # if player does not support next uri, manual play it
         if (
             not dlna_player.supports_next_uri
@@ -601,6 +594,6 @@ class DLNAPlayerProvider(PlayerProvider):
             and dlna_player.next_url
             and dlna_player.end_of_track_reached
         ):
-            await self.cmd_play_url(dlna_player.udn, dlna_player.next_url)
+            await self.cmd_play_url(dlna_player.udn, dlna_player.next_url, dlna_player.next_item)
             dlna_player.end_of_track_reached = False
             dlna_player.next_url = None

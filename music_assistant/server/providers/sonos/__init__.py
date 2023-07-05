@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-import xml.etree.ElementTree as ET  # noqa: N817
 from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
@@ -15,7 +14,7 @@ from soco.events_base import SubscriptionBase
 from soco.groups import ZoneGroup
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
+from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -74,7 +73,6 @@ class SonosPlayer:
     is_stereo_pair: bool = False
     next_url: str | None = None
     elapsed_time: int = 0
-    current_item_id: str | None = None
     radio_mode_started: float | None = None
 
     subscriptions: list[SubscriptionBase] = field(default_factory=list)
@@ -112,19 +110,6 @@ class SonosPlayer:
             self.track_info_updated = time.time()
             self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
 
-            current_item_id = None
-            if track_metadata := self.track_info.get("metadata"):
-                # extract queue_item_id from metadata xml
-                try:
-                    xml_root = ET.XML(track_metadata)
-                    for match in xml_root.iter("{http://purl.org/dc/elements/1.1/}queueItemId"):
-                        item_id = match.text
-                        current_item_id = item_id
-                        break
-                except (ET.ParseError, AttributeError):
-                    pass
-            self.current_item_id = current_item_id
-
         # speaker info
         if update_speaker_info:
             self.speaker_info = self.soco.get_speaker_info()
@@ -153,7 +138,6 @@ class SonosPlayer:
 
         # media info (track info)
         self.player.current_url = self.track_info["uri"]
-        self.player.current_item_id = self.current_item_id
 
         if self.radio_mode_started is not None:
             # sonos reports bullshit elapsed time while playing radio,
@@ -170,9 +154,7 @@ class SonosPlayer:
         if self.group_info and self.group_info.coordinator.uid == self.player_id:
             # this player is the sync leader
             self.player.synced_to = None
-            self.player.group_childs = {
-                x.uid for x in self.group_info.members if x.uid != self.player_id and x.is_visible
-            }
+            self.player.group_childs = {x.uid for x in self.group_info.members if x.is_visible}
             if not self.player.group_childs:
                 self.player.type = PlayerType.STEREO_PAIR
         elif self.group_info and self.group_info.coordinator:
@@ -288,14 +270,13 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
 
-        radio_mode = queue_item is not None and (
-            not queue_item.duration or queue_item.media_type == MediaType.RADIO
-        )
-        if radio_mode:
+        if queue_item is None:
+            # enforce mp3 radio mode for flow stream
+            url = url.replace(".flac", ".mp3").replace(".wav", ".mp3")
             sonos_player.radio_mode_started = time.time()
-            url = url.replace("http", "x-rincon-mp3radio")
-            metadata = create_didl_metadata(self.mass, url, queue_item)
-            await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
+            await asyncio.to_thread(
+                sonos_player.soco.play_uri, url, title="Music Assistant", force_radio=True
+            )
         else:
             sonos_player.radio_mode_started = None
             await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
@@ -515,17 +496,11 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player.group_info_updated = time.time()
         asyncio.run_coroutine_threadsafe(self._update_player(sonos_player), self.mass.loop)
 
-    async def _enqueue_next_track(
-        self, sonos_player: SonosPlayer, current_queue_item_id: str
-    ) -> None:
+    async def _enqueue_next_track(self, sonos_player: SonosPlayer) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
-        if not current_queue_item_id:
-            return  # guard
-        if not self.mass.players.queues.get_item(sonos_player.player_id, current_queue_item_id):
-            return  # guard
         try:
             next_url, next_item, crossfade = await self.mass.players.queues.preload_next_url(
-                sonos_player.player_id, current_queue_item_id
+                sonos_player.player_id
             )
         except QueueEmpty:
             return
@@ -573,7 +548,6 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _update_player(self, sonos_player: SonosPlayer, signal_update: bool = True) -> None:
         """Update Sonos Player."""
-        prev_item_id = sonos_player.current_item_id
         prev_url = sonos_player.player.current_url
         prev_state = sonos_player.player.state
         sonos_player.update_attributes()
@@ -599,13 +573,9 @@ class SonosPlayerProvider(PlayerProvider):
 
         # enqueue next item if needed
         if sonos_player.player.state == PlayerState.PLAYING and (
-            prev_item_id != sonos_player.current_item_id
-            or not sonos_player.next_url
-            or sonos_player.next_url == sonos_player.player.current_url
+            sonos_player.next_url or sonos_player.next_url == sonos_player.player.current_url
         ):
-            self.mass.create_task(
-                self._enqueue_next_track(sonos_player, sonos_player.current_item_id)
-            )
+            self.mass.create_task(self._enqueue_next_track(sonos_player))
 
 
 def _convert_state(sonos_state: str) -> PlayerState:

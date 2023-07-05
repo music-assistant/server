@@ -84,7 +84,7 @@ class PlayerProvider(Provider):
             - stream_job: the MultiClientStreamJob that the player should start playing.
         """
         url = await stream_job.resolve_stream_url(player_id)
-        await self.cmd_play_url(player_id=player_id, url=url)
+        await self.cmd_play_url(player_id=player_id, url=url, queue_item=None)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
