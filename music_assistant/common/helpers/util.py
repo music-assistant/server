@@ -182,13 +182,15 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-def get_ip_pton(ip_string: str = get_ip()):
+async def get_ip_pton(ip_string: str | None = None):
     """Return socket pton for local ip."""
+    if ip_string is None:
+        ip_string = await get_ip()
     # pylint:disable=no-member
     try:
-        return socket.inet_pton(socket.AF_INET, ip_string)
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
-        return socket.inet_pton(socket.AF_INET6, ip_string)
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
 def get_folder_size(folderpath):

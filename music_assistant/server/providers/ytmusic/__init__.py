@@ -704,7 +704,9 @@ class YoutubeMusicProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=available,
-                content_type=ContentType.M4A,
+                audio_format=AudioFormat(
+                    content_type=ContentType.M4A,
+                ),
             )
         )
         return track

@@ -25,23 +25,21 @@ JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_mappings")
 JOINED_KEYS = ("barcode", "isrc")
 
 
-@dataclass(frozen=True)
-class ProviderMapping(DataClassDictMixin):
-    """Model for a MediaItem's provider mapping details."""
+@dataclass
+class AudioFormat(DataClassDictMixin):
+    """Model for AudioFormat details."""
 
-    item_id: str
-    provider_domain: str
-    provider_instance: str
-    available: bool = True
-    # quality details (streamable content only)
     content_type: ContentType = ContentType.UNKNOWN
     sample_rate: int = 44100
     bit_depth: int = 16
-    bit_rate: int = 320
-    # optional details to store provider specific details
-    details: str | None = None
-    # url = link to provider details page if exists
-    url: str | None = None
+    channels: int = 2
+    output_format_str: str = ""
+    bit_rate: int = 320  # optional
+
+    def __post_init__(self):
+        """Execute actions after init."""
+        if not self.output_format_str:
+            self.output_format_str = self.content_type.value
 
     @property
     def quality(self) -> int:
@@ -54,6 +52,27 @@ class ProviderMapping(DataClassDictMixin):
         if self.content_type in (ContentType.AAC, ContentType.OGG):
             score += 1
         return int(score)
+
+
+@dataclass(frozen=True)
+class ProviderMapping(DataClassDictMixin):
+    """Model for a MediaItem's provider mapping details."""
+
+    item_id: str
+    provider_domain: str
+    provider_instance: str
+    available: bool = True
+    # quality/audio details (streamable content only)
+    audio_format: AudioFormat = field(default_factory=AudioFormat)
+    # optional details to store provider specific details
+    details: str | None = None
+    # url = link to provider details page if exists
+    url: str | None = None
+
+    @property
+    def quality(self) -> int:
+        """Return quality score."""
+        return self.audio_format.quality
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -509,22 +528,6 @@ def media_from_dict(media_item: dict) -> MediaItemType:
     if media_item["media_type"] == "radio":
         return Radio.from_dict(media_item)
     return MediaItem.from_dict(media_item)
-
-
-@dataclass
-class AudioFormat(DataClassDictMixin):
-    """Model for AudioFormat details."""
-
-    content_type: ContentType
-    sample_rate: int = 44100
-    bit_depth: int = 16
-    channels: int = 2
-    output_format_str: str = ""
-
-    def __post_init__(self):
-        """Execute actions after init."""
-        if not self.output_format_str:
-            self.output_format_str = self.content_type.value
 
 
 @dataclass

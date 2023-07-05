@@ -39,7 +39,7 @@ from .media.radio import RadioController
 from .media.tracks import TracksController
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
+    pass
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 SYNC_INTERVAL = 3 * 3600
@@ -48,16 +48,20 @@ SYNC_INTERVAL = 3 * 3600
 class MusicController(CoreController):
     """Several helpers around the musicproviders."""
 
+    name: str = "music"
+    friendly_name: str = "Music library"
+
     database: DatabaseConnection | None = None
 
-    def __init__(self, mass: MusicAssistant):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
-        self.mass = mass
-        self.artists = ArtistsController(mass)
-        self.albums = AlbumsController(mass)
-        self.tracks = TracksController(mass)
-        self.radio = RadioController(mass)
-        self.playlists = PlaylistController(mass)
+        super().__init__(*args, **kwargs)
+        self.cache = self.mass.cache
+        self.artists = ArtistsController(self.mass)
+        self.albums = AlbumsController(self.mass)
+        self.tracks = TracksController(self.mass)
+        self.radio = RadioController(self.mass)
+        self.playlists = PlaylistController(self.mass)
         self.in_progress_syncs: list[SyncTask] = []
         self._sync_lock = asyncio.Lock()
 

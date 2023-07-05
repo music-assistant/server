@@ -32,7 +32,6 @@ from music_assistant.server.helpers.images import create_collage, get_image_thum
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
     from music_assistant.server.models.metadata_provider import MetadataProvider
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
@@ -41,10 +40,13 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
 class MetaDataController(CoreController):
     """Several helpers to search and store metadata for mediaitems."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
+    name: str = "metadata"
+    friendly_name: str = "Metadata controller"
+
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
-        self.mass = mass
-        self.cache = mass.cache
+        super().__init__(*args, **kwargs)
+        self.cache = self.mass.cache
         self._pref_lang: str | None = None
         self.scan_busy: bool = False
 

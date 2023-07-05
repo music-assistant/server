@@ -173,8 +173,10 @@ class TuneInProvider(MusicProvider):
                 item_id=item_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=content_type,
-                bit_rate=bit_rate,
+                audio_format=AudioFormat(
+                    content_type=content_type,
+                    bit_rate=bit_rate,
+                ),
                 details=url,
             )
         )

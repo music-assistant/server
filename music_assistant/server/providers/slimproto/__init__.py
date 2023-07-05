@@ -9,7 +9,6 @@ from collections.abc import Callable, Generator
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, urlparse
 
 from aioslimproto.client import PlayerState as SlimPlayerState
 from aioslimproto.client import SlimClient
@@ -43,6 +42,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 CACHE_KEY_PREV_STATE = "slimproto_prev_state"
@@ -379,39 +379,37 @@ class SlimprotoProvider(PlayerProvider):
         if player.synced_to:
             raise RuntimeError("A synced player cannot receive play commands directly")
 
-        stream_job = None
-        sync_clients = [x for x in self._get_sync_clients(player_id)]
-        if sync_clients > 1:
-            # we need to form/join a multiclient stream job
-            if player.active_source == player.player_id:
-                # this player is a sync leader of a regular sync group
-                # parse original params from the regular stream url
-                parsed_url = urlparse(url)
-                start_queue_item_id = parsed_url.path.rsplit("/")[-1].split(".")[0]
-                params = parse_qsl(parsed_url.query)
-                stream_job = await self.mass.streams.create_multi_client_stream_job(
-                    queue_id=player.player_id,
-                    start_queue_item_id=start_queue_item_id,
-                    seek_position=int(params.get("seek_position", 0)),
-                    fade_in=bool(params.get("fade_in", 0)),
-                )
-            elif player.active_source in self.mass.streams.multi_client_jobs:
-                # join existing multiclient stream job (from universal group)
-                stream_job = self.mass.streams.multi_client_jobs[player.active_source]
-            else:
-                # edge case: regular url requested while synced
-                stream_job = None
-
         # forward command to player and any connected sync child's
+        sync_clients = [x for x in self._get_sync_clients(player_id)]
         async with asyncio.TaskGroup() as tg:
             for client in sync_clients:
-                if stream_job:
-                    url = await stream_job.resolve_stream_url(client.player_id)
                 tg.create_task(
                     self._handle_play_url(
                         client,
                         url=url,
                         queue_item=queue_item,
+                        send_flush=True,
+                        auto_play=len(sync_clients) == 1,
+                    )
+                )
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player."""
+        # send stop first
+        await self.cmd_stop(player_id)
+
+        player = self.mass.players.get(player_id)
+        if player.synced_to:
+            raise RuntimeError("A synced player cannot receive play commands directly")
+        sync_clients = [x for x in self._get_sync_clients(player_id)]
+        async with asyncio.TaskGroup() as tg:
+            for client in sync_clients:
+                url = await stream_job.resolve_stream_url(client.player_id)
+                tg.create_task(
+                    self._handle_play_url(
+                        client,
+                        url=url,
+                        queue_item=None,
                         send_flush=True,
                         auto_play=len(sync_clients) == 1,
                     )
@@ -437,7 +435,7 @@ class SlimprotoProvider(PlayerProvider):
 
         await client.play_url(
             url=url,
-            mime_type=f"audio/{url.split('.')[-1]}",
+            mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
             metadata={"item_id": queue_item.queue_item_id, "title": queue_item.name}
             if queue_item
             else None,

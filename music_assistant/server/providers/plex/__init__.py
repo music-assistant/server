@@ -401,7 +401,9 @@ class PlexProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=available,
-                content_type=ContentType.try_parse(content) if content else ContentType.UNKNOWN,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(content) if content else ContentType.UNKNOWN,
+                ),
                 url=plex_track.getWebURL(),
             )
         )

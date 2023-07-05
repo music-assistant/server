@@ -155,7 +155,7 @@ class WebserverController(CoreController):
         return web.json_response(self.mass.get_server_info().to_dict())
 
     async def _handle_ws_client(self, request: web.Request) -> web.WebSocketResponse:
-        connection = WebsocketClientHandler(self.mass, request)
+        connection = WebsocketClientHandler(self, request)
         try:
             self.clients.add(connection)
             return await connection.handle_client()

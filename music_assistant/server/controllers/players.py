@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.enums import (
@@ -28,18 +28,18 @@ from music_assistant.server.models.player_provider import PlayerProvider
 
 from .player_queues import PlayerQueuesController
 
-if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
-
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
 
 class PlayerController(CoreController):
     """Controller holding all logic to control registered players."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize class."""
-        self.mass = mass
+    name: str = "players"
+    friendly_name: str = "Players controller"
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize core controller."""
+        super().__init__(*args, **kwargs)
         self._players: dict[str, Player] = {}
         self._prev_states: dict[str, dict] = {}
         self.queues = PlayerQueuesController(self)

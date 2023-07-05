@@ -375,7 +375,9 @@ class SoundcloudMusicProvider(MusicProvider):
                 item_id=track_obj["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.MP3,
+                audio_format=AudioFormat(
+                    content_type=ContentType.MP3,
+                ),
                 url=track_obj["permalink_url"],
             )
         )

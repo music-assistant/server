@@ -209,7 +209,10 @@ class PlayerQueuesController:
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
 
         # load the items into the queue
-        cur_index = queue.index_in_buffer or 0
+        if queue.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+            cur_index = queue.index_in_buffer or 0
+        else:
+            cur_index = queue.current_index or 0
         shuffle = queue.shuffle_enabled and len(queue_items) >= 5
 
         # handle replace: clear all items and replace with the new items
@@ -487,25 +490,41 @@ class PlayerQueuesController:
         # power on player if needed
         await self.mass.players.cmd_power(queue_id, True)
         # execute the play_media command on the player
+        queue_player = self.mass.players.get(queue_id)
+        need_multi_stream = (
+            queue_player.provider in ("airplay", "ugp", "slimproto")
+            and len(queue_player.group_childs) > 1
+        )
         player_prov = self.mass.players.get_player_provider(queue_id)
-        # resolve stream url
-        queue.flow_mode = await self.mass.config.get_player_config_value(
-            queue.queue_id, CONF_FLOW_MODE
-        )
-        url = await self.mass.streams.resolve_stream_url(
-            queue_id=queue_id,
-            queue_item=queue_item,
-            seek_position=seek_position,
-            fade_in=fade_in,
-            flow_mode=queue.flow_mode,
-        )
-        await player_prov.cmd_play_url(
-            player_id=queue_id,
-            url=url,
-            # set queue_item to None if we're sending a flow mode url
-            # as the metadata is rather useless then
-            queue_item=None if queue.flow_mode else queue_item,
-        )
+        if need_multi_stream:
+            # handle special multi client stream
+            queue.flow_mode = True
+            stream_job = await self.mass.streams.create_multi_client_stream_job(
+                queue_id=queue_id,
+                start_queue_item=queue_item,
+                seek_position=seek_position,
+                fade_in=fade_in,
+            )
+            await player_prov.cmd_handle_stream_job(player_id=queue_id, stream_job=stream_job)
+        else:
+            # regular stream
+            queue.flow_mode = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_FLOW_MODE
+            )
+            url = await self.mass.streams.resolve_stream_url(
+                queue_id=queue_id,
+                queue_item=queue_item,
+                seek_position=seek_position,
+                fade_in=fade_in,
+                flow_mode=queue.flow_mode,
+            )
+            await player_prov.cmd_play_url(
+                player_id=queue_id,
+                url=url,
+                # set queue_item to None if we're sending a flow mode url
+                # as the metadata is rather useless then
+                queue_item=None if queue.flow_mode else queue_item,
+            )
 
     # Interaction with player
 

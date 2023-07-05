@@ -77,7 +77,7 @@ class MultiClientStreamJob:
         stream_controller: StreamsController,
         queue_id: str,
         pcm_format: AudioFormat,
-        start_queue_item_id: str,
+        start_queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
     ) -> None:
@@ -87,7 +87,7 @@ class MultiClientStreamJob:
         self.queue = self.stream_controller.mass.players.queues.get(queue_id)
         assert self.queue  # just in case
         self.pcm_format = pcm_format
-        self.start_queue_item_id = start_queue_item_id
+        self.start_queue_item = start_queue_item
         self.seek_position = seek_position
         self.fade_in = fade_in
         self.job_id = shortuuid.uuid()
@@ -146,7 +146,7 @@ class MultiClientStreamJob:
                 f";codec=pcm;rate={output_sample_rate};"
                 f"bitrate={output_bit_depth};channels={channels}"
             )
-        url = f"{self.stream_controller.webserver.base_url}/{self.queue_id}/multi/{child_player_id}/{self.start_queue_item_id}.{fmt}?job_id={self.job_id}"  # noqa: E501
+        url = f"{self.stream_controller._server.base_url}/{self.queue_id}/multi/{child_player_id}/{self.start_queue_item.queue_item_id}.{fmt}?job_id={self.job_id}"  # noqa: E501
         self.expected_players.add(child_player_id)
         return url
 
@@ -202,13 +202,8 @@ class MultiClientStreamJob:
     async def _stream_job_runner(self) -> None:
         """Feed audio chunks to StreamJob subscribers."""
         chunk_num = 0
-        start_queue_item = self.stream_controller.mass.players.queues.get_item(
-            self.queue_id, self.start_queue_item_id
-        )
-        if not start_queue_item:
-            raise RuntimeError(reason=f"Unknown Queue item: {self.start_queue_item_id}")
         async for chunk in self.stream_controller.get_flow_stream(
-            self.queue, start_queue_item, self.pcm_format, self.seek_position, self.fade_in
+            self.queue, self.start_queue_item, self.pcm_format, self.seek_position, self.fade_in
         ):
             chunk_num += 1
             # wait until all expected clients are connected
@@ -381,8 +376,10 @@ class StreamsController(CoreController):
                 output_bit_depth = min(FLOW_MAX_BIT_DEPTH, player_max_bit_depth)
             else:
                 streamdetails = await get_stream_details(self.mass, queue_item)
-                output_sample_rate = min(streamdetails.sample_rate, player.max_sample_rate)
-                output_bit_depth = min(streamdetails.bit_depth, player_max_bit_depth)
+                output_sample_rate = min(
+                    streamdetails.audio_format.sample_rate, player.max_sample_rate
+                )
+                output_bit_depth = min(streamdetails.audio_format.bit_depth, player_max_bit_depth)
             output_channels = await self.mass.config.get_player_config_value(
                 queue_id, CONF_OUTPUT_CHANNELS
             )
@@ -413,7 +410,7 @@ class StreamsController(CoreController):
     async def create_multi_client_stream_job(
         self,
         queue_id: str,
-        start_queue_item_id: str,
+        start_queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
     ) -> MultiClientStreamJob:
@@ -438,7 +435,7 @@ class StreamsController(CoreController):
                 bit_depth=24,
                 channels=2,
             ),
-            start_queue_item_id=start_queue_item_id,
+            start_queue_item=start_queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
         )
@@ -494,9 +491,14 @@ class StreamsController(CoreController):
         )
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
+        pcm_format = AudioFormat(
+            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
+            sample_rate=streamdetails.audio_format.sample_rate,
+            bit_depth=streamdetails.audio_format.bit_depth,
+        )
         ffmpeg_args = await self._get_player_ffmpeg_args(
             queue_player,
-            input_format=streamdetails.audio_format,
+            input_format=pcm_format,
             output_format=output_format,
         )
 
@@ -507,6 +509,7 @@ class StreamsController(CoreController):
                     async for chunk in get_media_stream(
                         self.mass,
                         streamdetails=streamdetails,
+                        pcm_format=pcm_format,
                         seek_position=seek_position,
                         fade_in=fade_in,
                     ):
@@ -801,9 +804,9 @@ class StreamsController(CoreController):
             async for chunk in get_media_stream(
                 self.mass,
                 streamdetails,
+                pcm_format=pcm_format,
                 seek_position=seek_position,
                 fade_in=fade_in,
-                output_format=pcm_format,
                 # only allow strip silence from begin if track is being crossfaded
                 strip_silence_begin=last_fadeout_part != b"",
             ):
@@ -897,9 +900,9 @@ class StreamsController(CoreController):
         # generic args
         generic_args = [
             "ffmpeg",
-            "-hide_banner",
-            "-loglevel",
-            "warning" if self.logger.isEnabledFor(logging.DEBUG) else "quiet",
+            # "-hide_banner",
+            # "-loglevel",
+            # "warning" if self.logger.isEnabledFor(logging.DEBUG) else "quiet",
             "-ignore_unknown",
         ]
         # input args
@@ -918,9 +921,9 @@ class StreamsController(CoreController):
         if output_format.content_type == ContentType.FLAC:
             output_args = ["-f", "flac", "-compression_level", "3"]
         elif output_format.content_type == ContentType.AAC:
-            output_args = ["-f", "adts", "-c:a", output_format.value, "-b:a", "320k"]
+            output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "320k"]
         elif output_format.content_type == ContentType.MP3:
-            output_args = ["-f", "mp3", "-c:a", output_format.value, "-b:a", "320k"]
+            output_args = ["-f", "mp3", "-c:a", "mp3", "-b:a", "320k"]
         else:
             output_args = ["-f", output_format.content_type.value]
 
@@ -989,7 +992,7 @@ class StreamsController(CoreController):
             )
             if content_type == ContentType.PCM:
                 # resolve generic pcm type
-                output_format = ContentType.from_bit_depth(output_bit_depth)
+                content_type = ContentType.from_bit_depth(output_bit_depth)
 
         else:
             output_sample_rate = min(default_sample_rate, queue_player.max_sample_rate)
@@ -1000,7 +1003,7 @@ class StreamsController(CoreController):
             )
             output_channels = 1 if output_channels_str != "stereo" else 2
         return AudioFormat(
-            content_type=output_format,
+            content_type=content_type,
             sample_rate=output_sample_rate,
             bit_depth=output_bit_depth,
             channels=output_channels,

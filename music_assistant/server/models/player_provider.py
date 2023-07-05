@@ -11,6 +11,7 @@ from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ConfigEntry, PlayerConfig
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
 
 # ruff: noqa: ARG001, ARG002
 
@@ -69,6 +70,21 @@ class PlayerProvider(Provider):
             - url: the url that the player should start playing.
             - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player.
+
+        This is called when the Queue wants the player to start playing media
+        to multiple subscribers at the same time using a MultiClientStreamJob.
+        The default implementation is that the URL to the stream is resolved for the player
+        and played like any regular play_url command, but implementation may override
+        this behavior for any more sophisticated handling (e.g. when syncing etc.)
+
+            - player_id: player_id of the player to handle the command.
+            - stream_job: the MultiClientStreamJob that the player should start playing.
+        """
+        url = await stream_job.resolve_stream_url(player_id)
+        await self.cmd_play_url(player_id=player_id, url=url)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.

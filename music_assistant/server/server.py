@@ -122,9 +122,10 @@ class MusicAssistant:
         await self.metadata.setup()
         await self.players.setup()
         await self.streams.setup()
+        # setup discovery
+        self.create_task(self._setup_discovery())
         # load providers
         await self._load_providers()
-        self._setup_discovery()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -495,7 +496,7 @@ class MusicAssistant:
                         exc_info=exc,
                     )
 
-    def _setup_discovery(self) -> None:
+    async def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
         zeroconf_type = "_mass._tcp.local."
         server_id = self.server_id
@@ -503,7 +504,7 @@ class MusicAssistant:
         info = ServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[get_ip_pton(self.streams.publish_ip)],
+            addresses=[await get_ip_pton(self.streams.publish_ip)],
             port=self.streams.publish_port,
             properties=self.get_server_info().to_dict(),
             server="mass.local.",
@@ -512,9 +513,9 @@ class MusicAssistant:
         try:
             existing = getattr(self, "mass_zc_service_set", None)
             if existing:
-                self.zeroconf.update_service(info)
+                await self.zeroconf.async_update_service(info)
             else:
-                self.zeroconf.register_service(info)
+                await self.zeroconf.async_register_service(info)
             setattr(self, "mass_zc_service_set", True)
         except NonUniqueNameException:
             LOGGER.error(

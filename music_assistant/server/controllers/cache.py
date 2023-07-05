@@ -21,7 +21,7 @@ from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
+    pass
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 
@@ -29,11 +29,13 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 class CacheController(CoreController):
     """Basic cache controller using both memory and database."""
 
-    database: DatabaseConnection | None = None
+    name: str = "cache"
+    friendly_name: str = "Cache controller"
 
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize our caching class."""
-        self.mass = mass
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize core controller."""
+        super().__init__(*args, **kwargs)
+        self.database: DatabaseConnection | None = None
         self._mem_cache = MemoryCache(500)
 
     async def setup(self) -> None:

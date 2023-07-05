@@ -126,10 +126,12 @@ class URLProvider(MusicProvider):
                 item_id=item_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                bit_rate=media_info.bit_rate,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(media_info.format),
+                    sample_rate=media_info.sample_rate,
+                    bit_depth=media_info.bits_per_sample,
+                    bit_rate=media_info.bit_rate,
+                ),
             )
         }
         if media_info.has_cover_image:

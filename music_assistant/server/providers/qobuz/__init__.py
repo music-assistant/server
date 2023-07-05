@@ -460,9 +460,11 @@ class QobuzProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=album_obj["streamable"] and album_obj["displayable"],
-                content_type=ContentType.FLAC,
-                sample_rate=album_obj["maximum_sampling_rate"] * 1000,
-                bit_depth=album_obj["maximum_bit_depth"],
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                    sample_rate=album_obj["maximum_sampling_rate"] * 1000,
+                    bit_depth=album_obj["maximum_bit_depth"],
+                ),
                 url=album_obj.get("url", f'https://open.qobuz.com/album/{album_obj["id"]}'),
             )
         )
@@ -559,9 +561,11 @@ class QobuzProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=track_obj["streamable"] and track_obj["displayable"],
-                content_type=ContentType.FLAC,
-                sample_rate=track_obj["maximum_sampling_rate"] * 1000,
-                bit_depth=track_obj["maximum_bit_depth"],
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                    sample_rate=track_obj["maximum_sampling_rate"] * 1000,
+                    bit_depth=track_obj["maximum_bit_depth"],
+                ),
                 url=track_obj.get("url", f'https://open.qobuz.com/track/{track_obj["id"]}'),
             )
         )

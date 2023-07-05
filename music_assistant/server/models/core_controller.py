@@ -27,10 +27,11 @@ class CoreController:
 
     async def get_config_entries(
         self,
-        action: str | None = None,
-        values: dict[str, ConfigValueType] | None = None,
+        action: str | None = None,  # noqa: ARG002
+        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
+        return tuple()
 
     async def setup(self) -> None:
         """Async initialize of module."""

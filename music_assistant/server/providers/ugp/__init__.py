@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qsl, urlparse
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_FLOW_MODE,
@@ -34,6 +33,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -205,35 +205,33 @@ class UniversalGroupProvider(PlayerProvider):
         group_player = self.mass.players.get(player_id)
         group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
 
-        # we need to form/join a multiclient stream job
-        if group_player.active_source == group_player.player_id:
-            # parse original params from the regular stream url
-            parsed_url = urlparse(url)
-            start_queue_item_id = parsed_url.path.split("/")[-1].split(".")[0]
-            params = parse_qsl(parsed_url.query)
-            stream_job = await self.mass.streams.create_multi_client_stream_job(
-                queue_id=group_player.player_id,
-                start_queue_item_id=start_queue_item_id,
-                seek_position=int(params.get("seek_position", 0)),
-                fade_in=bool(params.get("fade_in", 0)),
-            )
-        elif group_player.active_source in self.mass.streams.multi_client_jobs:
-            # join existing multiclient stream job (from parent group)
-            stream_job = self.mass.streams.multi_client_jobs[group_player.active_source]
-        else:
-            # edge case: regular url requested not related to the queue ?!
-            stream_job = None
-
         # forward command to all (powered) group child's
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(
                 player_id, only_powered=True, skip_sync_childs=True
             ):
                 player_prov = self.mass.players.get_player_provider(member.player_id)
-                if stream_job:
-                    url = await stream_job.resolve_stream_url(member.player_id)
                 tg.create_task(
                     player_prov.cmd_play_url(member.player_id, url=url, queue_item=queue_item)
+                )
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player."""
+        # send stop first
+        await self.cmd_stop(player_id)
+        # power ON
+        await self.cmd_power(player_id, True)
+        group_player = self.mass.players.get(player_id)
+        group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
+        # forward command to all (powered) group child's
+        async with asyncio.TaskGroup() as tg:
+            for member in self._get_active_members(
+                player_id, only_powered=True, skip_sync_childs=True
+            ):
+                player_prov = self.mass.players.get_player_provider(member.player_id)
+                # we forward the stream_job to child to allow for nested groups etc
+                tg.create_task(
+                    player_prov.cmd_handle_stream_job(member.player_id, stream_job=stream_job)
                 )
 
     async def cmd_pause(self, player_id: str) -> None:

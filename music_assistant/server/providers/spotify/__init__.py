@@ -451,8 +451,7 @@ class SpotifyProvider(MusicProvider):
                 item_id=album_obj["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                 url=album_obj["external_urls"]["spotify"],
             )
         )
@@ -500,8 +499,10 @@ class SpotifyProvider(MusicProvider):
                 item_id=track_obj["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
+                audio_format=AudioFormat(
+                    content_type=ContentType.OGG,
+                    bit_rate=320,
+                ),
                 url=track_obj["external_urls"]["spotify"],
                 available=not track_obj["is_local"] and track_obj["is_playable"],
             )
