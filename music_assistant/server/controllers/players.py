@@ -539,8 +539,8 @@ class PlayerController(CoreController):
 
     def _get_group_volume_level(self, player: Player) -> int:
         """Calculate a group volume from the grouped members."""
-        if len(player.group_childs) <= 1:
-            # player is not a group
+        if len(player.group_childs) == 0:
+            # player is not a group or syncgroup
             return player.volume_level
         # calculate group volume from all (turned on) players
         group_volume = 0
@@ -560,14 +560,6 @@ class PlayerController(CoreController):
     ) -> list[Player]:
         """Get (child) players attached to a grouped player."""
         child_players: list[Player] = []
-        if player.type != PlayerType.GROUP:  # noqa: SIM102
-            # if the player is not a dedicated player group,
-            # it is the master in a sync group and should be always present as child player
-            if player.player_id not in player.group_childs:
-                player.group_childs.add(player.player_id)
-            if len(player.group_childs) == 1:
-                # player is not synced
-                return child_players
         for child_id in player.group_childs:
             if child_player := self.get(child_id, False):
                 if not (not only_powered or child_player.powered):

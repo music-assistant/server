@@ -154,12 +154,21 @@ class SonosPlayer:
         if self.group_info and self.group_info.coordinator.uid == self.player_id:
             # this player is the sync leader
             self.player.synced_to = None
-            self.player.group_childs = {x.uid for x in self.group_info.members if x.is_visible}
-            if not self.player.group_childs:
+            group_members = {x.uid for x in self.group_info.members if x.is_visible}
+            if not group_members:
+                # not sure about this ?!
                 self.player.type = PlayerType.STEREO_PAIR
+            elif group_members == {self.player_id}:
+                self.player.group_childs = set()
+            else:
+                self.player.group_childs = group_members
         elif self.group_info and self.group_info.coordinator:
             # player is synced to
+            self.player.group_childs = set()
             self.player.synced_to = self.group_info.coordinator.uid
+        else:
+            # unsure
+            self.player.group_childs = set()
 
     async def check_poll(self) -> None:
         """Check if any of the endpoints needs to be polled for info."""
