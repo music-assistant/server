@@ -662,29 +662,26 @@ class QobuzProvider(MusicProvider):
             kwargs["request_sig"] = request_sig
             kwargs["app_id"] = app_var(0)
             kwargs["user_auth_token"] = await self._auth_token()
-        async with self._throttler:
-            async with self.mass.http_session.get(
-                url, headers=headers, params=kwargs, ssl=False
-            ) as response:
-                try:
-                    result = await response.json()
-                    # check for error in json
-                    if error := result.get("error"):
-                        raise ValueError(error)
-                    if result.get("status") and "error" in result["status"]:
-                        raise ValueError(result["status"])
-                except (
-                    aiohttp.ContentTypeError,
-                    JSONDecodeError,
-                    AssertionError,
-                    ValueError,
-                ) as err:
-                    text = await response.text()
-                    self.logger.exception(
-                        "Error while processing %s: %s", endpoint, text, exc_info=err
-                    )
-                    return None
-                return result
+        async with self._throttler, self.mass.http_session.get(
+            url, headers=headers, params=kwargs, ssl=False
+        ) as response:
+            try:
+                result = await response.json()
+                # check for error in json
+                if error := result.get("error"):
+                    raise ValueError(error)
+                if result.get("status") and "error" in result["status"]:
+                    raise ValueError(result["status"])
+            except (
+                aiohttp.ContentTypeError,
+                JSONDecodeError,
+                AssertionError,
+                ValueError,
+            ) as err:
+                text = await response.text()
+                self.logger.exception("Error while processing %s: %s", endpoint, text, exc_info=err)
+                return None
+            return result
 
     async def _post_data(self, endpoint, params=None, data=None):
         """Post data to api."""

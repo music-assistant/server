@@ -194,17 +194,16 @@ class MusicbrainzProvider(MetadataProvider):
         url = f"http://musicbrainz.org/ws/2/{endpoint}"
         headers = {"User-Agent": "Music Assistant/1.0.0 https://github.com/music-assistant"}
         kwargs["fmt"] = "json"  # type: ignore[assignment]
-        async with self.throttler:
-            async with self.mass.http_session.get(
-                url, headers=headers, params=kwargs, ssl=False
-            ) as response:
-                try:
-                    result = await response.json()
-                except (
-                    aiohttp.client_exceptions.ContentTypeError,
-                    JSONDecodeError,
-                ) as exc:
-                    msg = await response.text()
-                    self.logger.warning("%s - %s", str(exc), msg)
-                    result = None
-                return result
+        async with self.throttler, self.mass.http_session.get(
+            url, headers=headers, params=kwargs, ssl=False
+        ) as response:
+            try:
+                result = await response.json()
+            except (
+                aiohttp.client_exceptions.ContentTypeError,
+                JSONDecodeError,
+            ) as exc:
+                msg = await response.text()
+                self.logger.warning("%s - %s", str(exc), msg)
+                result = None
+            return result
