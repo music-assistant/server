@@ -254,11 +254,12 @@ class TuneInProvider(MusicProvider):
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
-        async with self._throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                result = await response.json()
-                if not result or "error" in result:
-                    self.logger.error(url)
-                    self.logger.error(kwargs)
-                    result = None
-                return result
+        async with self._throttler, self.mass.http_session.get(
+            url, params=kwargs, ssl=False
+        ) as response:
+            result = await response.json()
+            if not result or "error" in result:
+                self.logger.error(url)
+                self.logger.error(kwargs)
+                result = None
+            return result
