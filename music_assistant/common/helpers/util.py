@@ -129,32 +129,36 @@ def get_version_substitute(version_str: str):
     return version_str.strip()
 
 
-def get_ip():
+async def get_ip():
     """Get primary IP-address for this host."""
-    # pylint: disable=broad-except,no-member
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # doesn't even have to be reachable
-        sock.connect(("10.255.255.255", 1))
-        _ip = sock.getsockname()[0]
-    except Exception:
-        _ip = "127.0.0.1"
-    finally:
-        sock.close()
-    return _ip
 
-
-def is_port_in_use(port: int) -> bool:
-    """Check if port is in use."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+    def _get_ip():
+        """Get primary IP-address for this host."""
+        # pylint: disable=broad-except,no-member
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            _sock.bind(("127.0.0.1", port))
-        except OSError:
-            return True
+            # doesn't even have to be reachable
+            sock.connect(("10.255.255.255", 1))
+            _ip = sock.getsockname()[0]
+        except Exception:
+            _ip = "127.0.0.1"
+        finally:
+            sock.close()
+        return _ip
+
+    return await asyncio.to_thread(_get_ip)
 
 
 async def select_free_port(range_start: int, range_end: int) -> int:
     """Automatically find available port within range."""
+
+    def is_port_in_use(port: int) -> bool:
+        """Check if port is in use."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+            try:
+                _sock.bind(("127.0.0.1", port))
+            except OSError:
+                return True
 
     def _select_free_port():
         for port in range(range_start, range_end):
@@ -178,13 +182,15 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-def get_ip_pton(ip_string: str = get_ip()):
+async def get_ip_pton(ip_string: str | None = None):
     """Return socket pton for local ip."""
+    if ip_string is None:
+        ip_string = await get_ip()
     # pylint:disable=no-member
     try:
-        return socket.inet_pton(socket.AF_INET, ip_string)
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
-        return socket.inet_pton(socket.AF_INET6, ip_string)
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
 def get_folder_size(folderpath):

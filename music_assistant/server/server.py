@@ -12,7 +12,7 @@ from uuid import uuid4
 from aiohttp import ClientSession, TCPConnector
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
-from music_assistant.common.helpers.util import get_ip, get_ip_pton
+from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
@@ -66,28 +66,24 @@ class MusicAssistant:
     loop: asyncio.AbstractEventLoop
     http_session: ClientSession
     zeroconf: Zeroconf
+    config: ConfigController
+    webserver: WebserverController
+    cache: CacheController
+    metadata: MetaDataController
+    music: MusicController
+    players: PlayerController
+    streams: StreamsController
 
     def __init__(self, storage_path: str) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
-        self.base_ip = get_ip()
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
         self._available_providers: dict[str, ProviderManifest] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
-        # init core controllers
-        self.config = ConfigController(self)
-        self.webserver = WebserverController(self)
-        self.cache = CacheController(self)
-        self.metadata = MetaDataController(self)
-        self.music = MusicController(self)
-        self.players = PlayerController(self)
-        self.streams = StreamsController(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
-        # register all api commands (methods with decorator)
-        self._register_api_commands()
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
@@ -105,22 +101,31 @@ class MusicAssistant:
             ),
         )
         # setup config controller first and fetch important config values
+        self.config = ConfigController(self)
         await self.config.setup()
         LOGGER.info(
-            "Starting Music Assistant Server (%s) - autodetected IP-address: %s",
+            "Starting Music Assistant Server (%s)",
             self.server_id,
-            self.base_ip,
         )
         # setup other core controllers
+        self.cache = CacheController(self)
+        self.webserver = WebserverController(self)
+        self.metadata = MetaDataController(self)
+        self.music = MusicController(self)
+        self.players = PlayerController(self)
+        self.streams = StreamsController(self)
+        # register all api commands (methods with decorator)
+        self._register_api_commands()
         await self.cache.setup()
         await self.webserver.setup()
         await self.music.setup()
         await self.metadata.setup()
         await self.players.setup()
         await self.streams.setup()
+        # setup discovery
+        self.create_task(self._setup_discovery())
         # load providers
         await self._load_providers()
-        self._setup_discovery()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -276,6 +281,8 @@ class MusicAssistant:
 
         Tasks created by this helper will be properly cancelled on stop.
         """
+        if target is None:
+            raise RuntimeError("Target is missing")
         if existing := self._tracked_tasks.get(task_id):
             # prevent duplicate tasks if task_id is given and already present
             return existing
@@ -296,8 +303,9 @@ class MusicAssistant:
             if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else _task
                 LOGGER.exception(
-                    "Exception in task %s",
+                    "Exception in task %s - target: %s",
                     task_name,
+                    str(target),
                     exc_info=task.exception(),
                 )
 
@@ -321,7 +329,8 @@ class MusicAssistant:
         handler: Callable,
     ) -> None:
         """Dynamically register a command on the API."""
-        assert command not in self.command_handlers, "Command already registered"
+        if command in self.command_handlers:
+            raise RuntimeError(f"Command {command} is already registered")
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
     async def load_provider(self, conf: ProviderConfig) -> None:  # noqa: C901
@@ -490,7 +499,7 @@ class MusicAssistant:
                         exc_info=exc,
                     )
 
-    def _setup_discovery(self) -> None:
+    async def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
         zeroconf_type = "_mass._tcp.local."
         server_id = self.server_id
@@ -498,8 +507,8 @@ class MusicAssistant:
         info = ServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[get_ip_pton(self.base_ip)],
-            port=self.webserver.port,
+            addresses=[await get_ip_pton(self.streams.publish_ip)],
+            port=self.streams.publish_port,
             properties=self.get_server_info().to_dict(),
             server="mass.local.",
         )
@@ -507,9 +516,9 @@ class MusicAssistant:
         try:
             existing = getattr(self, "mass_zc_service_set", None)
             if existing:
-                self.zeroconf.update_service(info)
+                await self.zeroconf.async_update_service(info)
             else:
-                self.zeroconf.register_service(info)
+                await self.zeroconf.async_register_service(info)
             setattr(self, "mass_zc_service_set", True)
         except NonUniqueNameException:
             LOGGER.error(

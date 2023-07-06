@@ -13,7 +13,6 @@ from contextlib import suppress
 LOGGER = logging.getLogger(__name__)
 
 DEFAULT_CHUNKSIZE = 128000
-DEFAULT_TIMEOUT = 60
 
 # pylint: disable=invalid-name
 
@@ -91,23 +90,21 @@ class AsyncProcess:
                 break
             yield chunk
 
-    async def readexactly(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
+    async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
         try:
-            async with asyncio.timeout(timeout):
-                return await self._proc.stdout.readexactly(n)
+            return await self._proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
 
-    async def read(self, n: int, timeout: int = DEFAULT_TIMEOUT) -> bytes:
+    async def read(self, n: int) -> bytes:
         """Read up to n bytes from the stdout stream.
 
         If n is positive, this function try to read n bytes,
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        async with asyncio.timeout(timeout):
-            return await self._proc.stdout.read(n)
+        return await self._proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""

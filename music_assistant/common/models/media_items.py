@@ -25,23 +25,21 @@ JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_mappings")
 JOINED_KEYS = ("barcode", "isrc")
 
 
-@dataclass(frozen=True)
-class ProviderMapping(DataClassDictMixin):
-    """Model for a MediaItem's provider mapping details."""
+@dataclass
+class AudioFormat(DataClassDictMixin):
+    """Model for AudioFormat details."""
 
-    item_id: str
-    provider_domain: str
-    provider_instance: str
-    available: bool = True
-    # quality details (streamable content only)
     content_type: ContentType = ContentType.UNKNOWN
     sample_rate: int = 44100
     bit_depth: int = 16
-    bit_rate: int = 320
-    # optional details to store provider specific details
-    details: str | None = None
-    # url = link to provider details page if exists
-    url: str | None = None
+    channels: int = 2
+    output_format_str: str = ""
+    bit_rate: int = 320  # optional
+
+    def __post_init__(self):
+        """Execute actions after init."""
+        if not self.output_format_str:
+            self.output_format_str = self.content_type.value
 
     @property
     def quality(self) -> int:
@@ -54,6 +52,32 @@ class ProviderMapping(DataClassDictMixin):
         if self.content_type in (ContentType.AAC, ContentType.OGG):
             score += 1
         return int(score)
+
+    @property
+    def pcm_sample_size(self) -> int:
+        """Return the PCM sample size."""
+        return int(self.sample_rate * (self.bit_depth / 8) * self.channels)
+
+
+@dataclass(frozen=True)
+class ProviderMapping(DataClassDictMixin):
+    """Model for a MediaItem's provider mapping details."""
+
+    item_id: str
+    provider_domain: str
+    provider_instance: str
+    available: bool = True
+    # quality/audio details (streamable content only)
+    audio_format: AudioFormat = field(default_factory=AudioFormat)
+    # optional details to store provider specific details
+    details: str | None = None
+    # url = link to provider details page if exists
+    url: str | None = None
+
+    @property
+    def quality(self) -> int:
+        """Return quality score."""
+        return self.audio_format.quality
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -523,11 +547,9 @@ class StreamDetails(DataClassDictMixin):
     # mandatory fields
     provider: str
     item_id: str
-    content_type: ContentType
+    audio_format: AudioFormat
     media_type: MediaType = MediaType.TRACK
-    sample_rate: int = 44100
-    bit_depth: int = 16
-    channels: int = 2
+
     # stream_title: radio streams can optionally set this field
     stream_title: str | None = None
     # duration of the item to stream, copied from media_item if omitted

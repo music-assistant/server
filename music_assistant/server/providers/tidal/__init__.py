@@ -31,6 +31,7 @@ from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     ContentType,
     ItemMapping,
     MediaItemImage,
@@ -364,9 +365,11 @@ class TidalProvider(MusicProvider):
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
-            content_type=ContentType.FLAC,
-            sample_rate=44100,
-            bit_depth=16,
+            audio_format=AudioFormat(
+                content_type=ContentType.FLAC,
+                sample_rate=44100,
+                bit_depth=16,
+            ),
             duration=track.duration,
             direct=url,
         )
@@ -514,7 +517,9 @@ class TidalProvider(MusicProvider):
                 item_id=album_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                ),
                 url=f"http://www.tidal.com/album/{album_id}",
                 available=available,
             )
@@ -566,9 +571,11 @@ class TidalProvider(MusicProvider):
                 item_id=track_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
-                sample_rate=44100,
-                bit_depth=16,
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                    sample_rate=44100,
+                    bit_depth=16,
+                ),
                 url=f"http://www.tidal.com/tracks/{track_id}",
                 available=available,
             )

@@ -10,6 +10,7 @@ from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
 from music_assistant.common.models.media_items import (
+    AudioFormat,
     BrowseFolder,
     ContentType,
     ImageType,
@@ -322,7 +323,9 @@ class RadioBrowserProvider(MusicProvider):
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
-            content_type=ContentType.try_parse(stream.codec),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(stream.codec),
+            ),
             media_type=MediaType.RADIO,
             data=url_resolved,
             expires=time() + 24 * 3600,

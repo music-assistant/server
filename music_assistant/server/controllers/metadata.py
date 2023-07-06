@@ -29,27 +29,30 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
+from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
     from music_assistant.server.models.metadata_provider import MetadataProvider
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
 
 
-class MetaDataController:
+class MetaDataController(CoreController):
     """Several helpers to search and store metadata for mediaitems."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
+    name: str = "metadata"
+    friendly_name: str = "Metadata controller"
+
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
-        self.mass = mass
-        self.cache = mass.cache
+        super().__init__(*args, **kwargs)
+        self.cache = self.mass.cache
         self._pref_lang: str | None = None
         self.scan_busy: bool = False
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self.mass.webserver.register_route("/imageproxy", self._handle_imageproxy)
+        self.mass.streams.register_dynamic_route("/imageproxy", self._handle_imageproxy)
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -312,7 +315,7 @@ class MetaDataController:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
-            return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}"  # noqa: E501
+            return f"{self.mass.streams.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}"  # noqa: E501
         return image.path
 
     async def get_thumbnail(

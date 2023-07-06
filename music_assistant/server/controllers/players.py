@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterator
-from typing import TYPE_CHECKING, cast
+from typing import cast
 
 from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.enums import (
@@ -23,22 +23,23 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.player import Player
 from music_assistant.constants import CONF_HIDE_GROUP_CHILDS, CONF_PLAYERS, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
+from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .player_queues import PlayerQueuesController
 
-if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
-
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
 
-class PlayerController:
+class PlayerController(CoreController):
     """Controller holding all logic to control registered players."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize class."""
-        self.mass = mass
+    name: str = "players"
+    friendly_name: str = "Players controller"
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize core controller."""
+        super().__init__(*args, **kwargs)
         self._players: dict[str, Player] = {}
         self._prev_states: dict[str, dict] = {}
         self.queues = PlayerQueuesController(self)
@@ -253,8 +254,8 @@ class PlayerController:
         - player_id: player_id of the player to handle the command.
         """
         player_id = self._check_redirect(player_id)
-        player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_stop(player_id)
+        if player_provider := self.get_player_provider(player_id):
+            await player_provider.cmd_stop(player_id)
 
     @api_command("players/cmd/play")
     async def cmd_play(self, player_id: str) -> None:
@@ -527,19 +528,19 @@ class PlayerController:
                     return group_player.player_id
         # guess source from player's current url
         if player.current_url and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            if self.mass.webserver.base_url in player.current_url:
+            if self.mass.streams.base_url in player.current_url:
                 return player.player_id
             if ":" in player.current_url:
                 # extract source from uri/url
                 return player.current_url.split(":")[0]
-            return player.current_item_id or player.current_url
+            return player.current_url
         # defaults to the player's own player id
         return player.player_id
 
     def _get_group_volume_level(self, player: Player) -> int:
         """Calculate a group volume from the grouped members."""
-        if not player.group_childs:
-            # player is not a group
+        if len(player.group_childs) == 0:
+            # player is not a group or syncgroup
             return player.volume_level
         # calculate group volume from all (turned on) players
         group_volume = 0
@@ -559,13 +560,6 @@ class PlayerController:
     ) -> list[Player]:
         """Get (child) players attached to a grouped player."""
         child_players: list[Player] = []
-        if not player.group_childs:
-            # player is not a group
-            return child_players
-        if player.type != PlayerType.GROUP:
-            # if the player is not a dedicated player group,
-            # it is the master in a sync group and thus always present as child player
-            child_players.append(player)
         for child_id in player.group_childs:
             if child_player := self.get(child_id, False):
                 if not (not only_powered or child_player.powered):

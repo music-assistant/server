@@ -311,25 +311,26 @@ class AudioDbMetadataProvider(MetadataProvider):
     async def _get_data(self, endpoint, **kwargs) -> dict | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
-        async with self.throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                try:
-                    result = await response.json()
-                except (
-                    aiohttp.client_exceptions.ContentTypeError,
-                    JSONDecodeError,
-                ):
-                    self.logger.error("Failed to retrieve %s", endpoint)
-                    text_result = await response.text()
-                    self.logger.debug(text_result)
-                    return None
-                except (
-                    aiohttp.client_exceptions.ClientConnectorError,
-                    aiohttp.client_exceptions.ServerDisconnectedError,
-                ):
-                    self.logger.warning("Failed to retrieve %s", endpoint)
-                    return None
-                if "error" in result and "limit" in result["error"]:
-                    self.logger.warning(result["error"])
-                    return None
-                return result
+        async with self.throttler, self.mass.http_session.get(
+            url, params=kwargs, ssl=False
+        ) as response:
+            try:
+                result = await response.json()
+            except (
+                aiohttp.client_exceptions.ContentTypeError,
+                JSONDecodeError,
+            ):
+                self.logger.error("Failed to retrieve %s", endpoint)
+                text_result = await response.text()
+                self.logger.debug(text_result)
+                return None
+            except (
+                aiohttp.client_exceptions.ClientConnectorError,
+                aiohttp.client_exceptions.ServerDisconnectedError,
+            ):
+                self.logger.warning("Failed to retrieve %s", endpoint)
+                return None
+            if "error" in result and "limit" in result["error"]:
+                self.logger.warning(result["error"])
+                return None
+            return result

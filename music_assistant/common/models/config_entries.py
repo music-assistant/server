@@ -265,6 +265,15 @@ class PlayerConfig(Config):
     default_name: str | None = None
 
 
+@dataclass
+class CoreConfig(Config):
+    """CoreController Configuration."""
+
+    module: str  # name of the core module
+    friendly_name: str  # friendly name of the core module
+    last_error: str | None = None
+
+
 CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     key=CONF_LOG_LEVEL,
     type=ConfigEntryType.STRING,
@@ -282,6 +291,7 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
 )
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
+DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 
 # some reusable player config entries
 
@@ -405,6 +415,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     description="Duration in seconds of the crossfade between tracks (if enabled)",
     advanced=True,
 )
+
 
 CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
     key=CONF_GROUPED_POWER_ON,

@@ -26,6 +26,7 @@ from music_assistant.common.models.errors import (
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     BrowseFolder,
     ContentType,
     ImageType,
@@ -560,14 +561,12 @@ class FileSystemProviderBase(MusicProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=prov_mapping.content_type,
+            audio_format=prov_mapping.audio_format,
             media_type=MediaType.TRACK,
             duration=db_item.duration,
             size=file_item.file_size,
-            sample_rate=prov_mapping.sample_rate,
-            bit_depth=prov_mapping.bit_depth,
             direct=file_item.local_path,
-            can_seek=prov_mapping.content_type in SEEKABLE_FILES,
+            can_seek=prov_mapping.audio_format.content_type in SEEKABLE_FILES,
         )
 
     async def get_audio_stream(
@@ -725,10 +724,12 @@ class FileSystemProviderBase(MusicProvider):
                 item_id=file_item.path,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.try_parse(tags.format),
-                sample_rate=tags.sample_rate,
-                bit_depth=tags.bits_per_sample,
-                bit_rate=tags.bit_rate,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(tags.format),
+                    sample_rate=tags.sample_rate,
+                    bit_depth=tags.bits_per_sample,
+                    bit_rate=tags.bit_rate,
+                ),
             )
         )
         return track

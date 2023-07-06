@@ -209,7 +209,10 @@ class PlayerQueuesController:
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
 
         # load the items into the queue
-        cur_index = queue.index_in_buffer or 0
+        if queue.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+            cur_index = queue.index_in_buffer or 0
+        else:
+            cur_index = queue.current_index or 0
         shuffle = queue.shuffle_enabled and len(queue_items) >= 5
 
         # handle replace: clear all items and replace with the new items
@@ -430,7 +433,7 @@ class PlayerQueuesController:
         await self.play_index(queue_id, queue.current_index, position)
 
     @api_command("players/queue/resume")
-    async def resume(self, queue_id: str) -> None:
+    async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """Handle RESUME command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
@@ -459,7 +462,7 @@ class PlayerQueuesController:
 
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
-            fade_in = resume_pos > 0
+            fade_in = fade_in if fade_in is not None else resume_pos > 0
             await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
             raise QueueEmpty(f"Resume queue requested but queue {queue_id} is empty")
@@ -486,16 +489,43 @@ class PlayerQueuesController:
         queue.index_in_buffer = index
         # power on player if needed
         await self.mass.players.cmd_power(queue_id, True)
-        # execute the play_media command on the player(s)
+        # always send stop command first
+        # await self.mass.players.cmd_stop(queue_id)
+        # execute the play_media command on the player
+        queue_player = self.mass.players.get(queue_id)
+        need_multi_stream = (
+            queue_player.provider in ("airplay", "ugp", "slimproto")
+            and len(queue_player.group_childs) > 1
+        )
         player_prov = self.mass.players.get_player_provider(queue_id)
-        flow_mode = await self.mass.config.get_player_config_value(queue.queue_id, CONF_FLOW_MODE)
-        queue.flow_mode = flow_mode
-        await player_prov.cmd_play_media(
-            queue_id,
+        if need_multi_stream:
+            # handle special multi client stream
+            queue.flow_mode = True
+            stream_job = await self.mass.streams.create_multi_client_stream_job(
+                queue_id=queue_id,
+                start_queue_item=queue_item,
+                seek_position=int(seek_position),
+                fade_in=fade_in,
+            )
+            await player_prov.cmd_handle_stream_job(player_id=queue_id, stream_job=stream_job)
+            return
+        # regular stream
+        queue.flow_mode = await self.mass.config.get_player_config_value(
+            queue.queue_id, CONF_FLOW_MODE
+        )
+        url = await self.mass.streams.resolve_stream_url(
+            queue_id=queue_id,
             queue_item=queue_item,
-            seek_position=seek_position,
+            seek_position=int(seek_position),
             fade_in=fade_in,
-            flow_mode=flow_mode,
+            flow_mode=queue.flow_mode,
+        )
+        await player_prov.cmd_play_url(
+            player_id=queue_id,
+            url=url,
+            # set queue_item to None if we're sending a flow mode url
+            # as the metadata is rather useless then
+            queue_item=None if queue.flow_mode else queue_item,
         )
 
     # Interaction with player
@@ -543,10 +573,7 @@ class PlayerQueuesController:
         if queue.active:
             queue.state = player.state
             # update current item from player report
-            player_item_index = self.index_by_id(queue_id, player.current_item_id)
-            if player_item_index is None:
-                # try grabbing the item id from the url
-                player_item_index = self._get_player_item_index(queue_id, player.current_url)
+            player_item_index = self._get_player_item_index(queue_id, player.current_url)
             if player_item_index is not None:
                 if queue.flow_mode:
                     # flow mode active, calculate current item
@@ -622,25 +649,25 @@ class PlayerQueuesController:
         self._queues.pop(player_id, None)
         self._queue_items.pop(player_id, None)
 
-    async def player_ready_for_next_track(
-        self, queue_or_player_id: str, current_item_id: str
-    ) -> tuple[QueueItem, bool]:
-        """Call when a player is ready to load the next track into the buffer.
+    async def preload_next_url(
+        self, queue_id: str, current_item_id: str | None = None
+    ) -> tuple[str, QueueItem, bool]:
+        """Call when a player wants to load the next track/url into the buffer.
 
-        The result is a tuple of the next QueueItem to Play,
+        The result is a tuple of the next url + QueueItem to Play,
         and a bool if the player should crossfade (if supported).
         Raises QueueEmpty if there are no more tracks left.
-
-        NOTE: The player(s) should resolve the stream URL for the QueueItem,
-        just like with the play_media call.
         """
-        queue = self.get_active_queue(queue_or_player_id)
-        cur_index = self.index_by_id(queue.queue_id, current_item_id)
-        cur_item = self.get_item(queue.queue_id, cur_index)
+        queue = self.get(queue_id)
+        if current_item_id:
+            cur_index = self.index_by_id(queue_id, current_item_id) or 0
+        else:
+            cur_index = queue.index_in_buffer or queue.current_index or 0
+        cur_item = self.get_item(queue_id, cur_index)
         idx = 0
         while True:
-            next_index = self.get_next_index(queue.queue_id, cur_index + idx)
-            next_item = self.get_item(queue.queue_id, next_index)
+            next_index = self.get_next_index(queue_id, cur_index + idx)
+            next_item = self.get_item(queue_id, next_index)
             if not cur_item or not next_item:
                 raise QueueEmpty("No more tracks left in the queue.")
             try:
@@ -667,7 +694,11 @@ class PlayerQueuesController:
             # disable crossfade if playing tracks from same album
             # TODO: make this a bit more intelligent.
             crossfade = False
-        return (next_item, crossfade)
+        url = await self.mass.streams.resolve_stream_url(
+            queue_id=queue_id,
+            queue_item=next_item,
+        )
+        return (url, next_item, crossfade)
 
     # Main queue manipulation methods
 
@@ -847,9 +878,9 @@ class PlayerQueuesController:
         return queue_index, track_time
 
     def _get_player_item_index(self, queue_id: str, url: str) -> str | None:
-        """Parse QueueItem ID from Player's current url."""
-        if url and self.mass.webserver.base_url in url and "/stream/" in url:
+        """Parse (start) QueueItem ID from Player's current url."""
+        if url and self.mass.streams.base_url in url and queue_id in url:
             # try to extract the item id from the uri
-            current_item_id = url.rsplit("/")[-2]
+            current_item_id = url.rsplit("/")[-1].split(".")[0]
             return self.index_by_id(queue_id, current_item_id)
         return None

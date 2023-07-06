@@ -35,6 +35,7 @@ from music_assistant.common.models.errors import InvalidDataError, LoginFailed, 
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
+    AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemChapter,
@@ -409,7 +410,9 @@ class PlexProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=available,
-                content_type=ContentType.try_parse(content) if content else ContentType.UNKNOWN,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(content) if content else ContentType.UNKNOWN,
+                ),
                 url=plex_track.getWebURL(),
             )
         )
@@ -585,9 +588,11 @@ class PlexProvider(MusicProvider):
         stream_details = StreamDetails(
             item_id=plex_track.key,
             provider=self.instance_id,
-            content_type=media_type,
+            audio_format=AudioFormat(
+                content_type=media_type,
+                channels=media.audioChannels,
+            ),
             duration=plex_track.duration,
-            channels=media.audioChannels,
             data=plex_track,
         )
 
@@ -597,18 +602,18 @@ class PlexProvider(MusicProvider):
         if media_type != ContentType.M4A:
             stream_details.direct = self._plex_server.url(media_part.key, True)
             if audio_stream.samplingRate:
-                stream_details.sample_rate = audio_stream.samplingRate
+                stream_details.audio_format.sample_rate = audio_stream.samplingRate
             if audio_stream.bitDepth:
-                stream_details.bit_depth = audio_stream.bitDepth
+                stream_details.audio_format.bit_depth = audio_stream.bitDepth
 
         else:
             url = plex_track.getStreamURL()
             media_info = await parse_tags(url)
 
-            stream_details.channels = media_info.channels
-            stream_details.content_type = ContentType.try_parse(media_info.format)
-            stream_details.sample_rate = media_info.sample_rate
-            stream_details.bit_depth = media_info.bits_per_sample
+            stream_details.audio_format.channels = media_info.channels
+            stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
+            stream_details.audio_format.sample_rate = media_info.sample_rate
+            stream_details.audio_format.bit_depth = media_info.bits_per_sample
 
         return stream_details
 

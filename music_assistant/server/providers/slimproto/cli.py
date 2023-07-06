@@ -145,8 +145,8 @@ class LmsCli:
         """Handle async initialization of the plugin."""
         if self.enable_json:
             self.logger.info("Registering jsonrpc endpoints on the webserver")
-            self.mass.webserver.register_route("/jsonrpc.js", self._handle_jsonrpc)
-            self.mass.webserver.register_route("/cometd", self._handle_cometd)
+            self.mass.streams.register_dynamic_route("/jsonrpc.js", self._handle_jsonrpc)
+            self.mass.streams.register_dynamic_route("/cometd", self._handle_cometd)
             self._unsub_callback = self.mass.subscribe(
                 self._on_mass_event,
                 (EventType.PLAYER_UPDATED, EventType.QUEUE_UPDATED),
@@ -163,8 +163,8 @@ class LmsCli:
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        self.mass.webserver.unregister_route("/jsonrpc.js")
-        self.mass.webserver.unregister_route("/cometd")
+        self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
+        self.mass.streams.unregister_dynamic_route("/cometd")
         if self._unsub_callback:
             self._unsub_callback()
             self._unsub_callback = None
@@ -644,7 +644,7 @@ class LmsCli:
                 "sleep": 0,
                 "will_sleep_in": 0,
                 "sync_master": player.synced_to,
-                "sync_slaves": ",".join(player.group_childs),
+                "sync_slaves": ",".join(x for x in player.group_childs if x != player_id),
                 "mixer volume": player.volume_level,
                 "playlist repeat": REPEATMODE_MAP[queue.repeat_mode],
                 "playlist shuffle": int(queue.shuffle_enabled),
@@ -743,8 +743,8 @@ class LmsCli:
             players.append(player_item_from_mass(start_index + index, mass_player))
         return ServerStatusResponse(
             {
-                "httpport": self.mass.webserver.port,
-                "ip": self.mass.base_ip,
+                "httpport": self.mass.streams.port,
+                "ip": self.mass.streams.publish_ip,
                 "version": "7.999.999",
                 "uuid": self.mass.server_id,
                 # TODO: set these vars ?

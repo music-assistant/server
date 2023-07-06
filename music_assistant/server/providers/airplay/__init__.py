@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.slimproto import SlimprotoProvider
 
@@ -171,24 +172,35 @@ class AirplayProvider(PlayerProvider):
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.cmd_play(player_id)
 
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player."""
+        """Send PLAY URL command to given player.
+
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
+
+            - player_id: player_id of the player to handle the command.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+        """
         # simply forward to underlying slimproto player
         slimproto_prov = self.mass.get_provider("slimproto")
-        await slimproto_prov.cmd_play_media(
+        await slimproto_prov.cmd_play_url(
             player_id,
+            url=url,
             queue_item=queue_item,
-            seek_position=seek_position,
-            fade_in=fade_in,
-            flow_mode=flow_mode,
         )
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player."""
+        # simply forward to underlying slimproto player
+        slimproto_prov = self.mass.get_provider("slimproto")
+        await slimproto_prov.cmd_handle_stream_job(player_id=player_id, stream_job=stream_job)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""

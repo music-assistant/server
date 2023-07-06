@@ -12,6 +12,7 @@ from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed
 from music_assistant.common.models.media_items import (
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -288,6 +289,9 @@ class SoundcloudMusicProvider(MusicProvider):
             provider=self.instance_id,
             item_id=item_id,
             content_type=ContentType.try_parse(stream_format),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(stream_format),
+            ),
             direct=url,
         )
 
@@ -371,7 +375,9 @@ class SoundcloudMusicProvider(MusicProvider):
                 item_id=track_obj["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.MP3,
+                audio_format=AudioFormat(
+                    content_type=ContentType.MP3,
+                ),
                 url=track_obj["permalink_url"],
             )
         )

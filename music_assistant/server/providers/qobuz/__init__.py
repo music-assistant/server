@@ -19,6 +19,7 @@ from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -372,10 +373,12 @@ class QobuzProvider(MusicProvider):
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
-            content_type=content_type,
+            audio_format=AudioFormat(
+                content_type=content_type,
+                sample_rate=int(streamdata["sampling_rate"] * 1000),
+                bit_depth=streamdata["bit_depth"],
+            ),
             duration=streamdata["duration"],
-            sample_rate=int(streamdata["sampling_rate"] * 1000),
-            bit_depth=streamdata["bit_depth"],
             data=streamdata,  # we need these details for reporting playback
             expires=time.time() + 3600,  # not sure about the real allowed value
             direct=streamdata["url"],
@@ -457,9 +460,11 @@ class QobuzProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=album_obj["streamable"] and album_obj["displayable"],
-                content_type=ContentType.FLAC,
-                sample_rate=album_obj["maximum_sampling_rate"] * 1000,
-                bit_depth=album_obj["maximum_bit_depth"],
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                    sample_rate=album_obj["maximum_sampling_rate"] * 1000,
+                    bit_depth=album_obj["maximum_bit_depth"],
+                ),
                 url=album_obj.get("url", f'https://open.qobuz.com/album/{album_obj["id"]}'),
             )
         )
@@ -556,9 +561,11 @@ class QobuzProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=track_obj["streamable"] and track_obj["displayable"],
-                content_type=ContentType.FLAC,
-                sample_rate=track_obj["maximum_sampling_rate"] * 1000,
-                bit_depth=track_obj["maximum_bit_depth"],
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                    sample_rate=track_obj["maximum_sampling_rate"] * 1000,
+                    bit_depth=track_obj["maximum_bit_depth"],
+                ),
                 url=track_obj.get("url", f'https://open.qobuz.com/track/{track_obj["id"]}'),
             )
         )
@@ -655,29 +662,26 @@ class QobuzProvider(MusicProvider):
             kwargs["request_sig"] = request_sig
             kwargs["app_id"] = app_var(0)
             kwargs["user_auth_token"] = await self._auth_token()
-        async with self._throttler:
-            async with self.mass.http_session.get(
-                url, headers=headers, params=kwargs, ssl=False
-            ) as response:
-                try:
-                    result = await response.json()
-                    # check for error in json
-                    if error := result.get("error"):
-                        raise ValueError(error)
-                    if result.get("status") and "error" in result["status"]:
-                        raise ValueError(result["status"])
-                except (
-                    aiohttp.ContentTypeError,
-                    JSONDecodeError,
-                    AssertionError,
-                    ValueError,
-                ) as err:
-                    text = await response.text()
-                    self.logger.exception(
-                        "Error while processing %s: %s", endpoint, text, exc_info=err
-                    )
-                    return None
-                return result
+        async with self._throttler, self.mass.http_session.get(
+            url, headers=headers, params=kwargs, ssl=False
+        ) as response:
+            try:
+                result = await response.json()
+                # check for error in json
+                if error := result.get("error"):
+                    raise ValueError(error)
+                if result.get("status") and "error" in result["status"]:
+                    raise ValueError(result["status"])
+            except (
+                aiohttp.ContentTypeError,
+                JSONDecodeError,
+                AssertionError,
+                ValueError,
+            ) as err:
+                text = await response.text()
+                self.logger.exception("Error while processing %s: %s", endpoint, text, exc_info=err)
+                return None
+            return result
 
     async def _post_data(self, endpoint, params=None, data=None):
         """Post data to api."""

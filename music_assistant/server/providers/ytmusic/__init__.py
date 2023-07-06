@@ -24,6 +24,7 @@ from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     ItemMapping,
@@ -513,7 +514,9 @@ class YoutubeMusicProvider(MusicProvider):
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=ContentType.try_parse(stream_format["mimeType"]),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(stream_format["mimeType"]),
+            ),
             direct=url,
         )
         if (
@@ -524,9 +527,9 @@ class YoutubeMusicProvider(MusicProvider):
                 track_obj["streamingData"].get("expiresInSeconds")
             )
         if stream_format.get("audioChannels") and str(stream_format.get("audioChannels")).isdigit():
-            stream_details.channels = int(stream_format.get("audioChannels"))
+            stream_details.audio_format.channels = int(stream_format.get("audioChannels"))
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
-            stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
+            stream_details.audio_format.sample_rate = int(stream_format.get("audioSampleRate"))
         return stream_details
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
@@ -736,7 +739,9 @@ class YoutubeMusicProvider(MusicProvider):
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 available=available,
-                content_type=ContentType.M4A,
+                audio_format=AudioFormat(
+                    content_type=ContentType.M4A,
+                ),
             )
         )
         return track

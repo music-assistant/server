@@ -12,6 +12,7 @@ from music_assistant.common.models.config_entries import ConfigEntry, ConfigValu
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -172,8 +173,10 @@ class TuneInProvider(MusicProvider):
                 item_id=item_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=content_type,
-                bit_rate=bit_rate,
+                audio_format=AudioFormat(
+                    content_type=content_type,
+                    bit_rate=bit_rate,
+                ),
                 details=url,
             )
         )
@@ -201,6 +204,9 @@ class TuneInProvider(MusicProvider):
                 provider=self.instance_id,
                 item_id=item_id,
                 content_type=ContentType.UNKNOWN,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
                 media_type=MediaType.RADIO,
                 data=item_id,
             )
@@ -221,7 +227,9 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
-                content_type=ContentType(stream["media_type"]),
+                audio_format=AudioFormat(
+                    content_type=ContentType(stream["media_type"]),
+                ),
                 media_type=MediaType.RADIO,
                 data=url,
                 expires=time() + 24 * 3600,
@@ -246,11 +254,12 @@ class TuneInProvider(MusicProvider):
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
-        async with self._throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                result = await response.json()
-                if not result or "error" in result:
-                    self.logger.error(url)
-                    self.logger.error(kwargs)
-                    result = None
-                return result
+        async with self._throttler, self.mass.http_session.get(
+            url, params=kwargs, ssl=False
+        ) as response:
+            result = await response.json()
+            if not result or "error" in result:
+                self.logger.error(url)
+                self.logger.error(kwargs)
+                result = None
+            return result
