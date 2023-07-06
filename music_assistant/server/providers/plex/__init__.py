@@ -37,6 +37,7 @@ from music_assistant.common.models.media_items import (
     Artist,
     ItemMapping,
     MediaItem,
+    MediaItemChapter,
     MediaItemImage,
     Playlist,
     ProviderMapping,
@@ -387,6 +388,14 @@ class PlexProvider(MusicProvider):
             track.track_number = plex_track.trackNumber
         if plex_track.parentIndex:
             track.disc_number = plex_track.parentIndex
+        if plex_track.chapters:
+            track.metadata.chapters = [
+                MediaItemChapter(
+                    plex_chapter.id, plex_chapter.start, plex_chapter.end, plex_chapter.title
+                )
+                for plex_chapter in plex_track.chapters
+            ]
+
         available = False
         content = None
 
