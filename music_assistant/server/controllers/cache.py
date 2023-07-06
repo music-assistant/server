@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import logging
 import os
 import time
@@ -11,6 +10,7 @@ from collections import OrderedDict
 from collections.abc import Iterator, MutableMapping
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.constants import (
     DB_TABLE_CACHE,
     DB_TABLE_SETTINGS,
@@ -69,7 +69,7 @@ class CacheController(CoreController):
             not checksum or db_row["checksum"] == checksum and db_row["expires"] >= cur_time
         ):
             try:
-                data = await asyncio.to_thread(json.loads, db_row["data"])
+                data = await asyncio.to_thread(json_loads, db_row["data"])
             except Exception as exc:  # pylint: disable=broad-except
                 LOGGER.exception("Error parsing cache data for %s", cache_key, exc_info=exc)
             else:
@@ -93,7 +93,7 @@ class CacheController(CoreController):
         if (expires - time.time()) < 3600 * 4:
             # do not cache items in db with short expiration
             return
-        data = await asyncio.to_thread(json.dumps, data)
+        data = await asyncio.to_thread(json_dumps, data)
         await self.database.insert(
             DB_TABLE_CACHE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},

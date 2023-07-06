@@ -254,8 +254,8 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player_id = self._check_redirect(player_id)
-        player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_stop(player_id)
+        if player_provider := self.get_player_provider(player_id):
+            await player_provider.cmd_stop(player_id)
 
     @api_command("players/cmd/play")
     async def cmd_play(self, player_id: str) -> None:

@@ -29,6 +29,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.slimproto import SlimprotoProvider
 
@@ -194,6 +195,12 @@ class AirplayProvider(PlayerProvider):
             url=url,
             queue_item=queue_item,
         )
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player."""
+        # simply forward to underlying slimproto player
+        slimproto_prov = self.mass.get_provider("slimproto")
+        await slimproto_prov.cmd_handle_stream_job(player_id=player_id, stream_job=stream_job)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""

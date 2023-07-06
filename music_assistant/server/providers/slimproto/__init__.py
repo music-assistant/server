@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from aioslimproto.client import PlayerState as SlimPlayerState
-from aioslimproto.client import SlimClient
+from aioslimproto.client import SlimClient as SlimClientOrg
 from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
@@ -49,9 +49,8 @@ CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
-MAX_DEVIATION_ADJUST = 20000  # 10 seconds
-MIN_REQ_PLAYPOINTS = 2  # we need at least 2 measurements
-MIN_REQ_MILLISECONDS = 500
+MIN_REQ_PLAYPOINTS = 4  # we need at least 4 measurements
+ENABLE_EXPERIMENTAL_SYNC_JOIN = False  # WIP
 
 # TODO: Implement display support
 
@@ -69,7 +68,7 @@ class SyncPlayPoint:
     """Simple structure to describe a Sync Playpoint."""
 
     timestamp: float
-    item_id: str
+    sync_job_id: str
     diff: int
 
 
@@ -172,6 +171,7 @@ class SlimprotoProvider(PlayerProvider):
     _socket_clients: dict[str, SlimClient]
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
     _virtual_providers: dict[str, tuple[Callable, Callable]]
+    _do_not_resync_before: dict[str, float]
     _cli: LmsCli
     port: int = DEFAULT_SLIMPROTO_PORT
 
@@ -180,6 +180,7 @@ class SlimprotoProvider(PlayerProvider):
         self._socket_clients = {}
         self._sync_playpoints = {}
         self._virtual_providers = {}
+        self._do_not_resync_before = {}
         self.port = self.config.get_value(CONF_PORT)
         # start slimproto socket server
         try:
@@ -235,7 +236,7 @@ class SlimprotoProvider(PlayerProvider):
         self.logger.debug("Socket client connected: %s", addr)
 
         def client_callback(
-            event_type: SlimEventType, client: SlimClient, data: Any = None  # noqa: ARG001
+            event_type: SlimEventType | str, client: SlimClient, data: Any = None  # noqa: ARG001
         ):
             if event_type == SlimEventType.PLAYER_DISCONNECTED:
                 self.mass.create_task(self._handle_disconnected(client))
@@ -251,6 +252,11 @@ class SlimprotoProvider(PlayerProvider):
 
             if event_type == SlimEventType.PLAYER_BUFFER_READY:
                 self.mass.create_task(self._handle_buffer_ready(client))
+                return
+
+            if event_type == "output_underrun":
+                # player ran out of buffer
+                self.mass.create_task(self._handle_output_underrun(client))
                 return
 
             if event_type == SlimEventType.PLAYER_HEARTBEAT:
@@ -321,7 +327,7 @@ class SlimprotoProvider(PlayerProvider):
                 type=ConfigEntryType.INTEGER,
                 range=(0, 1500),
                 default_value=0,
-                label="Correct synchronization delay",
+                label="Audio synchronization delay correction",
                 description="If this player is playing audio synced with other players "
                 "and you always hear the audio too late on this player, "
                 "you can shift the audio a bit.",
@@ -465,9 +471,6 @@ class SlimprotoProvider(PlayerProvider):
         """Send POWER command to given player."""
         if client := self._socket_clients.get(player_id):
             await client.power(powered)
-            # if player := self.mass.players.get(player_id, raise_unavailable=False):
-            #     player.powered = powered
-            #     self.mass.players.update(player_id)
             # store last state in cache
             await self.mass.cache.set(
                 f"{CACHE_KEY_PREV_STATE}.{player_id}", (powered, client.volume_level)
@@ -490,29 +493,47 @@ class SlimprotoProvider(PlayerProvider):
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player."""
         child_player = self.mass.players.get(player_id)
-        assert child_player
+        assert child_player  # guard
         parent_player = self.mass.players.get(target_player)
-        assert parent_player
+        assert parent_player  # guard
+        # always make sure that the parent player is part of the sync group
+        parent_player.group_childs.add(parent_player.player_id)
         parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
-        self.mass.players.update(child_player.player_id)
-        self.mass.players.update(parent_player.player_id)
-        if parent_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            # playback needs to be restarted to get all players in sync
-            # TODO: If there is any need, we could make this smarter where the new
-            # sync child waits for the next track (or pcm chunk even).
-            active_queue = self.mass.players.queues.get_active_queue(parent_player.player_id)
-            await self.mass.players.queues.resume(active_queue.queue_id)
+        # check if we should (re)start or join a stream session
+        active_queue = self.mass.players.queues.get_active_queue(parent_player.player_id)
+        if (
+            ENABLE_EXPERIMENTAL_SYNC_JOIN
+            and (stream_job := self.mass.streams.multi_client_jobs.get(active_queue.queue_id))
+            and (stream_job.pending or stream_job.running)
+        ):
+            # this is a brave attempt to get players to to just join an existing stream
+            # session without having to resume playback
+            # it does not work reliable so far so consider this a WIP
+            # for someone to pickup with a lot of patience and too much time
+            url = await stream_job.resolve_stream_url(player_id)
+            client = self._socket_clients[player_id]
+            await self._handle_play_url(client, url, None, auto_play=True)
+        elif parent_player.state == PlayerState.PLAYING:
+            # playback needs to be restarted to form a new multi client stream session
+            await self.mass.players.queues.resume(active_queue.queue_id, fade_in=False)
+        else:
+            # make sure that the player manager gets an update
+            self.mass.players.update(child_player.player_id)
+            self.mass.players.update(parent_player.player_id)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player."""
         child_player = self.mass.players.get(player_id)
         parent_player = self.mass.players.get(child_player.synced_to)
-        if child_player.state == PlayerState.PLAYING:
-            await self.cmd_stop(child_player.player_id)
+        # make sure to send stop to the player
+        await self.cmd_stop(child_player.player_id)
         child_player.synced_to = None
         with suppress(KeyError):
             parent_player.group_childs.remove(child_player.player_id)
+        if parent_player.group_childs == {parent_player.player_id}:
+            # last child vanished; the sync group is dissolved
+            parent_player.group_childs.remove(parent_player.player_id)
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
 
@@ -563,8 +584,6 @@ class SlimprotoProvider(PlayerProvider):
                 ),
                 max_sample_rate=int(client.max_sample_rate),
             )
-            # always add player itself to group child's
-            player.group_childs.add(player_id)
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback
                 virtual_provider_info[0](player)
@@ -594,15 +613,30 @@ class SlimprotoProvider(PlayerProvider):
             # ignore server heartbeats when stopped
             return
 
-        player = self.mass.players.get(client.player_id)
-        sync_master_id = player.synced_to
-
         # elapsed time change on the player will be auto picked up
         # by the player manager.
+        player = self.mass.players.get(client.player_id)
         player.elapsed_time = client.elapsed_seconds
         player.elapsed_time_last_updated = time.time()
 
         # handle sync
+        if player.synced_to:
+            self._handle_client_sync(client)
+
+    async def _handle_output_underrun(self, client: SlimClient) -> None:
+        """Process SlimClient Output Underrun Event."""
+        player = self.mass.players.get(client.player_id)
+        self.logger.error("Player %s ran out of buffer", player.display_name)
+        if player.synced_to:
+            # if player is synced, resync it
+            await self.cmd_sync(player.player_id, player.synced_to)
+        else:
+            await self.cmd_stop(client.player_id)
+
+    def _handle_client_sync(self, client: SlimClient) -> None:
+        """Synchronize audio of a sync client."""
+        player = self.mass.players.get(client.player_id)
+        sync_master_id = player.synced_to
         if not sync_master_id:
             # we only correct sync child's, not the sync master itself
             return
@@ -616,28 +650,29 @@ class SlimprotoProvider(PlayerProvider):
         if client.state != SlimPlayerState.PLAYING:
             return
 
+        if backoff_time := self._do_not_resync_before.get(client.player_id):  # noqa: SIM102
+            # player has set a timestamp we should backoff from syncing it
+            if time.time() < backoff_time:
+                return
+
         # we collect a few playpoints of the player to determine
         # average lag/drift so we can adjust accordingly
-        sync_playpoints = self._sync_playpoints.setdefault(client.player_id, deque(maxlen=5))
-
-        # make sure client has loaded the same track as sync master
-        client_item_id = client.current_metadata["item_id"] if client.current_metadata else None
-        master_item_id = (
-            sync_master.current_metadata["item_id"] if sync_master.current_metadata else None
+        sync_playpoints = self._sync_playpoints.setdefault(
+            client.player_id, deque(maxlen=MIN_REQ_PLAYPOINTS)
         )
-        if client_item_id != master_item_id:
-            return
-        # ignore sync when player is transitioning to a new track (next metadata is loaded)
-        next_item_id = client._next_metadata["item_id"] if client._next_metadata else None
-        if next_item_id and client_item_id != next_item_id:
+
+        active_queue = self.mass.players.queues.get_active_queue(client.player_id)
+        stream_job = self.mass.streams.multi_client_jobs.get(active_queue.queue_id)
+        if not stream_job:
+            # should not happen, but just in case
             return
 
         last_playpoint = sync_playpoints[-1] if sync_playpoints else None
         if last_playpoint and (time.time() - last_playpoint.timestamp) > 10:
             # last playpoint is too old, invalidate
             sync_playpoints.clear()
-        if last_playpoint and last_playpoint.item_id != client_item_id:
-            # item has changed, invalidate
+        if last_playpoint and last_playpoint.sync_job_id != stream_job.job_id:
+            # streamjob has changed, invalidate
             sync_playpoints.clear()
 
         diff = int(
@@ -645,13 +680,8 @@ class SlimprotoProvider(PlayerProvider):
             - self._get_corrected_elapsed_milliseconds(client)
         )
 
-        if abs(diff) > MAX_DEVIATION_ADJUST:
-            # safety guard when player is transitioning or something is just plain wrong
-            sync_playpoints.clear()
-            return
-
         # we can now append the current playpoint to our list
-        sync_playpoints.append(SyncPlayPoint(time.time(), client_item_id, diff))
+        sync_playpoints.append(SyncPlayPoint(time.time(), stream_job.job_id, diff))
 
         if len(sync_playpoints) < MIN_REQ_PLAYPOINTS:
             return
@@ -663,15 +693,17 @@ class SlimprotoProvider(PlayerProvider):
         if delta < MIN_DEVIATION_ADJUST:
             return
 
-        # handle player lagging behind, fix with skip_ahead
+        # resync the player by skipping ahead or pause for x amount of (milli)seconds
+        sync_playpoints.clear()
         if avg_diff > 0:
+            # handle player lagging behind, fix with skip_ahead
             self.logger.debug("%s resync: skipAhead %sms", player.display_name, delta)
-            sync_playpoints.clear()
+            self._do_not_resync_before[client.player_id] = time.time() + 2
             asyncio.create_task(self._skip_over(client.player_id, delta))
         else:
             # handle player is drifting too far ahead, use pause_for to adjust
             self.logger.debug("%s resync: pauseFor %sms", player.display_name, delta)
-            sync_playpoints.clear()
+            self._do_not_resync_before[client.player_id] = time.time() + (delta / 1000) + 2
             asyncio.create_task(self._pause_for(client.player_id, delta))
 
     async def _handle_decoder_ready(self, client: SlimClient) -> None:
@@ -711,7 +743,7 @@ class SlimprotoProvider(PlayerProvider):
         if player.synced_to:
             # unpause of sync child is handled by sync master
             return
-        if len(player.group_childs) <= 1:
+        if not player.group_childs:
             # not a sync group, continue
             await client.play()
             return
@@ -729,7 +761,8 @@ class SlimprotoProvider(PlayerProvider):
         # all child's ready (or timeout) - start play
         async with asyncio.TaskGroup() as tg:
             for client in self._get_sync_clients(player.player_id):
-                timestamp = client.jiffies + 100
+                timestamp = client.jiffies + 20
+                self._do_not_resync_before[client.player_id] = time.time() + 1
                 tg.create_task(client.send_strm(b"u", replay_gain=int(timestamp)))
 
     async def _handle_connected(self, client: SlimClient) -> None:
@@ -787,15 +820,31 @@ class SlimprotoProvider(PlayerProvider):
     def _get_sync_clients(self, player_id: str) -> Generator[SlimClient]:
         """Get all sync clients for a player."""
         player = self.mass.players.get(player_id)
-        for child_id in player.group_childs:
+        # we need to return the player itself too
+        group_child_ids = {player_id}
+        group_child_ids.update(player.group_childs)
+        for child_id in group_child_ids:
             if client := self._socket_clients.get(child_id):
                 yield client
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds."""
+        skipped_millis = 0
+        active_queue = self.mass.players.queues.get_active_queue(client.player_id)
+        if stream_job := self.mass.streams.multi_client_jobs.get(active_queue.queue_id):
+            skipped_millis = stream_job.client_seconds_skipped.get(client.player_id, 0) * 1000
         sync_delay = self.mass.config.get_raw_player_config_value(
             client.player_id, CONF_SYNC_ADJUST, 0
         )
+        current_millis = int(skipped_millis + client.elapsed_milliseconds)
         if sync_delay != 0:
-            return client.elapsed_milliseconds - sync_delay
-        return client.elapsed_milliseconds
+            return current_millis - sync_delay
+        return current_millis
+
+
+class SlimClient(SlimClientOrg):
+    """Patched SLIMProto socket client."""
+
+    def _process_stat_stmo(self, data: bytes) -> None:  # noqa: ARG002
+        """Process incoming stat STMo message: Output Underrun."""
+        self.callback("output_underrun", self)

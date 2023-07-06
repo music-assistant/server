@@ -53,6 +53,11 @@ class AudioFormat(DataClassDictMixin):
             score += 1
         return int(score)
 
+    @property
+    def pcm_sample_size(self) -> int:
+        """Return the PCM sample size."""
+        return int(self.sample_rate * (self.bit_depth / 8) * self.channels)
+
 
 @dataclass(frozen=True)
 class ProviderMapping(DataClassDictMixin):

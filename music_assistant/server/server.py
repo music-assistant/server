@@ -281,6 +281,8 @@ class MusicAssistant:
 
         Tasks created by this helper will be properly cancelled on stop.
         """
+        if target is None:
+            raise RuntimeError("Target is missing")
         if existing := self._tracked_tasks.get(task_id):
             # prevent duplicate tasks if task_id is given and already present
             return existing
@@ -301,8 +303,9 @@ class MusicAssistant:
             if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else _task
                 LOGGER.exception(
-                    "Exception in task %s",
+                    "Exception in task %s - target: %s",
                     task_name,
+                    str(target),
                     exc_info=task.exception(),
                 )
 

@@ -433,7 +433,7 @@ class PlayerQueuesController:
         await self.play_index(queue_id, queue.current_index, position)
 
     @api_command("players/queue/resume")
-    async def resume(self, queue_id: str) -> None:
+    async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """Handle RESUME command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
@@ -462,7 +462,7 @@ class PlayerQueuesController:
 
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
-            fade_in = resume_pos > 0
+            fade_in = fade_in if fade_in is not None else resume_pos > 0
             await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
             raise QueueEmpty(f"Resume queue requested but queue {queue_id} is empty")
@@ -489,6 +489,8 @@ class PlayerQueuesController:
         queue.index_in_buffer = index
         # power on player if needed
         await self.mass.players.cmd_power(queue_id, True)
+        # always send stop command first
+        # await self.mass.players.cmd_stop(queue_id)
         # execute the play_media command on the player
         queue_player = self.mass.players.get(queue_id)
         need_multi_stream = (
@@ -506,25 +508,25 @@ class PlayerQueuesController:
                 fade_in=fade_in,
             )
             await player_prov.cmd_handle_stream_job(player_id=queue_id, stream_job=stream_job)
-        else:
-            # regular stream
-            queue.flow_mode = await self.mass.config.get_player_config_value(
-                queue.queue_id, CONF_FLOW_MODE
-            )
-            url = await self.mass.streams.resolve_stream_url(
-                queue_id=queue_id,
-                queue_item=queue_item,
-                seek_position=int(seek_position),
-                fade_in=fade_in,
-                flow_mode=queue.flow_mode,
-            )
-            await player_prov.cmd_play_url(
-                player_id=queue_id,
-                url=url,
-                # set queue_item to None if we're sending a flow mode url
-                # as the metadata is rather useless then
-                queue_item=None if queue.flow_mode else queue_item,
-            )
+            return
+        # regular stream
+        queue.flow_mode = await self.mass.config.get_player_config_value(
+            queue.queue_id, CONF_FLOW_MODE
+        )
+        url = await self.mass.streams.resolve_stream_url(
+            queue_id=queue_id,
+            queue_item=queue_item,
+            seek_position=int(seek_position),
+            fade_in=fade_in,
+            flow_mode=queue.flow_mode,
+        )
+        await player_prov.cmd_play_url(
+            player_id=queue_id,
+            url=url,
+            # set queue_item to None if we're sending a flow mode url
+            # as the metadata is rather useless then
+            queue_item=None if queue.flow_mode else queue_item,
+        )
 
     # Interaction with player
 
