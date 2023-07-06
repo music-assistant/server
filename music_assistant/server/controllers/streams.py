@@ -96,8 +96,9 @@ class MultiClientStreamJob:
         self.job_id = shortuuid.uuid()
         self.expected_players: set[str] = set()
         self.subscribed_players: dict[str, asyncio.Queue[bytes]] = {}
-        self.start_chunk: dict[str, int] = {}
         self.seen_players: set[str] = set()
+        self.bytes_streamed: int = 0
+        self.client_seconds_skipped: dict[str, int] = {}
         self._all_clients_connected = asyncio.Event()
         # start running the audio task in the background
         self._audio_task = asyncio.create_task(self._stream_job_runner())
@@ -159,7 +160,15 @@ class MultiClientStreamJob:
             self.seen_players.add(player_id)
             self.subscribed_players[player_id] = sub_queue = asyncio.Queue(1)
 
-            if len(self.subscribed_players) == len(self.expected_players):
+            if self._all_clients_connected.is_set():
+                # client subscribes while we're already started
+                # calculate how many seconds the client missed so far
+                pcm_sample_size = int(
+                    self.pcm_format.sample_rate * (self.pcm_format.bit_depth / 8) * 2
+                )
+                self.client_seconds_skipped[player_id] = self.bytes_streamed / pcm_sample_size
+
+            elif len(self.subscribed_players) == len(self.expected_players):
                 # we reached the number of expected subscribers, set event
                 # so that chunks can be pushed
                 self._all_clients_connected.set()
@@ -178,18 +187,17 @@ class MultiClientStreamJob:
             if len(self.subscribed_players) == 0 and self._audio_task and not self.finished:
                 self._audio_task.cancel()
 
-    async def _put_chunk(self, chunk: bytes, chunk_num: int, timeout: float = 120) -> None:
+    async def _put_chunk(self, chunk: bytes) -> None:
         """Put chunk of data to all subscribers."""
-        async with asyncio.timeout(timeout):
-            async with asyncio.TaskGroup() as tg:
-                for player_id in self.subscribed_players:
-                    try:
-                        sub_queue = self.subscribed_players[player_id]
-                        tg.create_task(sub_queue.put(chunk))
-                        if player_id not in self.start_chunk:
-                            self.start_chunk[player_id] = chunk_num
-                    except KeyError:
-                        pass  # race condition
+        async with asyncio.TaskGroup() as tg:
+            for player_id in self.subscribed_players:
+                try:
+                    sub_queue = self.subscribed_players[player_id]
+                    # put this chunk on the player's subqueue
+                    tg.create_task(sub_queue.put(chunk))
+                except KeyError:
+                    pass  # race condition
+        self.bytes_streamed += len(chunk)
 
     async def _stream_job_runner(self) -> None:
         """Feed audio chunks to StreamJob subscribers."""
@@ -197,8 +205,7 @@ class MultiClientStreamJob:
         async for chunk in self.stream_controller.get_flow_stream(
             self.queue, self.start_queue_item, self.pcm_format, self.seek_position, self.fade_in
         ):
-            chunk_num += 1
-            if chunk_num == 1:
+            if chunk_num == 0:
                 # wait until all expected clients are connected
                 try:
                     async with asyncio.timeout(10):
@@ -225,10 +232,11 @@ class MultiClientStreamJob:
             while len(self.subscribed_players) == 0:
                 # just a guard in case of race conditions
                 await asyncio.sleep(0.2)
-            await self._put_chunk(chunk, chunk_num=chunk_num)
+            await self._put_chunk(chunk)
+            chunk_num += 1
 
         # mark EOF with empty chunk
-        await self._put_chunk(b"", chunk_num=chunk_num + 1)
+        await self._put_chunk(b"")
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -710,10 +718,12 @@ class StreamsController(CoreController):
             # is requesting the same stream twice, mark it as workaround player
             self.logger.warning(
                 "Player %s is making multiple requests "
-                "to the same stream, marking it as player that needs a workaround",
+                "to the same stream, playback may be disturbed",
                 child_player_id,
             )
-            self.workaround_players.add(child_player_id)
+            if child_player.provider in ("sonos", "dlna"):
+                # these platforms are known for this ugly behavior
+                self.workaround_players.add(child_player_id)
 
         # all checks passed, start streaming!
         self.logger.debug(
@@ -777,6 +787,8 @@ class StreamsController(CoreController):
         assert pcm_format.content_type.is_pcm()
         queue_track = None
         last_fadeout_part = b""
+        total_bytes_written = 0
+        time_started = time.time()
         self.logger.info("Start Queue Flow stream for Queue %s", queue.display_name)
 
         while True:
@@ -825,7 +837,6 @@ class StreamsController(CoreController):
 
             buffer = b""
             bytes_written = 0
-            time_started = time.time()
             chunk_num = 0
             # handle incoming audio chunks
             async for chunk in get_media_stream(
@@ -868,10 +879,10 @@ class StreamsController(CoreController):
 
                 # slow down if the player buffers too aggressively
                 while True:
-                    seconds_streamed = int(bytes_written / pcm_sample_size)
+                    seconds_streamed = (total_bytes_written + bytes_written) / pcm_sample_size
                     time_passed = time.time() - time_started
                     seconds_buffered = seconds_streamed - time_passed
-                    if seconds_buffered < 18:
+                    if seconds_buffered < 16:
                         break
                     await asyncio.sleep(1)
 
@@ -907,6 +918,7 @@ class StreamsController(CoreController):
 
             # end of the track reached - store accurate duration
             queue_track.streamdetails.seconds_streamed = bytes_written / pcm_sample_size
+            total_bytes_written += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.streamdetails.uri,
