@@ -489,14 +489,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str, retry=0) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        # Misschien dit vervangen met api.get_song()? https://github.com/KoljaWindeler/ytube_music_player/blob/main/custom_components/ytube_music_player/media_player.py#L1493
-        # data = {
-        #     "playbackContext": {
-        #         "contentPlaybackContext": {"signatureTimestamp": self._signature_timestamp}
-        #     },
-        #     "video_id": item_id,
-        # }
-        # track_obj = await self._post_data("player", data=data)
+        await self._check_oauth_token()
         track_obj = await get_track(
             prov_track_id=item_id,
             headers=self._headers,
