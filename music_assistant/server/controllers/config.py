@@ -412,7 +412,9 @@ class ConfigController:
             assert isinstance(provider, PlayerProvider)
             provider.on_player_config_removed(player_id)
 
-    def create_default_player_config(self, player_id: str, provider: str, name: str) -> None:
+    def create_default_player_config(
+        self, player_id: str, provider: str, name: str, enabled: bool
+    ) -> None:
         """
         Create default/empty PlayerConfig.
 
@@ -427,7 +429,7 @@ class ConfigController:
         # config does not yet exist, create a default one
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
-            values={}, provider=provider, player_id=player_id, default_name=name
+            values={}, provider=provider, player_id=player_id, enabled=enabled, default_name=name
         )
         self.set(
             conf_key,
