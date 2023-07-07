@@ -192,7 +192,7 @@ class PlayerController(CoreController):
         )
         # handle special mute_as_power feature
         if player.mute_as_power:
-            player.powered = not player.volume_muted
+            player.powered = player.powered and not player.volume_muted
         # set player state to off if player is not powered
         if player.powered and player.state == PlayerState.OFF:
             player.state = PlayerState.IDLE
@@ -328,8 +328,13 @@ class PlayerController(CoreController):
         """
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
-        if player.powered == powered:
+
+        cur_power = (
+            (player.powered and not player.volume_muted) if player.mute_as_power else player.powered
+        )
+        if cur_power == powered:
             return  # nothing to do
+
         # stop player at power off
         if (
             not powered
