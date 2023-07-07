@@ -153,8 +153,12 @@ class PlayerProvider(Provider):
         If the player does not need any polling, simply do not override this method.
         """
 
-    def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
-        """Call when a child player is turned on/off."""
+    async def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
+        """
+        Call when a power command was executed on one of the child players.
+
+        This is used to handle special actions such as muting as power or (re)syncing.
+        """
 
     # DO NOT OVERRIDE BELOW
 

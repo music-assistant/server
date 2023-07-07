@@ -190,6 +190,9 @@ class PlayerController(CoreController):
             or player.name
             or player.player_id
         )
+        # handle special mute_as_power feature
+        if player.mute_as_power:
+            player.powered = not player.volume_muted
         # set player state to off if player is not powered
         if player.powered and player.state == PlayerState.OFF:
             player.state = PlayerState.IDLE
@@ -243,8 +246,7 @@ class PlayerController(CoreController):
             player_prov = self.get_player_provider(group_player.player_id)
             if not player_prov:
                 continue
-            player_prov.poll_player(group_player.player_id)
-            self.update(group_player.player_id, skip_forward=True)
+            self.mass.create_task(player_prov.poll_player(group_player.player_id))
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -325,41 +327,44 @@ class PlayerController(CoreController):
         - powered: bool if player should be powered on or off.
         """
         # TODO: Implement PlayerControl
-        # TODO: Handle group power
         player = self.get(player_id, True)
         if player.powered == powered:
-            return
+            return  # nothing to do
         # stop player at power off
         if (
             not powered
             and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
             and not player.synced_to
+            and not player.mute_as_power
         ):
             await self.cmd_stop(player_id)
         # unsync player at power off
-        if not powered:
+        if not powered and not player.mute_as_power:
             if player.synced_to is not None:
                 await self.cmd_unsync(player_id)
             for child in self._get_child_players(player):
                 if not child.synced_to:
                     continue
                 await self.cmd_unsync(child.player_id)
-        if PlayerFeature.POWER not in player.supported_features:
+        if player.mute_as_power:
+            # handle mute as power feature
+            await self.cmd_volume_mute(player_id, not powered)
+        elif PlayerFeature.POWER not in player.supported_features:
+            # player does not support power, use fake state instead
             player.powered = powered
             self.update(player_id)
         else:
+            # regular power command
             player_provider = self.get_player_provider(player_id)
             await player_provider.cmd_power(player_id, powered)
-        # forward to (active) group player if needed
+        # handle forward to (active) group player if needed
         for group_player in self._get_player_groups(player_id):
             if not group_player.available:
                 continue
             if not group_player.powered:
                 continue
-            player_prov = self.get_player_provider(group_player.player_id)
-            if not player_prov:
-                continue
-            player_prov.on_child_power(group_player.player_id, player, powered)
+            if player_prov := self.get_player_provider(group_player.player_id):
+                await player_prov.on_child_power(group_player.player_id, player, powered)
 
     @api_command("players/cmd/volume_set")
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
@@ -431,8 +436,16 @@ class PlayerController(CoreController):
         player = self.get(player_id, True)
         assert player
         if PlayerFeature.VOLUME_MUTE not in player.supported_features:
-            LOGGER.warning("Mute command called but player %s does not support muting", player_id)
+            LOGGER.debug("Mute command called but player %s does not support muting", player_id)
             player.volume_muted = muted
+            # use volume to process the muting
+            cache_key = f"prev_volume_muting_{player_id}"
+            if muted:
+                await self.mass.cache.set(cache_key, player.volume_level)
+                await self.cmd_volume_set(player_id, 0)
+            else:
+                prev_volume = await self.mass.cache.get(cache_key, default=10)
+                await self.cmd_volume_set(player_id, prev_volume)
             self.update(player_id)
             return
         # TODO: Implement PlayerControl

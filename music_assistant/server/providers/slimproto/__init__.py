@@ -485,11 +485,6 @@ class SlimprotoProvider(PlayerProvider):
                 f"{CACHE_KEY_PREV_STATE}.{player_id}", (client.powered, volume_level)
             )
 
-    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
-        """Send VOLUME MUTE command to given player."""
-        if client := self._socket_clients.get(player_id):
-            await client.mute(muted)
-
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player."""
         child_player = self.mass.players.get(player_id)
@@ -579,7 +574,6 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.ACCURATE_TIME,
                     PlayerFeature.POWER,
                     PlayerFeature.SYNC,
-                    PlayerFeature.VOLUME_MUTE,
                     PlayerFeature.VOLUME_SET,
                 ),
                 max_sample_rate=int(client.max_sample_rate),
@@ -596,8 +590,6 @@ class SlimprotoProvider(PlayerProvider):
         player.powered = client.powered
         player.state = STATE_MAP[client.state]
         player.volume_level = client.volume_level
-        # player.volume_muted = client.muted
-        player.volume_muted = client.powered and client.muted
         # set all existing player ids in `can_sync_with` field
         player.can_sync_with = tuple(
             x.player_id for x in self._socket_clients.values() if x.player_id != player_id
