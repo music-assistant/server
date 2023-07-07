@@ -68,7 +68,7 @@ jobs:
           echo "patch=${patch}" >> $GITHUB_OUTPUT
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
-          if [[ $string =~ "b" ]]; then
+          if [[ $patch =~ "b" ]]; then
             echo "channel=beta" >> $GITHUB_OUTPUT
           else
             echo "channel=stable" >> $GITHUB_OUTPUT
