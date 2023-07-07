@@ -57,7 +57,7 @@ class MetaDataController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""
-        self.mass.streams.register_dynamic_route("/imageproxy", self._handle_imageproxy)
+        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -334,7 +334,7 @@ class MetaDataController(CoreController):
             thumbnail = f"data:image/png;base64,{enc_image}"
         return thumbnail
 
-    async def _handle_imageproxy(self, request: web.Request) -> web.Response:
+    async def handle_imageproxy(self, request: web.Request) -> web.Response:
         """Handle request for image proxy."""
         path = request.query["path"]
         provider = request.query.get("provider", "url")

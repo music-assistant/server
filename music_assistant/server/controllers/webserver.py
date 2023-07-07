@@ -171,6 +171,8 @@ class WebserverController(CoreController):
         routes.append(("GET", "/info", self._handle_server_info))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
+        # also host the image proxy on the webserver
+        routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
         # start the webserver
         await self._server.setup(
             bind_ip=config.get_value(CONF_BIND_IP),
