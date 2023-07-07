@@ -10,7 +10,7 @@ from asyncio_throttle import Throttler
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     AudioFormat,
     ContentType,
@@ -100,13 +100,21 @@ class TuneInProvider(MusicProvider):
                 if item_type == "audio":
                     if "preset_id" not in item:
                         continue
+                    if "- Not Supported" in item.get("name", ""):
+                        continue
+                    if "- Not Supported" in item.get("text", ""):
+                        continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
                     for stream in stream_info["body"]:
                         yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link" and item.get("item") == "url":
                     # custom url
-                    yield await self._parse_radio(item)
+                    try:
+                        yield await self._parse_radio(item)
+                    except InvalidDataError as err:
+                        # there may be invalid custom urls, ignore those
+                        self.logger.warning(str(err))
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
