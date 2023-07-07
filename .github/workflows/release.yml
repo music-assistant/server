@@ -83,5 +83,6 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.minor }},
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.major }},
-            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.channel }}
+            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.channel }},
+            ghcr.io/${{ github.repository_owner }}/server:latest
           push: true
