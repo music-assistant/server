@@ -80,8 +80,8 @@ jobs:
           platforms: linux/amd64,linux/arm64
           file: Dockerfile
           tags: |-
-            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.patch }},
-            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.minor }},
-            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.major }},
-            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.channel }}
+            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
+            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.minor }},
+            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.major }},
+            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.channel }}
           push: true
