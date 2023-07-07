@@ -17,7 +17,6 @@ from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
 from music_assistant.common.models.config_entries import (
-    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueOption,
@@ -78,6 +77,16 @@ CONF_CLI_JSON = "cli_json"
 CONF_DISCOVERY = "discovery"
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_SLIMPROTO_PORT = 3483
+
+CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
+    key=CONF_CROSSFADE_DURATION,
+    type=ConfigEntryType.INTEGER,
+    range=(1, 10),
+    default_value=8,
+    label="Crossfade duration",
+    description="Duration in seconds of the crossfade between tracks (if enabled)",
+    advanced=True,
+)
 
 
 async def setup(
