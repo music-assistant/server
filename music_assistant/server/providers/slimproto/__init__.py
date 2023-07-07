@@ -207,7 +207,7 @@ class SlimprotoProvider(PlayerProvider):
                     self.mass.streams.publish_ip,
                     self.port,
                     self._cli.cli_port if enable_telnet else None,
-                    self.mass.streams.publish_ip if enable_json else None,
+                    self.mass.streams.publish_port if enable_json else None,
                     "Music Assistant",
                     self.mass.server_id,
                 )
