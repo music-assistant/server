@@ -10,7 +10,14 @@ from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
-from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature, ProviderType
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    EventType,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
@@ -42,14 +49,14 @@ if TYPE_CHECKING:
     pass
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
-SYNC_INTERVAL = 3 * 3600
+DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
+CONF_SYNC_INTERVAL = "sync_interval"
 
 
 class MusicController(CoreController):
     """Several helpers around the musicproviders."""
 
     domain: str = "music"
-
     database: DatabaseConnection | None = None
 
     def __init__(self, *args, **kwargs) -> None:
@@ -68,15 +75,40 @@ class MusicController(CoreController):
             "Music Assistant's core controller which manages all music from all providers."
         )
         self.manifest.icon = "mdi-archive-music"
+        self._sync_task: asyncio.Task | None = None
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,  # noqa: ARG002
+        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+    ) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        return (
+            ConfigEntry(
+                key=CONF_SYNC_INTERVAL,
+                type=ConfigEntryType.INTEGER,
+                range=(5, 720),
+                default_value=DEFAULT_SYNC_INTERVAL,
+                label="Sync interval",
+                description="Interval (in minutes) that a (delta) sync "
+                "of all providers should be performed.",
+            ),
+        )
 
     async def setup(self):
         """Async initialize of module."""
         # setup library database
         await self._setup_database()
-        self.mass.create_task(self.start_sync(reschedule=SYNC_INTERVAL))
+        sync_interval = await self.mass.config.get_core_config_value(
+            self.domain, CONF_SYNC_INTERVAL
+        )
+        self.logger.info("Setting up the sync interval to %s minutes.", sync_interval)
+        self._sync_task = self.mass.create_task(self.start_sync(reschedule=sync_interval))
 
     async def close(self) -> None:
         """Cleanup on exit."""
+        if self._sync_task and not self._sync_task.done():
+            self._sync_task.cancel()
         await self.database.close()
 
     @property
