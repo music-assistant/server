@@ -414,10 +414,11 @@ CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,
     type=ConfigEntryType.INTEGER,
-    range=(0, 12),
+    range=(1, 20),
     default_value=8,
     label="Crossfade duration",
     description="Duration in seconds of the crossfade between tracks (if enabled)",
+    depends_on=CONF_FLOW_MODE,
     advanced=True,
 )
 
@@ -445,4 +446,5 @@ DEFAULT_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_CROSSFADE_DURATION,
 )

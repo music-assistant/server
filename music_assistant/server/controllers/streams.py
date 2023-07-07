@@ -27,6 +27,7 @@ from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -802,7 +803,9 @@ class StreamsController(CoreController):
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-            crossfade_duration = 10  # TODO: grab from config
+            crossfade_duration = self.mass.config.get_raw_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION, 8
+            )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             queue_track.streamdetails.seconds_skipped = seek_position
             buffer_size = crossfade_size if use_crossfade else int(pcm_sample_size * 2)
