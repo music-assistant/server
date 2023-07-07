@@ -328,6 +328,13 @@ class ChromecastProvider(PlayerProvider):
                 )
                 return
 
+            # Disable TV's by default
+            # (can be enabled manually by the user)
+            enabled_by_default = True
+            for exclude in ("tv", "/12", "PUS", "OLED"):
+                if exclude.lower() in cast_info.friendly_name.lower():
+                    enabled_by_default = False
+
             # Instantiate chromecast object
             castplayer = CastPlayer(
                 player_id,
@@ -354,6 +361,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.VOLUME_SET,
                     ),
                     max_sample_rate=96000,
+                    enabled_by_default=enabled_by_default,
                 ),
                 logger=self.logger.getChild(cast_info.friendly_name),
             )
