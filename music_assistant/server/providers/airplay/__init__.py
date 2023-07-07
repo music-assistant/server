@@ -10,6 +10,7 @@ import asyncio
 import os
 import platform
 import xml.etree.ElementTree as ET  # noqa: N817
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -238,7 +239,7 @@ class AirplayProvider(PlayerProvider):
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.cmd_unsync(player_id)
 
-    def _handle_player_register_callback(self, player: Player) -> None:
+    async def _handle_player_register_callback(self, player: Player) -> None:
         """Handle player register callback from slimproto source player."""
         # TODO: Can we get better device info from mDNS ?
         player.provider = self.domain
@@ -248,6 +249,30 @@ class AirplayProvider(PlayerProvider):
             manufacturer="Generic",
         )
         player.supports_24bit = False
+
+        # extend info from the discovery xml
+        async with aiofiles.open(self._config_file, "r") as _file:
+            xml_data = await _file.read()
+            with suppress(ET.ParseError):
+                xml_root = ET.XML(xml_data)
+                for device_elem in xml_root.findall("device"):
+                    player_id = device_elem.find("mac").text
+                    if player_id != player.player_id:
+                        continue
+                    # prefer name from UDN because default name is often wrong
+                    udn = device_elem.find("udn").text
+                    udn_name = udn.split("@")[1].split("._")[0]
+                    player.name = udn_name
+                    # disable sonos by default
+                    if "sonos" in (device_elem.find("friendly_name").text or "").lower():
+                        player.enabled_by_default = False
+                        # TODO: query more info directly from the device
+                        player.device_info = DeviceInfo(
+                            model="Airplay device",
+                            address=player.device_info.address,
+                            manufacturer="SONOS",
+                        )
+                    break
 
     def _handle_player_update_callback(self, player: Player) -> None:
         """Handle player update callback from slimproto source player."""
