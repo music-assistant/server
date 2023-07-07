@@ -348,7 +348,7 @@ class UniversalGroupProvider(PlayerProvider):
                         self.mass.players.cmd_sync, child_player.player_id, sync_leader
                     )
                 else:
-                    self.mass.create_task(self.mass.players.queues.resume, player_id)
+                    self.mass.create_task(self.mass.player_queues.resume, player_id)
             elif (
                 not child_player.powered
                 and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
@@ -356,7 +356,7 @@ class UniversalGroupProvider(PlayerProvider):
             ):
                 # a sync master player turned OFF while the group player
                 # should still be playing - we need to resync/resume
-                self.mass.create_task(self.mass.players.queues.resume, player_id)
+                self.mass.create_task(self.mass.player_queues.resume, player_id)
 
     def _get_active_members(
         self, player_id: str, only_powered: bool = False, skip_sync_childs: bool = True

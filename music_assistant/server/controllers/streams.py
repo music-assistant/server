@@ -81,7 +81,7 @@ class MultiClientStreamJob:
         """Initialize MultiClientStreamJob instance."""
         self.stream_controller = stream_controller
         self.queue_id = queue_id
-        self.queue = self.stream_controller.mass.players.queues.get(queue_id)
+        self.queue = self.stream_controller.mass.player_queues.get(queue_id)
         assert self.queue  # just in case
         self.pcm_format = pcm_format
         self.start_queue_item = start_queue_item
@@ -447,12 +447,12 @@ class StreamsController(CoreController):
         """Stream single queueitem audio to a player."""
         self._log_request(request)
         queue_id = request.match_info["queue_id"]
-        queue = self.mass.players.queues.get(queue_id)
+        queue = self.mass.player_queues.get(queue_id)
         if not queue:
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         queue_player = self.mass.players.get(queue_id)
         queue_item_id = request.match_info["queue_item_id"]
-        queue_item = self.mass.players.queues.get_item(queue_id, queue_item_id)
+        queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
         try:
@@ -538,11 +538,11 @@ class StreamsController(CoreController):
         """Stream Queue Flow audio to player."""
         self._log_request(request)
         queue_id = request.match_info["queue_id"]
-        queue = self.mass.players.queues.get(queue_id)
+        queue = self.mass.player_queues.get(queue_id)
         if not queue:
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
-        start_queue_item = self.mass.players.queues.get_item(queue_id, start_queue_item_id)
+        start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
         seek_position = int(request.query.get("seek_position", 0))
@@ -629,7 +629,7 @@ class StreamsController(CoreController):
                     continue
 
                 # if icy metadata is enabled, send the icy metadata after the chunk
-                current_item = self.mass.players.queues.get_item(
+                current_item = self.mass.player_queues.get_item(
                     queue.queue_id, queue.index_in_buffer
                 )
                 if (
@@ -777,7 +777,7 @@ class StreamsController(CoreController):
                         _,
                         queue_track,
                         use_crossfade,
-                    ) = await self.mass.players.queues.preload_next_url(queue.queue_id)
+                    ) = await self.mass.player_queues.preload_next_url(queue.queue_id)
                 except QueueEmpty:
                     break
 

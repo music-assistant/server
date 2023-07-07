@@ -30,6 +30,7 @@ from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
+from music_assistant.server.controllers.player_queues import PlayerQueuesController
 from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.server.controllers.webserver import WebserverController
@@ -75,6 +76,7 @@ class MusicAssistant:
     metadata: MetaDataController
     music: MusicController
     players: PlayerController
+    player_queues: PlayerQueuesController
     streams: StreamsController
 
     def __init__(self, storage_path: str) -> None:
@@ -117,6 +119,7 @@ class MusicAssistant:
         self.metadata = MetaDataController(self)
         self.music = MusicController(self)
         self.players = PlayerController(self)
+        self.player_queues = PlayerQueuesController(self)
         self.streams = StreamsController(self)
         # register all api commands (methods with decorator)
         self._register_api_commands()
@@ -125,6 +128,7 @@ class MusicAssistant:
         await self.music.setup()
         await self.metadata.setup()
         await self.players.setup()
+        await self.player_queues.setup()
         await self.streams.setup()
         # setup discovery
         self.create_task(self._setup_discovery())
@@ -147,6 +151,7 @@ class MusicAssistant:
         await self.webserver.close()
         await self.metadata.close()
         await self.music.close()
+        await self.player_queues.close()
         await self.players.close()
         # cleanup cache and config
         await self.config.close()
@@ -421,7 +426,7 @@ class MusicAssistant:
             self.metadata,
             self.music,
             self.players,
-            self.players.queues,
+            self.player_queues,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
