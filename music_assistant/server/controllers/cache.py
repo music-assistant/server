@@ -11,6 +11,8 @@ from collections.abc import Iterator, MutableMapping
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.constants import (
     DB_TABLE_CACHE,
     DB_TABLE_SETTINGS,
@@ -21,9 +23,10 @@ from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    pass
+    from music_assistant.common.models.config_entries import CoreConfig
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
+CONF_CLEAR_CACHE = "clear_cache"
 
 
 class CacheController(CoreController):
@@ -42,7 +45,45 @@ class CacheController(CoreController):
         )
         self.manifest.icon = "mdi-memory"
 
-    async def setup(self) -> None:
+    async def get_config_entries(
+        self,
+        action: str | None = None,  # noqa: ARG002
+        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+    ) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        if action == CONF_CLEAR_CACHE:
+            await self.clear()
+            return (
+                ConfigEntry(
+                    key=CONF_CLEAR_CACHE,
+                    type=ConfigEntryType.LABEL,
+                    label="The cache has been cleared",
+                ),
+            )
+        return (
+            ConfigEntry(
+                key=CONF_CLEAR_CACHE,
+                type=ConfigEntryType.ACTION,
+                label="Clear cache",
+                description="Reset/clear all items in the cache. ",
+            ),
+            # ConfigEntry(
+            #     key=CONF_BIND_IP,
+            #     type=ConfigEntryType.STRING,
+            #     default_value=default_ip,
+            #     label="Bind to IP/interface",
+            #     description="Start the streamserver on this specific interface. \n"
+            #     "This IP address is communicated to players where to find this server. "
+            #     "Override the default in advanced scenarios, such as multi NIC configurations. \n"
+            #     "Make sure that this server can be reached "
+            #     "on the given IP and TCP port by players on the local network. \n"
+            #     "This is an advanced setting that should normally "
+            #     "not be adjusted in regular setups.",
+            #     advanced=True,
+            # ),
+        )
+
+    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of cache module."""
         await self._setup_database()
         self.__schedule_cleanup_task()

@@ -32,6 +32,7 @@ from music_assistant.server.helpers.images import create_collage, get_image_thum
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.metadata_provider import MetadataProvider
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
@@ -54,12 +55,13 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "mdi-book-information-variant"
 
-    async def setup(self) -> None:
+    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""
         self.mass.streams.register_dynamic_route("/imageproxy", self._handle_imageproxy)
 
     async def close(self) -> None:
         """Handle logic on server stop."""
+        self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:

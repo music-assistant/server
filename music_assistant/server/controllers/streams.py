@@ -45,6 +45,7 @@ from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.common.models.player import Player
 
 
@@ -305,7 +306,7 @@ class StreamsController(CoreController):
             ),
         )
 
-    async def setup(self) -> None:
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         ffmpeg_present, libsoxr_support, version = await check_audio_support()
         if not ffmpeg_present:
@@ -321,10 +322,8 @@ class StreamsController(CoreController):
             "with libsoxr support" if libsoxr_support else "",
         )
         # start the webserver
-        self.publish_port = await self.mass.config.get_core_config_value(
-            self.domain, CONF_BIND_PORT
-        )
-        self.publish_ip = await self.mass.config.get_core_config_value(self.domain, CONF_BIND_IP)
+        self.publish_port = config.get_value(CONF_BIND_PORT)
+        self.publish_ip = config.get_value(CONF_BIND_IP)
         await self._server.setup(
             bind_ip=self.publish_ip,
             bind_port=self.publish_port,

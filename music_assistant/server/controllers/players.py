@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterator
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.enums import (
@@ -26,6 +26,9 @@ from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
 
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import CoreConfig
+
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
 
@@ -44,10 +47,16 @@ class PlayerController(CoreController):
             "Music Assistant's core controller which manages all players from all providers."
         )
         self.manifest.icon = "mdi-speaker-multiple"
+        self._poll_task: asyncio.Task | None = None
 
-    async def setup(self) -> None:
+    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""
-        self.mass.create_task(self._poll_players())
+        self._poll_task = self.mass.create_task(self._poll_players())
+
+    async def close(self) -> None:
+        """Cleanup on exit."""
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
 
     @property
     def providers(self) -> list[PlayerProvider]:

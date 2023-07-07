@@ -46,7 +46,7 @@ from .media.radio import RadioController
 from .media.tracks import TracksController
 
 if TYPE_CHECKING:
-    pass
+    from music_assistant.common.models.config_entries import CoreConfig
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
@@ -95,13 +95,11 @@ class MusicController(CoreController):
             ),
         )
 
-    async def setup(self):
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         # setup library database
         await self._setup_database()
-        sync_interval = await self.mass.config.get_core_config_value(
-            self.domain, CONF_SYNC_INTERVAL
-        )
+        sync_interval = config.get_value(CONF_SYNC_INTERVAL)
         self.logger.info("Setting up the sync interval to %s minutes.", sync_interval)
         self._sync_task = self.mass.create_task(self.start_sync(reschedule=sync_interval))
 

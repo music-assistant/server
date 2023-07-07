@@ -9,7 +9,11 @@ from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        CoreConfig,
+    )
     from music_assistant.server import MusicAssistant
 
 
@@ -45,19 +49,19 @@ class CoreController:
         """Return all Config Entries for this core module (if any)."""
         return tuple()
 
-    async def setup(self) -> None:
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
 
     async def close(self) -> None:
         """Handle logic on server stop."""
 
-    async def reload(self) -> None:
+    async def reload(self, config: CoreConfig | None = None) -> None:
         """Reload this core controller."""
         await self.close()
-        log_level = self.mass.config.get_raw_core_config_value(
-            self.domain, CONF_LOG_LEVEL, "GLOBAL"
-        )
+        if config is None:
+            config = await self.mass.config.get_core_config(self.domain)
+        log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
             log_level = logging.getLogger(ROOT_LOGGER_NAME).level
         self.logger.setLevel(log_level)
-        await self.setup()
+        await self.setup(config)
