@@ -57,7 +57,8 @@ async def get_ips(include_ipv6: bool = False) -> set[str]:
 async def is_hass_supervisor() -> bool:
     """Return if we're running inside the HA Supervisor (e.g. HAOS)."""
     with suppress(urllib.error.URLError):
-        res = await asyncio.to_thread(urllib.request.urlopen, "ws://supervisor/core/websocket")
+        res = await asyncio.to_thread(urllib.request.urlopen, "http://supervisor/core")
+        # this should return a 401 unauthorized if it exists
         return res.code == 401
     return False
 
