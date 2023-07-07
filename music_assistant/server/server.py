@@ -25,7 +25,6 @@ from music_assistant.constants import (
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
     SCHEMA_VERSION,
-    VERSION,
 )
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
@@ -36,7 +35,11 @@ from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.server.controllers.webserver import WebserverController
 from music_assistant.server.helpers.api import APICommandHandler, api_command
 from music_assistant.server.helpers.images import get_icon_string
-from music_assistant.server.helpers.util import get_provider_module, is_hass_supervisor
+from music_assistant.server.helpers.util import (
+    get_package_version,
+    get_provider_module,
+    is_hass_supervisor,
+)
 
 from .models import ProviderInstanceType
 
@@ -85,11 +88,13 @@ class MusicAssistant:
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
         self.running_as_hass_addon: bool = False
+        self.version: str = "0.0.0"
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
         self.running_as_hass_addon = await is_hass_supervisor()
+        self.version = await get_package_version("music_assistant")
         # create shared zeroconf instance
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         # create shared aiohttp ClientSession
@@ -105,10 +110,7 @@ class MusicAssistant:
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
         await self.config.setup()
-        LOGGER.info(
-            "Starting Music Assistant Server (%s)",
-            self.server_id,
-        )
+        LOGGER.info("Starting Music Assistant Server (%s) version %s", self.server_id, self.version)
         # setup other core controllers
         self.cache = CacheController(self)
         self.webserver = WebserverController(self)
@@ -165,7 +167,7 @@ class MusicAssistant:
         """Return Info of this server."""
         return ServerInfoMessage(
             server_id=self.server_id,
-            server_version=VERSION,
+            server_version=self.version,
             schema_version=SCHEMA_VERSION,
             min_supported_schema_version=MIN_SCHEMA_VERSION,
             base_url=self.webserver.base_url,

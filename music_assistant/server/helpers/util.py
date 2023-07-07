@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.request
 from contextlib import suppress
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from typing import TYPE_CHECKING
 
 import memory_tempfile
@@ -36,6 +38,21 @@ async def install_package(package: str) -> None:
     if proc.returncode != 0:
         msg = f"Failed to install package {package}\n{stderr.decode()}"
         raise RuntimeError(msg)
+
+
+async def get_package_version(pkg_name: str) -> str:
+    """
+    Return the version of an installed (python) package.
+
+    Will return `0.0.0` if the package is not found.
+    """
+    try:
+        installed_version = await asyncio.to_thread(pkg_version, pkg_name)
+        if installed_version is None:
+            return "0.0.0"  # type: ignore[unreachable]
+        return installed_version
+    except PackageNotFoundError:
+        return "0.0.0"
 
 
 async def get_ips(include_ipv6: bool = False) -> set[str]:
