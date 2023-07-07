@@ -46,7 +46,7 @@ class PlayerController(CoreController):
         self.manifest.description = (
             "Music Assistant's core controller which manages all players from all providers."
         )
-        self.manifest.icon = "mdi:speaker-multiple"
+        self.manifest.icon = "mdi-speaker-multiple"
 
     async def setup(self) -> None:
         """Async initialize of module."""

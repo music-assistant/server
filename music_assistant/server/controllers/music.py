@@ -67,7 +67,7 @@ class MusicController(CoreController):
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
         )
-        self.manifest.icon = "mdi:archive-music"
+        self.manifest.icon = "mdi-archive-music"
 
     async def setup(self):
         """Async initialize of module."""

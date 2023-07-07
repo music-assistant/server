@@ -261,10 +261,10 @@ class StreamsController(CoreController):
         self.manifest.name = "Streamserver"
         self.manifest.description = (
             "Music Assistant's core server that is responsible for "
-            "streaming audio to players on the local network as well as some "
-            "and player specific control callbacks."
+            "streaming audio to players on the local network as well as "
+            "some player specific local control callbacks."
         )
-        self.manifest.icon = "mdi:cast-audio"
+        self.manifest.icon = "mdi-cast-audio"
 
     @property
     def base_url(self) -> str:
