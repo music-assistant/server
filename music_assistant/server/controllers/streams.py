@@ -18,11 +18,7 @@ import shortuuid
 from aiohttp import web
 
 from music_assistant.common.helpers.util import get_ip, select_free_port
-from music_assistant.common.models.config_entries import (
-    DEFAULT_CORE_CONFIG_ENTRIES,
-    ConfigEntry,
-    ConfigValueType,
-)
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ContentType
 from music_assistant.common.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
@@ -253,8 +249,7 @@ def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
 class StreamsController(CoreController):
     """Webserver Controller to stream audio to players."""
 
-    name: str = "streams"
-    friendly_name: str = "Streamserver"
+    domain: str = "streams"
 
     def __init__(self, *args, **kwargs):
         """Initialize instance."""
@@ -263,7 +258,13 @@ class StreamsController(CoreController):
         self.multi_client_jobs: dict[str, MultiClientStreamJob] = {}
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
-        self.workaround_players: set[str] = set()
+        self.manifest.name = "Streamserver"
+        self.manifest.description = (
+            "Music Assistant's core server that is responsible for "
+            "streaming audio to players on the local network as well as some "
+            "and player specific control callbacks."
+        )
+        self.manifest.icon = "mdi:cast-audio"
 
     @property
     def base_url(self) -> str:
@@ -278,7 +279,7 @@ class StreamsController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         default_ip = await get_ip()
         default_port = await select_free_port(8096, 9200)
-        return DEFAULT_CORE_CONFIG_ENTRIES + (
+        return (
             ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
@@ -300,7 +301,6 @@ class StreamsController(CoreController):
                 "on the given IP and TCP port by players on the local network. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                advanced=True,
             ),
         )
 
@@ -320,8 +320,10 @@ class StreamsController(CoreController):
             "with libsoxr support" if libsoxr_support else "",
         )
         # start the webserver
-        self.publish_port = await self.mass.config.get_core_config_value(self.name, CONF_BIND_PORT)
-        self.publish_ip = await self.mass.config.get_core_config_value(self.name, CONF_BIND_IP)
+        self.publish_port = await self.mass.config.get_core_config_value(
+            self.domain, CONF_BIND_PORT
+        )
+        self.publish_ip = await self.mass.config.get_core_config_value(self.domain, CONF_BIND_IP)
         await self._server.setup(
             bind_ip=self.publish_ip,
             bind_port=self.publish_port,

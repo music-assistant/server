@@ -50,14 +50,18 @@ CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 class WebserverController(CoreController):
     """Core Controller that manages the builtin webserver that hosts the api and frontend."""
 
-    name: str = "webserver"
-    friendly_name: str = "Web Server (frontend and api)"
+    domain: str = "webserver"
 
     def __init__(self, *args, **kwargs):
         """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger, enable_dynamic_routes=False)
         self.clients: set[WebsocketClientHandler] = set()
+        self.manifest.name = "Web Server (frontend and api)"
+        self.manifest.description = (
+            "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
+        )
+        self.manifest.icon = "mdi:web-box"
 
     @property
     def base_url(self) -> str:
@@ -124,7 +128,6 @@ class WebserverController(CoreController):
                 description="The (base) URL to reach this webserver in the network. \n"
                 "Override this in advanced scenarios where for example you're running "
                 "the webserver behind a reverse proxy.",
-                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_PORT,
@@ -132,7 +135,6 @@ class WebserverController(CoreController):
                 default_value=default_port,
                 label="TCP Port",
                 description="The TCP port to run the webserver.",
-                advanced=True,
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
@@ -145,7 +147,6 @@ class WebserverController(CoreController):
                 "to enhance security and protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                advanced=True,
             ),
         )
 
@@ -171,9 +172,9 @@ class WebserverController(CoreController):
         routes.append(("GET", "/ws", self._handle_ws_client))
         # start the webserver
         await self._server.setup(
-            bind_ip=await self.mass.config.get_core_config_value(self.name, CONF_BIND_IP),
-            bind_port=await self.mass.config.get_core_config_value(self.name, CONF_BIND_PORT),
-            base_url=await self.mass.config.get_core_config_value(self.name, CONF_BASE_URL),
+            bind_ip=await self.mass.config.get_core_config_value(self.domain, CONF_BIND_IP),
+            bind_port=await self.mass.config.get_core_config_value(self.domain, CONF_BIND_PORT),
+            base_url=await self.mass.config.get_core_config_value(self.domain, CONF_BASE_URL),
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),

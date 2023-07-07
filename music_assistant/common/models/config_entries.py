@@ -10,6 +10,7 @@ from typing import Any
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
+from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
@@ -181,14 +182,14 @@ class Config(DataClassDictMixin):
                 return ENCRYPT_CALLBACK(value.value)
             return value.value
 
-        return {
-            **self.to_dict(),
-            "values": {
-                x.key: _handle_value(x)
-                for x in self.values.values()
-                if (x.value != x.default_value and x.type not in UI_ONLY)
-            },
+        res = self.to_dict()
+        res.pop("manifest", None)  # filter out from storage
+        res["values"] = {
+            x.key: _handle_value(x)
+            for x in self.values.values()
+            if (x.value != x.default_value and x.type not in UI_ONLY)
         }
+        return res
 
     def __post_serialize__(self, d: dict[str, Any]) -> dict[str, Any]:
         """Adjust dict object after it has been serialized."""
@@ -207,9 +208,9 @@ class Config(DataClassDictMixin):
         # root values (enabled, name)
         root_values = ("enabled", "name")
         for key in root_values:
-            cur_val = getattr(self, key)
             if key not in update:
                 continue
+            cur_val = getattr(self, key)
             new_val = update[key]
             if new_val == cur_val:
                 continue
@@ -243,6 +244,7 @@ class ProviderConfig(Config):
     type: ProviderType
     domain: str
     instance_id: str
+    manifest: ProviderManifest | None = None  # copied here for UI convenience only
     # enabled: boolean to indicate if the provider is enabled
     enabled: bool = True
     # name: an (optional) custom name for this provider instance/config
@@ -271,8 +273,9 @@ class PlayerConfig(Config):
 class CoreConfig(Config):
     """CoreController Configuration."""
 
-    name: str  # name of the core module
-    friendly_name: str  # friendly name of the core module
+    domain: str  # domain/name of the core module
+    manifest: ProviderManifest | None = None  # copied here for UI convenience only
+    # last_error: an optional error message if the module could not be setup with this config
     last_error: str | None = None
 
 

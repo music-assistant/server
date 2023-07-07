@@ -48,8 +48,7 @@ SYNC_INTERVAL = 3 * 3600
 class MusicController(CoreController):
     """Several helpers around the musicproviders."""
 
-    name: str = "music"
-    friendly_name: str = "Music library"
+    domain: str = "music"
 
     database: DatabaseConnection | None = None
 
@@ -64,6 +63,11 @@ class MusicController(CoreController):
         self.playlists = PlaylistController(self.mass)
         self.in_progress_syncs: list[SyncTask] = []
         self._sync_lock = asyncio.Lock()
+        self.manifest.name = "Music controller"
+        self.manifest.description = (
+            "Music Assistant's core controller which manages all music from all providers."
+        )
+        self.manifest.icon = "mdi:archive-music"
 
     async def setup(self):
         """Async initialize of module."""

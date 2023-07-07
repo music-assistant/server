@@ -50,6 +50,8 @@ isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
 rename = wrap(os.rename)
 
+CONFIGURABLE_CORE_CONTROLLERS = ("streams", "webserver", "players", "metadata", "cache")
+
 
 class ConfigController:
     """Controller that handles storage of persistent configuration settings."""
@@ -179,7 +181,16 @@ class ConfigController:
             config_entries = await self.get_provider_config_entries(
                 raw_conf["domain"], instance_id=instance_id, values=raw_conf.get("values")
             )
-            return ProviderConfig.parse(config_entries, raw_conf)
+            for prov in self.mass.get_available_providers():
+                if prov.domain == raw_conf["domain"]:
+                    manifest = prov
+                    break
+            else:
+                raise KeyError(f'Unknown provider domain: {raw_conf["domain"]}')
+            conf: ProviderConfig = ProviderConfig.parse(config_entries, raw_conf)
+            # always copy the manifest to help the UI a bit
+            conf.manifest = manifest
+            return conf
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/get_value")
@@ -455,22 +466,24 @@ class ConfigController:
         """Return all core controllers config options."""
         return [
             await self.get_core_config(core_controller)
-            for core_controller in ("streams", "webserver")
+            for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
 
     @api_command("config/core/get")
-    async def get_core_config(self, core_controller: str) -> CoreConfig:
+    async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
-        core_controller_instance: CoreController = getattr(self.mass, core_controller)
-        raw_conf = self.get(f"{CONF_CORE}/{core_controller}", {"name": core_controller})
-        raw_conf["friendly_name"] = core_controller_instance.friendly_name
-        config_entries = await self.get_core_config_entries(core_controller)
-        return CoreConfig.parse(config_entries, raw_conf)
+        core_controller: CoreController = getattr(self.mass, domain)
+        raw_conf = self.get(f"{CONF_CORE}/{domain}", {"domain": domain})
+        config_entries = await self.get_core_config_entries(domain)
+        conf: CoreConfig = CoreConfig.parse(config_entries, raw_conf)
+        # always copy the manifest to help the UI a bit
+        conf.manifest = core_controller.manifest
+        return conf
 
     @api_command("config/core/get_value")
-    async def get_core_config_value(self, core_controller: str, key: str) -> ConfigValueType:
+    async def get_core_config_value(self, domain: str, key: str) -> ConfigValueType:
         """Return single configentry value for a core controller."""
-        conf = await self.get_core_config(core_controller)
+        conf = await self.get_core_config(domain)
         return (
             conf.values[key].value
             if conf.values[key].value is not None
@@ -480,7 +493,7 @@ class ConfigController:
     @api_command("config/core/get_entries")
     async def get_core_config_entries(
         self,
-        core_controller: str,
+        domain: str,
         action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
@@ -492,8 +505,8 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         if values is None:
-            values = self.get(f"{CONF_CORE}/{core_controller}/values", {})
-        controller: CoreController = getattr(self.mass, core_controller)
+            values = self.get(f"{CONF_CORE}/{domain}/values", {})
+        controller: CoreController = getattr(self.mass, domain)
         return (
             await controller.get_config_entries(action=action, values=values)
             + DEFAULT_CORE_CONFIG_ENTRIES
@@ -502,11 +515,11 @@ class ConfigController:
     @api_command("config/core/save")
     async def save_core_config(
         self,
-        core_controller: str,
+        domain: str,
         values: dict[str, ConfigValueType],
     ) -> CoreConfig:
         """Save CoreController Config values."""
-        config = await self.get_core_config(core_controller)
+        config = await self.get_core_config(domain)
         changed_keys = config.update(values)
         # validate the new config
         config.validate()
@@ -514,14 +527,14 @@ class ConfigController:
             # no changes
             return config
         # try to load the provider first to catch errors before we save it.
-        controller: CoreController = getattr(self.mass, core_controller)
+        controller: CoreController = getattr(self.mass, domain)
         await controller.reload()
         # reload succeeded, save new config
         config.last_error = None
-        conf_key = f"{CONF_CORE}/{core_controller}"
+        conf_key = f"{CONF_CORE}/{domain}"
         self.set(conf_key, config.to_raw())
         # return full config, just in case
-        return await self.get_core_config(core_controller)
+        return await self.get_core_config(domain)
 
     def get_raw_core_config_value(
         self, core_module: str, key: str, default: ConfigValueType = None
