@@ -34,8 +34,7 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 class PlayerController(CoreController):
     """Controller holding all logic to control registered players."""
 
-    name: str = "players"
-    friendly_name: str = "Players controller"
+    domain: str = "players"
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize core controller."""
@@ -43,6 +42,11 @@ class PlayerController(CoreController):
         self._players: dict[str, Player] = {}
         self._prev_states: dict[str, dict] = {}
         self.queues = PlayerQueuesController(self)
+        self.manifest.name = "Players controller"
+        self.manifest.description = (
+            "Music Assistant's core controller which manages all players from all providers."
+        )
+        self.manifest.icon = "mdi-speaker-multiple"
 
     async def setup(self) -> None:
         """Async initialize of module."""

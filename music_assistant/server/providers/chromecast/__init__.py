@@ -382,6 +382,8 @@ class ChromecastProvider(PlayerProvider):
 
     def on_new_cast_status(self, castplayer: CastPlayer, status: CastStatus) -> None:
         """Handle updated CastStatus."""
+        if status is None:
+            return  # guard
         castplayer.logger.debug(
             "Received cast status - app_id: %s - volume: %s",
             status.app_id,

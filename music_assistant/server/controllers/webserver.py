@@ -27,12 +27,13 @@ from music_assistant.common.models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant.common.models.config_entries import DEFAULT_CORE_CONFIG_ENTRIES, ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
 from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.server.helpers.util import get_ips, is_hass_supervisor
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
@@ -49,14 +50,18 @@ CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 class WebserverController(CoreController):
     """Core Controller that manages the builtin webserver that hosts the api and frontend."""
 
-    name: str = "webserver"
-    friendly_name: str = "Web Server (frontend and api)"
+    domain: str = "webserver"
 
     def __init__(self, *args, **kwargs):
         """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger, enable_dynamic_routes=False)
         self.clients: set[WebsocketClientHandler] = set()
+        self.manifest.name = "Web Server (frontend and api)"
+        self.manifest.description = (
+            "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
+        )
+        self.manifest.icon = "mdi-web-box"
 
     @property
     def base_url(self) -> str:
@@ -69,23 +74,67 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        return DEFAULT_CORE_CONFIG_ENTRIES + (
-            ConfigEntry(
-                key=CONF_BIND_PORT,
-                type=ConfigEntryType.STRING,
-                default_value=self._default_port,
-                label="TCP Port",
-                description="The TCP port to run the webserver.",
-            ),
+        if await is_hass_supervisor():
+            # if we're running on the HA supervisor the webserver is secured by HA ingress
+            # we only start the webserver on the internal docker network and ingress connects
+            # to that internally and exposes the webUI securely
+            # if a user also wants to expose a the webserver non securely on his internal
+            # network he/she should open the port in the add-on config.
+            internal_ip = next((x for x in await get_ips() if x.startswith("172")), await get_ip())
+            base_url = f"http://{internal_ip:8095}"
+            return (
+                ConfigEntry(
+                    key=CONF_BIND_PORT,
+                    type=ConfigEntryType.STRING,
+                    # hardcoded/static value
+                    default_value=8095,
+                    value=8095,
+                    label="TCP Port",
+                    description="",
+                    hidden=True,
+                ),
+                ConfigEntry(
+                    key=CONF_BIND_IP,
+                    type=ConfigEntryType.STRING,
+                    # hardcoded/static value
+                    default_value=internal_ip,
+                    value=internal_ip,
+                    label=CONF_BIND_IP,
+                    description="",
+                    hidden=True,
+                ),
+                ConfigEntry(
+                    key=CONF_BASE_URL,
+                    type=ConfigEntryType.STRING,
+                    # hardcoded/static value
+                    default_value=base_url,
+                    value=base_url,
+                    label=CONF_BASE_URL,
+                    hidden=True,
+                ),
+            )
+
+        # HA supervisor not present: user is responsible for securing the webserver
+        # we give the tools to do so by presenting config options
+        default_ip = await get_ip()
+        default_port = await select_free_port(8095, 9200)
+        default_base_url = f"http://{default_ip}:{default_port}"
+        return (
             ConfigEntry(
                 key=CONF_BASE_URL,
                 type=ConfigEntryType.STRING,
-                default_value=self._default_base_url,
+                default_value=default_base_url,
                 label="Base URL",
                 description="The (base) URL to reach this webserver in the network. \n"
                 "Override this in advanced scenarios where for example you're running "
                 "the webserver behind a reverse proxy.",
-                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_PORT,
+                type=ConfigEntryType.INTEGER,
+                default_value=default_port,
+                label="TCP Port",
+                description="The TCP port to run the webserver.",
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
@@ -98,15 +147,11 @@ class WebserverController(CoreController):
                 "to enhance security and protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                advanced=True,
             ),
         )
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self._default_ip = await get_ip()
-        self._default_port = await select_free_port(8095, 9200)
-        self._default_base_url = f"http://{self._default_ip}:{self._default_port}"
         # work out all routes
         routes: list[tuple[str, str, Awaitable]] = []
         # frontend routes
@@ -126,19 +171,10 @@ class WebserverController(CoreController):
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
         # start the webserver
-        bind_port = self.mass.config.get_raw_core_config_value(
-            self.name, CONF_BIND_IP, self._default_port
-        )
-        bind_ip = self.mass.config.get_raw_core_config_value(
-            self.name, CONF_BIND_IP, self._default_ip
-        )
-        base_url = self.mass.config.get_raw_core_config_value(
-            self.name, CONF_BASE_URL, self._default_ip
-        )
         await self._server.setup(
-            bind_ip=bind_ip,
-            bind_port=bind_port,
-            base_url=base_url,
+            bind_ip=await self.mass.config.get_core_config_value(self.domain, CONF_BIND_IP),
+            bind_port=await self.mass.config.get_core_config_value(self.domain, CONF_BIND_PORT),
+            base_url=await self.mass.config.get_core_config_value(self.domain, CONF_BASE_URL),
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),

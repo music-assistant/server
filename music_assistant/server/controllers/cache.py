@@ -29,14 +29,18 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 class CacheController(CoreController):
     """Basic cache controller using both memory and database."""
 
-    name: str = "cache"
-    friendly_name: str = "Cache controller"
+    domain: str = "cache"
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize core controller."""
         super().__init__(*args, **kwargs)
         self.database: DatabaseConnection | None = None
         self._mem_cache = MemoryCache(500)
+        self.manifest.name = "Cache controller"
+        self.manifest.description = (
+            "Music Assistant's core controller for caching data throughout the application."
+        )
+        self.manifest.icon = "mdi-memory"
 
     async def setup(self) -> None:
         """Async initialize of cache module."""

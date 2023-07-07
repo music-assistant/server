@@ -40,8 +40,7 @@ LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
 class MetaDataController(CoreController):
     """Several helpers to search and store metadata for mediaitems."""
 
-    name: str = "metadata"
-    friendly_name: str = "Metadata controller"
+    domain: str = "metadata"
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
@@ -49,6 +48,11 @@ class MetaDataController(CoreController):
         self.cache = self.mass.cache
         self._pref_lang: str | None = None
         self.scan_busy: bool = False
+        self.manifest.name = "Metadata controller"
+        self.manifest.description = (
+            "Music Assistant's core controller which handles all metadata for music."
+        )
+        self.manifest.icon = "mdi-book-information-variant"
 
     async def setup(self) -> None:
         """Async initialize of module."""

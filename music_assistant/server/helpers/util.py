@@ -5,7 +5,12 @@ import asyncio
 import importlib
 import logging
 import platform
+import socket
 import tempfile
+import urllib.error
+import urllib.parse
+import urllib.request
+from contextlib import suppress
 from functools import lru_cache
 from typing import TYPE_CHECKING
 
@@ -31,6 +36,30 @@ async def install_package(package: str) -> None:
     if proc.returncode != 0:
         msg = f"Failed to install package {package}\n{stderr.decode()}"
         raise RuntimeError(msg)
+
+
+async def get_ips(include_ipv6: bool = False) -> set[str]:
+    """Return all IP-adresses of all network interfaces."""
+
+    def call() -> set[str]:
+        result: set[str] = set()
+        for item in socket.getaddrinfo(socket.gethostname(), None):
+            protocol, *_, (ip, *_) = item
+            if protocol == socket.AddressFamily.AF_INET or (
+                include_ipv6 and protocol == socket.AddressFamily.AF_INET6
+            ):
+                result.add(ip)
+        return result
+
+    return await asyncio.to_thread(call)
+
+
+async def is_hass_supervisor() -> bool:
+    """Return if we're running inside the HA Supervisor (e.g. HAOS)."""
+    with suppress(urllib.error.URLError):
+        res = await asyncio.to_thread(urllib.request.urlopen, "ws://supervisor/core/websocket")
+        return res.code == 401
+    return False
 
 
 async def get_provider_module(domain: str) -> ProviderModuleType:

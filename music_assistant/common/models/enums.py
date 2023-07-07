@@ -338,6 +338,7 @@ class ProviderType(StrEnum):
     PLAYER = "player"
     METADATA = "metadata"
     PLUGIN = "plugin"
+    CORE = "core"
 
 
 class ConfigEntryType(StrEnum):
