@@ -582,7 +582,8 @@ class SonosPlayerProvider(PlayerProvider):
 
         # enqueue next item if needed
         if sonos_player.player.state == PlayerState.PLAYING and (
-            sonos_player.next_url or sonos_player.next_url == sonos_player.player.current_url
+            sonos_player.next_url is None
+            or sonos_player.next_url == sonos_player.player.current_url
         ):
             self.mass.create_task(self._enqueue_next_track(sonos_player))
 

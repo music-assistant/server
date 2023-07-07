@@ -5,7 +5,7 @@ import asyncio
 import statistics
 import time
 from collections import deque
-from collections.abc import Callable, Generator
+from collections.abc import Callable, Coroutine, Generator
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -170,7 +170,7 @@ class SlimprotoProvider(PlayerProvider):
     _socket_servers: list[asyncio.Server | asyncio.BaseTransport]
     _socket_clients: dict[str, SlimClient]
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
-    _virtual_providers: dict[str, tuple[Callable, Callable]]
+    _virtual_providers: dict[str, tuple[Coroutine, Callable]]
     _do_not_resync_before: dict[str, float]
     _cli: LmsCli
     port: int = DEFAULT_SLIMPROTO_PORT
@@ -271,7 +271,7 @@ class SlimprotoProvider(PlayerProvider):
                 return
 
             # forward player update to MA player controller
-            self._handle_player_update(client)
+            self.mass.create_task(self._handle_player_update(client))
 
         # construct SlimClient from socket client
         SlimClient(reader, writer, client_callback)
@@ -535,7 +535,7 @@ class SlimprotoProvider(PlayerProvider):
     def register_virtual_provider(
         self,
         player_model: str,
-        register_callback: Callable,
+        register_callback: Coroutine,
         update_callback: Callable,
     ) -> None:
         """Register a virtual provider based on slimproto, such as the airplay bridge."""
@@ -551,7 +551,7 @@ class SlimprotoProvider(PlayerProvider):
         """Unregister a virtual provider."""
         self._virtual_providers.pop(player_model, None)
 
-    def _handle_player_update(self, client: SlimClient) -> None:
+    async def _handle_player_update(self, client: SlimClient) -> None:
         """Process SlimClient update/add to Player controller."""
         player_id = client.player_id
         virtual_provider_info = self._virtual_providers.get(client.device_model)
@@ -580,7 +580,7 @@ class SlimprotoProvider(PlayerProvider):
             )
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback
-                virtual_provider_info[0](player)
+                await virtual_provider_info[0](player)
             self.mass.players.register_or_update(player)
 
         # update player state on player events
@@ -767,12 +767,12 @@ class SlimprotoProvider(PlayerProvider):
 
         self._socket_clients[player_id] = client
         # update all attributes
-        self._handle_player_update(client)
+        await self._handle_player_update(client)
         # update existing players so they can update their `can_sync_with` field
         for item in self._socket_clients.values():
             if item.player_id == player_id:
                 continue
-            self._handle_player_update(item)
+            await self._handle_player_update(item)
         # restore volume and power state
         if last_state := await self.mass.cache.get(f"{CACHE_KEY_PREV_STATE}.{player_id}"):
             init_power = last_state[0]
