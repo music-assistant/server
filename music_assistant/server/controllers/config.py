@@ -50,7 +50,7 @@ isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
 rename = wrap(os.rename)
 
-CONFIGURABLE_CORE_CONTROLLERS = ("streams", "webserver", "players", "metadata", "cache")
+CONFIGURABLE_CORE_CONTROLLERS = ("streams", "webserver", "players", "metadata", "cache", "music")
 
 
 class ConfigController:
