@@ -167,7 +167,9 @@ class Config(DataClassDictMixin):
         for entry in config_entries:
             # create a copy of the entry
             conf.values[entry.key] = ConfigEntry.from_dict(entry.to_dict())
-            conf.values[entry.key].parse_value(raw["values"].get(entry.key), allow_none=True)
+            conf.values[entry.key].parse_value(
+                raw.get("values", {}).get(entry.key), allow_none=True
+            )
         return conf
 
     def to_raw(self) -> dict[str, Any]:
@@ -269,7 +271,7 @@ class PlayerConfig(Config):
 class CoreConfig(Config):
     """CoreController Configuration."""
 
-    module: str  # name of the core module
+    name: str  # name of the core module
     friendly_name: str  # friendly name of the core module
     last_error: str | None = None
 

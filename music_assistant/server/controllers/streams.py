@@ -62,7 +62,6 @@ DEFAULT_STREAM_HEADERS = {
 }
 FLOW_MAX_SAMPLE_RATE = 96000
 FLOW_MAX_BIT_DEPTH = 24
-WORKAROUND_PLAYERS_CACHE_KEY = "streams.workaround_players"
 
 
 class MultiClientStreamJob:
@@ -277,11 +276,13 @@ class StreamsController(CoreController):
         values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
+        default_ip = await get_ip()
+        default_port = await select_free_port(8096, 9200)
         return DEFAULT_CORE_CONFIG_ENTRIES + (
             ConfigEntry(
                 key=CONF_BIND_PORT,
-                type=ConfigEntryType.STRING,
-                default_value=self._default_port,
+                type=ConfigEntryType.INTEGER,
+                default_value=default_port,
                 label="TCP Port",
                 description="The TCP port to run the server. "
                 "Make sure that this server can be reached "
@@ -290,9 +291,9 @@ class StreamsController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
-                default_value=self._default_ip,
+                default_value=default_ip,
                 label="Bind to IP/interface",
-                description="Start the (web)server on this specific interface. \n"
+                description="Start the streamserver on this specific interface. \n"
                 "This IP address is communicated to players where to find this server. "
                 "Override the default in advanced scenarios, such as multi NIC configurations. \n"
                 "Make sure that this server can be reached "
@@ -305,8 +306,6 @@ class StreamsController(CoreController):
 
     async def setup(self) -> None:
         """Async initialize of module."""
-        self._default_ip = await get_ip()
-        self._default_port = await select_free_port(8096, 9200)
         ffmpeg_present, libsoxr_support, version = await check_audio_support()
         if not ffmpeg_present:
             self.logger.error("FFmpeg binary not found on your system, playback will NOT work!.")
@@ -320,20 +319,13 @@ class StreamsController(CoreController):
             version,
             "with libsoxr support" if libsoxr_support else "",
         )
-        # restore known workaround players
-        if cache := await self.mass.cache.get(WORKAROUND_PLAYERS_CACHE_KEY):
-            self.workaround_players.update(cache)
         # start the webserver
-        self.publish_port = bind_port = self.mass.config.get_raw_core_config_value(
-            self.name, CONF_BIND_IP, self._default_port
-        )
-        self.publish_ip = bind_ip = self.mass.config.get_raw_core_config_value(
-            self.name, CONF_BIND_IP, self._default_ip
-        )
+        self.publish_port = await self.mass.config.get_core_config_value(self.name, CONF_BIND_PORT)
+        self.publish_ip = await self.mass.config.get_core_config_value(self.name, CONF_BIND_IP)
         await self._server.setup(
-            bind_ip=bind_ip,
-            bind_port=bind_port,
-            base_url=f"http://{bind_ip}:{bind_port}",
+            bind_ip=self.publish_ip,
+            bind_port=self.publish_port,
+            base_url=f"http://{self.publish_ip}:{self.publish_port}",
             static_routes=[
                 ("GET", "/preview", self.serve_preview_stream),
                 (
@@ -357,7 +349,6 @@ class StreamsController(CoreController):
     async def close(self) -> None:
         """Cleanup on exit."""
         await self._server.close()
-        await self.mass.cache.set(WORKAROUND_PLAYERS_CACHE_KEY, self.workaround_players)
 
     async def resolve_stream_url(
         self,

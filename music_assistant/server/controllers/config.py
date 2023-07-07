@@ -461,9 +461,21 @@ class ConfigController:
     @api_command("config/core/get")
     async def get_core_config(self, core_controller: str) -> CoreConfig:
         """Return configuration for a single core controller."""
-        raw_conf = self.get(f"{CONF_CORE}/{core_controller}", {})
+        core_controller_instance: CoreController = getattr(self.mass, core_controller)
+        raw_conf = self.get(f"{CONF_CORE}/{core_controller}", {"name": core_controller})
+        raw_conf["friendly_name"] = core_controller_instance.friendly_name
         config_entries = await self.get_core_config_entries(core_controller)
         return CoreConfig.parse(config_entries, raw_conf)
+
+    @api_command("config/core/get_value")
+    async def get_core_config_value(self, core_controller: str, key: str) -> ConfigValueType:
+        """Return single configentry value for a core controller."""
+        conf = await self.get_core_config(core_controller)
+        return (
+            conf.values[key].value
+            if conf.values[key].value is not None
+            else conf.values[key].default_value
+        )
 
     @api_command("config/core/get_entries")
     async def get_core_config_entries(
