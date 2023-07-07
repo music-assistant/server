@@ -243,7 +243,8 @@ class PlayerController(CoreController):
             player_prov = self.get_player_provider(group_player.player_id)
             if not player_prov:
                 continue
-            player_prov.on_child_state(group_player.player_id, player, changed_values)
+            player_prov.poll_player(group_player.player_id)
+            self.update(group_player.player_id, skip_forward=True)
 
     def get_player_provider(self, player_id: str) -> PlayerProvider:
         """Return PlayerProvider for given player."""
@@ -346,9 +347,19 @@ class PlayerController(CoreController):
         if PlayerFeature.POWER not in player.supported_features:
             player.powered = powered
             self.update(player_id)
-            return
-        player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_power(player_id, powered)
+        else:
+            player_provider = self.get_player_provider(player_id)
+            await player_provider.cmd_power(player_id, powered)
+        # forward to (active) group player if needed
+        for group_player in self._get_player_groups(player_id):
+            if not group_player.available:
+                continue
+            if not group_player.powered:
+                continue
+            player_prov = self.get_player_provider(group_player.player_id)
+            if not player_prov:
+                continue
+            player_prov.on_child_power(group_player.player_id, player, powered)
 
     @api_command("players/cmd/volume_set")
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:

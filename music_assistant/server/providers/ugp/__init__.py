@@ -7,7 +7,7 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_FLOW_MODE,
@@ -311,52 +311,51 @@ class UniversalGroupProvider(PlayerProvider):
             group_player.state = PlayerState.IDLE
             group_player.current_url = None
 
-    def on_child_state(
-        self, player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
-    ) -> None:
-        """Call when the state of a child player updates."""
+    def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
+        """Call when a child player is turned on/off."""
         self.update_attributes(player_id)
         group_player = self.mass.players.get(player_id)
         self.mass.players.update(player_id, skip_forward=True)
-        if "powered" in changed_values and (prev_power := changed_values["powered"][0]) != (
-            new_power := changed_values["powered"][1]
+
+        powered_childs = self._get_active_members(player_id, True, False)
+        if child_player in powered_childs and not new_power:
+            powered_childs.remove(powered_childs)  # race condition
+
+        if group_player.powered and len(powered_childs) == 0:
+            # the last player of a group turned off, turn off the group
+            self.mass.create_task(self.cmd_power, player_id, False)
+        elif (
+            group_player.powered
+            and new_power
+            and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
         ):
-            powered_players = self._get_active_members(player_id, True, False)
-            if group_player.powered and prev_power is True and len(powered_players) == 0:
-                # the last player of a group turned off, turn off the group
-                self.mass.create_task(self.cmd_power, player_id, False)
-            # ruff: noqa: SIM114
-            elif (
-                new_power is True
-                and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+            # a child player turned ON while the group player is already playing
+            # we need to resync/resume
+            if group_player.state == PlayerState.PLAYING and (
+                sync_leader := next(
+                    (
+                        x
+                        for x in child_player.can_sync_with
+                        if x in self.prev_sync_leaders[player_id]
+                    ),
+                    None,
+                )
             ):
-                # a child player turned ON while the group player is already playing
-                # we need to resync/resume
-                if group_player.state == PlayerState.PLAYING and (
-                    sync_leader := next(
-                        (
-                            x
-                            for x in child_player.can_sync_with
-                            if x in self.prev_sync_leaders[player_id]
-                        ),
-                        None,
-                    )
-                ):
-                    # prevent resume when player platform supports sync
-                    # and one of its players is already playing
-                    self.mass.create_task(
-                        self.mass.players.cmd_sync, child_player.player_id, sync_leader
-                    )
-                else:
-                    self.mass.create_task(self.mass.player_queues.resume, player_id)
-            elif (
-                not child_player.powered
-                and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
-                and child_player.player_id in self.prev_sync_leaders[player_id]
-            ):
-                # a sync master player turned OFF while the group player
-                # should still be playing - we need to resync/resume
+                # prevent resume when player platform supports sync
+                # and one of its players is already playing
+                self.mass.create_task(
+                    self.mass.players.cmd_sync, child_player.player_id, sync_leader
+                )
+            else:
                 self.mass.create_task(self.mass.player_queues.resume, player_id)
+        elif (
+            not new_power
+            and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+            and child_player.player_id in self.prev_sync_leaders[player_id]
+        ):
+            # a sync master player turned OFF while the group player
+            # should still be playing - we need to resync/resume
+            self.mass.create_task(self.mass.player_queues.resume, player_id)
 
     def _get_active_members(
         self, player_id: str, only_powered: bool = False, skip_sync_childs: bool = True
