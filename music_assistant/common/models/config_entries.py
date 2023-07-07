@@ -283,13 +283,13 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     key=CONF_LOG_LEVEL,
     type=ConfigEntryType.STRING,
     label="Log level",
-    options=[
+    options=(
         ConfigValueOption("global", "GLOBAL"),
         ConfigValueOption("info", "INFO"),
         ConfigValueOption("warning", "WARNING"),
         ConfigValueOption("error", "ERROR"),
         ConfigValueOption("debug", "DEBUG"),
-    ],
+    ),
     default_value="GLOBAL",
     description="Set the log verbosity for this provider",
     advanced=True,
