@@ -354,11 +354,12 @@ class PlayerController(CoreController):
         if player.mute_as_power:
             # handle mute as power feature
             await self.cmd_volume_mute(player_id, not powered)
-        elif PlayerFeature.POWER not in player.supported_features:
+
+        if PlayerFeature.POWER not in player.supported_features:
             # player does not support power, use fake state instead
             player.powered = powered
             self.update(player_id)
-        else:
+        elif powered or not player.mute_as_power:
             # regular power command
             player_provider = self.get_player_provider(player_id)
             await player_provider.cmd_power(player_id, powered)

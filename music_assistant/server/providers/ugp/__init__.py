@@ -268,12 +268,13 @@ class UniversalGroupProvider(PlayerProvider):
             player_id, CONF_GROUPED_POWER_ON
         )
         mute_childs = await self.mass.config.get_player_config_value(player_id, CONF_MUTE_CHILDS)
+        # set mute_as_power feature for group members
+        for child_player_id in mute_childs:
+            if child_player := self.mass.players.get(child_player_id):
+                child_player.mute_as_power = powered
         group_player = self.mass.players.get(player_id)
 
         async def set_child_power(child_player: Player) -> None:
-            # set/reset mute_as_power feature
-            if child_player.player_id in mute_childs:
-                child_player.mute_as_power = powered
             await self.mass.players.cmd_power(child_player.player_id, powered)
             # set optimistic state on child player to prevent race conditions in other actions
             child_player.powered = powered
