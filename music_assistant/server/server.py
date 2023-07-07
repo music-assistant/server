@@ -36,7 +36,7 @@ from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.server.controllers.webserver import WebserverController
 from music_assistant.server.helpers.api import APICommandHandler, api_command
 from music_assistant.server.helpers.images import get_icon_string
-from music_assistant.server.helpers.util import get_provider_module
+from music_assistant.server.helpers.util import get_provider_module, is_hass_supervisor
 
 from .models import ProviderInstanceType
 
@@ -84,10 +84,12 @@ class MusicAssistant:
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
+        self.running_as_hass_addon: bool = False
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+        self.running_as_hass_addon = await is_hass_supervisor()
         # create shared zeroconf instance
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         # create shared aiohttp ClientSession
@@ -167,6 +169,7 @@ class MusicAssistant:
             schema_version=SCHEMA_VERSION,
             min_supported_schema_version=MIN_SCHEMA_VERSION,
             base_url=self.webserver.base_url,
+            homeassistant_addon=self.running_as_hass_addon,
         )
 
     @api_command("providers/available")

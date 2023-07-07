@@ -33,7 +33,7 @@ from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
 from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.server.helpers.util import get_ips, is_hass_supervisor
+from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
@@ -74,7 +74,7 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        if await is_hass_supervisor():
+        if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor the webserver is secured by HA ingress
             # we only start the webserver on the internal docker network and ingress connects
             # to that internally and exposes the webUI securely
