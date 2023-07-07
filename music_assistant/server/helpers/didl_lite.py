@@ -22,6 +22,7 @@ def create_didl_metadata(
     if queue_item is None:
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
+            f'<item id="flowmode" parentID="0" restricted="1">'
             "<dc:title>Music Assistant</dc:title>"
             f"<upnp:albumArtURI>{escape_string(MASS_LOGO_ONLINE)}</upnp:albumArtURI>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
