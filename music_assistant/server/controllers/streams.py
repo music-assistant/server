@@ -301,6 +301,7 @@ class StreamsController(CoreController):
                 "on the given IP and TCP port by players on the local network. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
+                advanced=True,
             ),
         )
 

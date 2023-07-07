@@ -147,6 +147,7 @@ class WebserverController(CoreController):
                 "to enhance security and protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
+                advanced=True,
             ),
         )
 
