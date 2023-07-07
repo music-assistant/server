@@ -1,8 +1,25 @@
+name-template: '$RESOLVED_VERSION'
+tag-template: '$RESOLVED_VERSION'
+change-template: '- #$NUMBER - $TITLE (@$AUTHOR)'
 categories:
-  - title: "⬆️ Dependencies"
+  - title: "⚠ Breaking Changes"
+    labels:
+      - 'breaking-change'
+  - title: '⬆️ Dependencies'
     collapse-after: 1
     labels:
-      - "dependencies"
+      - 'dependencies'
+      - 'ci'
 template: |
-  ## What's Changed
+  ## What’s Changed
+
   $CHANGES
+version-resolver:
+  major:
+    labels:
+      - 'breaking-change'
+  minor:
+    labels:
+      - 'new-feature'
+      - 'enhancement'
+  default: patch

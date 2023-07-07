@@ -1,0 +1,87 @@
+name: Publish releases
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  build-and-publish-pypi:
+    name: Builds and publishes releases to PyPI
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.vars.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v3.5.3
+      - name: Get tag
+        id: vars
+        run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v4.6.1
+        with:
+          python-version: "3.10"
+      - name: Install build
+        run: >-
+          pip install build tomli tomli-w
+      - name: Set Python project version from tag
+        shell: python
+        run: |-
+          import tomli
+          import tomli_w
+
+          with open("pyproject.toml", "rb") as f:
+            pyproject = tomli.load(f)
+
+          pyproject["project"]["version"] = "${{ steps.vars.outputs.tag }}"
+
+          with open("pyproject.toml", "wb") as f:
+            tomli_w.dump(pyproject, f)
+      - name: Build
+        run: >-
+          python3 -m build
+      - name: Publish release to PyPI
+        uses: pypa/gh-action-pypi-publish@v1.8.7
+        with:
+          user: __token__
+          password: ${{ secrets.PYPI_TOKEN }}
+
+  build-and-push-container-image:
+    name: Builds and pushes the Music Assistant Server container to ghcr.io
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    needs: build-and-publish-pypi
+    steps:
+      - uses: actions/checkout@v3.5.3
+      - name: Log in to the GitHub container registry
+        uses: docker/login-action@v2.2.0
+        with:
+            registry: ghcr.io
+            username: ${{ github.repository_owner }}
+            password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2.8.0
+      - name: Version number for tags
+        id: tags
+        shell: bash
+        run: |-
+          patch=${GITHUB_REF#refs/*/}
+          echo "patch=${patch}" >> $GITHUB_OUTPUT
+          echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
+          echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
+          if [[ $string =~ "b" ]]; then
+            echo "channel=beta" >> $GITHUB_OUTPUT
+          else
+            echo "channel=stable" >> $GITHUB_OUTPUT
+          fi
+      - name: Build and Push
+        uses: docker/build-push-action@v4.1.1
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          file: Dockerfile
+          tags: |-
+            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.patch }},
+            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.minor }},
+            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.major }},
+            ghcr.io/${{ github.repository_owner }}/python-matter-server:${{ steps.tags.outputs.channel }}
+          push: true
