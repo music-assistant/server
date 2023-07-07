@@ -3,9 +3,6 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b41"
-
-VERSION: Final[int] = __version__
 SCHEMA_VERSION: Final[int] = 22
 MIN_SCHEMA_VERSION = 22
 

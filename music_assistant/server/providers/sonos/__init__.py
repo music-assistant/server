@@ -508,7 +508,7 @@ class SonosPlayerProvider(PlayerProvider):
     async def _enqueue_next_track(self, sonos_player: SonosPlayer) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
         try:
-            next_url, next_item, crossfade = await self.mass.players.queues.preload_next_url(
+            next_url, next_item, crossfade = await self.mass.player_queues.preload_next_url(
                 sonos_player.player_id
             )
         except QueueEmpty:

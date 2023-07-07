@@ -23,27 +23,33 @@ from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_FLOW_MODE, FALLBACK_DURATION, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.audio import get_stream_details
+from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant.common.models.player import Player
 
-    from .players import PlayerController
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players.queue")
 
 
-class PlayerQueuesController:
+class PlayerQueuesController(CoreController):
     """Controller holding all logic to enqueue music for players."""
 
-    def __init__(self, players: PlayerController) -> None:
-        """Initialize class."""
-        self.players = players
-        self.mass = players.mass
+    domain: str = "player_queues"
+
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize core controller."""
+        super().__init__(*args, **kwargs)
         self._queues: dict[str, PlayerQueue] = {}
         self._queue_items: dict[str, list[QueueItem]] = {}
         self._prev_states: dict[str, dict] = {}
+        self.manifest.name = "Player Queues controller"
+        self.manifest.description = (
+            "Music Assistant's core controller which manages the queues for all players."
+        )
+        self.manifest.icon = "mdi-playlist-music"
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -340,7 +346,7 @@ class PlayerQueuesController:
             LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
             return
         # simply forward the command to underlying player
-        await self.players.cmd_stop(queue_id)
+        await self.mass.players.cmd_stop(queue_id)
 
     @api_command("players/queue/play")
     async def play(self, queue_id: str) -> None:
@@ -354,7 +360,7 @@ class PlayerQueuesController:
             return
         if self._queues[queue_id].state == PlayerState.PAUSED:
             # simply forward the command to underlying player
-            await self.players.cmd_play(queue_id)
+            await self.mass.players.cmd_play(queue_id)
         else:
             await self.resume(queue_id)
 
@@ -368,7 +374,7 @@ class PlayerQueuesController:
             LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
             return
         # simply forward the command to underlying player
-        await self.players.cmd_pause(queue_id)
+        await self.mass.players.cmd_pause(queue_id)
 
     @api_command("players/queue/play_pause")
     async def play_pause(self, queue_id: str) -> None:
@@ -561,7 +567,7 @@ class PlayerQueuesController:
             # race condition
             return
         queue_id = player.player_id
-        player = self.players.get(queue_id)
+        player = self.mass.players.get(queue_id)
         queue = self._queues[queue_id]
 
         # basic properties

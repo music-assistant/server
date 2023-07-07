@@ -12,6 +12,8 @@ import urllib.parse
 import urllib.request
 from contextlib import suppress
 from functools import lru_cache
+from importlib.metadata import PackageNotFoundError
+from importlib.metadata import version as pkg_version
 from typing import TYPE_CHECKING
 
 import memory_tempfile
@@ -38,6 +40,21 @@ async def install_package(package: str) -> None:
         raise RuntimeError(msg)
 
 
+async def get_package_version(pkg_name: str) -> str:
+    """
+    Return the version of an installed (python) package.
+
+    Will return `0.0.0` if the package is not found.
+    """
+    try:
+        installed_version = await asyncio.to_thread(pkg_version, pkg_name)
+        if installed_version is None:
+            return "0.0.0"  # type: ignore[unreachable]
+        return installed_version
+    except PackageNotFoundError:
+        return "0.0.0"
+
+
 async def get_ips(include_ipv6: bool = False) -> set[str]:
     """Return all IP-adresses of all network interfaces."""
 
@@ -57,7 +74,8 @@ async def get_ips(include_ipv6: bool = False) -> set[str]:
 async def is_hass_supervisor() -> bool:
     """Return if we're running inside the HA Supervisor (e.g. HAOS)."""
     with suppress(urllib.error.URLError):
-        res = await asyncio.to_thread(urllib.request.urlopen, "ws://supervisor/core/websocket")
+        res = await asyncio.to_thread(urllib.request.urlopen, "http://supervisor/core")
+        # this should return a 401 unauthorized if it exists
         return res.code == 401
     return False
 

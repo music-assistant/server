@@ -50,7 +50,15 @@ isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
 rename = wrap(os.rename)
 
-CONFIGURABLE_CORE_CONTROLLERS = ("streams", "webserver", "players", "metadata", "cache")
+CONFIGURABLE_CORE_CONTROLLERS = (
+    "streams",
+    "webserver",
+    "players",
+    "metadata",
+    "cache",
+    "music",
+    "player_queues",
+)
 
 
 class ConfigController:
@@ -528,7 +536,7 @@ class ConfigController:
             return config
         # try to load the provider first to catch errors before we save it.
         controller: CoreController = getattr(self.mass, domain)
-        await controller.reload()
+        await controller.reload(config)
         # reload succeeded, save new config
         config.last_error = None
         conf_key = f"{CONF_CORE}/{domain}"

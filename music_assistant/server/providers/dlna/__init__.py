@@ -538,7 +538,7 @@ class DLNAPlayerProvider(PlayerProvider):
                 next_url,
                 next_item,
                 _,
-            ) = await self.mass.players.queues.preload_next_url(dlna_player.udn)
+            ) = await self.mass.player_queues.preload_next_url(dlna_player.udn)
         except QueueEmpty:
             return
 

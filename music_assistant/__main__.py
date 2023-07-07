@@ -89,7 +89,7 @@ def main():
         hass_options = {}
 
     log_level = hass_options.get("log_level", args.log_level).upper()
-    dev_mode = bool(os.environ.get("PYTHONDEVMODE", "0"))
+    dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
@@ -109,7 +109,7 @@ def main():
         start_mass(),
         use_uvloop=False,
         shutdown_callback=on_shutdown,
-        executor_workers=32,
+        executor_workers=64,
     )
 
 

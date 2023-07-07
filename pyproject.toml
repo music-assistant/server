@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "music_assistant"
-dynamic = ["version"]
+# The version is set by GH action on release
+version = "0.0.0"
 license     = {text = "Apache-2.0"}
 description = "Music Assistant"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors     = [
     {name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
 ]
@@ -59,9 +60,6 @@ test = [
 
 [project.scripts]
 mass = "music_assistant.__main__:main"
-
-[tool.setuptools.dynamic]
-version = {attr = "music_assistant.constants.__version__"}
 
 [tool.black]
 target-version = ['py311']

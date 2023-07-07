@@ -501,7 +501,7 @@ class SlimprotoProvider(PlayerProvider):
         parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
         # check if we should (re)start or join a stream session
-        active_queue = self.mass.players.queues.get_active_queue(parent_player.player_id)
+        active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if (
             ENABLE_EXPERIMENTAL_SYNC_JOIN
             and (stream_job := self.mass.streams.multi_client_jobs.get(active_queue.queue_id))
@@ -516,7 +516,7 @@ class SlimprotoProvider(PlayerProvider):
             await self._handle_play_url(client, url, None, auto_play=True)
         elif parent_player.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
-            await self.mass.players.queues.resume(active_queue.queue_id, fade_in=False)
+            await self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
         else:
             # make sure that the player manager gets an update
             self.mass.players.update(child_player.player_id)
@@ -661,7 +661,7 @@ class SlimprotoProvider(PlayerProvider):
             client.player_id, deque(maxlen=MIN_REQ_PLAYPOINTS)
         )
 
-        active_queue = self.mass.players.queues.get_active_queue(client.player_id)
+        active_queue = self.mass.player_queues.get_active_queue(client.player_id)
         stream_job = self.mass.streams.multi_client_jobs.get(active_queue.queue_id)
         if not stream_job:
             # should not happen, but just in case
@@ -719,7 +719,7 @@ class SlimprotoProvider(PlayerProvider):
         if player.active_source != player.player_id:
             return
         try:
-            next_url, next_item, crossfade = await self.mass.players.queues.preload_next_url(
+            next_url, next_item, crossfade = await self.mass.player_queues.preload_next_url(
                 client.player_id
             )
             async with asyncio.TaskGroup() as tg:
@@ -830,7 +830,7 @@ class SlimprotoProvider(PlayerProvider):
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds."""
         skipped_millis = 0
-        active_queue = self.mass.players.queues.get_active_queue(client.player_id)
+        active_queue = self.mass.player_queues.get_active_queue(client.player_id)
         if stream_job := self.mass.streams.multi_client_jobs.get(active_queue.queue_id):
             skipped_millis = stream_job.client_seconds_skipped.get(client.player_id, 0) * 1000
         sync_delay = self.mass.config.get_raw_player_config_value(

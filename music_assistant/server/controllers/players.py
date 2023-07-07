@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from collections.abc import Iterator
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.enums import (
@@ -26,7 +26,8 @@ from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
 
-from .player_queues import PlayerQueuesController
+if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import CoreConfig
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
@@ -41,20 +42,21 @@ class PlayerController(CoreController):
         super().__init__(*args, **kwargs)
         self._players: dict[str, Player] = {}
         self._prev_states: dict[str, dict] = {}
-        self.queues = PlayerQueuesController(self)
         self.manifest.name = "Players controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages all players from all providers."
         )
         self.manifest.icon = "mdi-speaker-multiple"
+        self._poll_task: asyncio.Task | None = None
 
-    async def setup(self) -> None:
+    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""
-        self.mass.create_task(self._poll_players())
+        self._poll_task = self.mass.create_task(self._poll_players())
 
     async def close(self) -> None:
         """Cleanup on exit."""
-        await self.queues.close()
+        if self._poll_task and not self._poll_task.done():
+            self._poll_task.cancel()
 
     @property
     def providers(self) -> list[PlayerProvider]:
@@ -127,7 +129,7 @@ class PlayerController(CoreController):
         player.enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
 
         # register playerqueue for this player
-        self.mass.create_task(self.queues.on_player_register(player))
+        self.mass.create_task(self.mass.player_queues.on_player_register(player))
 
         self._players[player_id] = player
 
@@ -163,7 +165,7 @@ class PlayerController(CoreController):
         if player is None:
             return
         LOGGER.info("Player removed: %s", player.name)
-        self.queues.on_player_remove(player_id)
+        self.mass.player_queues.on_player_remove(player_id)
         self.mass.config.remove(f"players/{player_id}")
         self._prev_states.pop(player_id, None)
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
@@ -208,7 +210,7 @@ class PlayerController(CoreController):
             return
 
         # always signal update to the playerqueue
-        self.queues.on_player_update(player, changed_values)
+        self.mass.player_queues.on_player_update(player, changed_values)
 
         if len(changed_values) == 0 and not force_update:
             return

@@ -33,12 +33,12 @@ from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
 from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
-from music_assistant.server.helpers.util import get_ips, is_hass_supervisor
+from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ConfigValueType
+    from music_assistant.common.models.config_entries import ConfigValueType, CoreConfig
 
 
 CONF_BASE_URL = "base_url"
@@ -74,7 +74,7 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        if await is_hass_supervisor():
+        if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor the webserver is secured by HA ingress
             # we only start the webserver on the internal docker network and ingress connects
             # to that internally and exposes the webUI securely
@@ -147,10 +147,11 @@ class WebserverController(CoreController):
                 "to enhance security and protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
+                advanced=True,
             ),
         )
 
-    async def setup(self) -> None:
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         # work out all routes
         routes: list[tuple[str, str, Awaitable]] = []
@@ -172,9 +173,9 @@ class WebserverController(CoreController):
         routes.append(("GET", "/ws", self._handle_ws_client))
         # start the webserver
         await self._server.setup(
-            bind_ip=await self.mass.config.get_core_config_value(self.domain, CONF_BIND_IP),
-            bind_port=await self.mass.config.get_core_config_value(self.domain, CONF_BIND_PORT),
-            base_url=await self.mass.config.get_core_config_value(self.domain, CONF_BASE_URL),
+            bind_ip=config.get_value(CONF_BIND_IP),
+            bind_port=config.get_value(CONF_BIND_PORT),
+            base_url=config.get_value(CONF_BASE_URL),
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
