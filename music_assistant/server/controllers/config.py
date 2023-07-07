@@ -385,7 +385,7 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        with suppress(PlayerUnavailableError, AttributeError):
+        with suppress(PlayerUnavailableError, AttributeError, KeyError):
             player = self.mass.players.get(config.player_id)
             if config.enabled:
                 player_prov = self.mass.players.get_player_provider(player_id)
