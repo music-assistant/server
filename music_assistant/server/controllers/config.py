@@ -299,7 +299,7 @@ class ConfigController:
         self.set(conf_key, value)
 
     @api_command("config/providers/reload")
-    async def reload_provider(self, instance_id: str, config: ProviderConfig | None) -> None:
+    async def reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
         config = await self.get_provider_config(instance_id)
         await self._load_provider_config(config)
@@ -385,7 +385,7 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        with suppress(PlayerUnavailableError, AttributeError):
+        with suppress(PlayerUnavailableError, AttributeError, KeyError):
             player = self.mass.players.get(config.player_id)
             if config.enabled:
                 player_prov = self.mass.players.get_player_provider(player_id)

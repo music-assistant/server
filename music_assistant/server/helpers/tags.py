@@ -255,7 +255,9 @@ class AudioTags:
     @classmethod
     def parse(cls, raw: dict) -> AudioTags:
         """Parse instance from raw ffmpeg info output."""
-        audio_stream = next(x for x in raw["streams"] if x["codec_type"] == "audio")
+        audio_stream = next((x for x in raw["streams"] if x["codec_type"] == "audio"), None)
+        if audio_stream is None:
+            raise InvalidDataError("No audio stream found")
         has_cover_image = any(x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png"))
         # convert all tag-keys (gathered from all streams) to lowercase without spaces
         tags = {}
