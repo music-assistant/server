@@ -357,6 +357,15 @@ class PlayerController(CoreController):
             # handle mute as power feature
             await self.cmd_volume_mute(player_id, not powered)
 
+        # restore mute if needed on poweroff
+        if (
+            not powered
+            and player.volume_muted
+            and not player.mute_as_power
+            and PlayerFeature.VOLUME_MUTE not in player.supported_features
+        ):
+            await self.cmd_volume_mute(player_id, False)
+
         if PlayerFeature.POWER not in player.supported_features:
             # player does not support power, use fake state instead
             player.powered = powered
