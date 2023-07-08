@@ -335,7 +335,8 @@ class UniversalGroupProvider(PlayerProvider):
                 child_player.mute_as_power = powered
 
         group_player.powered = powered
-        group_player.extra_data["optimistic_state"] = PlayerState.IDLE
+        if not powered:
+            group_player.extra_data["optimistic_state"] = PlayerState.IDLE
         self.mass.players.update(player_id)
         if powered:
             # sync all players on power on
