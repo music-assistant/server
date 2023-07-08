@@ -234,13 +234,23 @@ class UniversalGroupProvider(PlayerProvider):
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
+
+        active_members = self._get_active_members(
+            player_id, only_powered=True, skip_sync_childs=True
+        )
+        if len(active_members) == 0:
+            self.logger.warning(
+                "Play media requested for player %s but no member players are powered, "
+                "the request will be ignored",
+                group_player.display_name,
+            )
+            return
+
         group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
 
         # forward command to all (powered) group child's
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                player_id, only_powered=True, skip_sync_childs=True
-            ):
+            for member in active_members:
                 player_prov = self.mass.players.get_player_provider(member.player_id)
                 tg.create_task(
                     player_prov.cmd_play_url(member.player_id, url=url, queue_item=queue_item)
@@ -248,17 +258,28 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle StreamJob play command on given player."""
-        # send stop first
+        #  send stop first
         await self.cmd_stop(player_id)
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
+
+        active_members = self._get_active_members(
+            player_id, only_powered=True, skip_sync_childs=True
+        )
+        if len(active_members) == 0:
+            self.logger.warning(
+                "Play media requested for player %s but no member players are powered, "
+                "the request will be ignored",
+                group_player.display_name,
+            )
+            return
+
         group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
+
         # forward command to all (powered) group child's
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                player_id, only_powered=True, skip_sync_childs=True
-            ):
+            for member in active_members:
                 player_prov = self.mass.players.get_player_provider(member.player_id)
                 # we forward the stream_job to child to allow for nested groups etc
                 tg.create_task(
@@ -281,24 +302,26 @@ class UniversalGroupProvider(PlayerProvider):
             player_id, CONF_GROUPED_POWER_ON
         )
         mute_childs = self.mass.config.get_raw_player_config_value(player_id, CONF_MUTE_CHILDS, [])
-        # set mute_as_power feature for group members
-        for child_player_id in mute_childs:
-            if child_player := self.mass.players.get(child_player_id):
-                child_player.mute_as_power = powered
         group_player = self.mass.players.get(player_id)
 
         async def set_child_power(child_player: Player) -> None:
+            if not (not powered or group_power_on):
+                # do not turn on the player if not explicitly requested
+                return
+
             await self.mass.players.cmd_power(child_player.player_id, powered)
+            # (re)set mute_as_power feature for group members
+            if child_player.player_id in mute_childs:
+                child_player.mute_as_power = powered
             # set optimistic state on child player to prevent race conditions in other actions
             child_player.powered = powered
 
-        if not powered or group_power_on:
-            # turn on/off child players
-            async with asyncio.TaskGroup() as tg:
-                for member in self._get_active_members(
-                    player_id, only_powered=not powered, skip_sync_childs=False
-                ):
-                    tg.create_task(set_child_power(member))
+        # turn on/off child players
+        async with asyncio.TaskGroup() as tg:
+            for member in self._get_active_members(
+                player_id, only_powered=False, skip_sync_childs=False
+            ):
+                tg.create_task(set_child_power(member))
 
         group_player.powered = powered
         group_player.extra_data["optimistic_state"] = PlayerState.IDLE
@@ -328,13 +351,11 @@ class UniversalGroupProvider(PlayerProvider):
             player_id, only_powered=False, skip_sync_childs=False
         )
         group_player.group_childs = list(x.player_id for x in all_members)
-        # read the state from the first powered child player
+        # read the state from the first active group member
         for member in all_members:
             if member.synced_to:
                 continue
-            if not member.powered:
-                continue
-            if member.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
+            if not member.current_url or player_id not in member.current_url:
                 continue
             group_player.current_url = member.current_url
             group_player.elapsed_time = member.elapsed_time
