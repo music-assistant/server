@@ -173,6 +173,8 @@ class WebserverController(CoreController):
         routes.append(("GET", "/ws", self._handle_ws_client))
         # also host the image proxy on the webserver
         routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
+        # also host the audio preview service
+        routes.append(("GET", "/preview", self.mass.streams.serve_preview_stream))
         # start the webserver
         await self._server.setup(
             bind_ip=config.get_value(CONF_BIND_IP),

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import urllib.parse
 from contextlib import suppress
 
 from music_assistant.common.helpers.datetime import utc_timestamp
@@ -196,7 +197,11 @@ class TracksController(MediaControllerBase[Track]):
         if preview := track.metadata.preview:
             return preview
         # fallback to a preview/sample hosted by our own webserver
-        return self.mass.streams.get_preview_url(provider_instance_id_or_domain, item_id)
+        enc_track_id = urllib.parse.quote(item_id)
+        return (
+            f"{self.mass.webserver.base_url}/preview?"
+            f"provider={provider_instance_id_or_domain}&item_id={enc_track_id}"
+        )
 
     async def _match(self, db_track: Track) -> None:
         """Try to find matching track on all providers for the provided (database) track_id.

@@ -401,14 +401,6 @@ class StreamsController(CoreController):
             url += "?" + urllib.parse.urlencode(query_params)
         return url
 
-    def resolve_preview_url(self, provider_instance_id_or_domain: str, track_id: str) -> str:
-        """Return url to short preview sample."""
-        enc_track_id = urllib.parse.quote(track_id)
-        return (
-            f"{self._server.base_url}/preview?"
-            f"provider={provider_instance_id_or_domain}&item_id={enc_track_id}"
-        )
-
     async def create_multi_client_stream_job(
         self,
         queue_id: str,
