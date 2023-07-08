@@ -166,6 +166,7 @@ class UniversalGroupProvider(PlayerProvider):
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in self._get_active_members(player_id, False, False)
                 ),
+                default_value=[],
                 description="To prevent a restart of the stream, when a child player "
                 "turns on while the group is already playing, you can enable a workaround "
                 "where Music Assistant uses muting to control the group players. \n\n"
@@ -267,7 +268,7 @@ class UniversalGroupProvider(PlayerProvider):
         group_power_on = await self.mass.config.get_player_config_value(
             player_id, CONF_GROUPED_POWER_ON
         )
-        mute_childs = await self.mass.config.get_player_config_value(player_id, CONF_MUTE_CHILDS)
+        mute_childs = self.mass.config.get_raw_player_config_value(player_id, CONF_MUTE_CHILDS, [])
         # set mute_as_power feature for group members
         for child_player_id in mute_childs:
             if child_player := self.mass.players.get(child_player_id):
