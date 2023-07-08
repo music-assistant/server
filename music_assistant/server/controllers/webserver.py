@@ -83,7 +83,7 @@ class WebserverController(CoreController):
             # if a user also wants to expose a the webserver non securely on his internal
             # network he/she should open the port in the add-on config.
             internal_ip = next((x for x in await get_ips() if x.startswith("172")), await get_ip())
-            base_url = f"http://{internal_ip:8095}"
+            base_url = f"http://{internal_ip}:8095"
             return (
                 ConfigEntry(
                     key=CONF_BIND_PORT,
@@ -178,9 +178,11 @@ class WebserverController(CoreController):
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # start the webserver
+        self.publish_port = config.get_value(CONF_BIND_PORT)
+        self.publish_ip = config.get_value(CONF_BIND_IP)
         await self._server.setup(
-            bind_ip=config.get_value(CONF_BIND_IP),
-            bind_port=config.get_value(CONF_BIND_PORT),
+            bind_ip=self.publish_ip,
+            bind_port=self.publish_port,
             base_url=config.get_value(CONF_BASE_URL),
             static_routes=routes,
             # add assets subdir as static_content
