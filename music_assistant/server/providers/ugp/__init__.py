@@ -331,8 +331,6 @@ class UniversalGroupProvider(PlayerProvider):
         if powered:
             # sync all players on power on
             await self._sync_players(player_id)
-        else:
-            group_player.extra_data["optimistic_state"] = PlayerState.OFF
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -365,8 +363,7 @@ class UniversalGroupProvider(PlayerProvider):
             group_player.state = member.state
             break
         else:
-            group_player.state = PlayerState.IDLE
-            group_player.current_url = None
+            group_player.state = group_player.extra_data["optimistic_state"]
 
     async def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
         """

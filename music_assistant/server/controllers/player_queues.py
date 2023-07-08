@@ -327,7 +327,7 @@ class PlayerQueuesController(CoreController):
         """Clear all items in the queue."""
         queue = self._queues[queue_id]
         queue.radio_source = []
-        if queue.state not in (PlayerState.IDLE, PlayerState.OFF):
+        if queue.state != PlayerState.IDLE:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
         queue.current_item = None

@@ -195,11 +195,7 @@ class PlayerController(CoreController):
         # handle special mute_as_power feature
         if player.mute_as_power:
             player.powered = player.powered and not player.volume_muted
-        # set player state to off if player is not powered
-        if player.powered and player.state == PlayerState.OFF:
-            player.state = PlayerState.IDLE
-        elif not player.powered:
-            player.state = PlayerState.OFF
+
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
         new_state = self._players[player_id].to_dict()
@@ -567,7 +563,9 @@ class PlayerController(CoreController):
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
             for group_player in group_players:
-                if group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+                # if the group player's playerid is within the curtrent url,
+                # this group is definitely active
+                if player.current_url and group_player.player_id in player.current_url:
                     return group_player.player_id
             # fallback to the first powered group player
             for group_player in group_players:
