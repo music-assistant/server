@@ -340,7 +340,6 @@ class UniversalGroupProvider(PlayerProvider):
         This is used to handle special actions such as muting as power or (re)syncing.
         """
         group_player = self.mass.players.get(player_id)
-        mute_childs = self.mass.config.get_raw_player_config_value(player_id, CONF_MUTE_CHILDS, [])
 
         if not group_player.powered:
             # guard, this should be caught in the player controller but just in case...
@@ -384,7 +383,7 @@ class UniversalGroupProvider(PlayerProvider):
             not new_power
             and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
             and child_player.player_id in self.prev_sync_leaders[player_id]
-            and child_player.player_id not in mute_childs
+            and not child_player.mute_as_power
         ):
             # a sync master player turned OFF while the group player
             # should still be playing - we need to resync/resume
@@ -399,14 +398,14 @@ class UniversalGroupProvider(PlayerProvider):
         """Get (child) players attached to a grouped player."""
         child_players: list[Player] = []
         conf_members: list[str] = self.config.get_value(player_id)
-        mute_childs: list[str] = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_MUTE_CHILDS, []
-        )
         ignore_ids = set()
         for child_id in conf_members:
             if child_player := self.mass.players.get(child_id, False):
                 # work out power state
-                player_powered = True if child_id in mute_childs else child_player.powered
+                if child_player.mute_as_power:
+                    player_powered = child_player.powered and not child_player.volume_muted
+                else:
+                    player_powered = child_player.powered
                 if not (not only_powered or player_powered):
                     continue
                 if child_player.synced_to and skip_sync_childs:
