@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_GROUPED_POWER_ON,
     CONF_ENTRY_HIDE_GROUP_MEMBERS,
     CONF_ENTRY_OUTPUT_CHANNELS,
     ConfigEntry,
@@ -50,6 +49,19 @@ CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO = ConfigEntry.from_dict(
 )
 CONF_ENTRY_FORCED_FLOW_MODE = ConfigEntry.from_dict(
     {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True, "hidden": True}
+)
+CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
+    key=CONF_GROUPED_POWER_ON,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    label="Forced Power ON of all group members",
+    description="Power ON all child players when the group player is powered on "
+    "(or playback started). \n"
+    "If this setting is disabled, playback will only start on players that "
+    "are already powered ON at the time of playback start.\n"
+    "When turning OFF the group player, all group members are turned off, "
+    "regardless of this setting.",
+    advanced=False,
 )
 # ruff: noqa: ARG002
 
