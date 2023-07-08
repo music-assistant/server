@@ -10,6 +10,7 @@ import asyncio
 import inspect
 import logging
 import os
+import urllib.parse
 from collections.abc import Awaitable
 from concurrent import futures
 from contextlib import suppress
@@ -33,6 +34,7 @@ from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
 from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
+from music_assistant.server.helpers.audio import get_preview_stream
 from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
@@ -174,7 +176,7 @@ class WebserverController(CoreController):
         # also host the image proxy on the webserver
         routes.append(("GET", "/imageproxy", self.mass.metadata.handle_imageproxy))
         # also host the audio preview service
-        routes.append(("GET", "/preview", self.mass.streams.serve_preview_stream))
+        routes.append(("GET", "/preview", self.serve_preview_stream))
         # start the webserver
         await self._server.setup(
             bind_ip=config.get_value(CONF_BIND_IP),
@@ -190,6 +192,17 @@ class WebserverController(CoreController):
         for client in set(self.clients):
             await client.disconnect()
         await self._server.close()
+
+    async def serve_preview_stream(self, request: web.Request):
+        """Serve short preview sample."""
+        self._log_request(request)
+        provider_instance_id_or_domain = request.query["provider"]
+        item_id = urllib.parse.unquote(request.query["item_id"])
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
+        await resp.prepare(request)
+        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
+            await resp.write(chunk)
+        return resp
 
     async def _handle_server_info(self, request: web.Request) -> web.Response:  # noqa: ARG002
         """Handle request for server info."""
