@@ -308,11 +308,8 @@ class UniversalGroupProvider(PlayerProvider):
             if not (not powered or group_power_on):
                 # do not turn on the player if not explicitly requested
                 return
-
             await self.mass.players.cmd_power(child_player.player_id, powered)
-            # (re)set mute_as_power feature for group members
-            if child_player.player_id in mute_childs:
-                child_player.mute_as_power = powered
+
             # set optimistic state on child player to prevent race conditions in other actions
             child_player.powered = powered
 
@@ -322,6 +319,11 @@ class UniversalGroupProvider(PlayerProvider):
                 player_id, only_powered=False, skip_sync_childs=False
             ):
                 tg.create_task(set_child_power(member))
+
+        # (re)set mute_as_power feature for group members
+        for child_player_id in mute_childs:
+            if child_player := self.mass.players.get(child_player_id):
+                child_player.mute_as_power = powered
 
         group_player.powered = powered
         group_player.extra_data["optimistic_state"] = PlayerState.IDLE
