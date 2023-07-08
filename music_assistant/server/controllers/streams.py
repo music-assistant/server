@@ -38,7 +38,6 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_media_stream,
-    get_preview_stream,
     get_stream_details,
 )
 from music_assistant.server.helpers.process import AsyncProcess
@@ -330,7 +329,6 @@ class StreamsController(CoreController):
             bind_port=self.publish_port,
             base_url=f"http://{self.publish_ip}:{self.publish_port}",
             static_routes=[
-                ("GET", "/preview", self.serve_preview_stream),
                 (
                     "GET",
                     "/{queue_id}/multi/{job_id}/{player_id}/{queue_item_id}.{fmt}",
@@ -727,17 +725,6 @@ class StreamsController(CoreController):
                     # race condition
                     break
 
-        return resp
-
-    async def serve_preview_stream(self, request: web.Request):
-        """Serve short preview sample."""
-        self._log_request(request)
-        provider_instance_id_or_domain = request.query["provider"]
-        item_id = urllib.parse.unquote(request.query["item_id"])
-        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
-        await resp.prepare(request)
-        async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
-            await resp.write(chunk)
         return resp
 
     async def get_flow_stream(

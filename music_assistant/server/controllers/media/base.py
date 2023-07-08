@@ -573,7 +573,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return org_item.provider_mappings
         if overwrite and update_item.provider_mappings:
             return update_item.provider_mappings
-        return {*org_item.provider_mappings, *update_item.provider_mappings}
+        return {*update_item.provider_mappings, *org_item.provider_mappings}
 
     async def _get_artist_mappings(
         self,

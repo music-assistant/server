@@ -517,8 +517,8 @@ class MusicAssistant:
         info = ServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[await get_ip_pton(self.streams.publish_ip)],
-            port=self.streams.publish_port,
+            addresses=[await get_ip_pton(self.webserver.publish_ip)],
+            port=self.webserver.publish_port,
             properties=self.get_server_info().to_dict(),
             server="mass.local.",
         )
