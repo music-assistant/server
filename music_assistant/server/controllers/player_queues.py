@@ -539,12 +539,18 @@ class PlayerQueuesController(CoreController):
     async def on_player_register(self, player: Player) -> None:
         """Register PlayerQueue for given player/queue id."""
         queue_id = player.player_id
+        queue = None
         # try to restore previous state
         if prev_state := await self.mass.cache.get(f"queue.state.{queue_id}"):
-            queue = PlayerQueue.from_dict(prev_state)
-            prev_items = await self.mass.cache.get(f"queue.items.{queue_id}", default=[])
-            queue_items = [QueueItem.from_dict(x) for x in prev_items]
-        else:
+            try:
+                queue = PlayerQueue.from_dict(prev_state)
+                prev_items = await self.mass.cache.get(f"queue.items.{queue_id}", default=[])
+                queue_items = [QueueItem.from_dict(x) for x in prev_items]
+            except Exception as err:
+                self.logger.warning(
+                    "Failed to restore the queue(items) for %s - %s", player.display_name, str(err)
+                )
+        if queue is None:
             queue = PlayerQueue(
                 queue_id=queue_id,
                 active=False,

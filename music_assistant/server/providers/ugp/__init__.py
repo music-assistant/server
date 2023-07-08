@@ -305,15 +305,24 @@ class UniversalGroupProvider(PlayerProvider):
         group_player = self.mass.players.get(player_id)
 
         async def set_child_power(child_player: Player) -> None:
+            # do not turn on the player if not explicitly requested
+            # so either the group player turns off OR
+            # it turns ON and we have the group_power_on config option enabled
             if not (not powered or group_power_on):
-                # do not turn on the player if not explicitly requested
                 return
+            # make sure to disable the mute as power workaround,
+            # otherwise the player keeps on playing "invisible"
+            if not powered and child_player.player_id in mute_childs:
+                child_player.mute_as_power = False
+                if child_player.volume_muted:
+                    await self.mass.players.cmd_volume_mute(child_player.player_id, False)
+            # send actual power command to child player
             await self.mass.players.cmd_power(child_player.player_id, powered)
 
             # set optimistic state on child player to prevent race conditions in other actions
             child_player.powered = powered
 
-        # turn on/off child players
+        # turn on/off child players if needed
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(
                 player_id, only_powered=False, skip_sync_childs=False
