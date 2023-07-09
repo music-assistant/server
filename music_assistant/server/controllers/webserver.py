@@ -42,8 +42,9 @@ from music_assistant.server.models.core_controller import CoreController
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ConfigValueType, CoreConfig
 
-
+DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
+CONF_EXPOSE_SERVER = "expose_server"
 DEBUG = False  # Set to True to enable very verbose logging of all incoming/outgoing messages
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
@@ -76,52 +77,33 @@ class WebserverController(CoreController):
         values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
+        default_publish_ip = await get_ip()
         if self.mass.running_as_hass_addon:
-            # if we're running on the HA supervisor the webserver is secured by HA ingress
-            # we only start the webserver on the internal docker network and ingress connects
-            # to that internally and exposes the webUI securely
-            # if a user also wants to expose a the webserver non securely on his internal
-            # network he/she should open the port in the add-on config.
-            internal_ip = next((x for x in await get_ips() if x.startswith("172")), await get_ip())
-            base_url = f"http://{internal_ip}:8095"
             return (
                 ConfigEntry(
-                    key=CONF_BIND_PORT,
-                    type=ConfigEntryType.STRING,
+                    key=CONF_EXPOSE_SERVER,
+                    type=ConfigEntryType.BOOLEAN,
                     # hardcoded/static value
-                    default_value=8095,
-                    value=8095,
-                    label="TCP Port",
-                    description="",
-                    hidden=True,
-                ),
-                ConfigEntry(
-                    key=CONF_BIND_IP,
-                    type=ConfigEntryType.STRING,
-                    # hardcoded/static value
-                    default_value=internal_ip,
-                    value=internal_ip,
-                    label=CONF_BIND_IP,
-                    description="",
-                    hidden=True,
-                ),
-                ConfigEntry(
-                    key=CONF_BASE_URL,
-                    type=ConfigEntryType.STRING,
-                    # hardcoded/static value
-                    default_value=base_url,
-                    value=base_url,
-                    label=CONF_BASE_URL,
+                    default_value=False,
+                    label="Expose the webserver (port 8095)",
+                    description="By default the Music Assistant webserver "
+                    "(serving the API and frontend), runs on a protected internal network only "
+                    "and you can securely access the webinterface using "
+                    "Home Assistant's ingress service from the sidebar menu.\n\n"
+                    "By enabling this option you also allow direct access to the webserver "
+                    "from your local network, meaning you can navigate to "
+                    f"http://{default_publish_ip}:8095 to access the webinterface. \n\n"
+                    "Use this option on your own risk and never expose this port "
+                    "directly to the internet.",
                     hidden=True,
                 ),
             )
 
         # HA supervisor not present: user is responsible for securing the webserver
         # we give the tools to do so by presenting config options
-        default_ip = await get_ip()
         all_ips = await get_ips()
         default_port = await select_free_port(8095, 9200)
-        default_base_url = f"http://{default_ip}:{default_port}"
+        default_base_url = f"http://{default_publish_ip}:{default_port}"
         return (
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -180,12 +162,31 @@ class WebserverController(CoreController):
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # start the webserver
-        self.publish_port = config.get_value(CONF_BIND_PORT)
-        self.publish_ip = config.get_value(CONF_BIND_IP)
+        if self.mass.running_as_hass_addon:
+            # if we're running on the HA supervisor the webserver is secured by HA ingress
+            # we only start the webserver on the internal docker network and ingress connects
+            # to that internally and exposes the webUI securely
+            # if a user also wants to expose a the webserver non securely on his internal
+            # network he/she should explicitly do so (and know the risks)
+            default_publish_ip = await get_ip()
+            self.publish_port = DEFAULT_SERVER_PORT
+            if config.get_value(CONF_EXPOSE_SERVER):
+                bind_ip = "0.0.0.0"
+                self.publish_ip = default_publish_ip
+            else:
+                # use internal (172.x) IP
+                self.publish_ip = bind_ip = next(
+                    (x for x in await get_ips() if x.startswith("172")), default_publish_ip
+                )
+            base_url = f"http://{self.publish_ip}:{self.publish_port}"
+        else:
+            base_url = config.get_value(CONF_BASE_URL)
+            self.publish_port = config.get_value(CONF_BIND_PORT)
+            self.publish_ip = bind_ip = config.get_value(CONF_BIND_IP)
         await self._server.setup(
-            bind_ip=self.publish_ip,
+            bind_ip=bind_ip,
             bind_port=self.publish_port,
-            base_url=config.get_value(CONF_BASE_URL),
+            base_url=base_url,
             static_routes=routes,
             # add assets subdir as static_content
             static_content=("/assets", os.path.join(frontend_dir, "assets"), "assets"),
