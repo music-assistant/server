@@ -173,9 +173,9 @@ class WebserverController(CoreController):
                 bind_ip = "0.0.0.0"
                 self.publish_ip = default_publish_ip
             else:
-                # use internal (172.x) IP
+                # use internal ("172.30.32.) IP
                 self.publish_ip = bind_ip = next(
-                    (x for x in await get_ips() if x.startswith("172")), default_publish_ip
+                    (x for x in await get_ips() if x.startswith("172.30.32.")), default_publish_ip
                 )
             base_url = f"http://{self.publish_ip}:{self.publish_port}"
         else:
