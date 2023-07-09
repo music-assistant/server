@@ -88,6 +88,13 @@ def catch_request_errors(
         """Catch UpnpError errors and check availability before and after request."""
         player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         dlna_player = self.dlnaplayers[player_id]
+        self.logger.debug(
+            "Handling command %s for player %s - using args: %s %s",
+            func.__name__,
+            dlna_player.player.display_name,
+            str(args),
+            str(kwargs),
+        )
         if not dlna_player.available:
             self.logger.warning("Device disappeared when trying to call %s", func.__name__)
             return None
