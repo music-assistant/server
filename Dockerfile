@@ -20,6 +20,15 @@ RUN set -x \
         cargo \
         git
 
+# build jemalloc
+ARG JEMALLOC_VERSION=5.3.0
+RUN curl -L -s https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2 \
+        | tar -xjf - -C /tmp \
+    && cd /tmp/jemalloc-${JEMALLOC_VERSION} \
+    && ./configure \
+    && make \
+    && make install
+
 WORKDIR /wheels
 COPY requirements_all.txt .
 
@@ -43,6 +52,7 @@ RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
 #####################################################################
 FROM python:${PYTHON_VERSION}-slim AS final-build
 WORKDIR /app
+COPY --from=wheels-builder /usr/local/lib/libjemalloc.so /usr/local/lib/libjemalloc.so
 
 RUN set -x \
     && apt-get update \
