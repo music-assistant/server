@@ -73,6 +73,9 @@ jobs:
           else
             echo "channel=stable" >> $GITHUB_OUTPUT
           fi
+      - name: Install tomli
+        run: >-
+          pip install tomli tomli-w
       - name: Set Python project version from tag
         shell: python
         run: |-
