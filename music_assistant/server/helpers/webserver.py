@@ -3,8 +3,12 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Awaitable, Callable
+from typing import Final
 
 from aiohttp import web
+
+MAX_CLIENT_SIZE: Final = 1024**2 * 16
+MAX_LINE_SIZE: Final = 24570
 
 
 class Webserver:
@@ -37,8 +41,15 @@ class Webserver:
         self._base_url = base_url[:-1] if base_url.endswith("/") else base_url
         self._bind_port = bind_port
         self._static_routes = static_routes
-        self._webapp = web.Application(logger=self.logger)
-        self.logger.debug("Starting server on  %s:%s - base url: %s", bind_ip, bind_port, base_url)
+        self._webapp = web.Application(
+            logger=self.logger,
+            client_max_size=MAX_CLIENT_SIZE,
+            handler_args={
+                "max_line_size": MAX_LINE_SIZE,
+                "max_field_size": MAX_LINE_SIZE,
+            },
+        )
+        self.logger.info("Starting server on  %s:%s - base url: %s", bind_ip, bind_port, base_url)
         self._apprunner = web.AppRunner(self._webapp, access_log=None)
         # add static routes
         if self._static_routes:
@@ -54,7 +65,9 @@ class Webserver:
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
         host = None if bind_ip == "0.0.0.0" else bind_ip
-        self._tcp_site = web.TCPSite(self._apprunner, host=host, port=bind_port)
+        self._tcp_site = web.TCPSite(
+            self._apprunner, host=host, port=bind_port, shutdown_timeout=10
+        )
         await self._tcp_site.start()
 
     async def close(self) -> None:
