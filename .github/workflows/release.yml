@@ -85,7 +85,7 @@ jobs:
           with open("pyproject.toml", "rb") as f:
             pyproject = tomli.load(f)
 
-          pyproject["project"]["version"] = "${{ steps.vars.outputs.tag }}"
+          pyproject["project"]["version"] = "${{ needs.build-and-publish-pypi.outputs.version }}"
 
           with open("pyproject.toml", "wb") as f:
             tomli_w.dump(pyproject, f)
