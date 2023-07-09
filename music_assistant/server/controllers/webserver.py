@@ -199,7 +199,6 @@ class WebserverController(CoreController):
 
     async def serve_preview_stream(self, request: web.Request):
         """Serve short preview sample."""
-        self._log_request(request)
         provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
         resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
