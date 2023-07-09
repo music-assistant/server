@@ -38,7 +38,7 @@ class Webserver:
         self._bind_port = bind_port
         self._static_routes = static_routes
         self._webapp = web.Application(logger=self.logger)
-        self.logger.info("Starting server on  %s:%s", bind_ip, bind_port)
+        self.logger.debug("Starting server on  %s:%s - base url: %s", bind_ip, bind_port, base_url)
         self._apprunner = web.AppRunner(self._webapp, access_log=None)
         # add static routes
         if self._static_routes:
