@@ -95,7 +95,6 @@ class WebserverController(CoreController):
                     f"http://{default_publish_ip}:8095 to access the webinterface. \n\n"
                     "Use this option on your own risk and never expose this port "
                     "directly to the internet.",
-                    hidden=True,
                 ),
             )
 
