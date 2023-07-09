@@ -95,7 +95,6 @@ class WebserverController(CoreController):
                     f"http://{default_publish_ip}:8095 to access the webinterface. \n\n"
                     "Use this option on your own risk and never expose this port "
                     "directly to the internet.",
-                    hidden=True,
                 ),
             )
 
@@ -174,9 +173,9 @@ class WebserverController(CoreController):
                 bind_ip = "0.0.0.0"
                 self.publish_ip = default_publish_ip
             else:
-                # use internal (172.x) IP
+                # use internal ("172.30.32.) IP
                 self.publish_ip = bind_ip = next(
-                    (x for x in await get_ips() if x.startswith("172")), default_publish_ip
+                    (x for x in await get_ips() if x.startswith("172.30.32.")), default_publish_ip
                 )
             base_url = f"http://{self.publish_ip}:{self.publish_port}"
         else:
