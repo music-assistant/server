@@ -16,6 +16,7 @@ faust-cchardet>=2.1.18
 git+https://github.com/gieljnssns/python-radios.git@main
 git+https://github.com/jozefKruszynski/python-tidal.git@refs/heads/album-type-with-fix
 git+https://github.com/pytube/pytube.git@refs/pull/1680/head
+ifaddr==0.2.0
 mashumaro==3.7
 memory-tempfile==2.2.3
 music-assistant-frontend==2.0.1

@@ -5,7 +5,6 @@ import asyncio
 import importlib
 import logging
 import platform
-import socket
 import tempfile
 import urllib.error
 import urllib.parse
@@ -15,6 +14,7 @@ from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from typing import TYPE_CHECKING
 
+import ifaddr
 import memory_tempfile
 
 if TYPE_CHECKING:
@@ -54,17 +54,19 @@ async def get_package_version(pkg_name: str) -> str:
         return "0.0.0"
 
 
-async def get_ips(include_ipv6: bool = False) -> set[str]:
+async def get_ips(include_ipv6: bool = False, ignore_loopback: bool = True) -> set[str]:
     """Return all IP-adresses of all network interfaces."""
 
     def call() -> set[str]:
         result: set[str] = set()
-        for item in socket.getaddrinfo(socket.gethostname(), None):
-            protocol, *_, (ip, *_) = item
-            if protocol == socket.AddressFamily.AF_INET or (
-                include_ipv6 and protocol == socket.AddressFamily.AF_INET6
-            ):
-                result.add(ip)
+        adapters = ifaddr.get_adapters()
+        for adapter in adapters:
+            for ip in adapter.ips:
+                if ip.is_IPv6 and not include_ipv6:
+                    continue
+                if ip.ip == "127.0.0.1" and ignore_loopback:
+                    continue
+                result.add(ip.ip)
         return result
 
     return await asyncio.to_thread(call)

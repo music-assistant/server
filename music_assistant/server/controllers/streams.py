@@ -18,7 +18,11 @@ import shortuuid
 from aiohttp import web
 
 from music_assistant.common.helpers.util import get_ip, select_free_port
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import ConfigEntryType, ContentType
 from music_assistant.common.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
@@ -33,6 +37,7 @@ from music_assistant.constants import (
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
     CONF_OUTPUT_CODEC,
+    CONF_PUBLISH_IP,
 )
 from music_assistant.server.helpers.audio import (
     check_audio_support,
@@ -41,6 +46,7 @@ from music_assistant.server.helpers.audio import (
     get_stream_details,
 )
 from music_assistant.server.helpers.process import AsyncProcess
+from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
@@ -279,6 +285,7 @@ class StreamsController(CoreController):
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         default_ip = await get_ip()
+        all_ips = await get_ips()
         default_port = await select_free_port(8096, 9200)
         return (
             ConfigEntry(
@@ -291,15 +298,26 @@ class StreamsController(CoreController):
                 "on the given IP and TCP port by players on the local network.",
             ),
             ConfigEntry(
-                key=CONF_BIND_IP,
+                key=CONF_PUBLISH_IP,
                 type=ConfigEntryType.STRING,
                 default_value=default_ip,
-                label="Bind to IP/interface",
-                description="Start the streamserver on this specific interface. \n"
-                "This IP address is communicated to players where to find this server. "
+                label="Published IP address",
+                description="This IP address is communicated to players where to find this server. "
                 "Override the default in advanced scenarios, such as multi NIC configurations. \n"
                 "Make sure that this server can be reached "
                 "on the given IP and TCP port by players on the local network. \n"
+                "This is an advanced setting that should normally "
+                "not be adjusted in regular setups.",
+                advanced=True,
+            ),
+            ConfigEntry(
+                key=CONF_BIND_IP,
+                type=ConfigEntryType.STRING,
+                default_value="0.0.0.0",
+                options=(ConfigValueOption(x, x) for x in {"0.0.0.0", *all_ips}),
+                label="Bind to IP/interface",
+                description="Start the stream server on this specific interface. \n"
+                "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
                 advanced=True,
@@ -323,9 +341,9 @@ class StreamsController(CoreController):
         )
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
-        self.publish_ip = config.get_value(CONF_BIND_IP)
+        self.publish_ip = config.get_value(CONF_PUBLISH_IP)
         await self._server.setup(
-            bind_ip=self.publish_ip,
+            bind_ip=config.get_value(CONF_BIND_IP),
             bind_port=self.publish_port,
             base_url=f"http://{self.publish_ip}:{self.publish_port}",
             static_routes=[
