@@ -18,7 +18,8 @@ RUN set -x \
         build-essential \
         libffi-dev \
         cargo \
-        git
+        git \
+        curl
 
 # build jemalloc
 ARG JEMALLOC_VERSION=5.3.0
