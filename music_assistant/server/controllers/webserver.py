@@ -28,7 +28,7 @@ from music_assistant.common.models.api import (
     MessageType,
     SuccessResultMessage,
 )
-from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import InvalidCommand
 from music_assistant.common.models.event import MassEvent
@@ -119,6 +119,7 @@ class WebserverController(CoreController):
         # HA supervisor not present: user is responsible for securing the webserver
         # we give the tools to do so by presenting config options
         default_ip = await get_ip()
+        all_ips = await get_ips()
         default_port = await select_free_port(8095, 9200)
         default_base_url = f"http://{default_ip}:{default_port}"
         return (
@@ -142,6 +143,7 @@ class WebserverController(CoreController):
                 key=CONF_BIND_IP,
                 type=ConfigEntryType.STRING,
                 default_value="0.0.0.0",
+                options=(ConfigValueOption(x, x) for x in {"0.0.0.0", *all_ips}),
                 label="Bind to IP/interface",
                 description="Start the (web)server on this specific interface. \n"
                 "Use 0.0.0.0 to bind to all interfaces. \n"
