@@ -73,6 +73,19 @@ jobs:
           else
             echo "channel=stable" >> $GITHUB_OUTPUT
           fi
+      - name: Set Python project version from tag
+        shell: python
+        run: |-
+          import tomli
+          import tomli_w
+
+          with open("pyproject.toml", "rb") as f:
+            pyproject = tomli.load(f)
+
+          pyproject["project"]["version"] = "${{ steps.vars.outputs.tag }}"
+
+          with open("pyproject.toml", "wb") as f:
+            tomli_w.dump(pyproject, f)
       - name: Build and Push
         uses: docker/build-push-action@v4.1.1
         with:

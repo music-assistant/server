@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 ARG TARGETPLATFORM="linux/amd64"
-ARG MASS_VERSION="2.0.0b43"
+ARG BUILD_VERSION=latest
 ARG PYTHON_VERSION="3.11"
 
 #####################################################################
@@ -28,7 +28,13 @@ COPY requirements_all.txt .
 RUN set -x \
     && pip install --upgrade pip \
     && pip install build maturin \
-    && pip wheel -r requirements_all.txt -w /wheels
+    && pip wheel -r requirements_all.txt
+
+# build music assistant wheel
+COPY music_assistant music_assistant
+COPY pyproject.toml .
+COPY MANIFEST.in .
+RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
 
 #####################################################################
 #                                                                   #
@@ -63,16 +69,15 @@ RUN set -x \
 RUN --mount=type=bind,target=/tmp/wheels,source=/wheels,from=wheels-builder,rw \
     set -x \
     && pip install --upgrade pip \
-    && pip install --no-cache-dir /tmp/wheels/*.whl \
-    && pip install --no-cache-dir "music-assistant[server]==${MASS_VERSION}"
+    && pip install --no-cache-dir /tmp/wheels/*.whl
 
 # Required to persist build arg
-ARG MASS_VERSION
+ARG BUILD_VERSION
 ARG TARGETPLATFORM
 
 # Set some labels for the Home Assistant add-on
 LABEL \
-    io.hass.version=${MASS_VERSION} \
+    io.hass.version=${BUILD_VERSION} \
     io.hass.name="Music Assistant" \
     io.hass.description="Music Assistant Server/Core" \
     io.hass.platform="${TARGETPLATFORM}" \
