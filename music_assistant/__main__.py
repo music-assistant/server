@@ -5,6 +5,7 @@ import argparse
 import asyncio
 import logging
 import os
+import subprocess
 import sys
 import threading
 from contextlib import suppress
@@ -23,6 +24,7 @@ FORMAT_DATE: Final = "%Y-%m-%d"
 FORMAT_TIME: Final = "%H:%M:%S"
 FORMAT_DATETIME: Final = f"{FORMAT_DATE} {FORMAT_TIME}"
 MAX_LOG_FILESIZE = 1000000 * 10  # 10 MB
+ALPINE_RELEASE_FILE = "/etc/alpine-release"
 
 
 def get_arguments():
@@ -123,6 +125,19 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     return logger
 
 
+def _enable_posix_spawn() -> None:
+    """Enable posix_spawn on Alpine Linux."""
+    # pylint: disable=protected-access
+    if subprocess._USE_POSIX_SPAWN:
+        return
+
+    # The subprocess module does not know about Alpine Linux/musl
+    # and will use fork() instead of posix_spawn() which significantly
+    # less efficient. This is a workaround to force posix_spawn()
+    # on Alpine Linux which is supported by musl.
+    subprocess._USE_POSIX_SPAWN = os.path.exists(ALPINE_RELEASE_FILE)
+
+
 def main():
     """Start MusicAssistant."""
     # parse arguments
@@ -145,6 +160,9 @@ def main():
     # setup logger
     logger = setup_logger(data_dir, log_level)
     mass = MusicAssistant(data_dir)
+
+    # enable alpine subprocess workaround
+    _enable_posix_spawn()
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")
