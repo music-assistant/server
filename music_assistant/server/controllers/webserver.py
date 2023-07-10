@@ -154,6 +154,8 @@ class WebserverController(CoreController):
         routes.append(("GET", "/", handler))
         # add info
         routes.append(("GET", "/info", self._handle_server_info))
+        # add logging
+        routes.append(("GET", "/log", self._handle_application_log))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
         # also host the image proxy on the webserver
@@ -218,6 +220,11 @@ class WebserverController(CoreController):
             return await connection.handle_client()
         finally:
             self.clients.remove(connection)
+
+    async def _handle_application_log(self, request: web.Request) -> web.Response:  # noqa: ARG002
+        """Handle request to get the application log."""
+        log_data = await self.mass.get_application_log()
+        return web.Response(text=log_data, content_type="text/text")
 
 
 class WebSocketLogAdapter(logging.LoggerAdapter):

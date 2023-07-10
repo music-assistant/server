@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import logging
 import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from dataclasses import dataclass, field
@@ -217,10 +216,6 @@ class DLNAPlayerProvider(PlayerProvider):
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
         self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
-        # silence the async_upnp_client logger a bit
-        logging.getLogger("async_upnp_client").setLevel(logging.INFO)
-        logging.getLogger("charset_normalizer").setLevel(logging.INFO)
-
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
         self.mass.create_task(self._run_discovery())

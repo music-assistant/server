@@ -9,6 +9,7 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import aiofiles
 from aiohttp import ClientSession, TCPConnector
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
@@ -144,8 +145,9 @@ class MusicAssistant:
         for task in self._tracked_tasks.values():
             task.cancel()
         # cleanup all providers
-        for prov_id in list(self._providers.keys()):
-            asyncio.create_task(self.unload_provider(prov_id))
+        async with asyncio.TaskGroup() as tg:
+            for prov_id in list(self._providers.keys()):
+                tg.create_task(self.unload_provider(prov_id))
         # stop core controllers
         await self.streams.close()
         await self.webserver.close()
@@ -192,6 +194,13 @@ class MusicAssistant:
         return [
             x for x in self._providers.values() if provider_type is None or provider_type == x.type
         ]
+
+    @api_command("logging/get")
+    async def get_application_log(self) -> str:
+        """Return the application log from file."""
+        logfile = os.path.join(self.storage_path, "logs", "musicassistant.log")
+        async with aiofiles.open(logfile, "r") as _file:
+            return await _file.read()
 
     @property
     def providers(self) -> list[ProviderInstanceType]:
