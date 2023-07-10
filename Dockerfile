@@ -1,15 +1,13 @@
 # syntax=docker/dockerfile:1
-ARG BUILD_ARCH="aarch64"
-ARG MASS_VERSION="2.0.0b51"
+ARG MASS_VERSION
+ARG BUILD_ARCH
 ARG PYTHON_VERSION="3.11"
 ARG BASE_IMAGE_VERSION="3.11-alpine3.18"
 
-FROM ghcr.io/home-assistant/${BUILD_ARCH}-base-python:${BASE_IMAGE_VERSION}
+FROM ghcr.io/home-assistant/$BUILD_ARCH-base-python:${BASE_IMAGE_VERSION}
 
 ENV S6_SERVICES_GRACETIME=220000
 ENV WHEELS_LINKS="https://wheels.home-assistant.io/musllinux/"
-ARG MASS_VERSION="2.0.0b51"
-ARG QEMU_CPU
 
 WORKDIR /usr/src
 
@@ -53,9 +51,6 @@ LABEL \
     io.hass.type="addon"
 
 VOLUME [ "/data" ]
-
-ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2
-ENV MALLOC_CONF="background_thread:true,metadata_thp:auto,dirty_decay_ms:20000,muzzy_decay_ms:20000"
 
 # S6-Overlay
 COPY rootfs /
