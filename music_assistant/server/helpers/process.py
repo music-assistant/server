@@ -45,13 +45,6 @@ class AsyncProcess:
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
             close_fds=True,
         )
-
-        # Fix BrokenPipeError due to a race condition
-        # by attaching a default done callback
-        def _done_cb(fut: asyncio.Future):
-            fut.exception()
-
-        self._proc._transport._protocol._stdin_closed.add_done_callback(_done_cb)
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
