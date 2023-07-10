@@ -183,6 +183,8 @@ class LmsCli:
             while True:
                 raw_request = await reader.readline()
                 raw_request = raw_request.strip().decode("utf-8")
+                if not raw_request:
+                    break
                 # request comes in as url encoded strings, separated by space
                 raw_params = [urllib.parse.unquote(x) for x in raw_request.split(" ")]
                 # the first param is either a macaddress or a command
