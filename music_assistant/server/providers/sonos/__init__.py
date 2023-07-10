@@ -9,6 +9,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import soco
+from soco import config
 from soco.events_base import Event as SonosEvent
 from soco.events_base import SubscriptionBase
 from soco.groups import ZoneGroup
@@ -35,6 +36,10 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
 )
+
+# set event listener port to something other than 1400
+# to allow coextistence with HA on the same host
+config.EVENT_LISTENER_PORT = 1700
 
 
 async def setup(
