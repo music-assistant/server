@@ -7,7 +7,6 @@ https://github.com/philippe44/LMS-Raop
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import platform
 import xml.etree.ElementTree as ET  # noqa: N817
@@ -352,6 +351,7 @@ class AirplayProvider(PlayerProvider):
             self._config_file,
         )
         conf_log_level = self.config.get_value(CONF_LOG_LEVEL)
+        enable_debug_log = conf_log_level == "DEBUG"
         args = [
             self._bridge_bin,
             "-s",
@@ -361,7 +361,7 @@ class AirplayProvider(PlayerProvider):
             "-I",
             "-Z",
             "-d",
-            f'all={conf_log_level.replace("ing", "")}',
+            f'all={"debug" if enable_debug_log else "warn"}',
             # filter out apple tv's for now until we fix auth
             "-m",
             "apple-tv,appletv",
@@ -485,10 +485,7 @@ class AirplayProvider(PlayerProvider):
         bridge_logger = self.logger.getChild("squeeze2raop")
         while self._bridge_proc.returncode is None:
             async for line in self._bridge_proc.stdout:
-                if self.logger.level >= logging.INFO:
-                    bridge_logger.info(line.decode().strip())
-                else:
-                    bridge_logger.debug(line.decode().strip())
+                bridge_logger.debug(line.decode().strip())
 
     def restart_bridge(self) -> None:
         """Schedule restart of bridge process."""
