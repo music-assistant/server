@@ -8,17 +8,12 @@ import os
 import time
 from collections import OrderedDict
 from collections.abc import Iterator, MutableMapping
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Final
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.constants import (
-    DB_TABLE_CACHE,
-    DB_TABLE_SETTINGS,
-    ROOT_LOGGER_NAME,
-    SCHEMA_VERSION,
-)
+from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
 
@@ -27,6 +22,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
+DB_SCHEMA_VERSION: Final[int] = 22
 
 
 class CacheController(CoreController):
@@ -182,14 +178,14 @@ class CacheController(CoreController):
         except (KeyError, ValueError):
             prev_version = 0
 
-        if prev_version not in (0, SCHEMA_VERSION):
+        if prev_version not in (0, DB_SCHEMA_VERSION):
             LOGGER.info(
                 "Performing database migration from %s to %s",
                 prev_version,
-                SCHEMA_VERSION,
+                DB_SCHEMA_VERSION,
             )
 
-            if prev_version < SCHEMA_VERSION:
+            if prev_version < DB_SCHEMA_VERSION:
                 # for now just keep it simple and just recreate the table(s)
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
 
@@ -199,7 +195,7 @@ class CacheController(CoreController):
         # store current schema version
         await self.database.insert_or_replace(
             DB_TABLE_SETTINGS,
-            {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
+            {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
         # compact db
         await self.database.execute("VACUUM")

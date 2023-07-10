@@ -205,11 +205,6 @@ class ChromecastProvider(PlayerProvider):
                 content_type=f'audio/{url.split(".")[-1].split("?")[0]}',
                 title="Music Assistant",
                 thumb=MASS_LOGO_ONLINE,
-                media_info={
-                    "customData": {
-                        "queue_item_id": "flow",
-                    }
-                },
             )
             return
 
