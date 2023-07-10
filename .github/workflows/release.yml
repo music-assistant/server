@@ -51,6 +51,9 @@ jobs:
       packages: write
     needs: build-and-publish-pypi
     steps:
+      - name: Sleep for 60 seconds (to prevent race condition with the pypi upload)
+        run: sleep 60s
+        shell: bash
       - uses: actions/checkout@v3.5.3
       - name: Log in to the GitHub container registry
         uses: docker/login-action@v2.2.0
