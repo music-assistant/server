@@ -1,100 +1,63 @@
 # syntax=docker/dockerfile:1
-ARG TARGETPLATFORM="linux/amd64"
-ARG BUILD_VERSION=latest
+ARG BUILD_ARCH="aarch64"
+ARG MASS_VERSION="2.0.0b51"
 ARG PYTHON_VERSION="3.11"
+ARG BASE_IMAGE_VERSION="3.11-alpine3.18"
 
-#####################################################################
-#                                                                   #
-# Build Wheels                                                      #
-#                                                                   #
-#####################################################################
-FROM python:${PYTHON_VERSION}-slim as wheels-builder
-ARG TARGETPLATFORM
+FROM ghcr.io/home-assistant/${BUILD_ARCH}-base-python:${BASE_IMAGE_VERSION}
 
-# Install buildtime packages
-RUN set -x \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        build-essential \
-        libffi-dev \
-        cargo \
-        git \
-        curl
+ENV S6_SERVICES_GRACETIME=220000
+ENV WHEELS_LINKS="https://wheels.home-assistant.io/musllinux/"
+ARG MASS_VERSION="2.0.0b51"
+ARG QEMU_CPU
 
-# build jemalloc
-ARG JEMALLOC_VERSION=5.3.0
-RUN curl -L -s https://github.com/jemalloc/jemalloc/releases/download/${JEMALLOC_VERSION}/jemalloc-${JEMALLOC_VERSION}.tar.bz2 \
-        | tar -xjf - -C /tmp \
-    && cd /tmp/jemalloc-${JEMALLOC_VERSION} \
-    && ./configure \
-    && make \
-    && make install
+WORKDIR /usr/src
 
-WORKDIR /wheels
-COPY requirements_all.txt .
-
-
-# build python wheels for all dependencies
-RUN set -x \
-    && pip install --upgrade pip \
-    && pip install build maturin \
-    && pip wheel -r requirements_all.txt
-
-# build music assistant wheel
-COPY music_assistant music_assistant
-COPY pyproject.toml .
-COPY MANIFEST.in .
-RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
-
-#####################################################################
-#                                                                   #
-# Final Image                                                       #
-#                                                                   #
-#####################################################################
-FROM python:${PYTHON_VERSION}-slim AS final-build
-WORKDIR /app
-COPY --from=wheels-builder /usr/local/lib/libjemalloc.so /usr/local/lib/libjemalloc.so
-
-RUN set -x \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends \
-        ca-certificates \
-        curl \
+# Install OS requirements
+RUN apk update \
+    && apk add --no-cache \
         git \
         wget \
-        tzdata \
         ffmpeg \
-        libsox-fmt-all \
-        libsox3 \
         sox \
         cifs-utils \
-        libnfs-utils \
-        libjemalloc2 \
-    # cleanup
-    && rm -rf /tmp/* \
-    && rm -rf /var/lib/apt/lists/*
+        nfs-utils
 
+## Setup Core dependencies
+COPY requirements_all.txt .
+RUN pip3 install \
+    --no-cache-dir \
+    --only-binary=:all: \
+    --find-links ${WHEELS_LINKS} \
+    -r requirements_all.txt
 
-# https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/syntax.md#build-mounts-run---mount
-# Install all built wheels
-RUN --mount=type=bind,target=/tmp/wheels,source=/wheels,from=wheels-builder,rw \
-    set -x \
-    && pip install --upgrade pip \
-    && pip install --no-cache-dir /tmp/wheels/*.whl
+# Install Music Assistant
+RUN pip3 install \
+        --no-cache-dir \
+        music-assistant[server]==${MASS_VERSION} \
+    && python3 -m compileall music-assistant
 
-# Required to persist build arg
-ARG BUILD_VERSION
-ARG TARGETPLATFORM
-
-# Set some labels for the Home Assistant add-on
+# Set some labels
 LABEL \
-    io.hass.version=${BUILD_VERSION} \
+    org.opencontainers.image.title="Music Assistant" \
+    org.opencontainers.image.description="Music Assistant Server/Core" \
+    org.opencontainers.image.source="https://github.com/music-assistant/server" \
+    org.opencontainers.image.authors="The Music Assistant Team" \
+    org.opencontainers.image.documentation="https://github.com/orgs/music-assistant/discussions" \
+    org.opencontainers.image.licenses="Apache License 2.0" \
+    io.hass.version=${MASS_VERSION} \
+    io.hass.type="addon" \
     io.hass.name="Music Assistant" \
     io.hass.description="Music Assistant Server/Core" \
-    io.hass.platform="${TARGETPLATFORM}" \
+    io.hass.platform="linux/${BUILD_ARCH}" \
     io.hass.type="addon"
 
 VOLUME [ "/data" ]
 
-ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so
-ENTRYPOINT ["mass", "--config", "/data"]
+ENV LD_PRELOAD=/usr/local/lib/libjemalloc.so.2
+ENV MALLOC_CONF="background_thread:true,metadata_thp:auto,dirty_decay_ms:20000,muzzy_decay_ms:20000"
+
+# S6-Overlay
+COPY rootfs /
+
+WORKDIR /data
