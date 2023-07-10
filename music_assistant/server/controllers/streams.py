@@ -624,7 +624,7 @@ class StreamsController(CoreController):
             iterator = (
                 ffmpeg_proc.iter_chunked(icy_meta_interval)
                 if enable_icy
-                else ffmpeg_proc.iter_chunked(128000)
+                else ffmpeg_proc.iter_chunked(256000)
             )
             async for chunk in iterator:
                 try:
