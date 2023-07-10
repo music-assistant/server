@@ -20,13 +20,6 @@ from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server import MusicAssistant
 from music_assistant.server.helpers.logging import activate_log_queue_handler
 
-try:
-    import uvloop  # noqa: F401
-
-    USE_UVLOOP = True
-except ImportError:
-    USE_UVLOOP = False
-
 FORMAT_DATE: Final = "%Y-%m-%d"
 FORMAT_TIME: Final = "%H:%M:%S"
 FORMAT_DATETIME: Final = f"{FORMAT_DATE} {FORMAT_TIME}"
@@ -184,7 +177,7 @@ def main():
 
     run(
         start_mass(),
-        use_uvloop=USE_UVLOOP,
+        use_uvloop=True,
         shutdown_callback=on_shutdown,
         executor_workers=64,
     )

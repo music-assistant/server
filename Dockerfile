@@ -1,42 +1,90 @@
 # syntax=docker/dockerfile:1
-ARG BUILD_ARCH
-ARG BASE_IMAGE_VERSION="3.11-alpine3.18"
+ARG TARGETPLATFORM
+ARG PYTHON_VERSION="3.11"
 
-FROM ghcr.io/home-assistant/$BUILD_ARCH-base-python:${BASE_IMAGE_VERSION}
+#####################################################################
+#                                                                   #
+# Build Wheels                                                      #
+#                                                                   #
+#####################################################################
+FROM python:${PYTHON_VERSION}-slim as wheels-builder
+ARG TARGETPLATFORM
 
-ARG MASS_VERSION
-ENV S6_SERVICES_GRACETIME=220000
-ENV WHEELS_LINKS="https://wheels.home-assistant.io/musllinux/"
-ARG UVLOOP_VERSION="0.17.0"
+# Install buildtime packages
+RUN set -x \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        build-essential \
+        libffi-dev \
+        cargo \
+        git \
+        curl
 
-WORKDIR /usr/src
+WORKDIR /wheels
+COPY requirements_all.txt .
 
-# Install OS requirements
-RUN apk update \
-    && apk add --no-cache \
+
+# build python wheels for all dependencies
+RUN set -x \
+    && pip install --upgrade pip \
+    && pip install build maturin \
+    && pip wheel -r requirements_all.txt
+
+# build music assistant wheel
+COPY music_assistant music_assistant
+COPY pyproject.toml .
+COPY MANIFEST.in .
+RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
+
+#####################################################################
+#                                                                   #
+# Final Image                                                       #
+#                                                                   #
+#####################################################################
+FROM python:${PYTHON_VERSION}-slim AS final-build
+WORKDIR /app
+
+RUN set -x \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        ca-certificates \
+        curl \
         git \
         wget \
+        tzdata \
         ffmpeg \
+        libsox-fmt-all \
+        libsox3 \
         sox \
         cifs-utils \
-        nfs-utils
+        libnfs-utils \
+        libjemalloc2 \
+    # cleanup
+    && rm -rf /tmp/* \
+    && rm -rf /var/lib/apt/lists/*
 
-## Setup Core dependencies
-COPY requirements_all.txt .
-RUN pip3 install \
-    --no-cache-dir \
-    --only-binary=:all: \
-    --find-links ${WHEELS_LINKS} \
-    -r requirements_all.txt
 
-# Install Music Assistant
+# https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/syntax.md#build-mounts-run---mount
+# Install all built wheels
+RUN --mount=type=bind,target=/tmp/wheels,source=/wheels,from=wheels-builder,rw \
+    set -x \
+    && pip install --upgrade pip \
+    && pip install --no-cache-dir /tmp/wheels/*.whl
+
+# Install Music Assistant from published wheel
 RUN pip3 install \
         --no-cache-dir \
         music-assistant[server]==${MASS_VERSION} \
     && python3 -m compileall music-assistant
 
-# Install optional uvloop if possible (will fail on armv7)
-RUN pip3 install --no-cache-dir uvloop==${UVLOOP_VERSION}; exit 0
+# Enable jemalloc
+RUN \
+    export LD_PRELOAD="$(find /usr/lib/ -name *libjemalloc.so.2)" \
+    export MALLOC_CONF="background_thread:true,metadata_thp:auto,dirty_decay_ms:20000,muzzy_decay_ms:20000"
+
+# Required to persist build arg
+ARG MASS_VERSION
+ARG TARGETPLATFORM
 
 # Set some labels
 LABEL \
@@ -46,16 +94,13 @@ LABEL \
     org.opencontainers.image.authors="The Music Assistant Team" \
     org.opencontainers.image.documentation="https://github.com/orgs/music-assistant/discussions" \
     org.opencontainers.image.licenses="Apache License 2.0" \
-    io.hass.version=${MASS_VERSION} \
+    io.hass.version="${MASS_VERSION}" \
     io.hass.type="addon" \
     io.hass.name="Music Assistant" \
     io.hass.description="Music Assistant Server/Core" \
-    io.hass.platform="linux/${BUILD_ARCH}" \
+    io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"
 
 VOLUME [ "/data" ]
 
-# S6-Overlay
-COPY rootfs /
-
-WORKDIR /data
+ENTRYPOINT ["mass", "--config", "/data"]
