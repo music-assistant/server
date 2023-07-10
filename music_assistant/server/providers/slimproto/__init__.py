@@ -224,9 +224,13 @@ class SlimprotoProvider(PlayerProvider):
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
+        if getattr(self, "_virtual_providers", None):
+            raise RuntimeError("Virtual providers loaded")
         if hasattr(self, "_socket_clients"):
             for client in list(self._socket_clients.values()):
-                client.disconnect()
+                with suppress(RuntimeError):
+                    # this may fail due to a race condition sometimes
+                    client.disconnect()
         self._socket_clients = {}
         if hasattr(self, "_socket_servers"):
             for _server in self._socket_servers:
@@ -772,7 +776,8 @@ class SlimprotoProvider(PlayerProvider):
         if existing := self._socket_clients.pop(player_id, None):
             # race condition: new socket client connected while
             # the old one has not yet been cleaned up
-            existing.disconnect()
+            with suppress(RuntimeError):
+                existing.disconnect()
 
         self._socket_clients[player_id] = client
         # update all attributes

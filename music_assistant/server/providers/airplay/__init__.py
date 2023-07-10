@@ -7,6 +7,7 @@ https://github.com/philippe44/LMS-Raop
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import platform
 import xml.etree.ElementTree as ET  # noqa: N817
@@ -23,7 +24,7 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -116,6 +117,7 @@ class AirplayProvider(PlayerProvider):
     _timer_handle: asyncio.TimerHandle | None = None
     _closing: bool = False
     _config_file: str | None = None
+    _log_reader_task: asyncio.Task | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -349,6 +351,7 @@ class AirplayProvider(PlayerProvider):
             "Starting Airplay bridge using config file %s",
             self._config_file,
         )
+        conf_log_level = self.config.get_value(CONF_LOG_LEVEL)
         args = [
             self._bridge_bin,
             "-s",
@@ -358,21 +361,20 @@ class AirplayProvider(PlayerProvider):
             "-I",
             "-Z",
             "-d",
-            "all=warn",
+            f'all={conf_log_level.replace("ing", "")}',
             # filter out apple tv's for now until we fix auth
             "-m",
             "apple-tv,appletv",
-            # enable terminate on exit otherwise exists are soooo slooooowwww
-            "-k",
         ]
         start_success = False
         while True:
             try:
                 self._bridge_proc = await asyncio.create_subprocess_shell(
                     " ".join(args),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
                 )
+                self._log_reader_task = asyncio.create_task(self._log_reader())
                 await self._bridge_proc.wait()
             except Exception as err:
                 if not start_success:
@@ -394,6 +396,8 @@ class AirplayProvider(PlayerProvider):
                 self.logger.debug("Bridge process stopped.")
             except ProcessLookupError:
                 pass
+        if self._log_reader_task and not self._log_reader_task.done():
+            self._log_reader_task.cancel()
 
     async def _check_config_xml(self, recreate: bool = False) -> None:
         """Check the bridge config XML file."""
@@ -475,6 +479,16 @@ class AirplayProvider(PlayerProvider):
         # save config file
         async with aiofiles.open(self._config_file, "w") as _file:
             await _file.write(ET.tostring(xml_root).decode())
+
+    async def _log_reader(self) -> None:
+        """Read log output from bridge process."""
+        bridge_logger = self.logger.getChild("squeeze2raop")
+        while self._bridge_proc.returncode is None:
+            async for line in self._bridge_proc.stdout:
+                if self.logger.level >= logging.INFO:
+                    bridge_logger.info(line.decode().strip())
+                else:
+                    bridge_logger.debug(line.decode().strip())
 
     def restart_bridge(self) -> None:
         """Schedule restart of bridge process."""
