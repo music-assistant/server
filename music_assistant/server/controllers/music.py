@@ -9,6 +9,7 @@ from itertools import zip_longest
 from typing import TYPE_CHECKING, Final
 
 from music_assistant.common.helpers.datetime import utc_timestamp
+from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
@@ -643,7 +644,33 @@ class MusicController(CoreController):
                 DB_SCHEMA_VERSION,
             )
 
-            if prev_version < 22:
+            if prev_version == 22:
+                # migrate provider_mapping column (audio_format)
+                for table in ("tracks", "albums"):
+                    async for item in self.database.iter_items(table):
+                        prov_mappings = json_loads(item["provider_mappings"])
+                        needs_update = False
+                        for mapping in prov_mappings:
+                            if "content_type" in mapping:
+                                needs_update = True
+                                mapping["audio_format"] = {
+                                    "content_type": mapping.pop("content_type"),
+                                    "sample_rate": mapping.pop("sample_rate"),
+                                    "bit_depth": mapping.pop("bit_depth"),
+                                    "channels": mapping.pop("channels", 2),
+                                    "bit_rate": mapping.pop("bit_rate", 320),
+                                }
+                        if needs_update:
+                            await self.database.update(
+                                table,
+                                {
+                                    "item_id": item["item_id"],
+                                },
+                                {
+                                    "provider_mappings": json_dumps(prov_mappings),
+                                },
+                            )
+            elif prev_version < 22:
                 # for now just keep it simple and just recreate the tables if the schema is too old
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")

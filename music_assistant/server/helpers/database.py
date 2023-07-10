@@ -1,7 +1,7 @@
 """Database helpers and logic."""
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any
 
 import aiosqlite
@@ -149,3 +149,24 @@ class DatabaseConnection:
     async def execute(self, query: str | str, values: dict = None) -> Any:
         """Execute command on the database."""
         return await self._db.execute(query, values)
+
+    async def iter_items(
+        self,
+        table: str,
+        match: dict = None,
+    ) -> AsyncGenerator[Mapping, None]:
+        """Iterate all items within a table."""
+        limit: int = 500
+        offset: int = 0
+        while True:
+            next_items = await self.get_rows(
+                table=table,
+                match=match,
+                offset=offset,
+                limit=limit,
+            )
+            for item in next_items:
+                yield item
+            if len(next_items) < limit:
+                break
+            offset += limit
