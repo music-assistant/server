@@ -6,7 +6,7 @@ import logging
 import os
 import statistics
 from itertools import zip_longest
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
@@ -32,7 +32,6 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
     ROOT_LOGGER_NAME,
-    SCHEMA_VERSION,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
@@ -51,6 +50,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
+DB_SCHEMA_VERSION: Final[int] = 23
 
 
 class MusicController(CoreController):
@@ -636,11 +636,11 @@ class MusicController(CoreController):
         except (KeyError, ValueError):
             prev_version = 0
 
-        if prev_version not in (0, SCHEMA_VERSION):
+        if prev_version not in (0, DB_SCHEMA_VERSION):
             LOGGER.info(
                 "Performing database migration from %s to %s",
                 prev_version,
-                SCHEMA_VERSION,
+                DB_SCHEMA_VERSION,
             )
 
             if prev_version < 22:
@@ -659,7 +659,7 @@ class MusicController(CoreController):
         # store current schema version
         await self.database.insert_or_replace(
             DB_TABLE_SETTINGS,
-            {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
+            {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
         # create indexes if needed
         await self.__create_database_indexes()

@@ -39,8 +39,9 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.constants import SCHEMA_VERSION, VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
+from music_assistant.constants import VARIOUS_ARTISTS, VARIOUS_ARTISTS_ID
 from music_assistant.server.controllers.cache import use_cache
+from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
@@ -278,7 +279,7 @@ class FileSystemProviderBase(MusicProvider):
         if MediaType.TRACK not in media_types or MediaType.PLAYLIST not in media_types:
             return
         cache_key = f"{self.instance_id}.checksums"
-        prev_checksums = await self.mass.cache.get(cache_key, SCHEMA_VERSION)
+        prev_checksums = await self.mass.cache.get(cache_key, DB_SCHEMA_VERSION)
         save_checksum_interval = 0
         if prev_checksums is None:
             prev_checksums = {}
@@ -337,13 +338,13 @@ class FileSystemProviderBase(MusicProvider):
             # save checksums every 100 processed items
             # this allows us to pickup where we leftoff when initial scan gets interrupted
             if save_checksum_interval == 100:
-                await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+                await self.mass.cache.set(cache_key, cur_checksums, DB_SCHEMA_VERSION)
                 save_checksum_interval = 0
             else:
                 save_checksum_interval += 1
 
         # store (final) checksums in cache
-        await self.mass.cache.set(cache_key, cur_checksums, SCHEMA_VERSION)
+        await self.mass.cache.set(cache_key, cur_checksums, DB_SCHEMA_VERSION)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
@@ -414,7 +415,7 @@ class FileSystemProviderBase(MusicProvider):
             )
         )
         playlist.owner = self.name
-        checksum = f"{SCHEMA_VERSION}.{file_item.checksum}"
+        checksum = f"{DB_SCHEMA_VERSION}.{file_item.checksum}"
         playlist.metadata.checksum = checksum
         return playlist
 
