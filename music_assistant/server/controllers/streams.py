@@ -348,17 +348,17 @@ class StreamsController(CoreController):
             base_url=f"http://{self.publish_ip}:{self.publish_port}",
             static_routes=[
                 (
-                    "GET",
+                    "*",
                     "/{queue_id}/multi/{job_id}/{player_id}/{queue_item_id}.{fmt}",
                     self.serve_multi_subscriber_stream,
                 ),
                 (
-                    "GET",
+                    "*",
                     "/{queue_id}/flow/{queue_item_id}.{fmt}",
                     self.serve_queue_flow_stream,
                 ),
                 (
-                    "GET",
+                    "*",
                     "/{queue_id}/single/{queue_item_id}.{fmt}",
                     self.serve_queue_item_stream,
                 ),
@@ -923,7 +923,8 @@ class StreamsController(CoreController):
         input_args += ["-metadata", 'title="Music Assistant"']
         # select output args
         if output_format.content_type == ContentType.FLAC:
-            output_args = ["-f", "flac", "-compression_level", "3"]
+            # set compression level to 0 to prevent issues with cast players
+            output_args = ["-f", "flac", "-compression_level", "0"]
         elif output_format.content_type == ContentType.AAC:
             output_args = ["-f", "adts", "-c:a", "aac", "-b:a", "320k"]
         elif output_format.content_type == ContentType.MP3:
@@ -931,16 +932,14 @@ class StreamsController(CoreController):
         else:
             output_args = ["-f", output_format.content_type.value]
 
-        output_args += [
-            # append channels
-            "-ac",
-            str(output_format.channels),
-            # append sample rate
-            "-ar",
-            str(output_format.sample_rate),
-            # output = pipe
-            "-",
-        ]
+        # append channels
+        output_args += ["-ac", str(output_format.channels)]
+        # append sample rate (if codec is lossless)
+        if output_format.content_type.is_lossless():
+            output_args += ["-ar", str(output_format.sample_rate)]
+        # append output = pipe
+        output_args += ["-"]
+
         # collect extra and filter args
         # TODO: add convolution/DSP/roomcorrections here!
         extra_args = []
