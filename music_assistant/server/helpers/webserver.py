@@ -121,7 +121,7 @@ class Webserver:
             if handler := self._dynamic_routes.get(key):
                 return await handler(request)
         # deny all other requests
-        self.logger.debug(
+        self.logger.warning(
             "Received unhandled %s request to %s from %s\nheaders: %s\n",
             request.method,
             request.path,

@@ -21,11 +21,11 @@ from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
+    API_SCHEMA_VERSION,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
-    SCHEMA_VERSION,
 )
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
@@ -175,7 +175,7 @@ class MusicAssistant:
         return ServerInfoMessage(
             server_id=self.server_id,
             server_version=self.version,
-            schema_version=SCHEMA_VERSION,
+            schema_version=API_SCHEMA_VERSION,
             min_supported_schema_version=MIN_SCHEMA_VERSION,
             base_url=self.webserver.base_url,
             homeassistant_addon=self.running_as_hass_addon,
