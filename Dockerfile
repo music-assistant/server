@@ -7,6 +7,7 @@ FROM ghcr.io/home-assistant/$BUILD_ARCH-base-python:${BASE_IMAGE_VERSION}
 ARG MASS_VERSION
 ENV S6_SERVICES_GRACETIME=220000
 ENV WHEELS_LINKS="https://wheels.home-assistant.io/musllinux/"
+ARG UVLOOP_VERSION="0.17.0"
 
 WORKDIR /usr/src
 
@@ -33,6 +34,9 @@ RUN pip3 install \
         --no-cache-dir \
         music-assistant[server]==${MASS_VERSION} \
     && python3 -m compileall music-assistant
+
+# Install optional uvloop if possible (will fail on armv7)
+RUN pip3 install --no-cache-dir uvloop==${UVLOOP_VERSION}; exit 0
 
 # Set some labels
 LABEL \

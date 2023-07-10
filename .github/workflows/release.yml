@@ -73,23 +73,16 @@ jobs:
           else
             echo "channel=stable" >> $GITHUB_OUTPUT
           fi
-      - name: Install tomli
-        run: >-
-          pip install tomli tomli-w
-      - name: Set Python project version from tag
-        shell: python
-        run: |-
-          import tomli
-          import tomli_w
 
-          with open("pyproject.toml", "rb") as f:
-            pyproject = tomli.load(f)
+      - name: Docker meta
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          # list of Docker images to use as base name for tags
+          images: |
+            ghcr.io/music-assistant/server
 
-          pyproject["project"]["version"] = "${{ needs.build-and-publish-pypi.outputs.version }}"
-
-          with open("pyproject.toml", "wb") as f:
-            tomli_w.dump(pyproject, f)
-      # we use 3 different jobs here due to the fact that the architecture is named differently in buildx
+      # we use 3 different jobs here due so we can pass the correct BUILD_ARCH
       - name: Build and Push amd64
         uses: docker/build-push-action@v4.1.1
         with:
@@ -103,6 +96,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.channel }},
             ghcr.io/${{ github.repository_owner }}/server:latest
           push: true
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
             "BUILD_ARCH=amd64"
@@ -119,6 +113,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.channel }},
             ghcr.io/${{ github.repository_owner }}/server:latest
           push: true
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
             "BUILD_ARCH=aarch64"
@@ -135,6 +130,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.channel }},
             ghcr.io/${{ github.repository_owner }}/server:latest
           push: true
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
             "BUILD_ARCH=armv7"
