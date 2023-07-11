@@ -533,7 +533,7 @@ class StreamsController(CoreController):
             ffmpeg_proc.attach_task(read_audio())
 
             # read final chunks from stdout
-            async for chunk in ffmpeg_proc.iter_chunked():
+            async for chunk in ffmpeg_proc.iter_any(768000):
                 try:
                     await resp.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
@@ -624,7 +624,7 @@ class StreamsController(CoreController):
             iterator = (
                 ffmpeg_proc.iter_chunked(icy_meta_interval)
                 if enable_icy
-                else ffmpeg_proc.iter_chunked(256000)
+                else ffmpeg_proc.iter_any(768000)
             )
             async for chunk in iterator:
                 try:
@@ -736,7 +736,7 @@ class StreamsController(CoreController):
             ffmpeg_proc.attach_task(read_audio())
 
             # read final chunks from stdout
-            async for chunk in ffmpeg_proc.iter_chunked():
+            async for chunk in ffmpeg_proc.iter_any(768000):
                 try:
                     await resp.write(chunk)
                 except (BrokenPipeError, ConnectionResetError):
