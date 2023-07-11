@@ -380,20 +380,19 @@ class AirplayProvider(PlayerProvider):
                 if not start_success:
                     raise err
                 self.logger.exception("Error in Airplay bridge", exc_info=err)
-            else:
-                self.logger.debug("Airplay Bridge process stopped")
             if self._closing:
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(10)
 
     async def _stop_bridge(self) -> None:
         """Stop the bridge process."""
         if self._bridge_proc:
             try:
-                self.logger.debug("Stopping bridge process...")
+                self.logger.info("Stopping bridge process...")
                 self._bridge_proc.terminate()
                 await self._bridge_proc.wait()
-                self.logger.debug("Bridge process stopped.")
+                self.logger.info("Bridge process stopped.")
+                await asyncio.sleep(5)
             except ProcessLookupError:
                 pass
         if self._log_reader_task and not self._log_reader_task.done():
