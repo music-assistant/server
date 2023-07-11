@@ -495,8 +495,6 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = index
         # power on player if needed
         await self.mass.players.cmd_power(queue_id, True)
-        # always send stop command first
-        # await self.mass.players.cmd_stop(queue_id)
         # execute the play_media command on the player
         queue_player = self.mass.players.get(queue_id)
         need_multi_stream = (
