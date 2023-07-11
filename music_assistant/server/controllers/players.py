@@ -186,6 +186,8 @@ class PlayerController(CoreController):
         player.active_source = self._get_active_source(player)
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
+        if player.type == PlayerType.GROUP:
+            player.volume_level = player.group_volume
         # prefer any overridden name from config
         player.display_name = (
             self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/name")
@@ -388,6 +390,10 @@ class PlayerController(CoreController):
         """
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
+        if player.type == PlayerType.GROUP:
+            # redirect to group volume control
+            await self.cmd_group_volume(player_id, volume_level)
+            return
         if PlayerFeature.VOLUME_SET not in player.supported_features:
             LOGGER.warning(
                 "Volume set command called but player %s does not support volume",
@@ -556,9 +562,9 @@ class PlayerController(CoreController):
 
     def _get_active_source(self, player: Player) -> str:
         """Return the active_source id for given player."""
-        # if player is synced, return master/group leader
-        if player.synced_to and player.synced_to in self._players:
-            return player.synced_to
+        # if player is synced, return master/group leader's active source
+        if player.synced_to and (parent_player := self.get(player.synced_to)):
+            return self._get_active_source(parent_player)
         # iterate player groups to find out if one is playing
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
@@ -607,6 +613,8 @@ class PlayerController(CoreController):
         child_players: list[Player] = []
         for child_id in player.group_childs:
             if child_player := self.get(child_id, False):
+                if not child_player.available:
+                    continue
                 if not (not only_powered or child_player.powered):
                     continue
                 if not (

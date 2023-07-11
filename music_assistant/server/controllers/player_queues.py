@@ -89,7 +89,9 @@ class PlayerQueuesController(CoreController):
             if player.synced_to:
                 return self.get_active_queue(player.synced_to)
             # active_source may be filled with other queue id
-            if queue := self.get(player.active_source):
+            if player.active_source != player_id and (
+                queue := self.get_active_queue(player.active_source)
+            ):
                 return queue
         return self.get(player_id)
 
@@ -495,8 +497,6 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = index
         # power on player if needed
         await self.mass.players.cmd_power(queue_id, True)
-        # always send stop command first
-        # await self.mass.players.cmd_stop(queue_id)
         # execute the play_media command on the player
         queue_player = self.mass.players.get(queue_id)
         need_multi_stream = (

@@ -10,9 +10,13 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_EQ_BASS,
+    CONF_ENTRY_EQ_MID,
+    CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HIDE_GROUP_MEMBERS,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -49,6 +53,14 @@ CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO = ConfigEntry.from_dict(
 )
 CONF_ENTRY_FORCED_FLOW_MODE = ConfigEntry.from_dict(
     {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True, "hidden": True}
+)
+CONF_ENTRY_EQ_BASS_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_BASS.to_dict(), "hidden": True})
+CONF_ENTRY_EQ_MID_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_MID.to_dict(), "hidden": True})
+CONF_ENTRY_EQ_TREBLE_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_EQ_TREBLE.to_dict(), "hidden": True}
+)
+CONF_ENTRY_OUTPUT_CODEC_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "hidden": True}
 )
 CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
     key=CONF_GROUPED_POWER_ON,
@@ -188,6 +200,12 @@ class UniversalGroupProvider(PlayerProvider):
             ),
             CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO,
             CONF_ENTRY_FORCED_FLOW_MODE,
+            # group player outputs to individual members so
+            # these settings make no sense, hide them
+            CONF_ENTRY_EQ_BASS_HIDDEN,
+            CONF_ENTRY_EQ_MID_HIDDEN,
+            CONF_ENTRY_EQ_TREBLE_HIDDEN,
+            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -357,6 +375,10 @@ class UniversalGroupProvider(PlayerProvider):
     def update_attributes(self, player_id: str) -> None:
         """Update player attributes."""
         group_player = self.mass.players.get(player_id)
+        if not group_player.powered:
+            group_player.state = PlayerState.IDLE
+            return
+
         all_members = self._get_active_members(
             player_id, only_powered=False, skip_sync_childs=False
         )
@@ -365,15 +387,17 @@ class UniversalGroupProvider(PlayerProvider):
         for member in all_members:
             if member.synced_to:
                 continue
-            if not member.current_url or player_id not in member.current_url:
+            if member.mute_as_power:
+                player_powered = member.powered and not member.volume_muted
+            else:
+                player_powered = member.powered
+            if not player_powered:
                 continue
             group_player.current_url = member.current_url
             group_player.elapsed_time = member.elapsed_time
             group_player.elapsed_time_last_updated = member.elapsed_time_last_updated
             group_player.state = member.state
             break
-        else:
-            group_player.state = group_player.extra_data["optimistic_state"]
 
     async def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
         """
@@ -420,7 +444,8 @@ class UniversalGroupProvider(PlayerProvider):
                     self.mass.players.cmd_sync, child_player.player_id, sync_leader
                 )
             else:
-                self.mass.create_task(self.mass.player_queues.resume, player_id)
+                # send atcive source because the group may be within another group
+                self.mass.create_task(self.mass.player_queues.resume, group_player.active_source)
         elif (
             not new_power
             and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
@@ -429,7 +454,8 @@ class UniversalGroupProvider(PlayerProvider):
         ):
             # a sync master player turned OFF while the group player
             # should still be playing - we need to resync/resume
-            self.mass.create_task(self.mass.player_queues.resume, player_id)
+            # send atcive source because the group may be within another group
+            self.mass.create_task(self.mass.player_queues.resume, group_player.active_source)
 
     def _get_active_members(
         self,
@@ -441,6 +467,8 @@ class UniversalGroupProvider(PlayerProvider):
         child_players: list[Player] = []
         conf_members: list[str] = self.config.get_value(player_id)
         ignore_ids = set()
+        group_player = self.mass.players.get(player_id)
+        parent_source = group_player.active_source
         for child_id in conf_members:
             if child_player := self.mass.players.get(child_id, False):
                 # work out power state
@@ -452,7 +480,7 @@ class UniversalGroupProvider(PlayerProvider):
                     continue
                 if child_player.synced_to and skip_sync_childs:
                     continue
-                allowed_sources = [child_player.player_id, player_id] + conf_members
+                allowed_sources = [child_player.player_id, player_id, parent_source] + conf_members
                 if child_player.active_source not in allowed_sources:
                     # edge case: the child player has another group already active!
                     continue
