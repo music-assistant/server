@@ -186,6 +186,8 @@ class PlayerController(CoreController):
         player.active_source = self._get_active_source(player)
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
+        if player.type == PlayerType.GROUP:
+            player.volume_level = player.group_volume
         # prefer any overridden name from config
         player.display_name = (
             self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/name")
@@ -388,6 +390,10 @@ class PlayerController(CoreController):
         """
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
+        if player.type == PlayerType.GROUP:
+            # redirect to group volume control
+            await self.cmd_group_volume(player_id, volume_level)
+            return
         if PlayerFeature.VOLUME_SET not in player.supported_features:
             LOGGER.warning(
                 "Volume set command called but player %s does not support volume",

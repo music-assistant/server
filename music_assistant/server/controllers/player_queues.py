@@ -89,7 +89,9 @@ class PlayerQueuesController(CoreController):
             if player.synced_to:
                 return self.get_active_queue(player.synced_to)
             # active_source may be filled with other queue id
-            if queue := self.get(player.active_source):
+            if player.active_source != player_id and (
+                queue := self.get_active_queue(player.active_source)
+            ):
                 return queue
         return self.get(player_id)
 
