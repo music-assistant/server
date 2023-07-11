@@ -607,6 +607,8 @@ class PlayerController(CoreController):
         child_players: list[Player] = []
         for child_id in player.group_childs:
             if child_player := self.get(child_id, False):
+                if not child_player.available:
+                    continue
                 if not (not only_powered or child_player.powered):
                     continue
                 if not (
