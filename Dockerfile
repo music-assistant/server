@@ -30,11 +30,6 @@ RUN set -x \
     && pip install build maturin \
     && pip wheel -r requirements_all.txt
 
-# build music assistant wheel
-COPY music_assistant music_assistant
-COPY pyproject.toml .
-COPY MANIFEST.in .
-RUN python3 -m build --wheel --outdir /wheels --skip-dependency-check
 
 #####################################################################
 #                                                                   #
