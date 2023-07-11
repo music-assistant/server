@@ -58,9 +58,9 @@ jobs:
       - name: Log in to the GitHub container registry
         uses: docker/login-action@v2.2.0
         with:
-            registry: ghcr.io
-            username: ${{ github.repository_owner }}
-            password: ${{ secrets.GITHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.repository_owner }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v2.9.0
       - name: Version number for tags
@@ -82,7 +82,7 @@ jobs:
         uses: docker/metadata-action@v4
         with:
           images: |
-            ghcr.io/music-assistant/server
+            ghcr.io/${{ github.repository_owner }}/server
 
       - name: Build and Push images
         uses: docker/build-push-action@v4.1.1
@@ -100,4 +100,3 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
-      
