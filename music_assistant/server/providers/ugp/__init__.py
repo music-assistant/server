@@ -10,9 +10,13 @@ import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_EQ_BASS,
+    CONF_ENTRY_EQ_MID,
+    CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HIDE_GROUP_MEMBERS,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -49,6 +53,14 @@ CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO = ConfigEntry.from_dict(
 )
 CONF_ENTRY_FORCED_FLOW_MODE = ConfigEntry.from_dict(
     {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True, "hidden": True}
+)
+CONF_ENTRY_EQ_BASS_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_BASS.to_dict(), "hidden": True})
+CONF_ENTRY_EQ_MID_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_MID.to_dict(), "hidden": True})
+CONF_ENTRY_EQ_TREBLE_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_EQ_TREBLE.to_dict(), "hidden": True}
+)
+CONF_ENTRY_OUTPUT_CODEC_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "hidden": True}
 )
 CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
     key=CONF_GROUPED_POWER_ON,
@@ -188,6 +200,12 @@ class UniversalGroupProvider(PlayerProvider):
             ),
             CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO,
             CONF_ENTRY_FORCED_FLOW_MODE,
+            # group player outputs to individual members so
+            # these settings make no sense, hide them
+            CONF_ENTRY_EQ_BASS_HIDDEN,
+            CONF_ENTRY_EQ_MID_HIDDEN,
+            CONF_ENTRY_EQ_TREBLE_HIDDEN,
+            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
