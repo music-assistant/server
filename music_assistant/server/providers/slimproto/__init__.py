@@ -854,3 +854,8 @@ class SlimClient(SlimClientOrg):
     def _process_stat_stmo(self, data: bytes) -> None:  # noqa: ARG002
         """Process incoming stat STMo message: Output Underrun."""
         self.callback("output_underrun", self)
+
+    def _process_stat_stmf(self, data: bytes) -> None:  # noqa: ARG002
+        """Process incoming stat STMf message (connection closed)."""
+        self.logger.debug("STMf received - connection closed.")
+        # we should ignore this event, its not relevant
