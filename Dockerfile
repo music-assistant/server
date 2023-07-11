@@ -39,6 +39,10 @@ RUN set -x \
 FROM python:${PYTHON_VERSION}-slim AS final-build
 WORKDIR /app
 
+# Required to persist build arg
+ARG MASS_VERSION
+ARG TARGETPLATFORM
+
 RUN set -x \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
@@ -76,10 +80,6 @@ RUN pip3 install \
 RUN \
     export LD_PRELOAD="$(find /usr/lib/ -name *libjemalloc.so.2)" \
     export MALLOC_CONF="background_thread:true,metadata_thp:auto,dirty_decay_ms:20000,muzzy_decay_ms:20000"
-
-# Required to persist build arg
-ARG MASS_VERSION
-ARG TARGETPLATFORM
 
 # Set some labels
 LABEL \
