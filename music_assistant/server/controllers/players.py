@@ -556,9 +556,9 @@ class PlayerController(CoreController):
 
     def _get_active_source(self, player: Player) -> str:
         """Return the active_source id for given player."""
-        # if player is synced, return master/group leader
-        if player.synced_to and player.synced_to in self._players:
-            return player.synced_to
+        # if player is synced, return master/group leader's active source
+        if player.synced_to and (parent_player := self.get(player.synced_to)):
+            return self._get_active_source(parent_player)
         # iterate player groups to find out if one is playing
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
