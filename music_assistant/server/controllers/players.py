@@ -21,7 +21,12 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.player import Player
-from music_assistant.constants import CONF_HIDE_GROUP_CHILDS, CONF_PLAYERS, ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    CONF_AUTO_PLAY,
+    CONF_HIDE_GROUP_CHILDS,
+    CONF_PLAYERS,
+    ROOT_LOGGER_NAME,
+)
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -380,6 +385,13 @@ class PlayerController(CoreController):
                 continue
             if player_prov := self.get_player_provider(group_player.player_id):
                 await player_prov.on_child_power(group_player.player_id, player, powered)
+                break
+        else:
+            # auto play feature
+            if powered and self.mass.config.get_raw_player_config_value(
+                player_id, CONF_AUTO_PLAY, False
+            ):
+                await self.mass.player_queues.resume(player_id)
 
     @api_command("players/cmd/volume_set")
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
