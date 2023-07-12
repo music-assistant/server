@@ -12,6 +12,7 @@ from mashumaro import DataClassDictMixin
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
+    CONF_AUTO_PLAY,
     CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
     CONF_EQ_MID,
@@ -329,6 +330,15 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     advanced=False,
 )
 
+CONF_ENTRY_AUTO_PLAY = ConfigEntry(
+    key=CONF_AUTO_PLAY,
+    type=ConfigEntryType.BOOLEAN,
+    label="Automatically play/resume on power on",
+    default_value=False,
+    description="When this player is turned ON, automatically start playing "
+    "(if there are items in the queue).",
+)
+
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     key=CONF_OUTPUT_CHANNELS,
     type=ConfigEntryType.STRING,
@@ -425,6 +435,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_AUTO_PLAY,
     CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_EQ_BASS,
