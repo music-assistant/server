@@ -33,7 +33,7 @@ class Music:
 
     async def get_tracks(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -43,7 +43,7 @@ class Music:
         return PagedItems.parse(
             await self.client.send_command(
                 "music/tracks",
-                in_library=in_library,
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -118,7 +118,7 @@ class Music:
 
     async def get_albums(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -128,7 +128,7 @@ class Music:
         return PagedItems.parse(
             await self.client.send_command(
                 "music/albums",
-                in_library=in_library,
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -189,7 +189,7 @@ class Music:
 
     async def get_artists(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -199,7 +199,7 @@ class Music:
         return PagedItems.parse(
             await self.client.send_command(
                 "music/artists",
-                in_library=in_library,
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -210,7 +210,7 @@ class Music:
 
     async def get_album_artists(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -220,7 +220,7 @@ class Music:
         return PagedItems.parse(
             await self.client.send_command(
                 "music/albumartists",
-                in_library=in_library,
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -281,7 +281,7 @@ class Music:
 
     async def get_playlists(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -291,7 +291,7 @@ class Music:
         return PagedItems.parse(
             await self.client.send_command(
                 "music/playlists",
-                in_library=in_library,
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -367,7 +367,7 @@ class Music:
 
     async def get_radios(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -377,7 +377,7 @@ class Music:
         return PagedItems.parse(
             await self.client.send_command(
                 "music/radios",
-                in_library=in_library,
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -491,12 +491,15 @@ class Music:
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
 
-    async def delete_db_item(
-        self, media_type: MediaType, db_item_id: str | int, recursive: bool = False
+    async def delete_library_item(
+        self, media_type: MediaType, library_item_id: str | int, recursive: bool = False
     ) -> None:
         """Remove item from the database."""
         await self.client.send_command(
-            "music/delete", media_type=media_type, db_item_id=db_item_id, recursive=recursive
+            "music/delete",
+            media_type=media_type,
+            library_item_id=library_item_id,
+            recursive=recursive,
         )
 
     async def browse(

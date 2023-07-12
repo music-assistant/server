@@ -203,16 +203,18 @@ class FileSystemProviderBase(MusicProvider):
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
             query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.tracks = await self.mass.music.tracks.get_db_items_by_query(query, params)
+            result.tracks = await self.mass.music.tracks.get_library_items_by_query(query, params)
         if media_types is None or MediaType.ALBUM in media_types:
             query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.albums = await self.mass.music.albums.get_db_items_by_query(query, params)
+            result.albums = await self.mass.music.albums.get_library_items_by_query(query, params)
         if media_types is None or MediaType.ARTIST in media_types:
             query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.artists = await self.mass.music.artists.get_db_items_by_query(query, params)
+            result.artists = await self.mass.music.artists.get_library_items_by_query(query, params)
         if media_types is None or MediaType.PLAYLIST in media_types:
             query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.playlists = await self.mass.music.playlists.get_db_items_by_query(query, params)
+            result.playlists = await self.mass.music.playlists.get_library_items_by_query(
+                query, params
+            )
         return result
 
     async def browse(self, path: str) -> BrowseFolder:
@@ -241,28 +243,30 @@ class FileSystemProviderBase(MusicProvider):
                 continue
 
             if item.ext in TRACK_EXTENSIONS:
-                if db_item := await self.mass.music.tracks.get_db_item_by_prov_id(
+                if library_item := await self.mass.music.tracks.get_library_item_by_prov_id(
                     item.path, self.instance_id
                 ):
-                    subitems.append(db_item)
+                    subitems.append(library_item)
                 elif track := await self.get_track(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
-                    subitems.append(db_item)
+                    library_item = await self.mass.music.tracks.add(
+                        track, skip_metadata_lookup=True
+                    )
+                    subitems.append(library_item)
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
-                if db_item := await self.mass.music.playlists.get_db_item_by_prov_id(
+                if library_item := await self.mass.music.playlists.get_library_item_by_prov_id(
                     item.path, self.instance_id
                 ):
-                    subitems.append(db_item)
+                    subitems.append(library_item)
                 elif playlist := await self.get_playlist(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    db_item = await self.mass.music.playlists.add(
+                    library_item = await self.mass.music.playlists.add(
                         playlist, skip_metadata_lookup=True
                     )
-                    subitems.append(db_item)
+                    subitems.append(library_item)
                 continue
 
         return BrowseFolder(
@@ -326,7 +330,7 @@ class FileSystemProviderBase(MusicProvider):
                     # add/update] playlist to db
                     playlist.metadata.checksum = item.checksum
                     # playlist is always in-library
-                    playlist.in_library = True
+                    playlist.favorite = True
                     await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
@@ -360,12 +364,14 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 controller = self.mass.music.get_controller(MediaType.TRACK)
 
-            if db_item := await controller.get_db_item_by_prov_id(file_path, self.instance_id):
-                await controller.delete(db_item.item_id, True)
+            if library_item := await controller.get_library_item_by_prov_id(
+                file_path, self.instance_id
+            ):
+                await controller.delete(library_item.item_id, True)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        db_artist = await self.mass.music.artists.get_db_item_by_prov_id(
+        db_artist = await self.mass.music.artists.get_library_item_by_prov_id(
             prov_artist_id, self.instance_id
         )
         if db_artist is None:
@@ -422,7 +428,7 @@ class FileSystemProviderBase(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
-        db_album = await self.mass.music.albums.get_db_item_by_prov_id(
+        db_album = await self.mass.music.albums.get_library_item_by_prov_id(
             prov_album_id, self.instance_id
         )
         if db_album is None:
@@ -431,7 +437,7 @@ class FileSystemProviderBase(MusicProvider):
         query = f"SELECT * FROM tracks WHERE albums LIKE '%\"{db_album.item_id}\"%'"
         query += f" AND provider_mappings LIKE '%\"{self.instance_id}\"%'"
         result = []
-        for track in await self.mass.music.tracks.get_db_items_by_query(query):
+        for track in await self.mass.music.tracks.get_library_items_by_query(query):
             track.album = db_album
             if album_mapping := next(
                 (x for x in track.albums if x.item_id == db_album.item_id), None
@@ -552,11 +558,13 @@ class FileSystemProviderBase(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        db_item = await self.mass.music.tracks.get_db_item_by_prov_id(item_id, self.instance_id)
-        if db_item is None:
+        library_item = await self.mass.music.tracks.get_library_item_by_prov_id(
+            item_id, self.instance_id
+        )
+        if library_item is None:
             raise MediaNotFoundError(f"Item not found: {item_id}")
 
-        prov_mapping = next(x for x in db_item.provider_mappings if x.item_id == item_id)
+        prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
         file_item = await self.resolve(item_id)
 
         return StreamDetails(
@@ -564,7 +572,7 @@ class FileSystemProviderBase(MusicProvider):
             item_id=item_id,
             audio_format=prov_mapping.audio_format,
             media_type=MediaType.TRACK,
-            duration=db_item.duration,
+            duration=library_item.duration,
             size=file_item.file_size,
             direct=file_item.local_path,
             can_seek=prov_mapping.audio_format.content_type in SEEKABLE_FILES,

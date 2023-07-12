@@ -206,7 +206,7 @@ class MediaItem(DataClassDictMixin):
 
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
-    in_library: bool = False
+    favorite: bool = False
     media_type: MediaType = MediaType.UNKNOWN
     # sort_name and uri are auto generated, do not override unless really needed
     sort_name: str | None = None
@@ -226,7 +226,7 @@ class MediaItem(DataClassDictMixin):
     def from_db_row(cls, db_row: Mapping):
         """Create MediaItem object from database row."""
         db_row = dict(db_row)
-        db_row["provider"] = "database"
+        db_row["provider"] = "library"
         for key in JSON_KEYS:
             if key in db_row and db_row[key] is not None:
                 db_row[key] = json_loads(db_row[key])
@@ -235,8 +235,8 @@ class MediaItem(DataClassDictMixin):
                 continue
             db_row[key] = db_row[key].strip()
             db_row[key] = db_row[key].split(";") if db_row[key] else []
-        if "in_library" in db_row:
-            db_row["in_library"] = bool(db_row["in_library"])
+        if "favorite" in db_row:
+            db_row["favorite"] = bool(db_row["favorite"])
         if db_row.get("albums"):
             db_row["album"] = db_row["albums"][0]
             db_row["disc_number"] = db_row["albums"][0]["disc_number"]

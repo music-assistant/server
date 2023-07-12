@@ -51,7 +51,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
-DB_SCHEMA_VERSION: Final[int] = 23
+DB_SCHEMA_VERSION: Final[int] = 24
 
 
 class MusicController(CoreController):
@@ -260,7 +260,7 @@ class MusicController(CoreController):
         if not path or path == "root":
             return BrowseFolder(
                 item_id="root",
-                provider="database",
+                provider="library",
                 path="root",
                 label="browse",
                 name="",
@@ -303,7 +303,7 @@ class MusicController(CoreController):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         lazy: bool = True,
-        add_to_db: bool = False,
+        add_to_library: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         if provider_instance_id_or_domain == "url":
@@ -315,7 +315,7 @@ class MusicController(CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             force_refresh=force_refresh,
             lazy=lazy,
-            add_to_db=add_to_db,
+            add_to_library=add_to_library,
         )
 
     @api_command("music/library/add")
@@ -332,7 +332,7 @@ class MusicController(CoreController):
             item_id,
             provider_instance_id_or_domain,
             lazy=False,
-            add_to_db=True,
+            add_to_library=True,
         )
         ctrl = self.get_controller(media_type)
         await ctrl.add_to_library(
@@ -392,11 +392,11 @@ class MusicController(CoreController):
 
     @api_command("music/delete")
     async def delete(
-        self, media_type: MediaType, db_item_id: str | int, recursive: bool = False
+        self, media_type: MediaType, library_item_id: str | int, recursive: bool = False
     ) -> None:
         """Remove item from the database."""
         ctrl = self.get_controller(media_type)
-        await ctrl.delete(db_item_id, recursive)
+        await ctrl.delete(library_item_id, recursive)
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
@@ -419,7 +419,7 @@ class MusicController(CoreController):
                 media_item.provider,
                 force_refresh=True,
                 lazy=False,
-                add_to_db=True,
+                add_to_library=True,
             )
         except MusicAssistantError:
             pass
@@ -438,7 +438,7 @@ class MusicController(CoreController):
         for item in result:
             if item.available:
                 return await self.get_item(
-                    item.media_type, item.item_id, item.provider, lazy=False, add_to_db=True
+                    item.media_type, item.item_id, item.provider, lazy=False, add_to_library=True
                 )
         return None
 
@@ -617,7 +617,7 @@ class MusicController(CoreController):
             self.mass.music.albums,
             self.mass.music.artists,
         ):
-            prov_items = await ctrl.get_db_items_by_prov_id(provider_instance)
+            prov_items = await ctrl.get_library_items_by_prov_id(provider_instance)
             for item in prov_items:
                 await ctrl.remove_prov_mapping(item.item_id, provider_instance)
 
@@ -644,10 +644,37 @@ class MusicController(CoreController):
                 DB_SCHEMA_VERSION,
             )
 
-            if prev_version == 22:
-                # migrate provider_mapping column (audio_format)
-                for table in ("tracks", "albums"):
+            if prev_version < 22:
+                # for now just keep it simple and just recreate the tables if the schema is too old
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
+
+                # recreate missing tables
+                await self.__create_database_tables()
+
+            if prev_version in (22, 23):
+                # migrate in_library --> favorite
+                for table in (
+                    DB_TABLE_ARTISTS,
+                    DB_TABLE_ALBUMS,
+                    DB_TABLE_TRACKS,
+                    DB_TABLE_PLAYLISTS,
+                    DB_TABLE_RADIOS,
+                ):
+                    # rename in_library --> favorite
+                    await self.database.execute(
+                        f"ALTER TABLE {table} RENAME COLUMN in_library TO favorite;"
+                    )
+                    # clean out all non favorites from library db
+                    item_ids_to_delete = set()
                     async for item in self.database.iter_items(table):
+                        if not item["favorite"] or "filesystem" in item["provider_mappings"]:
+                            item_ids_to_delete.add(item["item_id"])
+                            continue
+                        # migrate provider_mapping column (audio_format)
                         prov_mappings = json_loads(item["provider_mappings"])
                         needs_update = False
                         for mapping in prov_mappings:
@@ -670,18 +697,13 @@ class MusicController(CoreController):
                                     "provider_mappings": json_dumps(prov_mappings),
                                 },
                             )
-            elif prev_version < 22:
-                # for now just keep it simple and just recreate the tables if the schema is too old
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
+                    for item_id in item_ids_to_delete:
+                        await self.database.delete(table, {"item_id": item_id})
 
-                # recreate missing tables
-                await self.__create_database_tables()
-            else:
-                raise RuntimeError("db schema migration missing")
+            LOGGER.info(
+                "Database migration to version %s completed",
+                DB_SCHEMA_VERSION,
+            )
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -725,7 +747,7 @@ class MusicController(CoreController):
                     album_type TEXT,
                     year INTEGER,
                     version TEXT,
-                    in_library BOOLEAN DEFAULT 0,
+                    favorite BOOLEAN DEFAULT 0,
                     barcode TEXT,
                     musicbrainz_id TEXT,
                     artists json,
@@ -741,7 +763,7 @@ class MusicController(CoreController):
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
                     musicbrainz_id TEXT,
-                    in_library BOOLEAN DEFAULT 0,
+                    favorite BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
                     timestamp_added INTEGER NOT NULL,
@@ -757,7 +779,7 @@ class MusicController(CoreController):
                     sort_album TEXT,
                     version TEXT,
                     duration INTEGER,
-                    in_library BOOLEAN DEFAULT 0,
+                    favorite BOOLEAN DEFAULT 0,
                     isrc TEXT,
                     musicbrainz_id TEXT,
                     artists json,
@@ -775,7 +797,7 @@ class MusicController(CoreController):
                     sort_name TEXT NOT NULL,
                     owner TEXT NOT NULL,
                     is_editable BOOLEAN NOT NULL,
-                    in_library BOOLEAN DEFAULT 0,
+                    favorite BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
                     timestamp_added INTEGER NOT NULL,
@@ -787,7 +809,7 @@ class MusicController(CoreController):
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort_name TEXT NOT NULL,
-                    in_library BOOLEAN DEFAULT 0,
+                    favorite BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
                     timestamp_added INTEGER NOT NULL,
@@ -808,19 +830,19 @@ class MusicController(CoreController):
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
+            "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_in_library_idx on albums(in_library);"
+            "CREATE INDEX IF NOT EXISTS albums_in_library_idx on albums(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS tracks_in_library_idx on tracks(in_library);"
+            "CREATE INDEX IF NOT EXISTS tracks_in_library_idx on tracks(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS playlists_in_library_idx on playlists(in_library);"
+            "CREATE INDEX IF NOT EXISTS playlists_in_library_idx on playlists(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS radios_in_library_idx on radios(in_library);"
+            "CREATE INDEX IF NOT EXISTS radios_in_library_idx on radios(favorite);"
         )
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS artists_sort_name_idx on artists(sort_name);"

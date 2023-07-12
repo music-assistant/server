@@ -399,27 +399,27 @@ class MusicProvider(Provider):
             controller = self.mass.music.get_controller(media_type)
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type):
-                db_item = await controller.get_db_item_by_prov_mappings(
+                library_item = await controller.get_library_item_by_prov_mappings(
                     prov_item.provider_mappings,
                 )
-                if not db_item:
+                if not library_item:
                     # create full db item
-                    prov_item.in_library = True
-                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
+                    prov_item.favorite = True
+                    library_item = await controller.add(prov_item, skip_metadata_lookup=True)
                 elif (
-                    db_item.metadata.checksum and prov_item.metadata.checksum
-                ) and db_item.metadata.checksum != prov_item.metadata.checksum:
+                    library_item.metadata.checksum and prov_item.metadata.checksum
+                ) and library_item.metadata.checksum != prov_item.metadata.checksum:
                     # existing dbitem checksum changed
-                    db_item = await controller.update(db_item.item_id, prov_item)
-                cur_db_ids.add(db_item.item_id)
-                if not db_item.in_library:
-                    await controller.set_db_library(db_item.item_id, True)
+                    library_item = await controller.update(library_item.item_id, prov_item)
+                cur_db_ids.add(library_item.item_id)
+                if not library_item.favorite:
+                    await controller.set_db_library(library_item.item_id, True)
 
             # process deletions (= no longer in library)
-            cache_key = f"db_items.{media_type}.{self.instance_id}"
-            prev_db_items: list[int] | None
-            if prev_db_items := await self.mass.cache.get(cache_key):
-                for db_id in prev_db_items:
+            cache_key = f"library_items.{media_type}.{self.instance_id}"
+            prev_library_items: list[int] | None
+            if prev_library_items := await self.mass.cache.get(cache_key):
+                for db_id in prev_library_items:
                     if db_id not in cur_db_ids:
                         # only mark the item as not in library and leave the metadata in db
                         await controller.set_db_library(db_id, False)

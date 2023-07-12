@@ -95,7 +95,7 @@ class MetaDataController(CoreController):
 
             LOGGER.debug("Start scan for missing artist metadata")
             self.scan_busy = True
-            async for artist in self.mass.music.artists.iter_db_items():
+            async for artist in self.mass.music.artists.iter_library_items():
                 if artist.metadata.last_refresh is not None:
                     continue
                 # most important is to see artist thumb in listings

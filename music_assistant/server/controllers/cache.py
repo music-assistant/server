@@ -22,7 +22,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
-DB_SCHEMA_VERSION: Final[int] = 22
+DB_SCHEMA_VERSION: Final[int] = 23
 
 
 class CacheController(CoreController):
