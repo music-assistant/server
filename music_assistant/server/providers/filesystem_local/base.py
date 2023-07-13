@@ -250,7 +250,7 @@ class FileSystemProviderBase(MusicProvider):
                 elif track := await self.get_track(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    library_item = await self.mass.music.tracks.add(
+                    library_item = await self.mass.music.tracks.add_item_to_library(
                         track, skip_metadata_lookup=True
                     )
                     subitems.append(library_item)
@@ -324,14 +324,18 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)
-                    await self.mass.music.tracks.add(track, skip_metadata_lookup=True)
+                    await self.mass.music.tracks.add_item_to_library(
+                        track, skip_metadata_lookup=True
+                    )
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
                     playlist.metadata.checksum = item.checksum
                     # playlist is always in-library
                     playlist.favorite = True
-                    await self.mass.music.playlists.add(playlist, skip_metadata_lookup=True)
+                    await self.mass.music.playlists.add_item_to_library(
+                        playlist, skip_metadata_lookup=True
+                    )
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
@@ -353,6 +357,8 @@ class FileSystemProviderBase(MusicProvider):
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
         # process deleted tracks/playlists
+        album_ids = set()
+        artist_ids = set()
         for file_path in deleted_files:
             _, ext = file_path.rsplit(".", 1)
             if ext not in SUPPORTED_EXTENSIONS:
@@ -367,7 +373,21 @@ class FileSystemProviderBase(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                await controller.delete(library_item.item_id, True)
+                if library_item.media_type == MediaType.TRACK:
+                    album_ids.add(library_item.album.item_id)
+                    for artist in library_item.artists + library_item.album.artists:
+                        artist_ids.add(artist.item_id)
+                await controller.remove_item_from_library(library_item.item_id)
+        # check if any albums need to be cleaned up
+        for album_id in album_ids:
+            if not self.mass.music.albums.tracks(album_id, "library"):
+                await self.mass.music.albums.remove_item_from_library(album_id)
+        # check if any artists need to be cleaned up
+        for artist_id in artist_ids:
+            if not self.mass.music.artists.albums(
+                artist_id, "library"
+            ) and self.mass.music.artists.tracks(artist_id, "library"):
+                await self.mass.music.artists.remove_item_from_library(album_id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""

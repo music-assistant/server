@@ -213,7 +213,9 @@ class AudioDbMetadataProvider(MetadataProvider):
                     # found match - update album metadata too while we're here
                     if not ref_album.musicbrainz_id:
                         ref_album.metadata = self.__parse_album(item)
-                        await self.mass.music.albums.add(ref_album, skip_metadata_lookup=True)
+                        await self.mass.music.albums.add_item_to_library(
+                            ref_album, skip_metadata_lookup=True
+                        )
                     musicbrainz_id = item["strMusicBrainzArtistID"]
 
         return musicbrainz_id

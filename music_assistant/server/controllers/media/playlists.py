@@ -34,19 +34,30 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         # register api handlers
-        self.mass.register_api_command("music/playlists", self.library_items)
-        self.mass.register_api_command("music/playlist", self.get)
-        self.mass.register_api_command("music/playlist/tracks", self.tracks)
-        self.mass.register_api_command("music/playlist/tracks/add", self.add_playlist_tracks)
-        self.mass.register_api_command("music/playlist/tracks/remove", self.remove_playlist_tracks)
-        self.mass.register_api_command("music/playlist/update", self._update_library_item)
-        self.mass.register_api_command("music/playlist/delete", self.delete)
-        self.mass.register_api_command("music/playlist/create", self.create)
+        self.mass.register_api_command("music/playlists/library_items", self.library_items)
+        self.mass.register_api_command(
+            "music/playlists/update_item_in_library", self.update_item_in_library
+        )
+        self.mass.register_api_command(
+            "music/playlists/remove_item_from_library", self.remove_item_from_library
+        )
+        self.mass.register_api_command("music/playlists/create_playlist", self.create_playlist)
 
-    async def add(self, item: Playlist, skip_metadata_lookup: bool = False) -> Playlist:
+        self.mass.register_api_command("music/playlists/get_playlist", self.get)
+        self.mass.register_api_command("music/playlists/playlist_tracks", self.tracks)
+        self.mass.register_api_command(
+            "music/playlists/add_playlist_tracks", self.add_playlist_tracks
+        )
+        self.mass.register_api_command(
+            "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
+        )
+
+    async def add_item_to_library(
+        self, item: Playlist, skip_metadata_lookup: bool = False
+    ) -> Playlist:
         """Add playlist to library and return the new database item."""
         if item.provider == "library":
-            library_item = await self._update_library_item(item.item_id, item)
+            library_item = await self._update_item_in_library(item.item_id, item)
         else:
             # use the lock to prevent a race condition of the same item being added twice
             async with self._db_add_lock:
@@ -57,12 +68,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # metadata lookup we need to do after adding it to the db
         if not skip_metadata_lookup:
             await self.mass.metadata.get_playlist_metadata(library_item)
-            library_item = await self._update_library_item(library_item.item_id, library_item)
+            library_item = await self._update_item_in_library(library_item.item_id, library_item)
         return library_item
 
-    async def update(self, item_id: int, update: Playlist, overwrite: bool = False) -> Playlist:
+    async def update_item_in_library(
+        self, item_id: int, update: Playlist, overwrite: bool = False
+    ) -> Playlist:
         """Update existing record in the database."""
-        return await self._update_library_item(item_id=item_id, item=update, overwrite=overwrite)
+        return await self._update_item_in_library(item_id=item_id, item=update, overwrite=overwrite)
 
     async def tracks(
         self,
@@ -79,7 +92,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         ):
             yield track
 
-    async def create(self, name: str, provider_instance_or_domain: str | None = None) -> Playlist:
+    async def create_playlist(
+        self, name: str, provider_instance_or_domain: str | None = None
+    ) -> Playlist:
         """Create new playlist."""
         # if provider is omitted, just pick first provider
         if provider_instance_or_domain:
@@ -97,10 +112,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise ProviderUnavailableError("No provider available which allows playlists creation.")
 
         # create playlist on the provider
-        prov_playlist = await provider.create_playlist(name)
-        prov_playlist.favorite = True
-        # return db playlist
-        return await self.add(prov_playlist, True)
+        return await provider.create_playlist(name)
 
     async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
@@ -203,13 +215,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # safety guard: check for existing item first
         if cur_item := await self.get_library_item_by_prov_mappings(item.provider_mappings):
             # existing item found: update it
-            return await self._update_library_item(cur_item.item_id, item)
+            return await self._update_item_in_library(cur_item.item_id, item)
         # try name matching
         match = {"name": item.name, "owner": item.owner}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
             cur_item = Playlist.from_db_row(db_row)
             # existing item found: update it
-            return await self._update_library_item(cur_item.item_id, item)
+            return await self._update_item_in_library(cur_item.item_id, item)
         # insert new item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
@@ -230,7 +242,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # return the full item we just added
         return library_item
 
-    async def _update_library_item(
+    async def _update_item_in_library(
         self, item_id: str | int, item: Playlist, overwrite: bool = False
     ) -> Playlist:
         """Update Playlist record in the database."""

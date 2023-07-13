@@ -25,11 +25,15 @@ class RadioController(MediaControllerBase[Radio]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         # register api handlers
-        self.mass.register_api_command("music/radios", self.library_items)
-        self.mass.register_api_command("music/radio", self.get)
-        self.mass.register_api_command("music/radio/versions", self.versions)
-        self.mass.register_api_command("music/radio/update", self._update_library_item)
-        self.mass.register_api_command("music/radio/delete", self.delete)
+        self.mass.register_api_command("music/radio/library_items", self.library_items)
+        self.mass.register_api_command("music/radio/get_item", self.get)
+        self.mass.register_api_command(
+            "music/radio/update_item_in_library", self.update_item_in_library
+        )
+        self.mass.register_api_command(
+            "music/radio/remove_item_from_library", self.remove_item_from_library
+        )
+        self.mass.register_api_command("music/radio/radio_versions", self.versions)
 
     async def versions(
         self,
@@ -57,21 +61,23 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add(self, item: Radio, skip_metadata_lookup: bool = False) -> Radio:
+    async def add_item_to_library(self, item: Radio, skip_metadata_lookup: bool = False) -> Radio:
         """Add radio to library and return the new database item."""
         if not skip_metadata_lookup:
             await self.mass.metadata.get_radio_metadata(item)
         if item.provider == "library":
-            library_item = await self._update_library_item(item.item_id, item)
+            library_item = await self._update_item_in_library(item.item_id, item)
         else:
             # use the lock to prevent a race condition of the same item being added twice
             async with self._db_add_lock:
                 library_item = await self._add_library_item(item)
         return library_item
 
-    async def update(self, item_id: str | int, update: Radio, overwrite: bool = False) -> Radio:
+    async def update_item_in_library(
+        self, item_id: str | int, update: Radio, overwrite: bool = False
+    ) -> Radio:
         """Update existing record in the database."""
-        return await self._update_library_item(item_id=item_id, item=update, overwrite=overwrite)
+        return await self._update_item_in_library(item_id=item_id, item=update, overwrite=overwrite)
 
     async def _add_library_item(self, item: Radio) -> Radio:
         """Add a new item record to the database."""
@@ -80,13 +86,13 @@ class RadioController(MediaControllerBase[Radio]):
         # safety guard: check for existing item first
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item found: update it
-            return await self._update_library_item(cur_item.item_id, item)
+            return await self._update_item_in_library(cur_item.item_id, item)
         # try name matching
         match = {"name": item.name}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
             cur_item = Radio.from_db_row(db_row)
             # existing item found: update it
-            return await self._update_library_item(cur_item.item_id, item)
+            return await self._update_item_in_library(cur_item.item_id, item)
         # insert new item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
@@ -107,7 +113,7 @@ class RadioController(MediaControllerBase[Radio]):
         # return the full item we just added
         return library_item
 
-    async def _update_library_item(
+    async def _update_item_in_library(
         self, item_id: str | int, item: Radio, overwrite: bool = False
     ) -> Radio:
         """Update Radio record in the database."""

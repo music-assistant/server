@@ -491,15 +491,14 @@ class Music:
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
 
-    async def delete_library_item(
-        self, media_type: MediaType, library_item_id: str | int, recursive: bool = False
+    async def remove_item_from_library(
+        self, media_type: MediaType, library_item_id: str | int
     ) -> None:
         """Remove item from the database."""
         await self.client.send_command(
             "music/delete",
             media_type=media_type,
             library_item_id=library_item_id,
-            recursive=recursive,
         )
 
     async def browse(

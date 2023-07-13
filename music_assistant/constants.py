@@ -3,8 +3,9 @@
 import pathlib
 from typing import Final
 
-API_SCHEMA_VERSION: Final[int] = 22
-MIN_SCHEMA_VERSION = 22
+API_SCHEMA_VERSION: Final[int] = 23
+MIN_SCHEMA_VERSION: Final[int] = 23
+DB_SCHEMA_VERSION: Final[int] = 24
 
 ROOT_LOGGER_NAME: Final[str] = "music_assistant"
 

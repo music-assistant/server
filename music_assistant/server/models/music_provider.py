@@ -404,16 +404,20 @@ class MusicProvider(Provider):
                 )
                 if not library_item:
                     # create full db item
+                    # note that we skip the metadata lookup purely to speed up the sync
+                    # the additional metedata is then lazy retrieved afterwards
                     prov_item.favorite = True
-                    library_item = await controller.add(prov_item, skip_metadata_lookup=True)
+                    library_item = await controller.add_item_to_library(
+                        prov_item, skip_metadata_lookup=True
+                    )
                 elif (
                     library_item.metadata.checksum and prov_item.metadata.checksum
                 ) and library_item.metadata.checksum != prov_item.metadata.checksum:
                     # existing dbitem checksum changed
-                    library_item = await controller.update(library_item.item_id, prov_item)
+                    library_item = await controller.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
                 cur_db_ids.add(library_item.item_id)
-                if not library_item.favorite:
-                    await controller.set_db_library(library_item.item_id, True)
 
             # process deletions (= no longer in library)
             cache_key = f"library_items.{media_type}.{self.instance_id}"
@@ -421,8 +425,22 @@ class MusicProvider(Provider):
             if prev_library_items := await self.mass.cache.get(cache_key):
                 for db_id in prev_library_items:
                     if db_id not in cur_db_ids:
-                        # only mark the item as not in library and leave the metadata in db
-                        await controller.set_db_library(db_id, False)
+                        item = await controller.get_library_item(db_id)
+                        remaining_providers = {
+                            x.provider_domain
+                            for x in item.provider_mappings
+                            if x.provider_domain != self.domain
+                        }
+                        if not remaining_providers and media_type != MediaType.ARTIST:
+                            # this item is removed from the provider's library
+                            # and we have no other providers attached to it
+                            # it is safe to remove it from the MA library too
+                            # note we skip artists here to prevent a recursive removal
+                            # of all albums and tracks underneath this artist
+                            controller.remove_item_from_library(db_id)
+                        else:
+                            # otherwise: just unmark favorite
+                            await controller.set_favorite(db_id, False)
             await self.mass.cache.set(cache_key, list(cur_db_ids))
 
     # DO NOT OVERRIDE BELOW

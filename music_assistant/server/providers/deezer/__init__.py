@@ -287,7 +287,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Add an item to the library."""
+        """Add an item to the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
             result = await self.client.add_user_artists(
@@ -310,7 +310,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         return result
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove an item to the library."""
+        """Remove an item from the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
             result = await self.client.remove_user_artists(

@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import shutil
 import statistics
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import json_dumps, json_loads
@@ -23,6 +24,7 @@ from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
+    DB_SCHEMA_VERSION,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
@@ -51,7 +53,6 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
-DB_SCHEMA_VERSION: Final[int] = 24
 
 
 class MusicController(CoreController):
@@ -306,6 +307,9 @@ class MusicController(CoreController):
         add_to_library: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
+        if provider_instance_id_or_domain == "database":
+            # backwards compatibility - to remove when 2.0 stable is released
+            provider_instance_id_or_domain = "library"
         if provider_instance_id_or_domain == "url":
             # handle special case of 'URL' MusicProvider which allows us to play regular url's
             return await self.mass.get_provider("url").parse_item(item_id)
@@ -318,15 +322,16 @@ class MusicController(CoreController):
             add_to_library=add_to_library,
         )
 
-    @api_command("music/library/add")
-    async def add_to_library(
+    @api_command("music/favorites/add")
+    async def add_to_favorites(
         self,
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> None:
-        """Add an item to the library."""
-        # make sure we have a full db item
+        """Add an item to the favorites."""
+        # make sure we have a full library item
+        # a favorite must always be in the library
         full_item = await self.get_item(
             media_type,
             item_id,
@@ -334,15 +339,16 @@ class MusicController(CoreController):
             lazy=False,
             add_to_library=True,
         )
+        # set favorite in library db
         ctrl = self.get_controller(media_type)
-        await ctrl.add_to_library(
+        await ctrl.set_favorite(
             full_item.item_id,
-            full_item.provider,
+            True,
         )
 
-    @api_command("music/library/add_items")
-    async def add_items_to_library(self, items: list[str | MediaItemType]) -> None:
-        """Add multiple items to the library (provide uri or MediaItem)."""
+    @api_command("music/favorites/add_items")
+    async def add_items_to_favorites(self, items: list[str | MediaItemType]) -> None:
+        """Add multiple items to the favorites (provide uri or MediaItem)."""
         tasks = []
         for item in items:
             if isinstance(item, str):
@@ -358,23 +364,23 @@ class MusicController(CoreController):
             )
         await asyncio.gather(*tasks)
 
-    @api_command("music/library/remove")
-    async def remove_from_library(
+    @api_command("music/favorites/remove")
+    async def remove_from_favorites(
         self,
         media_type: MediaType,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item_id: str | int,
     ) -> None:
-        """Remove item from the library."""
+        """Remove (library) item from the favorites."""
+        item_id = int(item_id)
         ctrl = self.get_controller(media_type)
-        await ctrl.remove_from_library(
+        await ctrl.set_favorite(
             item_id,
-            provider_instance_id_or_domain,
+            False,
         )
 
-    @api_command("music/library/remove_items")
-    async def remove_items_from_library(self, items: list[str | MediaItemType]) -> None:
-        """Remove multiple items from the library (provide uri or MediaItem)."""
+    @api_command("music/favorites/remove_items")
+    async def remove_items_from_favorites(self, items: list[str | MediaItemType]) -> None:
+        """Remove multiple items from the favorites (provide uri or MediaItem)."""
         tasks = []
         for item in items:
             if isinstance(item, str):
@@ -496,34 +502,6 @@ class MusicController(CoreController):
             allow_replace=True,
         )
 
-    async def library_add_items(self, items: list[MediaItemType]) -> None:
-        """Add media item(s) to the library.
-
-        Creates background tasks to process the action.
-        """
-        for media_item in items:
-            self.mass.create_task(
-                self.add_to_library(
-                    media_item.media_type,
-                    media_item.item_id,
-                    media_item.provider,
-                )
-            )
-
-    async def library_remove_items(self, items: list[MediaItemType]) -> None:
-        """Remove media item(s) from the library.
-
-        Creates background tasks to process the action.
-        """
-        for media_item in items:
-            self.mass.create_task(
-                self.remove_from_library(
-                    media_item.media_type,
-                    media_item.item_id,
-                    media_item.provider,
-                )
-            )
-
     def get_controller(
         self, media_type: MediaType
     ) -> (
@@ -619,7 +597,7 @@ class MusicController(CoreController):
         ):
             prov_items = await ctrl.get_library_items_by_prov_id(provider_instance)
             for item in prov_items:
-                await ctrl.remove_prov_mapping(item.item_id, provider_instance)
+                await ctrl.remove_provider_mappings(item.item_id, provider_instance)
 
     async def _setup_database(self):
         """Initialize database."""
@@ -643,24 +621,38 @@ class MusicController(CoreController):
                 prev_version,
                 DB_SCHEMA_VERSION,
             )
+            # make a backup of db file
+            db_path_backup = db_path + ".backup"
+            await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
-            if prev_version < 22:
-                # for now just keep it simple and just recreate the tables if the schema is too old
+            if prev_version < 22 or prev_version > DB_SCHEMA_VERSION:
+                # for now just keep it simple and just recreate the tables
+                # if the schema is too old or too new
+                # we allow migrations only for up to 2 schema versions behind
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}")
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
-
                 # recreate missing tables
                 await self.__create_database_tables()
 
             if prev_version in (22, 23):
-                # migrate in_library --> favorite
+                # reset albums, artists, tracks, impossible to migrate in a clean way
                 for table in (
                     DB_TABLE_ARTISTS,
                     DB_TABLE_ALBUMS,
                     DB_TABLE_TRACKS,
+                ):
+                    self.logger.warning(
+                        "Resetting %s library/database - a full rescan will be performed!", table
+                    )
+                    await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+                # recreate missing tables
+                await self.__create_database_tables()
+
+                # migrate in_library --> favorite
+                for table in (
                     DB_TABLE_PLAYLISTS,
                     DB_TABLE_RADIOS,
                 ):
@@ -671,7 +663,7 @@ class MusicController(CoreController):
                     # clean out all non favorites from library db
                     item_ids_to_delete = set()
                     async for item in self.database.iter_items(table):
-                        if not item["favorite"] or "filesystem" in item["provider_mappings"]:
+                        if not (item["favorite"] or '"url' in item["provider_mappings"]):
                             item_ids_to_delete.add(item["item_id"])
                             continue
                         # migrate provider_mapping column (audio_format)

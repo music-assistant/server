@@ -42,19 +42,26 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
-    async def add(self, item: ItemCls, skip_metadata_lookup: bool = False) -> ItemCls:
+    async def add_item_to_library(
+        self, item: ItemCls, skip_metadata_lookup: bool = False
+    ) -> ItemCls:
         """Add item to library and return the database item."""
         raise NotImplementedError
 
     @abstractmethod
-    async def update(self, item_id: str | int, update: ItemCls, overwrite: bool = False) -> ItemCls:
-        """Update existing record in the database."""
+    async def update_item_in_library(
+        self, item_id: str | int, update: ItemCls, overwrite: bool = False
+    ) -> ItemCls:
+        """Update existing library record in the database."""
 
-    async def delete(self, item_id: str | int, recursive: bool = False) -> None:  # noqa: ARG002
-        """Delete record from the database."""
+    async def remove_item_from_library(self, item_id: str | int) -> None:
+        """Delete library record from the database."""
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
+        for provider_mapping in library_item.provider_mappings:
+            if "filesystem" in provider_mapping.provider_domain:
+                raise RuntimeError("Can not remove filesystem items from the library")
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -136,6 +143,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         add_to_library: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
+        if provider_instance_id_or_domain == "database":
+            # backwards compatibility - to remove when 2.0 stable is released
+            provider_instance_id_or_domain = "library"
         if not add_to_library and provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
         if details and not add_to_library and details.provider == "library":
@@ -148,10 +158,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # it's been too long since the full metadata was last retrieved (or never at all)
             force_refresh = True
         if library_item and force_refresh and add_to_library:
-            # get (first) provider item id belonging to this db item
+            # get (first) provider item id belonging to this library item
             provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)
         elif library_item:
-            # we have a db item and no refreshing is needed, return the results!
+            # we have a library item and no refreshing is needed, return the results!
             return library_item
         if (
             provider_instance_id_or_domain
@@ -174,12 +184,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             raise MediaNotFoundError(f"Item not found: {provider_instance_id_or_domain}/{item_id}")
         if not add_to_library:
             return details
-        # create task to add the item to the db, including matching metadata etc. takes some time
+        # create task to add the item to the library,
+        # including matching metadata etc. takes some time
         # in 99% of the cases we just return lazy because we want the details as fast as possible
-        # only if we really need to wait for the result (e.g. to prevent race conditions), we
-        # can set lazy to false and we await the job to complete.
+        # only if we really need to wait for the result (e.g. to prevent race conditions),
+        # we can set lazy to false and we await the job to complete.
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(self.add, details, task_id=task_id)
+        add_task = self.mass.create_task(self.add_item_to_library, details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
@@ -236,52 +247,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         return items
 
-    async def add_to_library(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
-    ) -> None:
-        """Add an item to the library."""
-        prov_item = await self.get_library_item_by_prov_id(
-            item_id,
-            provider_instance_id_or_domain,
-        )
-        if prov_item is None:
-            prov_item = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        if prov_item.favorite is True:
-            return
-        # mark as favorite/library item on provider(s)
-        for prov_mapping in prov_item.provider_mappings:
-            if prov := self.mass.get_provider(prov_mapping.provider_instance):
-                if not prov.library_edit_supported(self.media_type):
-                    continue
-                await prov.library_add(prov_mapping.item_id, self.media_type)
-        # mark as library item in internal db if db item
-        if prov_item.provider == "library" and not prov_item.favorite:
-            prov_item.favorite = True
-            await self.set_db_library(prov_item.item_id, True)
-
-    async def remove_from_library(self, item_id: str, provider_instance_id_or_domain: str) -> None:
-        """Remove item from the library."""
-        prov_item = await self.get_library_item_by_prov_id(
-            item_id,
-            provider_instance_id_or_domain,
-        )
-        if prov_item is None:
-            prov_item = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        if prov_item.favorite is False:
-            return
-        # unmark as favorite/library item on provider(s)
-        for prov_mapping in prov_item.provider_mappings:
-            if prov := self.mass.get_provider(prov_mapping.provider_instance):
-                if not prov.library_edit_supported(self.media_type):
-                    continue
-                await prov.library_remove(prov_mapping.item_id, self.media_type)
-        # unmark as library item in internal db if db item
-        if prov_item.provider == "library":
-            prov_item.favorite = False
-            await self.set_db_library(prov_item.item_id, False)
-
     async def get_provider_mapping(self, item: ItemCls) -> tuple[str, str]:
         """Return (first) provider and item id."""
         if not getattr(item, "provider_mappings", None):
@@ -319,14 +284,14 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         match = {"item_id": db_id}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
             return self.item_cls.from_db_row(db_row)
-        raise MediaNotFoundError(f"Album not found in database: {db_id}")
+        raise MediaNotFoundError(f"{self.media_type.value} not found in library: {db_id}")
 
     async def get_library_item_by_prov_id(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> ItemCls | None:
-        """Get the database item for the given provider_instance."""
+        """Get the library item for the given provider_instance."""
         assert item_id
         assert provider_instance_id_or_domain
         if provider_instance_id_or_domain == "library":
@@ -342,7 +307,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         provider_mappings: list[ProviderMapping],
     ) -> ItemCls | None:
-        """Get the database item for the given provider_instance."""
+        """Get the library item for the given provider_instance."""
         # always prefer provider instance first
         for mapping in provider_mappings:
             for item in await self.get_library_items_by_prov_id(
@@ -366,7 +331,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
     ) -> list[ItemCls]:
-        """Fetch all records from database for given provider."""
+        """Fetch all records from library for given provider."""
         if provider_instance_id_or_domain == "library":
             return await self.get_library_items_by_query(limit=limit, offset=offset)
 
@@ -407,9 +372,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 break
             offset += limit
 
-    async def set_db_library(self, item_id: str | int, favorite: bool) -> None:
-        """Set the in-library bool on a database item."""
+    async def set_favorite(self, item_id: str | int, favorite: bool) -> None:
+        """Set the favorite bool on a database item."""
         db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        if library_item.favorite == favorite:
+            return
         match = {"item_id": db_id}
         await self.mass.music.database.update(self.db_table, match, {"favorite": favorite})
         library_item = await self.get_library_item(db_id)
@@ -452,8 +420,55 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             f"found on provider {provider_instance_id_or_domain}"
         )
 
-    async def remove_prov_mapping(self, item_id: str | int, provider_instance_id: str) -> None:
-        """Remove provider id(s) from item."""
+    async def remove_provider_mapping(
+        self, item_id: str | int, provider_instance_id: str, provider_item_id: str
+    ) -> None:
+        """Remove provider mapping(s) from item."""
+        db_id = int(item_id)  # ensure integer
+        try:
+            library_item = await self.get_library_item(db_id)
+        except MediaNotFoundError:
+            # edge case: already deleted / race condition
+            return
+
+        # update provider_mappings table
+        await self.mass.music.database.delete(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {
+                "media_type": self.media_type.value,
+                "item_id": db_id,
+                "provider_instance": provider_instance_id,
+                "provider_item_id": provider_item_id,
+            },
+        )
+
+        # update the item in db (provider_mappings column only)
+        library_item.provider_mappings = {
+            x
+            for x in library_item.provider_mappings
+            if x.provider_instance != provider_instance_id and x.item_id != provider_item_id
+        }
+        match = {"item_id": db_id}
+        if library_item.provider_mappings:
+            await self.mass.music.database.update(
+                self.db_table,
+                match,
+                {"provider_mappings": serialize_to_json(library_item.provider_mappings)},
+            )
+            self.logger.debug(
+                "removed provider_mapping %s/%s from item id %s",
+                provider_instance_id,
+                provider_item_id,
+                db_id,
+            )
+            self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
+        else:
+            # remove item if it has no more providers
+            with suppress(AssertionError):
+                await self.remove_item_from_library(db_id)
+
+    async def remove_provider_mappings(self, item_id: str | int, provider_instance_id: str) -> None:
+        """Remove all provider mappings from an item."""
         db_id = int(item_id)  # ensure integer
         try:
             library_item = await self.get_library_item(db_id)
@@ -482,12 +497,16 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 match,
                 {"provider_mappings": serialize_to_json(library_item.provider_mappings)},
             )
-            self.logger.debug("removed provider %s from item id %s", provider_instance_id, db_id)
+            self.logger.debug(
+                "removed all provider mappings for provider %s from item id %s",
+                provider_instance_id,
+                db_id,
+            )
             self.mass.signal_event(EventType.MEDIA_ITEM_UPDATED, library_item.uri, library_item)
         else:
-            # delete item if it has no more providers
+            # remove item if it has no more providers
             with suppress(AssertionError):
-                await self.delete(db_id)
+                await self.remove_item_from_library(db_id)
 
     async def dynamic_tracks(
         self,
@@ -611,7 +630,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # try to request the full item
         with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
-            db_artist = await self.mass.music.artists.add(artist, skip_metadata_lookup=True)
+            db_artist = await self.mass.music.artists.add_item_to_library(
+                artist, skip_metadata_lookup=True
+            )
             return ItemMapping.from_item(db_artist)
         # fallback to just the provider item
         album = await self.mass.music.albums.get_provider_item(

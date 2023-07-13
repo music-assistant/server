@@ -42,13 +42,17 @@ class TracksController(MediaControllerBase[Track]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         # register api handlers
-        self.mass.register_api_command("music/tracks", self.library_items)
-        self.mass.register_api_command("music/track", self.get)
-        self.mass.register_api_command("music/track/versions", self.versions)
-        self.mass.register_api_command("music/track/albums", self.albums)
-        self.mass.register_api_command("music/track/update", self._update_library_item)
-        self.mass.register_api_command("music/track/delete", self.delete)
-        self.mass.register_api_command("music/track/preview", self.get_preview_url)
+        self.mass.register_api_command("music/tracks/library_items", self.library_items)
+        self.mass.register_api_command("music/tracks/get_track", self.get)
+        self.mass.register_api_command("music/tracks/track_versions", self.versions)
+        self.mass.register_api_command("music/tracks/track_albums", self.albums)
+        self.mass.register_api_command(
+            "music/tracks/update_item_in_library", self.update_item_in_library
+        )
+        self.mass.register_api_command(
+            "music/tracks/remove_item_from_library", self.remove_item_from_library
+        )
+        self.mass.register_api_command("music/tracks/preview", self.get_preview_url)
 
     async def get(
         self,
@@ -100,7 +104,7 @@ class TracksController(MediaControllerBase[Track]):
         track.artists = full_artists
         return track
 
-    async def add(self, item: Track, skip_metadata_lookup: bool = False) -> Track:
+    async def add_item_to_library(self, item: Track, skip_metadata_lookup: bool = False) -> Track:
         """Add track to library and return the new database item."""
         if not isinstance(item, Track):
             raise InvalidDataError("Not a valid Track object (ItemMapping can not be added to db)")
@@ -133,7 +137,7 @@ class TracksController(MediaControllerBase[Track]):
         if not skip_metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
         if item.provider == "library":
-            library_item = await self._update_library_item(item.item_id, item)
+            library_item = await self._update_item_in_library(item.item_id, item)
         else:
             # use the lock to prevent a race condition of the same item being added twice
             async with self._db_add_lock:
@@ -144,9 +148,11 @@ class TracksController(MediaControllerBase[Track]):
         # return final library_item after all match/metadata actions
         return await self.get_library_item(library_item.item_id)
 
-    async def update(self, item_id: str | int, update: Track, overwrite: bool = False) -> Track:
+    async def update_item_in_library(
+        self, item_id: str | int, update: Track, overwrite: bool = False
+    ) -> Track:
         """Update existing record in the database."""
-        return await self._update_library_item(item_id=item_id, item=update, overwrite=overwrite)
+        return await self._update_item_in_library(item_id=item_id, item=update, overwrite=overwrite)
 
     async def versions(
         self,
@@ -243,7 +249,7 @@ class TracksController(MediaControllerBase[Track]):
                     if compare_track(prov_track, db_track):
                         # 100% match, we can simply update the db with additional provider ids
                         match_found = True
-                        await self._update_library_item(db_track.item_id, search_result_item)
+                        await self._update_item_in_library(db_track.item_id, search_result_item)
 
             if not match_found:
                 self.logger.debug(
@@ -286,20 +292,20 @@ class TracksController(MediaControllerBase[Track]):
         # safety guard: check for existing item first
         if cur_item := await self.get_library_item_by_prov_mappings(item.provider_mappings):
             # existing item found: update it
-            return await self._update_library_item(cur_item.item_id, item)
+            return await self._update_item_in_library(cur_item.item_id, item)
         # try matching on musicbrainz_id
         if item.musicbrainz_id:
             match = {"musicbrainz_id": item.musicbrainz_id}
             if db_row := await self.mass.music.database.get_row(self.db_table, match):
                 cur_item = Track.from_db_row(db_row)
                 # existing item found: update it
-                return await self._update_library_item(cur_item.item_id, item)
+                return await self._update_item_in_library(cur_item.item_id, item)
         # try matching on isrc
         for isrc in item.isrc:
             if search_result := await self.mass.music.database.search(self.db_table, isrc, "isrc"):
                 cur_item = Track.from_db_row(search_result[0])
                 # existing item found: update it
-                return await self._update_library_item(cur_item.item_id, item)
+                return await self._update_item_in_library(cur_item.item_id, item)
         # fallback to compare matching
         match = {"sort_name": item.sort_name}
         for row in await self.mass.music.database.get_rows(self.db_table, match):
@@ -307,7 +313,7 @@ class TracksController(MediaControllerBase[Track]):
             if compare_track(row_track, item):
                 cur_item = row_track
                 # existing item found: update it
-                return await self._update_library_item(cur_item.item_id, item)
+                return await self._update_item_in_library(cur_item.item_id, item)
 
         # no existing match found: insert new item
         track_artists = await self._get_artist_mappings(item)
@@ -343,7 +349,7 @@ class TracksController(MediaControllerBase[Track]):
         # return the full item we just added
         return library_item
 
-    async def _update_library_item(
+    async def _update_item_in_library(
         self, item_id: str | int, item: Track | ItemMapping, overwrite: bool = False
     ) -> Track:
         """Update Track record in the database, merging data."""
@@ -444,7 +450,9 @@ class TracksController(MediaControllerBase[Track]):
 
         # try to request the full item
         with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
-            db_album = await self.mass.music.albums.add(album, skip_metadata_lookup=True)
+            db_album = await self.mass.music.albums.add_item_to_library(
+                album, skip_metadata_lookup=True
+            )
             return TrackAlbumMapping.from_item(db_album, disc_number, track_number)
 
         # fallback to just the provider item
