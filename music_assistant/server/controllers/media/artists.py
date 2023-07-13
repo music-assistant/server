@@ -46,7 +46,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         super().__init__(*args, **kwargs)
         # register api handlers
         self.mass.register_api_command("music/artists/library_items", self.library_items)
-        self.mass.register_api_command("music/artists/album_artists", self.album_artists)
         self.mass.register_api_command(
             "music/artists/update_item_in_library", self.update_item_in_library
         )
@@ -84,22 +83,27 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Update existing record in the database."""
         return await self._update_item_in_library(item_id=item_id, item=update, overwrite=overwrite)
 
-    async def album_artists(
+    async def library_items(
         self,
         favorite: bool | None = None,
         search: str | None = None,
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
+        album_artists_only: bool = False,
     ) -> PagedItems:
         """Get in-database album artists."""
-        return await self.library_items(
-            favorite=favorite,
-            search=search,
-            limit=limit,
-            offset=offset,
-            order_by=order_by,
-            query_parts=["artists.sort_name in (select albums.sort_artist from albums)"],
+        if album_artists_only:
+            return await self.library_items(
+                favorite=favorite,
+                search=search,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+                query_parts=["artists.sort_name in (select albums.sort_artist from albums)"],
+            )
+        return await super().library_items(
+            favorite=favorite, search=search, limit=limit, offset=offset, order_by=order_by
         )
 
     async def tracks(

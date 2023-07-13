@@ -283,17 +283,13 @@ class MusicController(CoreController):
         return await prov.browse(path)
 
     @api_command("music/item_by_uri")
-    async def get_item_by_uri(
-        self, uri: str, force_refresh: bool = False, lazy: bool = True
-    ) -> MediaItemType:
+    async def get_item_by_uri(self, uri: str) -> MediaItemType:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            lazy=lazy,
         )
 
     @api_command("music/item")
@@ -322,8 +318,8 @@ class MusicController(CoreController):
             add_to_library=add_to_library,
         )
 
-    @api_command("music/favorites/add")
-    async def add_to_favorites(
+    @api_command("music/favorites/add_item")
+    async def add_item_to_favorites(
         self,
         media_type: MediaType,
         item_id: str,
@@ -364,7 +360,7 @@ class MusicController(CoreController):
             )
         await asyncio.gather(*tasks)
 
-    @api_command("music/favorites/remove")
+    @api_command("music/favorites/remove_item")
     async def remove_from_favorites(
         self,
         media_type: MediaType,
@@ -396,13 +392,27 @@ class MusicController(CoreController):
             )
         await asyncio.gather(*tasks)
 
-    @api_command("music/delete")
-    async def delete(
-        self, media_type: MediaType, library_item_id: str | int, recursive: bool = False
+    @api_command("music/library/remove_item")
+    async def remove_item_from_library(
+        self, media_type: MediaType, library_item_id: str | int
     ) -> None:
-        """Remove item from the database."""
+        """
+        Remove item from the library.
+
+        Destructive! Will remove the item and all dependants.
+        """
         ctrl = self.get_controller(media_type)
-        await ctrl.delete(library_item_id, recursive)
+        await ctrl.remove_item_from_library(library_item_id)
+
+    @api_command("music/library/add_item")
+    async def add_item_to_library(self, item: str | MediaItemType) -> MediaItemType:
+        """Add item (uri or mediaitem) to the library."""
+        if isinstance(item, str):
+            item = await self.get_item_by_uri(item)
+        ctrl = self.get_controller(item.media_type)
+        return await ctrl.get(
+            item_id=item.item_id, provider_instance_id_or_domain=item.provider, add_to_library=True
+        )
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.

@@ -135,7 +135,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not playlist.is_editable:
             raise InvalidDataError(f"Playlist {playlist.name} is not editable")
         # make sure we have recent full track details
-        track = await self.mass.music.get_item_by_uri(track_uri, lazy=False)
+        track = await self.mass.music.get_item_by_uri(track_uri)
         assert track.media_type == MediaType.TRACK
         # a playlist can only have one provider (for now)
         playlist_prov = next(iter(playlist.provider_mappings))
