@@ -26,7 +26,7 @@ class RadioController(MediaControllerBase[Radio]):
         super().__init__(*args, **kwargs)
         # register api handlers
         self.mass.register_api_command("music/radio/library_items", self.library_items)
-        self.mass.register_api_command("music/radio/get_item", self.get)
+        self.mass.register_api_command("music/radio/get_radio", self.get)
         self.mass.register_api_command(
             "music/radio/update_item_in_library", self.update_item_in_library
         )

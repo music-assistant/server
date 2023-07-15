@@ -4,6 +4,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -28,17 +29,19 @@ class MusicProvider(Provider):
     """
 
     @property
-    def is_unique(self) -> bool:
+    def is_streaming_provider(self) -> bool:
         """
-        Return True if the (non user related) data in this provider instance is unique.
+        Return True if the provider is a streaming provider.
 
-        For example on a global streaming provider (like Spotify),
-        the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to False will only query one instance of the provider for search and lookups.
-        Setting this to True will query all instances of this provider for search and lookups.
+        This literally means that the catalog is not the same as the library contents.
+        For local based providers (files, plex), the catalog is the same as the library content.
+        It also means that data is if this provider is NOT a streaming provider,
+        data cross instances is unique, the catalog and library differs per instance.
+
+        Setting this to True will only query one instance of the provider for search and lookups.
+        Setting this to False will query all instances of this provider for search and lookups.
         """
-        return False
+        return True
 
     async def search(
         self,
@@ -425,7 +428,11 @@ class MusicProvider(Provider):
             if prev_library_items := await self.mass.cache.get(cache_key):
                 for db_id in prev_library_items:
                     if db_id not in cur_db_ids:
-                        item = await controller.get_library_item(db_id)
+                        try:
+                            item = await controller.get_library_item(db_id)
+                        except MediaNotFoundError:
+                            # edge case: the item is already removed
+                            continue
                         remaining_providers = {
                             x.provider_domain
                             for x in item.provider_mappings

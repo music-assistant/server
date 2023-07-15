@@ -6,6 +6,7 @@ import logging
 import os
 import shutil
 import statistics
+from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
 
@@ -321,76 +322,39 @@ class MusicController(CoreController):
     @api_command("music/favorites/add_item")
     async def add_item_to_favorites(
         self,
-        media_type: MediaType,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: str | MediaItemType,
     ) -> None:
         """Add an item to the favorites."""
+        if isinstance(item, str):
+            item = await self.get_item_by_uri(item)
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
-            media_type,
-            item_id,
-            provider_instance_id_or_domain,
+            item.media_type,
+            item.item_id,
+            item.provider,
             lazy=False,
             add_to_library=True,
         )
         # set favorite in library db
-        ctrl = self.get_controller(media_type)
+        ctrl = self.get_controller(item.media_type)
         await ctrl.set_favorite(
             full_item.item_id,
             True,
         )
 
-    @api_command("music/favorites/add_items")
-    async def add_items_to_favorites(self, items: list[str | MediaItemType]) -> None:
-        """Add multiple items to the favorites (provide uri or MediaItem)."""
-        tasks = []
-        for item in items:
-            if isinstance(item, str):
-                item = await self.get_item_by_uri(item)  # noqa: PLW2901
-            tasks.append(
-                self.mass.create_task(
-                    self.add_to_library(
-                        media_type=item.media_type,
-                        item_id=item.item_id,
-                        provider_instance_id_or_domain=item.provider,
-                    )
-                )
-            )
-        await asyncio.gather(*tasks)
-
     @api_command("music/favorites/remove_item")
-    async def remove_from_favorites(
+    async def remove_item_from_favorites(
         self,
         media_type: MediaType,
-        item_id: str | int,
+        library_item_id: str | int,
     ) -> None:
         """Remove (library) item from the favorites."""
-        item_id = int(item_id)
         ctrl = self.get_controller(media_type)
         await ctrl.set_favorite(
-            item_id,
+            library_item_id,
             False,
         )
-
-    @api_command("music/favorites/remove_items")
-    async def remove_items_from_favorites(self, items: list[str | MediaItemType]) -> None:
-        """Remove multiple items from the favorites (provide uri or MediaItem)."""
-        tasks = []
-        for item in items:
-            if isinstance(item, str):
-                item = await self.get_item_by_uri(item)  # noqa: PLW2901
-            tasks.append(
-                self.mass.create_task(
-                    self.remove_from_library(
-                        media_type=item.media_type,
-                        item_id=item.item_id,
-                        provider_instance_id_or_domain=item.provider,
-                    )
-                )
-            )
-        await asyncio.gather(*tasks)
 
     @api_command("music/library/remove_item")
     async def remove_item_from_library(
@@ -402,6 +366,12 @@ class MusicController(CoreController):
         Destructive! Will remove the item and all dependants.
         """
         ctrl = self.get_controller(media_type)
+        item = await ctrl.get_library_item(library_item_id)
+        # remove from all providers
+        for provider_mapping in item.provider_mappings:
+            prov_controller = self.mass.get_provider(provider_mapping.provider_instance)
+            with suppress(NotImplementedError):
+                await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
         await ctrl.remove_item_from_library(library_item_id)
 
     @api_command("music/library/add_item")
@@ -410,8 +380,15 @@ class MusicController(CoreController):
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
         ctrl = self.get_controller(item.media_type)
+        # add to provider's library first
+        provider = self.mass.get_provider(item.provider)
+        if provider.library_edit_supported(item.media_type):
+            await provider.library_add(item.item_id, item.media_type)
         return await ctrl.get(
-            item_id=item.item_id, provider_instance_id_or_domain=item.provider, add_to_library=True
+            item_id=item.item_id,
+            provider_instance_id_or_domain=item.provider,
+            details=item,
+            add_to_library=True,
         )
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
@@ -544,7 +521,7 @@ class MusicController(CoreController):
         instances = set()
         domains = set()
         for provider in self.providers:
-            if provider.domain not in domains or provider.is_unique:
+            if provider.domain not in domains or not provider.is_streaming_provider:
                 instances.add(provider.instance_id)
                 domains.add(provider.domain)
         return instances

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import itertools
 from random import choice, random
 from typing import TYPE_CHECKING, Any
 
@@ -53,8 +52,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             "music/artists/remove_item_from_library", self.remove_item_from_library
         )
         self.mass.register_api_command("music/artists/get_artist", self.get)
-        self.mass.register_api_command("music/artist/artist_albums", self.albums)
-        self.mass.register_api_command("music/artist/artist_tracks", self.tracks)
+        self.mass.register_api_command("music/artists/artist_albums", self.albums)
+        self.mass.register_api_command("music/artists/artist_tracks", self.tracks)
 
     async def add_item_to_library(
         self, item: Artist | ItemMapping, skip_metadata_lookup: bool = False
@@ -93,17 +92,15 @@ class ArtistsController(MediaControllerBase[Artist]):
         album_artists_only: bool = False,
     ) -> PagedItems:
         """Get in-database album artists."""
-        if album_artists_only:
-            return await self.library_items(
-                favorite=favorite,
-                search=search,
-                limit=limit,
-                offset=offset,
-                order_by=order_by,
-                query_parts=["artists.sort_name in (select albums.sort_artist from albums)"],
-            )
         return await super().library_items(
-            favorite=favorite, search=search, limit=limit, offset=offset, order_by=order_by
+            favorite=favorite,
+            search=search,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            query_parts=["artists.sort_name in (select albums.sort_artist from albums)"]
+            if album_artists_only
+            else None,
         )
 
     async def tracks(
@@ -112,28 +109,18 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str | None = None,
         artist: Artist | None = None,
     ) -> list[Track]:
-        """Return top tracks for an artist."""
+        """Return all/top tracks for an artist."""
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_artist_tracks(
+                item_id,
+            )
         if not artist:
             artist = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
-        # get results from all providers
-        coros = [
-            self.get_provider_artist_toptracks(
-                prov_mapping.item_id,
-                prov_mapping.provider_instance,
-                cache_checksum=artist.metadata.checksum,
-            )
-            for prov_mapping in artist.provider_mappings
-        ]
-        tracks = itertools.chain.from_iterable(await asyncio.gather(*coros))
-        # merge duplicates using a dict
-        final_items: dict[str, Track] = {}
-        for track in tracks:
-            key = f".{track.name}.{track.version}"
-            if key in final_items:
-                final_items[key].provider_mappings.update(track.provider_mappings)
-            else:
-                final_items[key] = track
-        return list(final_items.values())
+        return await self.get_provider_artist_toptracks(
+            item_id,
+            provider_instance_id_or_domain,
+            cache_checksum=artist.metadata.checksum,
+        )
 
     async def albums(
         self,
@@ -142,29 +129,18 @@ class ArtistsController(MediaControllerBase[Artist]):
         artist: Artist | None = None,
     ) -> list[Album]:
         """Return (all/most popular) albums for an artist."""
+        if provider_instance_id_or_domain == "library":
+            # only return results from a single provider (which may be the library only)
+            return await self.get_library_artist_albums(
+                item_id,
+            )
         if not artist:
             artist = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
-        # get results from all providers
-        coros = [
-            self.get_provider_artist_albums(
-                item.item_id,
-                item.provider_domain,
-                cache_checksum=artist.metadata.checksum,
-            )
-            for item in artist.provider_mappings
-        ]
-        albums: list[Album] = itertools.chain.from_iterable(await asyncio.gather(*coros))
-        # merge duplicates using a dict
-        final_items: dict[str, Album] = {}
-        for album in albums:
-            key = f".{album.name}.{album.version}.{album.metadata.explicit}"
-            if key in final_items:
-                final_items[key].provider_mappings.update(album.provider_mappings)
-            else:
-                final_items[key] = album
-            if album.favorite:
-                final_items[key].favorite = True
-        return list(final_items.values())
+        return await self.get_provider_artist_albums(
+            item_id,
+            provider_instance_id_or_domain,
+            cache_checksum=artist.metadata.checksum,
+        )
 
     async def remove_item_from_library(self, item_id: str | int) -> None:
         """Delete record from the database."""
@@ -200,8 +176,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if provider.is_unique:
-                # matching on unique provider sis pointless as they push (all) their content to MA
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
                 continue
             if await self._match(db_artist, provider):
                 cur_provider_domains.add(provider.domain)
@@ -219,7 +195,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         cache_checksum: Any = None,
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
-        assert provider_instance_id_or_domain != "library"
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_artist_tracks(item_id)
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
@@ -246,6 +223,15 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
+
+    async def get_library_artist_tracks(
+        self,
+        item_id: str | int,
+    ) -> list[Track]:
+        """Return all tracks for an artist in the library."""
+        # TODO: adjust to json query instead of text search?
+        query = f"SELECT * FROM tracks WHERE artists LIKE '%\"{item_id}\"%'"
+        return await self.mass.music.tracks.get_library_items_by_query(query)
 
     async def get_provider_artist_albums(
         self,
@@ -284,6 +270,15 @@ class ArtistsController(MediaControllerBase[Artist]):
             self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
+
+    async def get_library_artist_albums(
+        self,
+        item_id: str | int,
+    ) -> list[Album]:
+        """Return all in-library albums for an artist."""
+        # TODO: adjust to json query instead of text search?
+        query = f"SELECT * FROM albums WHERE artists LIKE '%\"{item_id}\"%'"
+        return await self.mass.music.albums.get_library_items_by_query(query)
 
     async def _add_library_item(self, item: Artist | ItemMapping) -> Artist:
         """Add a new item record to the database."""

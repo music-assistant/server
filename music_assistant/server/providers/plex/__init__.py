@@ -182,17 +182,19 @@ class PlexProvider(MusicProvider):
         )
 
     @property
-    def is_unique(self) -> bool:
+    def is_streaming_provider(self) -> bool:
         """
-        Return True if the (non user related) data in this provider instance is unique.
+        Return True if the provider is a streaming provider.
 
-        For example on a global streaming provider (like Spotify),
-        the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to False will only query one instance of the provider for search and lookups.
-        Setting this to True will query all instances of this provider for search and lookups.
+        This literally means that the catalog is not the same as the library contents.
+        For local based providers (files, plex), the catalog is the same as the library content.
+        It also means that data is if this provider is NOT a streaming provider,
+        data cross instances is unique, the catalog and library differs per instance.
+
+        Setting this to True will only query one instance of the provider for search and lookups.
+        Setting this to False will query all instances of this provider for search and lookups.
         """
-        return True
+        return False
 
     async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
         """Return the full image URL including the auth token."""

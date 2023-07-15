@@ -180,9 +180,6 @@ class AlbumsController(MediaControllerBase[Album]):
             # artist must match
             and album.artists[0].sort_name in {x.sort_name for x in prov_item.artists}
         }
-        # make sure that the 'base' version is NOT included
-        for prov_version in album.provider_mappings:
-            all_versions.pop(prov_version.item_id, None)
 
         # return the aggregated result
         return all_versions.values()
@@ -399,7 +396,7 @@ class AlbumsController(MediaControllerBase[Album]):
         return sorted(result, key=lambda x: (x.disc_number or 0, x.track_number or 0))
 
     async def _match(self, db_album: Album) -> None:
-        """Try to find matching album on all providers for the provided (database) album.
+        """Try to find match on all (streaming) providers for the provided (database) album.
 
         This is used to link objects of different providers/qualities together.
         """
@@ -443,8 +440,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 continue
             if ProviderFeature.SEARCH not in provider.supported_features:
                 continue
-            if provider.is_unique:
-                # matching on unique provider sis pointless as they push (all) their content to MA
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
                 continue
             if await find_prov_match(provider):
                 cur_provider_domains.add(provider.domain)

@@ -146,10 +146,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
-        if not add_to_library and provider_instance_id_or_domain == "library":
-            return await self.get_library_item(item_id)
-        if details and not add_to_library and details.provider == "library":
-            return details
+        # always prefer the full library item if we have it
         library_item = await self.get_library_item_by_prov_id(
             item_id,
             provider_instance_id_or_domain,
@@ -157,7 +154,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if library_item and (time() - (library_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
             force_refresh = True
-        if library_item and force_refresh and add_to_library:
+            add_to_library = True
+        if library_item and force_refresh:
             # get (first) provider item id belonging to this library item
             provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)
         elif library_item:
@@ -183,6 +181,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # we couldn't get a match from any of the providers, raise error
             raise MediaNotFoundError(f"Item not found: {provider_instance_id_or_domain}/{item_id}")
         if not add_to_library:
+            # return the provider item as-is
             return details
         # create task to add the item to the library,
         # including matching metadata etc. takes some time
@@ -258,7 +257,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 if not prov_mapping.available:
                     continue
                 if provider := self.mass.get_provider(prov_mapping.provider_instance):
-                    if prefer_unique and not provider.is_unique:
+                    if prefer_unique and provider.is_streaming_provider:
                         continue
                     return (prov_mapping.provider_instance, prov_mapping.item_id)
         return (None, None)
