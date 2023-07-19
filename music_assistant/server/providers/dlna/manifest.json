@@ -8,5 +8,6 @@
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1139",
   "multi_instance": false,
   "builtin": false,
-  "load_by_default": true
+  "load_by_default": true,
+  "icon": "dlna"
 }

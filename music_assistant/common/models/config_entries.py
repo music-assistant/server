@@ -10,7 +10,6 @@ from typing import Any
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
-from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_CROSSFADE_DURATION,
@@ -183,7 +182,6 @@ class Config(DataClassDictMixin):
             return value.value
 
         res = self.to_dict()
-        res.pop("manifest", None)  # filter out from storage
         res["values"] = {
             x.key: _handle_value(x)
             for x in self.values.values()
@@ -244,7 +242,6 @@ class ProviderConfig(Config):
     type: ProviderType
     domain: str
     instance_id: str
-    manifest: ProviderManifest | None = None  # copied here for UI convenience only
     # enabled: boolean to indicate if the provider is enabled
     enabled: bool = True
     # name: an (optional) custom name for this provider instance/config
@@ -274,7 +271,6 @@ class CoreConfig(Config):
     """CoreController Configuration."""
 
     domain: str  # domain/name of the core module
-    manifest: ProviderManifest | None = None  # copied here for UI convenience only
     # last_error: an optional error message if the module could not be setup with this config
     last_error: str | None = None
 

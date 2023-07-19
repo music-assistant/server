@@ -51,7 +51,7 @@ class PlayerController(CoreController):
         self.manifest.description = (
             "Music Assistant's core controller which manages all players from all providers."
         )
-        self.manifest.icon = "mdi-speaker-multiple"
+        self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task | None = None
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002

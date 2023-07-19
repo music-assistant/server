@@ -32,6 +32,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONFIGURABLE_CORE_CONTROLLERS,
     ENCRYPT_SUFFIX,
 )
 from music_assistant.server.helpers.api import api_command
@@ -49,16 +50,6 @@ DEFAULT_SAVE_DELAY = 5
 isfile = wrap(os.path.isfile)
 remove = wrap(os.remove)
 rename = wrap(os.rename)
-
-CONFIGURABLE_CORE_CONTROLLERS = (
-    "streams",
-    "webserver",
-    "players",
-    "metadata",
-    "cache",
-    "music",
-    "player_queues",
-)
 
 
 class ConfigController:
@@ -172,7 +163,7 @@ class ConfigController:
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
-        prov_entries = {x.domain for x in self.mass.get_available_providers()}
+        prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
         return [
             await self.get_provider_config(prov_conf["instance_id"])
             for prov_conf in raw_values.values()
@@ -189,16 +180,12 @@ class ConfigController:
             config_entries = await self.get_provider_config_entries(
                 raw_conf["domain"], instance_id=instance_id, values=raw_conf.get("values")
             )
-            for prov in self.mass.get_available_providers():
+            for prov in self.mass.get_provider_manifests():
                 if prov.domain == raw_conf["domain"]:
-                    manifest = prov
                     break
             else:
                 raise KeyError(f'Unknown provider domain: {raw_conf["domain"]}')
-            conf: ProviderConfig = ProviderConfig.parse(config_entries, raw_conf)
-            # always copy the manifest to help the UI a bit
-            conf.manifest = manifest
-            return conf
+            return ProviderConfig.parse(config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/get_value")
@@ -234,7 +221,7 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         # lookup provider manifest and module
-        for prov in self.mass.get_available_providers():
+        for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 prov_mod = await get_provider_module(provider_domain)
                 break
@@ -446,7 +433,7 @@ class ConfigController:
         for conf in await self.get_provider_configs(provider_domain=provider_domain):
             # return if there is already a config
             return
-        for prov in self.mass.get_available_providers():
+        for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 manifest = prov
                 break
@@ -482,13 +469,9 @@ class ConfigController:
     @api_command("config/core/get")
     async def get_core_config(self, domain: str) -> CoreConfig:
         """Return configuration for a single core controller."""
-        core_controller: CoreController = getattr(self.mass, domain)
         raw_conf = self.get(f"{CONF_CORE}/{domain}", {"domain": domain})
         config_entries = await self.get_core_config_entries(domain)
-        conf: CoreConfig = CoreConfig.parse(config_entries, raw_conf)
-        # always copy the manifest to help the UI a bit
-        conf.manifest = core_controller.manifest
-        return conf
+        return CoreConfig.parse(config_entries, raw_conf)
 
     @api_command("config/core/get_value")
     async def get_core_config_value(self, domain: str, key: str) -> ConfigValueType:
@@ -662,7 +645,7 @@ class ConfigController:
         Returns: newly created ProviderConfig.
         """
         # lookup provider manifest and module
-        for prov in self.mass.get_available_providers():
+        for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 manifest = prov
                 break

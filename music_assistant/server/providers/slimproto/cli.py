@@ -745,7 +745,7 @@ class LmsCli:
             players.append(player_item_from_mass(start_index + index, mass_player))
         return ServerStatusResponse(
             {
-                "httpport": self.mass.streams.port,
+                "httpport": self.mass.streams.publish_port,
                 "ip": self.mass.streams.publish_ip,
                 "version": "7.999.999",
                 "uuid": self.mass.server_id,

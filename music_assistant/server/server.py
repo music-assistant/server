@@ -24,6 +24,7 @@ from music_assistant.constants import (
     API_SCHEMA_VERSION,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONFIGURABLE_CORE_CONTROLLERS,
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
 )
@@ -47,6 +48,8 @@ from .models import ProviderInstanceType
 
 if TYPE_CHECKING:
     from types import TracebackType
+
+    from music_assistant.server.models.core_controller import CoreController
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = tuple[
@@ -86,7 +89,7 @@ class MusicAssistant:
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
-        self._available_providers: dict[str, ProviderManifest] = {}
+        self._provider_manifests: dict[str, ProviderManifest] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
@@ -122,6 +125,10 @@ class MusicAssistant:
         self.players = PlayerController(self)
         self.player_queues = PlayerQueuesController(self)
         self.streams = StreamsController(self)
+        # add manifests for core controllers
+        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
+            controller: CoreController = getattr(self, controller_name)
+            self._provider_manifests[controller.domain] = controller.manifest
         await self.cache.setup(await self.config.get_core_config("cache"))
         await self.webserver.setup(await self.config.get_core_config("webserver"))
         await self.music.setup(await self.config.get_core_config("music"))
@@ -181,10 +188,10 @@ class MusicAssistant:
             homeassistant_addon=self.running_as_hass_addon,
         )
 
-    @api_command("providers/available")
-    def get_available_providers(self) -> list[ProviderManifest]:
-        """Return all available Providers."""
-        return list(self._available_providers.values())
+    @api_command("providers/manifests")
+    def get_provider_manifests(self) -> list[ProviderManifest]:
+        """Return all Provider manifests."""
+        return list(self._provider_manifests.values())
 
     @api_command("providers")
     def get_providers(
@@ -356,7 +363,7 @@ class MusicAssistant:
             raise SetupFailedError("Configuration is invalid") from err
 
         domain = conf.domain
-        prov_manifest = self._available_providers.get(domain)
+        prov_manifest = self._provider_manifests.get(domain)
         # check for other instances of this provider
         existing = next((x for x in self.providers if x.domain == domain), None)
         if existing and not prov_manifest.multi_instance:
@@ -437,10 +444,10 @@ class MusicAssistant:
     async def _load_providers(self) -> None:
         """Load providers from config."""
         # load all available providers from manifest files
-        await self.__load_available_providers()
+        await self.__load_provider_manifests()
 
         # create default config for any 'load_by_default' providers (e.g. URL provider)
-        for prov_manifest in self._available_providers.values():
+        for prov_manifest in self._provider_manifests.values():
             if not prov_manifest.load_by_default:
                 continue
             await self.config.create_default_provider_config(prov_manifest.domain)
@@ -469,7 +476,7 @@ class MusicAssistant:
                     continue
                 tg.create_task(load_provider(prov_conf))
 
-    async def __load_available_providers(self) -> None:
+    async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""
         for dir_str in os.listdir(PROVIDERS_PATH):
             dir_path = os.path.join(PROVIDERS_PATH, dir_str)
@@ -484,21 +491,17 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest = await ProviderManifest.parse(file_path)
-                    # check for icon file
-                    if not provider_manifest.icon:
-                        for icon_file in ("icon.svg", "icon.png"):
-                            icon_path = os.path.join(dir_path, icon_file)
-                            if os.path.isfile(icon_path):
-                                provider_manifest.icon = await get_icon_string(icon_path)
-                                break
+                    # check for icon.svg file
+                    if not provider_manifest.icon_svg:
+                        icon_path = os.path.join(dir_path, "icon.svg")
+                        if os.path.isfile(icon_path):
+                            provider_manifest.icon_svg = await get_icon_string(icon_path)
                     # check for dark_icon file
-                    if not provider_manifest.icon_dark:
-                        for icon_file in ("icon_dark.svg", "icon_dark.png"):
-                            icon_path = os.path.join(dir_path, icon_file)
-                            if os.path.isfile(icon_path):
-                                provider_manifest.icon_dark = await get_icon_string(icon_path)
-                                break
-                    self._available_providers[provider_manifest.domain] = provider_manifest
+                    if not provider_manifest.icon_svg_dark:
+                        icon_path = os.path.join(dir_path, "icon_dark.svg")
+                        if os.path.isfile(icon_path):
+                            provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
+                    self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", dir_str)
                 except Exception as exc:  # pylint: disable=broad-except
                     LOGGER.exception(

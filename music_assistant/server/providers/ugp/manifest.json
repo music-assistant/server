@@ -9,5 +9,5 @@
   "multi_instance": false,
   "builtin": false,
   "load_by_default": false,
-  "icon": "mdi:mdi-speaker-multiple"
+  "icon": "speaker-multiple"
 }

@@ -6,5 +6,6 @@
   "codeowners": ["@gieljnssns"],
   "requirements": ["git+https://github.com/gieljnssns/python-radios.git@main"],
   "documentation": "https://github.com/orgs/music-assistant/discussions/1202",
-  "multi_instance": false
+  "multi_instance": false,
+  "icon": "radio"
 }

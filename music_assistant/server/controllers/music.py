@@ -75,7 +75,7 @@ class MusicController(CoreController):
         self.manifest.description = (
             "Music Assistant's core controller which manages all music from all providers."
         )
-        self.manifest.icon = "mdi-archive-music"
+        self.manifest.icon = "archive-music"
         self._sync_task: asyncio.Task | None = None
 
     async def get_config_entries(
