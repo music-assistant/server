@@ -64,7 +64,7 @@ class WebserverController(CoreController):
         self.manifest.description = (
             "The built-in webserver that hosts the Music Assistant Websockets API and frontend"
         )
-        self.manifest.icon = "mdi-web-box"
+        self.manifest.icon = "web-box"
 
     @property
     def base_url(self) -> str:

@@ -49,7 +49,7 @@ class PlayerQueuesController(CoreController):
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
         )
-        self.manifest.icon = "mdi-playlist-music"
+        self.manifest.icon = "playlist-music"
 
     async def close(self) -> None:
         """Cleanup on exit."""

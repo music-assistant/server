@@ -9,5 +9,5 @@
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
-  "icon": "md:cast"
+  "icon": "cast"
 }

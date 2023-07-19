@@ -38,7 +38,7 @@ class CoreController:
             name=f"{self.domain.title()} Core controller",
             description=f"{self.domain.title()} Core controller",
             codeowners=["@music-assistant"],
-            icon="mdi:puzzle-outline",
+            icon="puzzle-outline",
         )
 
     async def get_config_entries(

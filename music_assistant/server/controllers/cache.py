@@ -43,7 +43,7 @@ class CacheController(CoreController):
         self.manifest.description = (
             "Music Assistant's core controller for caching data throughout the application."
         )
-        self.manifest.icon = "mdi-memory"
+        self.manifest.icon = "memory"
 
     async def get_config_entries(
         self,

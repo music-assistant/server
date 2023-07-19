@@ -53,7 +53,7 @@ class MetaDataController(CoreController):
         self.manifest.description = (
             "Music Assistant's core controller which handles all metadata for music."
         )
-        self.manifest.icon = "mdi-book-information-variant"
+        self.manifest.icon = "book-information-variant"
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""

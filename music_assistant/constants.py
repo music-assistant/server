@@ -76,3 +76,12 @@ MASS_LOGO_ONLINE: Final[
 ] = "https://github.com/home-assistant/brands/raw/master/custom_integrations/mass/icon%402x.png"
 ENCRYPT_SUFFIX = "_encrypted_"
 SECURE_STRING_SUBSTITUTE = "this_value_is_encrypted"
+CONFIGURABLE_CORE_CONTROLLERS = (
+    "streams",
+    "webserver",
+    "players",
+    "metadata",
+    "cache",
+    "music",
+    "player_queues",
+)

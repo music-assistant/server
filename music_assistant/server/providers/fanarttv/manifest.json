@@ -9,5 +9,5 @@
   "multi_instance": false,
   "builtin": true,
   "load_by_default": true,
-  "icon": "mdi-folder-information"
+  "icon": "folder-information"
 }
