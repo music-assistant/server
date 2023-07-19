@@ -44,7 +44,7 @@ server = [
   "orjson==3.9.2",
   "shortuuid==1.0.11",
   "zeroconf==0.71.0",
-  "cryptography==41.0.1",
+  "cryptography==41.0.2",
   "ifaddr==0.2.0",
   "uvloop==0.17.0"
 ]
