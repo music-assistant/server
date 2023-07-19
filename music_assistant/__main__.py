@@ -54,10 +54,6 @@ def get_arguments():
 
 def setup_logger(data_path: str, level: str = "DEBUG"):
     """Initialize logger."""
-    logs_dir = os.path.join(data_path, "logs")
-    if not os.path.isdir(logs_dir):
-        os.mkdir(logs_dir)
-
     # define log formatter
     log_fmt = "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s"
 
@@ -86,7 +82,7 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logging.captureWarnings(True)
 
     # setup file handler
-    log_filename = os.path.join(logs_dir, "musicassistant.log")
+    log_filename = os.path.join(data_path, "musicassistant.log")
     file_handler = RotatingFileHandler(log_filename, maxBytes=MAX_LOG_FILESIZE, backupCount=1)
     # rotate log at each start
     with suppress(OSError):

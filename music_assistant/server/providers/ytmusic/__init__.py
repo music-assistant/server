@@ -22,6 +22,7 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     AlbumType,
     Artist,
     AudioFormat,
@@ -31,6 +32,7 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     MediaType,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
@@ -284,7 +286,7 @@ class YoutubeMusicProvider(MusicProvider):
             return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
         raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
         await self._check_oauth_token()
         album_obj = await get_album(prov_album_id=prov_album_id)
@@ -292,12 +294,12 @@ class YoutubeMusicProvider(MusicProvider):
             return []
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
+            track_obj["disc_number"] = 0
+            track_obj["track_number"] = idx
             try:
                 track = await self._parse_track(track_obj=track_obj)
             except InvalidDataError:
                 continue
-            track.disc_number = 0
-            track.track_number = idx
             tracks.append(track)
         return tracks
 
@@ -331,7 +333,7 @@ class YoutubeMusicProvider(MusicProvider):
             return await self._parse_playlist(playlist_obj)
         raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         await self._check_oauth_token()
         # Grab the playlist id from the full url in case of personal playlists
@@ -340,20 +342,17 @@ class YoutubeMusicProvider(MusicProvider):
         playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return
-        for index, track in enumerate(playlist_obj["tracks"]):
-            if track["isAvailable"]:
+        for index, track_obj in enumerate(playlist_obj["tracks"]):
+            if track_obj["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id
                 try:
-                    track = await self._parse_track(track)
-                    if track:
-                        track.position = index + 1
+                    track_obj["position"] = index + 1
+                    if track := await self._parse_track(track_obj):
                         yield track
                 except InvalidDataError:
-                    track = await self.get_track(track["videoId"])
-                    if track:
-                        track.position = index + 1
-                        yield track
+                    if track := await self.get_track(track_obj["videoId"]):
+                        yield PlaylistTrack.from_dict({**track.to_dict(), "position": index + 1})
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -699,11 +698,30 @@ class YoutubeMusicProvider(MusicProvider):
         playlist.metadata.checksum = playlist_obj.get("checksum")
         return playlist
 
-    async def _parse_track(self, track_obj: dict) -> Track:
+    async def _parse_track(self, track_obj: dict) -> Track | AlbumTrack | PlaylistTrack:
         """Parse a YT Track response to a Track model object."""
         if not track_obj.get("videoId"):
             raise InvalidDataError("Track is missing videoId")
-        track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
+
+        if "position" in track_obj:
+            track_class = PlaylistTrack
+            extra_init_kwargs = {"position": track_obj["position"]}
+        elif "disc_number" in track_obj and "track_number" in track_obj:
+            track_class = AlbumTrack
+            extra_init_kwargs = {
+                "disc_number": track_obj["disc_number"],
+                "track_number": track_obj["track_number"],
+            }
+        else:
+            track_class = Track
+            extra_init_kwargs = {}
+        track = track_class(
+            item_id=track_obj["videoId"],
+            provider=self.domain,
+            name=track_obj["title"],
+            **extra_init_kwargs,
+        )
+
         if "artists" in track_obj and track_obj["artists"]:
             track.artists = [
                 self._get_artist_item_mapping(artist)

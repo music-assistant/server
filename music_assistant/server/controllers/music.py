@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import shutil
 import statistics
@@ -26,6 +25,7 @@ from music_assistant.common.models.media_items import BrowseFolder, MediaItemTyp
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     DB_SCHEMA_VERSION,
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
@@ -35,7 +35,6 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
-    ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
@@ -51,7 +50,6 @@ from .media.tracks import TracksController
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
 
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 
@@ -534,7 +532,7 @@ class MusicController(CoreController):
                 continue
             for media_type in media_types:
                 if media_type in sync_task.media_types:
-                    LOGGER.debug(
+                    self.logger.debug(
                         "Skip sync task for %s because another task is already in progress",
                         provider_instance,
                     )
@@ -544,7 +542,7 @@ class MusicController(CoreController):
 
         async def run_sync() -> None:
             # Wrap the provider sync into a lock to prevent
-            # race conditions when multiple propviders are syncing at the same time.
+            # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
                 await provider.sync_library(media_types)
 
@@ -562,9 +560,16 @@ class MusicController(CoreController):
 
         def on_sync_task_done(task: asyncio.Task):  # noqa: ARG001
             self.in_progress_syncs.remove(sync_spec)
+            if task_err := task.exception():
+                self.logger.warning(
+                    "Sync task for %s completed with errors", provider.name, exc_info=task_err
+                )
+            else:
+                self.logger.info("Sync task for %s completed", provider.name)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            # trigger metadata scan after provider sync completed
-            self.mass.metadata.start_scan()
+            # trigger metadata scan after all provider syncs completed
+            if len(self.in_progress_syncs) == 0:
+                self.mass.metadata.start_scan()
 
         task.add_done_callback(on_sync_task_done)
 
@@ -603,7 +608,7 @@ class MusicController(CoreController):
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
-            LOGGER.info(
+            self.logger.info(
                 "Performing database migration from %s to %s",
                 prev_version,
                 DB_SCHEMA_VERSION,
@@ -679,7 +684,7 @@ class MusicController(CoreController):
                     for item_id in item_ids_to_delete:
                         await self.database.delete(table, {"item_id": item_id})
 
-            LOGGER.info(
+            self.logger.info(
                 "Database migration to version %s completed",
                 DB_SCHEMA_VERSION,
             )
@@ -723,15 +728,14 @@ class MusicController(CoreController):
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
                     sort_artist TEXT,
-                    album_type TEXT,
+                    album_type TEXT NOT NULL,
                     year INTEGER,
                     version TEXT,
                     favorite BOOLEAN DEFAULT 0,
-                    barcode TEXT,
-                    musicbrainz_id TEXT,
-                    artists json,
-                    metadata json,
-                    provider_mappings json,
+                    mbid TEXT,
+                    artists json NOT NULL,
+                    metadata json NOT NULL,
+                    provider_mappings json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                 );"""
@@ -741,10 +745,10 @@ class MusicController(CoreController):
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
-                    musicbrainz_id TEXT,
+                    mbid TEXT,
                     favorite BOOLEAN DEFAULT 0,
-                    metadata json,
-                    provider_mappings json,
+                    metadata json NOT NULL,
+                    provider_mappings json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                     );"""
@@ -755,18 +759,24 @@ class MusicController(CoreController):
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
                     sort_artist TEXT,
-                    sort_album TEXT,
                     version TEXT,
                     duration INTEGER,
                     favorite BOOLEAN DEFAULT 0,
-                    isrc TEXT,
-                    musicbrainz_id TEXT,
-                    artists json,
-                    albums json,
-                    metadata json,
-                    provider_mappings json,
+                    mbid TEXT,
+                    artists json NOT NULL,
+                    metadata json NOT NULL,
+                    provider_mappings json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
+                    track_id INTEGER NOT NULL,
+                    album_id INTEGER NOT NULL,
+                    disc_number INTEGER NOT NULL,
+                    track_number INTEGER NOT NULL,
+                    UNIQUE(track_id, album_id)
                 );"""
         )
         await self.database.execute(
@@ -838,16 +848,6 @@ class MusicController(CoreController):
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS radios_sort_name_idx on radios(sort_name);"
         )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS artists_musicbrainz_id_idx on artists(musicbrainz_id);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_musicbrainz_id_idx on albums(musicbrainz_id);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS tracks_musicbrainz_id_idx on tracks(musicbrainz_id);"
-        )
-        await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);")
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_barcode_idx on albums(barcode);"
-        )
+        await self.database.execute("CREATE INDEX IF NOT EXISTS artists_mbid_idx on artists(mbid);")
+        await self.database.execute("CREATE INDEX IF NOT EXISTS albums_mbid_idx on albums(mbid);")
+        await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_mbid_idx on tracks(mbid);")

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABCMeta, abstractmethod
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Iterable
 from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING, Generic, TypeVar
@@ -18,7 +18,7 @@ from music_assistant.common.models.media_items import (
     ProviderMapping,
     media_from_dict,
 )
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, ROOT_LOGGER_NAME, VARIOUS_ARTISTS
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant.common.models.media_items import Album, Artist, Track
@@ -59,9 +59,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db_id = int(item_id)  # ensure integer
         library_item = await self.get_library_item(db_id)
         assert library_item, f"Item does not exist: {db_id}"
-        for provider_mapping in library_item.provider_mappings:
-            if "filesystem" in provider_mapping.provider_domain:
-                raise RuntimeError("Can not remove filesystem items from the library")
         # delete item
         await self.mass.music.database.delete(
             self.db_table,
@@ -189,12 +186,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # only if we really need to wait for the result (e.g. to prevent race conditions),
         # we can set lazy to false and we await the job to complete.
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(self.add_item_to_library, details, task_id=task_id)
+        add_task = self.mass.create_task(self.add_item_to_library, item=details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
 
-        return details
+        return library_item or details
 
     async def search(
         self,
@@ -419,6 +416,29 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             f"found on provider {provider_instance_id_or_domain}"
         )
 
+    async def add_provider_mapping(
+        self, item_id: str | int, provider_mapping: ProviderMapping
+    ) -> None:
+        """Add provider mapping to existing library item."""
+        db_id = int(item_id)  # ensure integer
+        library_item = await self.get_library_item(db_id)
+        # ignore if the mapping is already present
+        if provider_mapping in library_item.provider_mappings:
+            return
+        # update item's db record
+        library_item.provider_mappings.add(provider_mapping)
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "provider_mappings": serialize_to_json(library_item.provider_mappings),
+            },
+        )
+        # update provider_mappings table
+        await self._set_provider_mappings(
+            item_id=item_id, provider_mappings=library_item.provider_mappings
+        )
+
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
     ) -> None:
@@ -543,12 +563,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Get dynamic list of tracks for given item, fallback/default implementation."""
 
     async def _set_provider_mappings(
-        self, item_id: str | int, provider_mappings: list[ProviderMapping]
+        self, item_id: str | int, provider_mappings: Iterable[ProviderMapping]
     ) -> None:
         """Update the provider_items table for the media item."""
         db_id = int(item_id)  # ensure integer
         # get current mappings (if any)
-        cur_mappings = set()
+        cur_mappings: set[ProviderMapping] = set()
         match = {"media_type": self.media_type.value, "item_id": db_id}
         for db_row in await self.mass.music.database.get_rows(DB_TABLE_PROVIDER_MAPPINGS, match):
             cur_mappings.add(
@@ -602,18 +622,18 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         overwrite: bool = False,
     ) -> list[ItemMapping]:
         """Extract (database) album/track artist(s) as ItemMapping."""
+        artist_mappings: list[ItemMapping] = []
         if update_item is None or isinstance(update_item, ItemMapping):
             source_artists = org_item.artists
         elif overwrite and update_item.artists:
             source_artists = update_item.artists
         else:
             source_artists = org_item.artists + update_item.artists
-        item_artists = {await self._get_artist_mapping(artist) for artist in source_artists}
-        # use intermediate set to prevent duplicates
-        # filter various artists if multiple artists
-        if len(item_artists) > 1:
-            item_artists = {x for x in item_artists if (x.name != VARIOUS_ARTISTS)}
-        return list(item_artists)
+        for artist in source_artists:
+            artist_mapping = await self._get_artist_mapping(artist)
+            if artist_mapping not in artist_mappings:
+                artist_mappings.append(artist_mapping)
+        return artist_mappings
 
     async def _get_artist_mapping(self, artist: Artist | ItemMapping) -> ItemMapping:
         """Extract (database) track artist as ItemMapping."""
@@ -634,10 +654,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
             return ItemMapping.from_item(db_artist)
         # fallback to just the provider item
-        album = await self.mass.music.albums.get_provider_item(
+        artist = await self.mass.music.artists.get_provider_item(
             artist.item_id, artist.provider, fallback=artist
         )
-        if isinstance(album, ItemMapping):
+        if isinstance(artist, ItemMapping):
             # this can happen for unavailable items
             return artist
-        return ItemMapping.from_item(album)
+        return ItemMapping.from_item(artist)

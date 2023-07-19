@@ -79,9 +79,9 @@ class URLProvider(MusicProvider):
         artist = prov_artist_id
         # this is here for compatibility reasons only
         return Artist(
-            artist,
-            self.domain,
-            artist,
+            item_id=artist,
+            provider=self.domain,
+            name=artist,
             provider_mappings={
                 ProviderMapping(artist, self.domain, self.instance_id, available=False)
             },

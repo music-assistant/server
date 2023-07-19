@@ -7,10 +7,12 @@ from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
     BrowseFolder,
     MediaItemType,
     Playlist,
+    PlaylistTrack,
     Radio,
     SearchResults,
     StreamDetails,
@@ -71,7 +73,7 @@ class MusicProvider(Provider):
             raise NotImplementedError
         yield  # type: ignore
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
         """Retrieve library tracks from the provider."""
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
             raise NotImplementedError
@@ -125,14 +127,16 @@ class MusicProvider(Provider):
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
             raise NotImplementedError
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:  # type: ignore[return]
+    async def get_album_tracks(
+        self, prov_album_id: str  # type: ignore[return]
+    ) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
@@ -408,7 +412,7 @@ class MusicProvider(Provider):
                 if not library_item:
                     # create full db item
                     # note that we skip the metadata lookup purely to speed up the sync
-                    # the additional metedata is then lazy retrieved afterwards
+                    # the additional metadata is then lazy retrieved afterwards
                     prov_item.favorite = True
                     library_item = await controller.add_item_to_library(
                         prov_item, skip_metadata_lookup=True
@@ -444,7 +448,7 @@ class MusicProvider(Provider):
                             # it is safe to remove it from the MA library too
                             # note we skip artists here to prevent a recursive removal
                             # of all albums and tracks underneath this artist
-                            controller.remove_item_from_library(db_id)
+                            await controller.remove_item_from_library(db_id)
                         else:
                             # otherwise: just unmark favorite
                             await controller.set_favorite(db_id, False)
