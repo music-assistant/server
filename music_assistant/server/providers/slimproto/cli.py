@@ -1181,21 +1181,27 @@ class LmsCli:
                 await self.mass.music.artists.album_artists(True, limit=limit, offset=offset)
             ).items
         elif mode == "artists":
-            items = (await self.mass.music.artists.db_items(True, limit=limit, offset=offset)).items
+            items = (
+                await self.mass.music.artists.library_items(True, limit=limit, offset=offset)
+            ).items
         elif mode == "artist" and "uri" in kwargs:
             artist = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
         elif mode == "albums":
-            items = (await self.mass.music.albums.db_items(True, limit=limit, offset=offset)).items
+            items = (
+                await self.mass.music.albums.library_items(True, limit=limit, offset=offset)
+            ).items
         elif mode == "album" and "uri" in kwargs:
             album = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = await self.mass.music.albums.tracks(album.item_id, album.provider)
         elif mode == "playlists":
             items = (
-                await self.mass.music.playlists.db_items(True, limit=limit, offset=offset)
+                await self.mass.music.playlists.library_items(True, limit=limit, offset=offset)
             ).items
         elif mode == "radios":
-            items = (await self.mass.music.radio.db_items(True, limit=limit, offset=offset)).items
+            items = (
+                await self.mass.music.radio.library_items(True, limit=limit, offset=offset)
+            ).items
         elif mode == "playlist" and "uri" in kwargs:
             playlist = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = [

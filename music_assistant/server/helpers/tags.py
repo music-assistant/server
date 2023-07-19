@@ -216,25 +216,24 @@ class AudioTags:
         return AlbumType.UNKNOWN
 
     @property
-    def isrc(self) -> tuple[str, ...]:
-        """Return isrc tag(s)."""
-        if tag := self.tags.get("isrc"):
-            return split_items(tag, True)
-        if tag := self.tags.get("tsrc"):
-            return split_items(tag, True)
-        return tuple()
+    def isrc(self) -> str | None:
+        """Return isrc tag."""
+        for tag in ("isrc", "tsrc"):
+            if tag := self.tags.get("isrc"):
+                # sometyimes the field contains multiple values
+                # we only need one
+                return split_items(tag, True)[0]
+        return None
 
     @property
-    def barcode(self) -> tuple[str, ...]:
+    def barcode(self) -> str | None:
         """Return barcode (upc/ean) tag(s)."""
-        # prefer multi-artist tag
-        if tag := self.tags.get("barcode"):
-            return split_items(tag, True)
-        if tag := self.tags.get("upc"):
-            return split_items(tag, True)
-        if tag := self.tags.get("ean"):
-            return split_items(tag, True)
-        return tuple()
+        for tag in ("barcode", "upc", "ean"):
+            if tag := self.tags.get("isrc"):
+                # sometyimes the field contains multiple values
+                # we only need one
+                return split_items(tag, True)[0]
+        return None
 
     @property
     def chapters(self) -> list[MediaItemChapter]:

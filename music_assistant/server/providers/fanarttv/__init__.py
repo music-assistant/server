@@ -80,10 +80,10 @@ class FanartTvMetadataProvider(MetadataProvider):
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""
-        if not artist.musicbrainz_id:
+        if not artist.mbid:
             return None
         self.logger.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
-        if data := await self._get_data(f"music/{artist.musicbrainz_id}"):
+        if data := await self._get_data(f"music/{artist.mbid}"):
             metadata = MediaItemMetadata()
             metadata.images = []
             for key, img_type in IMG_MAPPING.items():
@@ -97,12 +97,12 @@ class FanartTvMetadataProvider(MetadataProvider):
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on fanart.tv."""
-        if not album.musicbrainz_id:
+        if not album.mbid:
             return None
         self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
-        if data := await self._get_data(f"music/albums/{album.musicbrainz_id}"):  # noqa: SIM102
+        if data := await self._get_data(f"music/albums/{album.mbid}"):  # noqa: SIM102
             if data and data.get("albums"):
-                data = data["albums"][album.musicbrainz_id]
+                data = data["albums"][album.mbid]
                 metadata = MediaItemMetadata()
                 metadata.images = []
                 for key, img_type in IMG_MAPPING.items():

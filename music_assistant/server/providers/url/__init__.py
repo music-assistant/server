@@ -64,7 +64,7 @@ class URLProvider(MusicProvider):
         Called when provider is registered.
         """
         self._full_url = {}
-        # self.mass.register_api_command("music/tracks", self.db_items)
+        # self.mass.register_api_command("music/tracks", self.library_items)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -79,9 +79,9 @@ class URLProvider(MusicProvider):
         artist = prov_artist_id
         # this is here for compatibility reasons only
         return Artist(
-            artist,
-            self.domain,
-            artist,
+            item_id=artist,
+            provider=self.domain,
+            name=artist,
             provider_mappings={
                 ProviderMapping(artist, self.domain, self.instance_id, available=False)
             },

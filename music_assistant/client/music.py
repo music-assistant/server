@@ -1,6 +1,7 @@
 """Handle Music/library related endpoints for Music Assistant."""
 from __future__ import annotations
 
+import urllib.parse
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import MediaType
@@ -31,9 +32,9 @@ class Music:
 
     #  Tracks related endpoints/commands
 
-    async def get_tracks(
+    async def get_library_tracks(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -42,8 +43,8 @@ class Music:
         """Get Track listing from the server."""
         return PagedItems.parse(
             await self.client.send_command(
-                "music/tracks",
-                in_library=in_library,
+                "music/tracks/library_items",
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -56,19 +57,15 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool | None = None,
-        lazy: bool | None = None,
-        album: str | None = None,
+        album_uri: str | None = None,
     ) -> Track:
         """Get single Track from the server."""
         return Track.from_dict(
             await self.client.send_command(
-                "music/track",
+                "music/tracks/get_track",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                lazy=lazy,
-                album=album,
+                album_uri=album_uri,
             ),
         )
 
@@ -81,7 +78,7 @@ class Music:
         return [
             Track.from_dict(item)
             for item in await self.client.send_command(
-                "music/track/versions",
+                "music/tracks/track_versions",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
@@ -96,29 +93,26 @@ class Music:
         return [
             Album.from_dict(item)
             for item in await self.client.send_command(
-                "music/track/albums",
+                "music/tracks/track_albums",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
         ]
 
-    async def get_track_preview_url(
+    def get_track_preview_url(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> str:
         """Get URL to preview clip of given track."""
-        return await self.client.send_command(
-            "music/track/preview",
-            item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
-        )
+        encoded_url = urllib.parse.quote(urllib.parse.quote(item_id))
+        return f"{self.client.server_info.base_url}/preview?path={encoded_url}&provider={provider_instance_id_or_domain}"  # noqa: E501
 
     #  Albums related endpoints/commands
 
-    async def get_albums(
+    async def get_library_albums(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -127,8 +121,8 @@ class Music:
         """Get Albums listing from the server."""
         return PagedItems.parse(
             await self.client.send_command(
-                "music/albums",
-                in_library=in_library,
+                "music/albums/library_items",
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -141,17 +135,13 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool | None = None,
-        lazy: bool | None = None,
     ) -> Album:
         """Get single Album from the server."""
         return Album.from_dict(
             await self.client.send_command(
-                "music/album",
+                "music/albums/get_album",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                lazy=lazy,
             ),
         )
 
@@ -179,7 +169,7 @@ class Music:
         return [
             Album.from_dict(item)
             for item in await self.client.send_command(
-                "music/album/versions",
+                "music/albums/album_versions",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
@@ -187,44 +177,25 @@ class Music:
 
     #  Artist related endpoints/commands
 
-    async def get_artists(
+    async def get_library_artists(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
+        album_artists_only: bool = False,
     ) -> PagedItems:
         """Get Artists listing from the server."""
         return PagedItems.parse(
             await self.client.send_command(
-                "music/artists",
-                in_library=in_library,
+                "music/artists/library_items",
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-            ),
-            Artist,
-        )
-
-    async def get_album_artists(
-        self,
-        in_library: bool | None = None,
-        search: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
-        order_by: str | None = None,
-    ) -> PagedItems:
-        """Get AlbumArtists listing from the server."""
-        return PagedItems.parse(
-            await self.client.send_command(
-                "music/albumartists",
-                in_library=in_library,
-                search=search,
-                limit=limit,
-                offset=offset,
-                order_by=order_by,
+                album_artists_only=album_artists_only,
             ),
             Artist,
         )
@@ -233,17 +204,13 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool | None = None,
-        lazy: bool | None = None,
     ) -> Artist:
         """Get single Artist from the server."""
         return Artist.from_dict(
             await self.client.send_command(
-                "music/artist",
+                "music/artists/get_artist",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                lazy=lazy,
             ),
         )
 
@@ -256,7 +223,7 @@ class Music:
         return [
             Artist.from_dict(item)
             for item in await self.client.send_command(
-                "music/artist/tracks",
+                "music/artists/artist_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
@@ -271,7 +238,7 @@ class Music:
         return [
             Album.from_dict(item)
             for item in await self.client.send_command(
-                "music/artist/albums",
+                "music/artists/artist_albums",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
@@ -279,9 +246,9 @@ class Music:
 
     #  Playlist related endpoints/commands
 
-    async def get_playlists(
+    async def get_library_playlists(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -290,8 +257,8 @@ class Music:
         """Get Playlists listing from the server."""
         return PagedItems.parse(
             await self.client.send_command(
-                "music/playlists",
-                in_library=in_library,
+                "music/playlists/library_items",
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -304,17 +271,13 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool | None = None,
-        lazy: bool | None = None,
     ) -> Playlist:
         """Get single Playlist from the server."""
         return Playlist.from_dict(
             await self.client.send_command(
-                "music/playlist",
+                "music/playlists/get_playlist",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                lazy=lazy,
             ),
         )
 
@@ -327,7 +290,7 @@ class Music:
         return [
             Track.from_dict(item)
             for item in await self.client.send_command(
-                "music/playlist/tracks",
+                "music/playlists/playlist_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
@@ -336,7 +299,7 @@ class Music:
     async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
         await self.client.send_command(
-            "music/playlist/tracks/add",
+            "music/playlists/add_playlist_tracks",
             db_playlist_id=db_playlist_id,
             uris=uris,
         )
@@ -346,7 +309,7 @@ class Music:
     ) -> None:
         """Remove multiple tracks from playlist."""
         await self.client.send_command(
-            "music/playlist/tracks/add",
+            "music/playlists/remove_playlist_tracks",
             db_playlist_id=db_playlist_id,
             positions_to_remove=positions_to_remove,
         )
@@ -357,7 +320,7 @@ class Music:
         """Create new playlist."""
         return Playlist.from_dict(
             await self.client.send_command(
-                "music/playlist/create",
+                "music/playlists/create_playlist",
                 name=name,
                 provider_instance_or_domain=provider_instance_or_domain,
             )
@@ -365,9 +328,9 @@ class Music:
 
     #  Radio related endpoints/commands
 
-    async def get_radios(
+    async def get_library_radios(
         self,
-        in_library: bool | None = None,
+        favorite: bool | None = None,
         search: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
@@ -376,8 +339,8 @@ class Music:
         """Get Radio listing from the server."""
         return PagedItems.parse(
             await self.client.send_command(
-                "music/radios",
-                in_library=in_library,
+                "music/radio/library_items",
+                favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
@@ -390,17 +353,13 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool | None = None,
-        lazy: bool | None = None,
     ) -> Radio:
         """Get single Radio from the server."""
         return Radio.from_dict(
             await self.client.send_command(
-                "music/radio",
+                "music/radio/get_item",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                lazy=lazy,
             ),
         )
 
@@ -413,7 +372,7 @@ class Music:
         return [
             Radio.from_dict(item)
             for item in await self.client.send_command(
-                "music/radio/versions",
+                "music/radio/radio_versions",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
@@ -424,15 +383,9 @@ class Music:
     async def get_item_by_uri(
         self,
         uri: str,
-        force_refresh: bool | None = None,
-        lazy: bool | None = None,
     ) -> MediaItemType:
         """Get single music item providing a mediaitem uri."""
-        return media_from_dict(
-            await self.client.send_command(
-                "music/item_by_uri", uri=uri, force_refresh=force_refresh, lazy=lazy
-            )
-        )
+        return media_from_dict(await self.client.send_command("music/item_by_uri", uri=uri))
 
     async def refresh_item(
         self,
@@ -448,8 +401,6 @@ class Music:
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool | None = None,
-        lazy: bool | None = None,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         return media_from_dict(
@@ -458,45 +409,49 @@ class Music:
                 media_type=media_type,
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                lazy=lazy,
             )
         )
 
-    async def add_to_library(
+    async def add_item_to_library(self, item: str | MediaItemType) -> MediaItemType:
+        """Add item (uri or mediaitem) to the library."""
+        await self.client.send_command("music/library/add_item", item=item)
+
+    async def remove_item_from_library(
+        self, media_type: MediaType, library_item_id: str | int
+    ) -> None:
+        """
+        Remove item from the library.
+
+        Destructive! Will remove the item and all dependants.
+        """
+        await self.client.send_command(
+            "music/library/remove", media_type=media_type, library_item_id=library_item_id
+        )
+
+    async def add_item_to_favorites(
         self,
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> None:
-        """Add an item to the library."""
+        """Add an item to the favorites."""
         await self.client.send_command(
-            "music/library/add",
+            "music/favorites/add_item",
             media_type=media_type,
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
         )
 
-    async def remove_from_library(
+    async def remove_item_from_favorites(
         self,
         media_type: MediaType,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item_id: str | int,
     ) -> None:
-        """Remove an item from the library."""
+        """Remove (library) item from the favorites."""
         await self.client.send_command(
-            "music/library/remove",
+            "music/favorites/remove_item",
             media_type=media_type,
             item_id=item_id,
-            provider_instance_id_or_domain=provider_instance_id_or_domain,
-        )
-
-    async def delete_db_item(
-        self, media_type: MediaType, db_item_id: str | int, recursive: bool = False
-    ) -> None:
-        """Remove item from the database."""
-        await self.client.send_command(
-            "music/delete", media_type=media_type, db_item_id=db_item_id, recursive=recursive
         )
 
     async def browse(

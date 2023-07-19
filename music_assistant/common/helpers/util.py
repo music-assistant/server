@@ -47,7 +47,7 @@ def try_parse_bool(possible_bool: Any) -> str:
 def create_sort_name(input_str: str) -> str:
     """Create sort name/title from string."""
     input_str = input_str.lower().strip()
-    for item in ["the ", "de ", "les "]:
+    for item in ["the ", "de ", "les ", "dj "]:
         if input_str.startswith(item):
             input_str = input_str.replace(item, "")
     return input_str.strip()

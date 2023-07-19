@@ -3,14 +3,15 @@
 import pathlib
 from typing import Final
 
-API_SCHEMA_VERSION: Final[int] = 22
-MIN_SCHEMA_VERSION = 22
+API_SCHEMA_VERSION: Final[int] = 23
+MIN_SCHEMA_VERSION: Final[int] = 23
+DB_SCHEMA_VERSION: Final[int] = 24
 
 ROOT_LOGGER_NAME: Final[str] = "music_assistant"
 
 UNKNOWN_ARTIST: Final[str] = "Unknown Artist"
-VARIOUS_ARTISTS: Final[str] = "Various Artists"
-VARIOUS_ARTISTS_ID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
+VARIOUS_ARTISTS_NAME: Final[str] = "Various Artists"
+VARIOUS_ARTISTS_ID_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 
 
 RESOURCES_DIR: Final[pathlib.Path] = (
@@ -61,6 +62,7 @@ DB_TABLE_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
 DB_TABLE_TRACKS: Final[str] = "tracks"
+DB_TABLE_ALBUM_TRACKS: Final[str] = "albumtracks"
 DB_TABLE_PLAYLISTS: Final[str] = "playlists"
 DB_TABLE_RADIOS: Final[str] = "radios"
 DB_TABLE_CACHE: Final[str] = "cache"

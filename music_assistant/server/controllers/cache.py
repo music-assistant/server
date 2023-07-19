@@ -8,12 +8,17 @@ import os
 import time
 from collections import OrderedDict
 from collections.abc import Iterator, MutableMapping
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    DB_SCHEMA_VERSION,
+    DB_TABLE_CACHE,
+    DB_TABLE_SETTINGS,
+    ROOT_LOGGER_NAME,
+)
 from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
 
@@ -22,7 +27,6 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
-DB_SCHEMA_VERSION: Final[int] = 22
 
 
 class CacheController(CoreController):

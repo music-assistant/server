@@ -307,9 +307,9 @@ class SlimprotoProvider(PlayerProvider):
         preset_entries = tuple()
         if not (client and client.device_model in self._virtual_providers):
             presets = []
-            async for playlist in self.mass.music.playlists.iter_db_items(True):
+            async for playlist in self.mass.music.playlists.iter_library_items(True):
                 presets.append(ConfigValueOption(playlist.name, playlist.uri))
-            async for radio in self.mass.music.radio.iter_db_items(True):
+            async for radio in self.mass.music.radio.iter_library_items(True):
                 presets.append(ConfigValueOption(radio.name, radio.uri))
             # dynamically extend the amount of presets when needed
             if self.mass.config.get_raw_player_config_value(player_id, "preset_15"):

@@ -4,12 +4,15 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
     BrowseFolder,
     MediaItemType,
     Playlist,
+    PlaylistTrack,
     Radio,
     SearchResults,
     StreamDetails,
@@ -28,17 +31,19 @@ class MusicProvider(Provider):
     """
 
     @property
-    def is_unique(self) -> bool:
+    def is_streaming_provider(self) -> bool:
         """
-        Return True if the (non user related) data in this provider instance is unique.
+        Return True if the provider is a streaming provider.
 
-        For example on a global streaming provider (like Spotify),
-        the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to False will only query one instance of the provider for search and lookups.
-        Setting this to True will query all instances of this provider for search and lookups.
+        This literally means that the catalog is not the same as the library contents.
+        For local based providers (files, plex), the catalog is the same as the library content.
+        It also means that data is if this provider is NOT a streaming provider,
+        data cross instances is unique, the catalog and library differs per instance.
+
+        Setting this to True will only query one instance of the provider for search and lookups.
+        Setting this to False will query all instances of this provider for search and lookups.
         """
-        return False
+        return True
 
     async def search(
         self,
@@ -68,7 +73,7 @@ class MusicProvider(Provider):
             raise NotImplementedError
         yield  # type: ignore
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
         """Retrieve library tracks from the provider."""
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
             raise NotImplementedError
@@ -122,14 +127,16 @@ class MusicProvider(Provider):
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
             raise NotImplementedError
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:  # type: ignore[return]
+    async def get_album_tracks(
+        self, prov_album_id: str  # type: ignore[return]
+    ) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
@@ -399,30 +406,52 @@ class MusicProvider(Provider):
             controller = self.mass.music.get_controller(media_type)
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type):
-                db_item = await controller.get_db_item_by_prov_mappings(
+                library_item = await controller.get_library_item_by_prov_mappings(
                     prov_item.provider_mappings,
                 )
-                if not db_item:
+                if not library_item:
                     # create full db item
-                    prov_item.in_library = True
-                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
+                    # note that we skip the metadata lookup purely to speed up the sync
+                    # the additional metadata is then lazy retrieved afterwards
+                    prov_item.favorite = True
+                    library_item = await controller.add_item_to_library(
+                        prov_item, skip_metadata_lookup=True
+                    )
                 elif (
-                    db_item.metadata.checksum and prov_item.metadata.checksum
-                ) and db_item.metadata.checksum != prov_item.metadata.checksum:
+                    library_item.metadata.checksum and prov_item.metadata.checksum
+                ) and library_item.metadata.checksum != prov_item.metadata.checksum:
                     # existing dbitem checksum changed
-                    db_item = await controller.update(db_item.item_id, prov_item)
-                cur_db_ids.add(db_item.item_id)
-                if not db_item.in_library:
-                    await controller.set_db_library(db_item.item_id, True)
+                    library_item = await controller.update_item_in_library(
+                        library_item.item_id, prov_item
+                    )
+                cur_db_ids.add(library_item.item_id)
 
             # process deletions (= no longer in library)
-            cache_key = f"db_items.{media_type}.{self.instance_id}"
-            prev_db_items: list[int] | None
-            if prev_db_items := await self.mass.cache.get(cache_key):
-                for db_id in prev_db_items:
+            cache_key = f"library_items.{media_type}.{self.instance_id}"
+            prev_library_items: list[int] | None
+            if prev_library_items := await self.mass.cache.get(cache_key):
+                for db_id in prev_library_items:
                     if db_id not in cur_db_ids:
-                        # only mark the item as not in library and leave the metadata in db
-                        await controller.set_db_library(db_id, False)
+                        try:
+                            item = await controller.get_library_item(db_id)
+                        except MediaNotFoundError:
+                            # edge case: the item is already removed
+                            continue
+                        remaining_providers = {
+                            x.provider_domain
+                            for x in item.provider_mappings
+                            if x.provider_domain != self.domain
+                        }
+                        if not remaining_providers and media_type != MediaType.ARTIST:
+                            # this item is removed from the provider's library
+                            # and we have no other providers attached to it
+                            # it is safe to remove it from the MA library too
+                            # note we skip artists here to prevent a recursive removal
+                            # of all albums and tracks underneath this artist
+                            await controller.remove_item_from_library(db_id)
+                        else:
+                            # otherwise: just unmark favorite
+                            await controller.set_favorite(db_id, False)
             await self.mass.cache.set(cache_key, list(cur_db_ids))
 
     # DO NOT OVERRIDE BELOW

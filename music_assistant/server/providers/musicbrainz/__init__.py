@@ -79,35 +79,39 @@ class MusicbrainzProvider(MetadataProvider):
         """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
         for ref_album in ref_albums:
             # try matching on album musicbrainz id
-            if ref_album.musicbrainz_id:  # noqa: SIM102
-                if musicbrainz_id := await self._search_artist_by_album_mbid(
-                    artistname=artist.name, album_mbid=ref_album.musicbrainz_id
+            if ref_album.mbid:  # noqa: SIM102
+                if mbid := await self._search_artist_by_album_mbid(
+                    artistname=artist.name, album_mbid=ref_album.mbid
                 ):
-                    return musicbrainz_id
+                    return mbid
             # try matching on album barcode
-            for barcode in ref_album.barcode:
-                if musicbrainz_id := await self._search_artist_by_album(
+            for provider_mapping in ref_album.provider_mappings:
+                if not provider_mapping.barcode:
+                    continue
+                if mbid := await self._search_artist_by_album(
                     artistname=artist.name,
-                    album_barcode=barcode,
+                    album_barcode=provider_mapping.barcode,
                 ):
-                    return musicbrainz_id
+                    return mbid
 
         # try again with matching on track isrc
         for ref_track in ref_tracks:
-            for isrc in ref_track.isrc:
-                if musicbrainz_id := await self._search_artist_by_track(
+            for provider_mapping in ref_track.provider_mappings:
+                if not provider_mapping.isrc:
+                    continue
+                if mbid := await self._search_artist_by_track(
                     artistname=artist.name,
-                    track_isrc=isrc,
+                    track_isrc=provider_mapping.isrc,
                 ):
-                    return musicbrainz_id
+                    return mbid
 
         # last restort: track matching by name
         for ref_track in ref_tracks:
-            if musicbrainz_id := await self._search_artist_by_track(
+            if mbid := await self._search_artist_by_track(
                 artistname=artist.name,
                 trackname=ref_track.name,
             ):
-                return musicbrainz_id
+                return mbid
 
         return None
 

@@ -2,11 +2,12 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
+import shutil
 import statistics
+from contextlib import suppress
 from itertools import zip_longest
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import json_dumps, json_loads
@@ -23,6 +24,8 @@ from music_assistant.common.models.errors import MusicAssistantError
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
+    DB_SCHEMA_VERSION,
+    DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
@@ -32,7 +35,6 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
-    ROOT_LOGGER_NAME,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
@@ -48,10 +50,8 @@ from .media.tracks import TracksController
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
 
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.music")
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
-DB_SCHEMA_VERSION: Final[int] = 23
 
 
 class MusicController(CoreController):
@@ -260,7 +260,7 @@ class MusicController(CoreController):
         if not path or path == "root":
             return BrowseFolder(
                 item_id="root",
-                provider="database",
+                provider="library",
                 path="root",
                 label="browse",
                 name="",
@@ -282,17 +282,13 @@ class MusicController(CoreController):
         return await prov.browse(path)
 
     @api_command("music/item_by_uri")
-    async def get_item_by_uri(
-        self, uri: str, force_refresh: bool = False, lazy: bool = True
-    ) -> MediaItemType:
+    async def get_item_by_uri(self, uri: str) -> MediaItemType:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            lazy=lazy,
         )
 
     @api_command("music/item")
@@ -303,9 +299,12 @@ class MusicController(CoreController):
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
         lazy: bool = True,
-        add_to_db: bool = False,
+        add_to_library: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
+        if provider_instance_id_or_domain == "database":
+            # backwards compatibility - to remove when 2.0 stable is released
+            provider_instance_id_or_domain = "library"
         if provider_instance_id_or_domain == "url":
             # handle special case of 'URL' MusicProvider which allows us to play regular url's
             return await self.mass.get_provider("url").parse_item(item_id)
@@ -315,88 +314,80 @@ class MusicController(CoreController):
             provider_instance_id_or_domain=provider_instance_id_or_domain,
             force_refresh=force_refresh,
             lazy=lazy,
-            add_to_db=add_to_db,
+            add_to_library=add_to_library,
         )
 
-    @api_command("music/library/add")
-    async def add_to_library(
+    @api_command("music/favorites/add_item")
+    async def add_item_to_favorites(
         self,
-        media_type: MediaType,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        item: str | MediaItemType,
     ) -> None:
-        """Add an item to the library."""
-        # make sure we have a full db item
+        """Add an item to the favorites."""
+        if isinstance(item, str):
+            item = await self.get_item_by_uri(item)
+        # make sure we have a full library item
+        # a favorite must always be in the library
         full_item = await self.get_item(
-            media_type,
-            item_id,
-            provider_instance_id_or_domain,
+            item.media_type,
+            item.item_id,
+            item.provider,
             lazy=False,
-            add_to_db=True,
+            add_to_library=True,
         )
-        ctrl = self.get_controller(media_type)
-        await ctrl.add_to_library(
+        # set favorite in library db
+        ctrl = self.get_controller(item.media_type)
+        await ctrl.set_favorite(
             full_item.item_id,
-            full_item.provider,
+            True,
         )
 
-    @api_command("music/library/add_items")
-    async def add_items_to_library(self, items: list[str | MediaItemType]) -> None:
-        """Add multiple items to the library (provide uri or MediaItem)."""
-        tasks = []
-        for item in items:
-            if isinstance(item, str):
-                item = await self.get_item_by_uri(item)  # noqa: PLW2901
-            tasks.append(
-                self.mass.create_task(
-                    self.add_to_library(
-                        media_type=item.media_type,
-                        item_id=item.item_id,
-                        provider_instance_id_or_domain=item.provider,
-                    )
-                )
-            )
-        await asyncio.gather(*tasks)
-
-    @api_command("music/library/remove")
-    async def remove_from_library(
+    @api_command("music/favorites/remove_item")
+    async def remove_item_from_favorites(
         self,
         media_type: MediaType,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        library_item_id: str | int,
     ) -> None:
-        """Remove item from the library."""
+        """Remove (library) item from the favorites."""
         ctrl = self.get_controller(media_type)
-        await ctrl.remove_from_library(
-            item_id,
-            provider_instance_id_or_domain,
+        await ctrl.set_favorite(
+            library_item_id,
+            False,
         )
 
-    @api_command("music/library/remove_items")
-    async def remove_items_from_library(self, items: list[str | MediaItemType]) -> None:
-        """Remove multiple items from the library (provide uri or MediaItem)."""
-        tasks = []
-        for item in items:
-            if isinstance(item, str):
-                item = await self.get_item_by_uri(item)  # noqa: PLW2901
-            tasks.append(
-                self.mass.create_task(
-                    self.remove_from_library(
-                        media_type=item.media_type,
-                        item_id=item.item_id,
-                        provider_instance_id_or_domain=item.provider,
-                    )
-                )
-            )
-        await asyncio.gather(*tasks)
-
-    @api_command("music/delete")
-    async def delete(
-        self, media_type: MediaType, db_item_id: str | int, recursive: bool = False
+    @api_command("music/library/remove_item")
+    async def remove_item_from_library(
+        self, media_type: MediaType, library_item_id: str | int
     ) -> None:
-        """Remove item from the database."""
+        """
+        Remove item from the library.
+
+        Destructive! Will remove the item and all dependants.
+        """
         ctrl = self.get_controller(media_type)
-        await ctrl.delete(db_item_id, recursive)
+        item = await ctrl.get_library_item(library_item_id)
+        # remove from all providers
+        for provider_mapping in item.provider_mappings:
+            prov_controller = self.mass.get_provider(provider_mapping.provider_instance)
+            with suppress(NotImplementedError):
+                await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
+        await ctrl.remove_item_from_library(library_item_id)
+
+    @api_command("music/library/add_item")
+    async def add_item_to_library(self, item: str | MediaItemType) -> MediaItemType:
+        """Add item (uri or mediaitem) to the library."""
+        if isinstance(item, str):
+            item = await self.get_item_by_uri(item)
+        ctrl = self.get_controller(item.media_type)
+        # add to provider's library first
+        provider = self.mass.get_provider(item.provider)
+        if provider.library_edit_supported(item.media_type):
+            await provider.library_add(item.item_id, item.media_type)
+        return await ctrl.get(
+            item_id=item.item_id,
+            provider_instance_id_or_domain=item.provider,
+            details=item,
+            add_to_library=True,
+        )
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
@@ -419,7 +410,7 @@ class MusicController(CoreController):
                 media_item.provider,
                 force_refresh=True,
                 lazy=False,
-                add_to_db=True,
+                add_to_library=True,
             )
         except MusicAssistantError:
             pass
@@ -438,7 +429,7 @@ class MusicController(CoreController):
         for item in result:
             if item.available:
                 return await self.get_item(
-                    item.media_type, item.item_id, item.provider, lazy=False, add_to_db=True
+                    item.media_type, item.item_id, item.provider, lazy=False, add_to_library=True
                 )
         return None
 
@@ -496,34 +487,6 @@ class MusicController(CoreController):
             allow_replace=True,
         )
 
-    async def library_add_items(self, items: list[MediaItemType]) -> None:
-        """Add media item(s) to the library.
-
-        Creates background tasks to process the action.
-        """
-        for media_item in items:
-            self.mass.create_task(
-                self.add_to_library(
-                    media_item.media_type,
-                    media_item.item_id,
-                    media_item.provider,
-                )
-            )
-
-    async def library_remove_items(self, items: list[MediaItemType]) -> None:
-        """Remove media item(s) from the library.
-
-        Creates background tasks to process the action.
-        """
-        for media_item in items:
-            self.mass.create_task(
-                self.remove_from_library(
-                    media_item.media_type,
-                    media_item.item_id,
-                    media_item.provider,
-                )
-            )
-
     def get_controller(
         self, media_type: MediaType
     ) -> (
@@ -556,7 +519,7 @@ class MusicController(CoreController):
         instances = set()
         domains = set()
         for provider in self.providers:
-            if provider.domain not in domains or provider.is_unique:
+            if provider.domain not in domains or not provider.is_streaming_provider:
                 instances.add(provider.instance_id)
                 domains.add(provider.domain)
         return instances
@@ -569,7 +532,7 @@ class MusicController(CoreController):
                 continue
             for media_type in media_types:
                 if media_type in sync_task.media_types:
-                    LOGGER.debug(
+                    self.logger.debug(
                         "Skip sync task for %s because another task is already in progress",
                         provider_instance,
                     )
@@ -579,7 +542,7 @@ class MusicController(CoreController):
 
         async def run_sync() -> None:
             # Wrap the provider sync into a lock to prevent
-            # race conditions when multiple propviders are syncing at the same time.
+            # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
                 await provider.sync_library(media_types)
 
@@ -597,9 +560,16 @@ class MusicController(CoreController):
 
         def on_sync_task_done(task: asyncio.Task):  # noqa: ARG001
             self.in_progress_syncs.remove(sync_spec)
+            if task_err := task.exception():
+                self.logger.warning(
+                    "Sync task for %s completed with errors", provider.name, exc_info=task_err
+                )
+            else:
+                self.logger.info("Sync task for %s completed", provider.name)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            # trigger metadata scan after provider sync completed
-            self.mass.metadata.start_scan()
+            # trigger metadata scan after all provider syncs completed
+            if len(self.in_progress_syncs) == 0:
+                self.mass.metadata.start_scan()
 
         task.add_done_callback(on_sync_task_done)
 
@@ -617,9 +587,9 @@ class MusicController(CoreController):
             self.mass.music.albums,
             self.mass.music.artists,
         ):
-            prov_items = await ctrl.get_db_items_by_prov_id(provider_instance)
+            prov_items = await ctrl.get_library_items_by_prov_id(provider_instance)
             for item in prov_items:
-                await ctrl.remove_prov_mapping(item.item_id, provider_instance)
+                await ctrl.remove_provider_mappings(item.item_id, provider_instance)
 
     async def _setup_database(self):
         """Initialize database."""
@@ -638,16 +608,57 @@ class MusicController(CoreController):
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
-            LOGGER.info(
+            self.logger.info(
                 "Performing database migration from %s to %s",
                 prev_version,
                 DB_SCHEMA_VERSION,
             )
+            # make a backup of db file
+            db_path_backup = db_path + ".backup"
+            await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
-            if prev_version == 22:
-                # migrate provider_mapping column (audio_format)
-                for table in ("tracks", "albums"):
+            if prev_version < 22 or prev_version > DB_SCHEMA_VERSION:
+                # for now just keep it simple and just recreate the tables
+                # if the schema is too old or too new
+                # we allow migrations only for up to 2 schema versions behind
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}")
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
+                # recreate missing tables
+                await self.__create_database_tables()
+
+            if prev_version in (22, 23):
+                # reset albums, artists, tracks, impossible to migrate in a clean way
+                for table in (
+                    DB_TABLE_ARTISTS,
+                    DB_TABLE_ALBUMS,
+                    DB_TABLE_TRACKS,
+                ):
+                    self.logger.warning(
+                        "Resetting %s library/database - a full rescan will be performed!", table
+                    )
+                    await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+                # recreate missing tables
+                await self.__create_database_tables()
+
+                # migrate in_library --> favorite
+                for table in (
+                    DB_TABLE_PLAYLISTS,
+                    DB_TABLE_RADIOS,
+                ):
+                    # rename in_library --> favorite
+                    await self.database.execute(
+                        f"ALTER TABLE {table} RENAME COLUMN in_library TO favorite;"
+                    )
+                    # clean out all non favorites from library db
+                    item_ids_to_delete = set()
                     async for item in self.database.iter_items(table):
+                        if not (item["favorite"] or '"url' in item["provider_mappings"]):
+                            item_ids_to_delete.add(item["item_id"])
+                            continue
+                        # migrate provider_mapping column (audio_format)
                         prov_mappings = json_loads(item["provider_mappings"])
                         needs_update = False
                         for mapping in prov_mappings:
@@ -670,18 +681,13 @@ class MusicController(CoreController):
                                     "provider_mappings": json_dumps(prov_mappings),
                                 },
                             )
-            elif prev_version < 22:
-                # for now just keep it simple and just recreate the tables if the schema is too old
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
+                    for item_id in item_ids_to_delete:
+                        await self.database.delete(table, {"item_id": item_id})
 
-                # recreate missing tables
-                await self.__create_database_tables()
-            else:
-                raise RuntimeError("db schema migration missing")
+            self.logger.info(
+                "Database migration to version %s completed",
+                DB_SCHEMA_VERSION,
+            )
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -722,15 +728,14 @@ class MusicController(CoreController):
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
                     sort_artist TEXT,
-                    album_type TEXT,
+                    album_type TEXT NOT NULL,
                     year INTEGER,
                     version TEXT,
-                    in_library BOOLEAN DEFAULT 0,
-                    barcode TEXT,
-                    musicbrainz_id TEXT,
-                    artists json,
-                    metadata json,
-                    provider_mappings json,
+                    favorite BOOLEAN DEFAULT 0,
+                    mbid TEXT,
+                    artists json NOT NULL,
+                    metadata json NOT NULL,
+                    provider_mappings json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                 );"""
@@ -740,10 +745,10 @@ class MusicController(CoreController):
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
-                    musicbrainz_id TEXT,
-                    in_library BOOLEAN DEFAULT 0,
-                    metadata json,
-                    provider_mappings json,
+                    mbid TEXT,
+                    favorite BOOLEAN DEFAULT 0,
+                    metadata json NOT NULL,
+                    provider_mappings json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                     );"""
@@ -754,18 +759,24 @@ class MusicController(CoreController):
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
                     sort_artist TEXT,
-                    sort_album TEXT,
                     version TEXT,
                     duration INTEGER,
-                    in_library BOOLEAN DEFAULT 0,
-                    isrc TEXT,
-                    musicbrainz_id TEXT,
-                    artists json,
-                    albums json,
-                    metadata json,
-                    provider_mappings json,
+                    favorite BOOLEAN DEFAULT 0,
+                    mbid TEXT,
+                    artists json NOT NULL,
+                    metadata json NOT NULL,
+                    provider_mappings json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
+                    track_id INTEGER NOT NULL,
+                    album_id INTEGER NOT NULL,
+                    disc_number INTEGER NOT NULL,
+                    track_number INTEGER NOT NULL,
+                    UNIQUE(track_id, album_id)
                 );"""
         )
         await self.database.execute(
@@ -775,7 +786,7 @@ class MusicController(CoreController):
                     sort_name TEXT NOT NULL,
                     owner TEXT NOT NULL,
                     is_editable BOOLEAN NOT NULL,
-                    in_library BOOLEAN DEFAULT 0,
+                    favorite BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
                     timestamp_added INTEGER NOT NULL,
@@ -787,7 +798,7 @@ class MusicController(CoreController):
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL UNIQUE,
                     sort_name TEXT NOT NULL,
-                    in_library BOOLEAN DEFAULT 0,
+                    favorite BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
                     timestamp_added INTEGER NOT NULL,
@@ -808,19 +819,19 @@ class MusicController(CoreController):
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(in_library);"
+            "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_in_library_idx on albums(in_library);"
+            "CREATE INDEX IF NOT EXISTS albums_in_library_idx on albums(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS tracks_in_library_idx on tracks(in_library);"
+            "CREATE INDEX IF NOT EXISTS tracks_in_library_idx on tracks(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS playlists_in_library_idx on playlists(in_library);"
+            "CREATE INDEX IF NOT EXISTS playlists_in_library_idx on playlists(favorite);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS radios_in_library_idx on radios(in_library);"
+            "CREATE INDEX IF NOT EXISTS radios_in_library_idx on radios(favorite);"
         )
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS artists_sort_name_idx on artists(sort_name);"
@@ -837,16 +848,6 @@ class MusicController(CoreController):
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS radios_sort_name_idx on radios(sort_name);"
         )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS artists_musicbrainz_id_idx on artists(musicbrainz_id);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_musicbrainz_id_idx on albums(musicbrainz_id);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS tracks_musicbrainz_id_idx on tracks(musicbrainz_id);"
-        )
-        await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_isrc_idx on tracks(isrc);")
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_barcode_idx on albums(barcode);"
-        )
+        await self.database.execute("CREATE INDEX IF NOT EXISTS artists_mbid_idx on artists(mbid);")
+        await self.database.execute("CREATE INDEX IF NOT EXISTS albums_mbid_idx on albums(mbid);")
+        await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_mbid_idx on tracks(mbid);")

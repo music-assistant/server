@@ -198,7 +198,7 @@ class MusicAssistant:
     @api_command("logging/get")
     async def get_application_log(self) -> str:
         """Return the application log from file."""
-        logfile = os.path.join(self.storage_path, "logs", "musicassistant.log")
+        logfile = os.path.join(self.storage_path, "musicassistant.log")
         async with aiofiles.open(logfile, "r") as _file:
             return await _file.read()
 
@@ -215,7 +215,7 @@ class MusicAssistant:
         if prov := self._providers.get(provider_instance_or_domain):
             if return_unavailable or prov.available:
                 return prov
-            if prov.is_unique:
+            if not prov.is_streaming_provider:
                 # no need to lookup other instances because this provider has unique data
                 return None
             provider_instance_or_domain = prov.domain
@@ -236,17 +236,6 @@ class MusicAssistant:
     ) -> None:
         """Signal event to subscribers."""
         if self.closing:
-            return
-        if (
-            event
-            in (
-                EventType.MEDIA_ITEM_ADDED,
-                EventType.MEDIA_ITEM_DELETED,
-                EventType.MEDIA_ITEM_UPDATED,
-            )
-            and self.music.in_progress_syncs
-        ):
-            # ignore media item events while sync is running because it clutters too much
             return
 
         if LOGGER.isEnabledFor(logging.DEBUG) and event != EventType.QUEUE_TIME_UPDATED:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator, Callable, Coroutine
+from typing import Any
 
 import plexapi.exceptions
 from aiohttp import ClientTimeout
@@ -34,6 +35,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
     AudioFormat,
     ItemMapping,
@@ -41,6 +43,7 @@ from music_assistant.common.models.media_items import (
     MediaItemChapter,
     MediaItemImage,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
@@ -182,17 +185,19 @@ class PlexProvider(MusicProvider):
         )
 
     @property
-    def is_unique(self) -> bool:
+    def is_streaming_provider(self) -> bool:
         """
-        Return True if the (non user related) data in this provider instance is unique.
+        Return True if the provider is a streaming provider.
 
-        For example on a global streaming provider (like Spotify),
-        the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to False will only query one instance of the provider for search and lookups.
-        Setting this to True will query all instances of this provider for search and lookups.
+        This literally means that the catalog is not the same as the library contents.
+        For local based providers (files, plex), the catalog is the same as the library content.
+        It also means that data is if this provider is NOT a streaming provider,
+        data cross instances is unique, the catalog and library differs per instance.
+
+        Setting this to True will only query one instance of the provider for search and lookups.
+        Setting this to False will query all instances of this provider for search and lookups.
         """
-        return True
+        return False
 
     async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
         """Return the full image URL including the auth token."""
@@ -220,7 +225,7 @@ class PlexProvider(MusicProvider):
             "name": f"%{artist_name}%",
             "provider_instance": f"%{self.instance_id}%",
         }
-        db_artists = await self.mass.music.artists.get_db_items_by_query(query, params)
+        db_artists = await self.mass.music.artists.get_library_items_by_query(query, params)
         if db_artists:
             return ItemMapping.from_item(db_artists[0])
 
@@ -359,9 +364,26 @@ class PlexProvider(MusicProvider):
         )
         return playlist
 
-    async def _parse_track(self, plex_track: PlexTrack) -> Track:
+    async def _parse_track(
+        self, plex_track: PlexTrack, extra_init_kwargs: dict[str, Any] | None = None
+    ) -> Track | AlbumTrack | PlaylistTrack:
         """Parse a Plex Track response to a Track model object."""
-        track = Track(item_id=plex_track.key, provider=self.instance_id, name=plex_track.title)
+        if extra_init_kwargs and "position" in extra_init_kwargs:
+            track_class = PlaylistTrack
+        elif (
+            extra_init_kwargs
+            and "disc_number" in extra_init_kwargs
+            and "track_number" in extra_init_kwargs
+        ):
+            track_class = AlbumTrack
+        else:
+            track_class = Track
+        track = track_class(
+            item_id=plex_track.key,
+            provider=self.instance_id,
+            name=plex_track.title,
+            **extra_init_kwargs or {},
+        )
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.
@@ -385,10 +407,6 @@ class PlexProvider(MusicProvider):
             )
         if plex_track.duration:
             track.duration = int(plex_track.duration / 1000)
-        if plex_track.trackNumber:
-            track.track_number = plex_track.trackNumber
-        if plex_track.parentIndex:
-            track.disc_number = plex_track.parentIndex
         if plex_track.chapters:
             track.metadata.chapters = [
                 MediaItemChapter(
@@ -506,13 +524,15 @@ class PlexProvider(MusicProvider):
             return await self._parse_album(plex_album)
         raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
-        plex_album = await self._get_data(prov_album_id, PlexAlbum)
-
+        plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
         for plex_track in await self._run_async(plex_album.tracks):
-            track = await self._parse_track(plex_track)
+            track = await self._parse_track(
+                plex_track,
+                {"disc_number": plex_track.parentIndex, "track_number": plex_track.trackNumber},
+            )
             tracks.append(track)
         return tracks
 
@@ -521,7 +541,7 @@ class PlexProvider(MusicProvider):
         if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             # This artist does not exist in plex, so we can just load it from DB.
 
-            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+            if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
                 prov_artist_id, self.instance_id
             ):
                 return db_artist
@@ -547,16 +567,11 @@ class PlexProvider(MusicProvider):
         self, prov_playlist_id: str
     ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        plex_playlist = await self._get_data(prov_playlist_id, PlexPlaylist)
-
+        plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
         playlist_items = await self._run_async(plex_playlist.items)
 
-        if not playlist_items:
-            yield None
-        for index, plex_track in enumerate(playlist_items):
-            track = await self._parse_track(plex_track)
-            if track:
-                track.position = index + 1
+        for index, plex_track in enumerate(playlist_items or []):
+            if track := await self._parse_track(plex_track, {"position": index + 1}):
                 yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:

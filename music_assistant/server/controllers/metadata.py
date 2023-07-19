@@ -95,7 +95,7 @@ class MetaDataController(CoreController):
 
             LOGGER.debug("Start scan for missing artist metadata")
             self.scan_busy = True
-            async for artist in self.mass.music.artists.iter_db_items():
+            async for artist in self.mass.music.artists.iter_library_items():
                 if artist.metadata.last_refresh is not None:
                     continue
                 # most important is to see artist thumb in listings
@@ -115,15 +115,10 @@ class MetaDataController(CoreController):
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
-        # set timestamp, used to determine when this function was last called
-        artist.metadata.last_refresh = int(time())
-
-        if not artist.musicbrainz_id:
-            artist.musicbrainz_id = await self.get_artist_musicbrainz_id(artist)
-
-        if not artist.musicbrainz_id:
+        if not artist.mbid:
+            artist.mbid = await self.get_artist_mbid(artist)
+        if not artist.mbid:
             return
-
         # collect metadata from all providers
         for provider in self.providers:
             if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
@@ -135,13 +130,13 @@ class MetaDataController(CoreController):
                     artist.name,
                     provider.name,
                 )
+        # set timestamp, used to determine when this function was last called
+        artist.metadata.last_refresh = int(time())
 
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
-        # set timestamp, used to determine when this function was last called
-        album.metadata.last_refresh = int(time())
         # ensure the album has a musicbrainz id or artist
-        if not (album.musicbrainz_id or album.artists):
+        if not (album.mbid or album.artists):
             return
         # collect metadata from all providers
         for provider in self.providers:
@@ -154,6 +149,8 @@ class MetaDataController(CoreController):
                     album.name,
                     provider.name,
                 )
+        # set timestamp, used to determine when this function was last called
+        album.metadata.last_refresh = int(time())
 
     async def get_track_metadata(self, track: Track) -> None:
         """Get/update rich metadata for a track."""
@@ -228,12 +225,24 @@ class MetaDataController(CoreController):
         # NOTE: we do not have any metadata for radio so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
 
-    async def get_artist_musicbrainz_id(self, artist: Artist) -> str | None:
+    async def get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
-        ref_albums = await self.mass.music.artists.albums(artist=artist)
-        ref_tracks = await self.mass.music.artists.tracks(artist=artist)
+        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
+        if len(ref_albums) < 10:
+            # fetch reference albums from provider(s) attached to the artist
+            for provider_mapping in artist.provider_mappings:
+                ref_albums += await self.mass.music.artists.albums(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+        ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
+        if len(ref_tracks) < 10:
+            # fetch reference tracks from provider(s) attached to the artist
+            for provider_mapping in artist.provider_mappings:
+                ref_tracks += await self.mass.music.artists.tracks(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
 
-        # randomize providers so average the load
+        # randomize providers to average the load
         providers = self.providers
         shuffle(providers)
 
@@ -241,7 +250,7 @@ class MetaDataController(CoreController):
         for provider in providers:
             if ProviderFeature.GET_ARTIST_MBID not in provider.supported_features:
                 continue
-            if musicbrainz_id := await provider.get_musicbrainz_artist_id(
+            if mbid := await provider.get_musicbrainz_artist_id(
                 artist, ref_albums=ref_albums, ref_tracks=ref_tracks
             ):
                 LOGGER.debug(
@@ -249,7 +258,7 @@ class MetaDataController(CoreController):
                     artist.name,
                     provider.name,
                 )
-                return musicbrainz_id
+                return mbid
 
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"

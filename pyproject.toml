@@ -91,7 +91,6 @@ warn_unused_ignores = true
 ignore_missing_imports = true
 module = [
   "aiorun",
-  "coloredlogs",
 ]
 
 [tool.pytest.ini_options]

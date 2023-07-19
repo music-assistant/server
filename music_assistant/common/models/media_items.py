@@ -21,8 +21,7 @@ from music_assistant.common.models.enums import (
 
 MetadataTypes = int | bool | str | list[str]
 
-JSON_KEYS = ("artists", "artist", "albums", "metadata", "provider_mappings")
-JOINED_KEYS = ("barcode", "isrc")
+JSON_KEYS = ("artists", "metadata", "provider_mappings")
 
 
 @dataclass
@@ -69,10 +68,14 @@ class ProviderMapping(DataClassDictMixin):
     available: bool = True
     # quality/audio details (streamable content only)
     audio_format: AudioFormat = field(default_factory=AudioFormat)
-    # optional details to store provider specific details
-    details: str | None = None
     # url = link to provider details page if exists
     url: str | None = None
+    # isrc (tracks only) - isrc identifier if known
+    isrc: str | None = None
+    # barcode (albums only) - barcode identifier if known
+    barcode: str | None = None
+    # optional details to store provider specific details
+    details: str | None = None
 
     @property
     def quality(self) -> int:
@@ -206,7 +209,7 @@ class MediaItem(DataClassDictMixin):
 
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
-    in_library: bool = False
+    favorite: bool = False
     media_type: MediaType = MediaType.UNKNOWN
     # sort_name and uri are auto generated, do not override unless really needed
     sort_name: str | None = None
@@ -226,21 +229,12 @@ class MediaItem(DataClassDictMixin):
     def from_db_row(cls, db_row: Mapping):
         """Create MediaItem object from database row."""
         db_row = dict(db_row)
-        db_row["provider"] = "database"
+        db_row["provider"] = "library"
         for key in JSON_KEYS:
             if key in db_row and db_row[key] is not None:
                 db_row[key] = json_loads(db_row[key])
-        for key in JOINED_KEYS:
-            if key not in db_row:
-                continue
-            db_row[key] = db_row[key].strip()
-            db_row[key] = db_row[key].split(";") if db_row[key] else []
-        if "in_library" in db_row:
-            db_row["in_library"] = bool(db_row["in_library"])
-        if db_row.get("albums"):
-            db_row["album"] = db_row["albums"][0]
-            db_row["disc_number"] = db_row["albums"][0]["disc_number"]
-            db_row["track_number"] = db_row["albums"][0]["track_number"]
+        if "favorite" in db_row:
+            db_row["favorite"] = bool(db_row["favorite"])
         db_row["item_id"] = str(db_row["item_id"])
         return cls.from_dict(db_row)
 
@@ -251,8 +245,6 @@ class MediaItem(DataClassDictMixin):
             """Transform value for db storage."""
             if key in JSON_KEYS:
                 return json_dumps(value)
-            if key in JOINED_KEYS:
-                return ";".join(value)
             return value
 
         return {
@@ -304,9 +296,9 @@ class ItemMapping(DataClassDictMixin):
     item_id: str
     provider: str  # provider instance id or provider domain
     name: str
+    version: str = ""
     sort_name: str | None = None
     uri: str | None = None
-    version: str = ""
     available: bool = True
 
     @classmethod
@@ -327,13 +319,17 @@ class ItemMapping(DataClassDictMixin):
         """Return custom hash."""
         return hash((self.media_type.value, self.provider, self.item_id))
 
+    def __eq__(self, other: ProviderMapping) -> bool:
+        """Check equality of two items."""
+        return self.__hash__() == other.__hash__()
+
 
 @dataclass
 class Artist(MediaItem):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.ARTIST
-    musicbrainz_id: str | None = None
+    mbid: str | None = None
 
 
 @dataclass
@@ -345,40 +341,7 @@ class Album(MediaItem):
     year: int | None = None
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     album_type: AlbumType = AlbumType.UNKNOWN
-    barcode: set[str] = field(default_factory=set)
-    musicbrainz_id: str | None = None  # release group id
-
-
-@dataclass
-class DbAlbum(Album):
-    """Model for an album when retrieved from the db."""
-
-    artists: list[ItemMapping] = field(default_factory=list)
-
-
-@dataclass
-class TrackAlbumMapping(ItemMapping):
-    """Model for a track that is mapped to an album."""
-
-    disc_number: int | None = None
-    track_number: int | None = None
-
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.media_type, self.provider, self.item_id))
-
-    @classmethod
-    def from_item(
-        cls,
-        item: MediaItemType | ItemMapping,
-        disc_number: int | None = None,
-        track_number: int | None = None,
-    ) -> TrackAlbumMapping:
-        """Create TrackAlbumMapping object from regular item."""
-        result = super().from_item(item)
-        result.disc_number = disc_number
-        result.track_number = track_number
-        return result
+    mbid: str | None = None  # release group id
 
 
 @dataclass
@@ -388,16 +351,9 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
-    isrc: set[str] = field(default_factory=set)
-    musicbrainz_id: str | None = None  # Recording ID
+    mbid: str | None = None  # Recording ID
     artists: list[Artist | ItemMapping] = field(default_factory=list)
-    # album track only
-    album: Album | ItemMapping | None = None
-    albums: list[TrackAlbumMapping] = field(default_factory=list)
-    disc_number: int | None = None
-    track_number: int | None = None
-    # playlist track only
-    position: int | None = None
+    album: Album | ItemMapping | None = None  # optional
 
     def __hash__(self):
         """Return custom hash."""
@@ -424,14 +380,20 @@ class Track(MediaItem):
         return self.metadata and self.metadata.chapters and len(self.metadata.chapters) > 1
 
 
-@dataclass
-class DbTrack(Track):
-    """Model for a track when retrieved from the db."""
+@dataclass(kw_only=True)
+class AlbumTrack(Track):
+    """Model for a track on an album."""
 
-    artists: list[ItemMapping] = field(default_factory=list)
-    # album track only
-    album: ItemMapping | None = None
-    albums: list[TrackAlbumMapping] = field(default_factory=list)
+    album: Album | ItemMapping  # required
+    disc_number: int = 0
+    track_number: int = 0
+
+
+@dataclass(kw_only=True)
+class PlaylistTrack(Track):
+    """Model for a track on a playlist."""
+
+    position: int  # required
 
 
 @dataclass
