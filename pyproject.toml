@@ -28,7 +28,7 @@ server = [
   "faust-cchardet>=2.1.18",
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
-  "aiohttp==3.8.4",
+  "aiohttp==3.8.5",
   "asyncio-throttle==1.0.2",
   "aiofiles==23.1.0",
   "aiorun==2022.11.1",
