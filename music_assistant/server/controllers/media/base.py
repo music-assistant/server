@@ -409,14 +409,29 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # There is a possibility that the (streaming) provider changed the id of the item
         # so we return the previous details (if we have any) marked as unavailable, so
         # at least we have the possibility to sort out the new id through matching logic.
-        if not fallback:
-            fallback = await self.get_library_item_by_prov_id(
-                item_id, provider_instance_id_or_domain
+        fallback = fallback or await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
+        )
+        if fallback and isinstance(fallback, ItemMapping):
+            # create a fake item on the fly from the ItemMapping details
+            fallback_item: MediaItemType = self.item_cls(
+                item_id=fallback.item_id, provider=fallback.provider, name=fallback.name
             )
-        if fallback:
-            fallback_item = ItemMapping.from_item(fallback)
-            fallback_item.available = False
-            return fallback_item
+            if provider := self.mass.get_provider(fallback_item.provider):
+                fallback_item.provider_mappings.add(
+                    ProviderMapping(
+                        item_id=fallback_item.item_id,
+                        provider_domain=provider.domain,
+                        provider_instance=provider.instance_id,
+                        available=False,
+                    )
+                )
+                return fallback_item
+        elif fallback:
+            # simply return the fallback item (marked as unavailable)
+            fallback.available = False
+            return fallback
+        # all options exhausted, we really can not find this item
         raise MediaNotFoundError(
             f"{self.media_type.value}://{item_id} not "
             f"found on provider {provider_instance_id_or_domain}"

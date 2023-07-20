@@ -268,6 +268,12 @@ class MediaItem(DataClassDictMixin):
         """Return (calculated) availability."""
         return any(x.available for x in self.provider_mappings)
 
+    @available.setter
+    def available(self, available: bool):
+        """Set availability."""
+        for provider_mapping in self.provider_mappings:
+            provider_mapping.available = available
+
     @property
     def image(self) -> MediaItemImage | None:
         """Return (first/random) image/thumb from metadata (if any)."""
