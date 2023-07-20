@@ -93,7 +93,7 @@ class TracksController(MediaControllerBase[Track]):
             # edge case where playlist track has invalid albumdetails
             self.logger.warning("Unable to fetch album details %s", track.album.uri)
         # prefer album image (otherwise it may look weird)
-        if track.album and track.album.image:
+        if track.album and track.album.image and track.metadata.images:
             track.metadata.images = [track.album.image] + track.metadata.images
         # append full artist details to full track item
         full_artists = []
