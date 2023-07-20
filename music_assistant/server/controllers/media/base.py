@@ -12,16 +12,18 @@ from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
+    Album,
+    Artist,
     ItemMapping,
     MediaItemType,
     PagedItems,
     ProviderMapping,
+    Track,
     media_from_dict,
 )
 from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.media_items import Album, Artist, Track
     from music_assistant.server import MusicAssistant
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
