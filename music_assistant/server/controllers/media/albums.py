@@ -65,6 +65,7 @@ class AlbumsController(MediaControllerBase[Album]):
         lazy: bool = True,
         details: Album | ItemMapping = None,
         add_to_library: bool = False,
+        skip_metadata_lookup: bool = False,
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
@@ -74,6 +75,7 @@ class AlbumsController(MediaControllerBase[Album]):
             lazy=lazy,
             details=details,
             add_to_library=add_to_library,
+            skip_metadata_lookup=skip_metadata_lookup,
         )
         # append full artist details to full album item
         album.artists = [

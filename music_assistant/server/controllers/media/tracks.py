@@ -56,6 +56,7 @@ class TracksController(MediaControllerBase[Track]):
         details: Track = None,
         album_uri: str | None = None,
         add_to_library: bool = False,
+        skip_metadata_lookup: bool = False,
     ) -> Track:
         """Return (full) details for a single media item."""
         track = await super().get(
@@ -65,6 +66,7 @@ class TracksController(MediaControllerBase[Track]):
             lazy=lazy,
             details=details,
             add_to_library=add_to_library,
+            skip_metadata_lookup=skip_metadata_lookup,
         )
         # append full album details to full track item
         try:
@@ -77,6 +79,7 @@ class TracksController(MediaControllerBase[Track]):
                     lazy=lazy,
                     details=None if isinstance(track.album, ItemMapping) else track.album,
                     add_to_library=add_to_library,
+                    skip_metadata_lookup=skip_metadata_lookup,
                 )
             elif provider_instance_id_or_domain == "library":
                 # grab the first album this track is attached to
@@ -102,6 +105,7 @@ class TracksController(MediaControllerBase[Track]):
                     lazy=lazy,
                     details=None if isinstance(artist, ItemMapping) else artist,
                     add_to_library=add_to_library,
+                    skip_metadata_lookup=skip_metadata_lookup,
                 )
             )
         track.artists = full_artists
@@ -395,13 +399,14 @@ class TracksController(MediaControllerBase[Track]):
         """Store AlbumTrack info."""
         if album.provider == "library":
             db_album = album
-        elif match := await self.mass.music.albums.get_library_item_by_prov_mappings(
-            album.provider_mappings
-        ):
-            db_album = match
         else:
-            db_album = await self.mass.music.albums.add_item_to_library(
-                album, skip_metadata_lookup=True
+            db_album = await self.mass.music.albums.get(
+                item_id=album.item_id,
+                provider_instance_id_or_domain=album.provider,
+                lazy=False,
+                details=album,
+                add_to_library=True,
+                skip_metadata_lookup=True,
             )
         album_mapping = {"track_id": db_id, "album_id": int(db_album.item_id)}
         if db_row := await self.mass.music.database.get_row(DB_TABLE_ALBUM_TRACKS, album_mapping):

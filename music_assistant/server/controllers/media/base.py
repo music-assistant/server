@@ -138,6 +138,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         lazy: bool = True,
         details: ItemCls = None,
         add_to_library: bool = False,
+        skip_metadata_lookup: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         if provider_instance_id_or_domain == "database":
@@ -186,7 +187,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # only if we really need to wait for the result (e.g. to prevent race conditions),
         # we can set lazy to false and we await the job to complete.
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(self.add_item_to_library, item=details, task_id=task_id)
+        add_task = self.mass.create_task(
+            self.add_item_to_library,
+            item=details,
+            skip_metadata_lookup=skip_metadata_lookup,
+            task_id=task_id,
+        )
         if not lazy:
             await add_task
             return add_task.result()
