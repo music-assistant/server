@@ -415,10 +415,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             item_id, provider_instance_id_or_domain
         )
         if fallback and not (isinstance(fallback, ItemMapping) and self.item_cls in (Track, Album)):
-            # simply return the fallback item (marked as unavailable)
+            # simply return the fallback item
             # NOTE: we only accept ItemMapping as fallback for flat items
             # so not for tracks and albums (which rely on other objects)
-            fallback.available = False
             return fallback
         # all options exhausted, we really can not find this item
         raise MediaNotFoundError(

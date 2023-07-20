@@ -268,12 +268,6 @@ class MediaItem(DataClassDictMixin):
         """Return (calculated) availability."""
         return any(x.available for x in self.provider_mappings)
 
-    @available.setter
-    def available(self, available: bool):
-        """Set availability."""
-        for provider_mapping in self.provider_mappings:
-            provider_mapping.available = available
-
     @property
     def image(self) -> MediaItemImage | None:
         """Return (first/random) image/thumb from metadata (if any)."""
@@ -292,6 +286,14 @@ class MediaItem(DataClassDictMixin):
             )
         }
         self.provider_mappings.add(prov_mapping)
+
+    def __hash__(self) -> int:
+        """Return custom hash."""
+        return hash(self.uri)
+
+    def __eq__(self, other: ItemMapping) -> bool:
+        """Check equality of two items."""
+        return self.uri == other.uri
 
 
 @dataclass
@@ -323,11 +325,11 @@ class ItemMapping(DataClassDictMixin):
 
     def __hash__(self) -> int:
         """Return custom hash."""
-        return hash((self.media_type.value, self.provider, self.item_id))
+        return hash(self.uri)
 
-    def __eq__(self, other: ProviderMapping) -> bool:
+    def __eq__(self, other: ItemMapping) -> bool:
         """Check equality of two items."""
-        return self.__hash__() == other.__hash__()
+        return self.uri == other.uri
 
 
 @dataclass
