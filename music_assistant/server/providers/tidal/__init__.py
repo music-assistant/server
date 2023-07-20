@@ -421,12 +421,12 @@ class TidalProvider(MusicProvider):
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
         return ItemMapping(
-            media_type,
-            key,
-            self.instance_id,
-            name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
+            media_type=media_type,
+            item_id=key,
+            provider=self.instance_id,
+            name=name,
+            uri=create_uri(media_type, self.instance_id, key),
+            sort_name=create_sort_name(self.name),
         )
 
     async def _get_tidal_session(self) -> TidalSession:
@@ -570,7 +570,6 @@ class TidalProvider(MusicProvider):
             track_class = AlbumTrack
         else:
             track_class = Track
-
         track = track_class(
             item_id=track_id,
             provider=self.instance_id,
