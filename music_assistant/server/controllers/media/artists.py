@@ -449,7 +449,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                             fallback=search_result_item,
                         )
                         # 100% match, we update the db with the additional provider mapping(s)
-                        for provider_mapping in search_result_item.provider_mappings:
+                        for provider_mapping in prov_artist.provider_mappings:
                             await self.add_provider_mapping(db_artist.item_id, provider_mapping)
                         return True
         # try to get a match with some reference albums of this artist
