@@ -150,12 +150,14 @@ class PlayerQueuesController(CoreController):
         media: MediaItemType | list[MediaItemType] | str | list[str],
         option: QueueOption = QueueOption.PLAY,
         radio_mode: bool = False,
+        start_item: str | None = None,
     ) -> None:
         """Play media item(s) on the given queue.
 
         - media: Media that should be played (MediaItem(s) or uri's).
         - queue_opt: Which enqueue mode to use.
         - radio_mode: Enable radio mode for the given item(s).
+        - start_item: Optional item to start the playlist or album from.
         """
         # ruff: noqa: PLR0915,PLR0912
         queue = self._queues[queue_id]
@@ -208,6 +210,17 @@ class PlayerQueuesController(CoreController):
             else:
                 # single track or radio item
                 tracks += [media_item]
+
+            # handle optional start item (play playlist from here feature)
+            if start_item is not None:
+                prev_items = []
+                next_items = []
+                for track in tracks:
+                    if next_items or track.item_id == start_item:
+                        next_items.append(track)
+                    else:
+                        prev_items.append(track)
+                tracks = next_items + prev_items
 
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
