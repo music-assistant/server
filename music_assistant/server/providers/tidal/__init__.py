@@ -562,13 +562,16 @@ class TidalProvider(MusicProvider):
         """Parse tidal track object to generic layout."""
         version = track_obj.version if track_obj.version is not None else None
         track_id = str(track_obj.id)
-        if "position" in extra_init_kwargs:
+        if extra_init_kwargs is not None and "position" in extra_init_kwargs:
             track_class = PlaylistTrack
-        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
+        elif (
+            extra_init_kwargs is not None
+            and "disc_number" in extra_init_kwargs
+            and "track_number" in extra_init_kwargs
+        ):
             track_class = AlbumTrack
         else:
             track_class = Track
-
         track = track_class(
             item_id=track_id,
             provider=self.instance_id,
