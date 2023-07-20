@@ -19,7 +19,7 @@ git+https://github.com/pytube/pytube.git@refs/pull/1680/head
 ifaddr==0.2.0
 mashumaro==3.8.1
 memory-tempfile==2.2.3
-music-assistant-frontend==2.0.2
+music-assistant-frontend==2.0.3
 orjson==3.9.2
 pillow==9.5.0
 plexapi==4.14.0
