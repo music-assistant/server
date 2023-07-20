@@ -4,7 +4,7 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import (
     Album,
     AlbumTrack,
@@ -409,22 +409,25 @@ class MusicProvider(Provider):
                 library_item = await controller.get_library_item_by_prov_mappings(
                     prov_item.provider_mappings,
                 )
-                if not library_item:
-                    # create full db item
-                    # note that we skip the metadata lookup purely to speed up the sync
-                    # the additional metadata is then lazy retrieved afterwards
-                    prov_item.favorite = True
-                    library_item = await controller.add_item_to_library(
-                        prov_item, skip_metadata_lookup=True
-                    )
-                elif (
-                    library_item.metadata.checksum and prov_item.metadata.checksum
-                ) and library_item.metadata.checksum != prov_item.metadata.checksum:
-                    # existing dbitem checksum changed
-                    library_item = await controller.update_item_in_library(
-                        library_item.item_id, prov_item
-                    )
-                cur_db_ids.add(library_item.item_id)
+                try:
+                    if not library_item:
+                        # create full db item
+                        # note that we skip the metadata lookup purely to speed up the sync
+                        # the additional metadata is then lazy retrieved afterwards
+                        prov_item.favorite = True
+                        library_item = await controller.add_item_to_library(
+                            prov_item, skip_metadata_lookup=True
+                        )
+                    elif (
+                        library_item.metadata.checksum and prov_item.metadata.checksum
+                    ) and library_item.metadata.checksum != prov_item.metadata.checksum:
+                        # existing dbitem checksum changed
+                        library_item = await controller.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
+                    cur_db_ids.add(library_item.item_id)
+                except MusicAssistantError as err:
+                    self.logger.warning("Skipping sync of item %s: %s", prov_item.uri, str(err))
 
             # process deletions (= no longer in library)
             cache_key = f"library_items.{media_type}.{self.instance_id}"

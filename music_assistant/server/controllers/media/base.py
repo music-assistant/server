@@ -412,23 +412,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         fallback = fallback or await self.get_library_item_by_prov_id(
             item_id, provider_instance_id_or_domain
         )
-        if fallback and isinstance(fallback, ItemMapping):
-            # create a fake item on the fly from the ItemMapping details
-            fallback_item: MediaItemType = self.item_cls(
-                item_id=fallback.item_id, provider=fallback.provider, name=fallback.name
-            )
-            if provider := self.mass.get_provider(fallback_item.provider):
-                fallback_item.provider_mappings.add(
-                    ProviderMapping(
-                        item_id=fallback_item.item_id,
-                        provider_domain=provider.domain,
-                        provider_instance=provider.instance_id,
-                        available=False,
-                    )
-                )
-                return fallback_item
-        elif fallback:
+        if fallback and not (isinstance(fallback, ItemMapping) and self.item_cls in (Track, Album)):
             # simply return the fallback item (marked as unavailable)
+            # NOTE: we only accept ItemMapping as fallback for flat items
+            # so not for tracks and albums (which rely on other objects)
             fallback.available = False
             return fallback
         # all options exhausted, we really can not find this item
