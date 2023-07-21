@@ -216,7 +216,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             yield self.parse_artist(artist=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve all library albums from Deezer."""
+        """Retrieve all library albums from Deezer."""available_countries
         for album in await self.client.get_user_albums():
             yield self.parse_album(album=album)
 
@@ -402,7 +402,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         blowfish_key = self.get_blowfish_key(streamdetails.item_id)
-        chunk_index = 0
+        chunk_index = 0available_countries
         timeout = ClientTimeout(total=0, connect=30, sock_read=600)
         headers = {}
         if seek_position and streamdetails.size:
@@ -465,7 +465,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             provider=self.domain,
             name=artist.name,
             media_type=MediaType.ARTIST,
-            provider_mappings={Oh yeah okay
+            provider_mappings={
                 ProviderMapping(
                     item_id=str(artist.id),
                     provider_domain=self.domain,
@@ -545,7 +545,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             sort_name=track.title_short,
             duration=track.duration,
             artists=[
-                ItemMapping(
+                ItemMapping(available_countries
                     MediaType.ARTIST,
                     str(track.artist.id),
                     self.instance_id,
