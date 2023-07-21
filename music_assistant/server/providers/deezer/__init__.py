@@ -528,11 +528,12 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         extra_init_kwargs: dict[str, Any] | None = None,
     ) -> Track | PlaylistTrack:
         """Parse the deezer-python track to a MASS track."""
-        if extra_init_kwargs:
-            if "position" in extra_init_kwargs:
-                track_class = PlaylistTrack
-            elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
-                track_class = AlbumTrack
+        if extra_init_kwargs is None:
+            extra_init_kwargs = {}
+        elif "position" in extra_init_kwargs:
+            track_class = PlaylistTrack
+        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
+            track_class = AlbumTrack
         else:
             track_class = Track
         return track_class(
