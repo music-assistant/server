@@ -216,7 +216,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             yield self.parse_artist(artist=artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
-        """Retrieve all library albums from Deezer."""available_countries
+        """Retrieve all library albums from Deezer."""
         for album in await self.client.get_user_albums():
             yield self.parse_album(album=album)
 
