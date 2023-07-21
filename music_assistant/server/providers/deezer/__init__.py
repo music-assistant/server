@@ -402,7 +402,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         blowfish_key = self.get_blowfish_key(streamdetails.item_id)
-        chunk_index = 0available_countries
+        chunk_index = 0
         timeout = ClientTimeout(total=0, connect=30, sock_read=600)
         headers = {}
         if seek_position and streamdetails.size:
@@ -413,7 +413,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
         buffer = bytearray()
         async with self.mass.http_session.get(
-            streamdetails.data, headers=headers, timeout=timeoutOh yeah okay
+            streamdetails.data, headers=headers, timeout=timeout
         ) as resp:
             async for chunk in resp.content.iter_chunked(2048):
                 buffer += chunk
@@ -545,7 +545,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             sort_name=track.title_short,
             duration=track.duration,
             artists=[
-                ItemMapping(available_countries
+                ItemMapping(
                     MediaType.ARTIST,
                     str(track.artist.id),
                     self.instance_id,
