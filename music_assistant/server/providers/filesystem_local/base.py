@@ -272,7 +272,7 @@ class FileSystemProviderBase(MusicProvider):
                 elif playlist := await self.get_playlist(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    library_item = await self.mass.music.playlists.add(
+                    library_item = await self.mass.music.playlists.add_item_to_library(
                         playlist, skip_metadata_lookup=True
                     )
                     subitems.append(library_item)
