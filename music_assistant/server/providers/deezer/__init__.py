@@ -566,7 +566,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 )
             },
             metadata=self.parse_metadata_track(track=track),
-            **extra_init_kwargs or {},
+            **extra_init_kwargs,
         )
 
     ### SEARCH AND PARSE FUNCTIONS ###
