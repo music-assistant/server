@@ -413,7 +413,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
         buffer = bytearray()
         async with self.mass.http_session.get(
-            streamdetails.data, headers=headers, timeout=timeout
+            streamdetails.data, headers=headers, timeout=timeoutOh yeah okay
         ) as resp:
             async for chunk in resp.content.iter_chunked(2048):
                 buffer += chunk
@@ -465,7 +465,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             provider=self.domain,
             name=artist.name,
             media_type=MediaType.ARTIST,
-            provider_mappings={
+            provider_mappings={Oh yeah okay
                 ProviderMapping(
                     item_id=str(artist.id),
                     provider_domain=self.domain,
@@ -530,7 +530,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Parse the deezer-python track to a MASS track."""
         if extra_init_kwargs is None:
             extra_init_kwargs = {}
-        if "position" in extra_init_kwargs:
+            track_class = Track
+        elif "position" in extra_init_kwargs:
             track_class = PlaylistTrack
         elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
             track_class = AlbumTrack
