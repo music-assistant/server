@@ -10,8 +10,9 @@ from asyncio_throttle import Throttler
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -99,13 +100,21 @@ class TuneInProvider(MusicProvider):
                 if item_type == "audio":
                     if "preset_id" not in item:
                         continue
+                    if "- Not Supported" in item.get("name", ""):
+                        continue
+                    if "- Not Supported" in item.get("text", ""):
+                        continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
                     for stream in stream_info["body"]:
                         yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link" and item.get("item") == "url":
                     # custom url
-                    yield await self._parse_radio(item)
+                    try:
+                        yield await self._parse_radio(item)
+                    except InvalidDataError as err:
+                        # there may be invalid custom urls, ignore those
+                        self.logger.warning(str(err))
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
@@ -172,8 +181,10 @@ class TuneInProvider(MusicProvider):
                 item_id=item_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=content_type,
-                bit_rate=bit_rate,
+                audio_format=AudioFormat(
+                    content_type=content_type,
+                    bit_rate=bit_rate,
+                ),
                 details=url,
             )
         )
@@ -201,6 +212,9 @@ class TuneInProvider(MusicProvider):
                 provider=self.instance_id,
                 item_id=item_id,
                 content_type=ContentType.UNKNOWN,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
                 media_type=MediaType.RADIO,
                 data=item_id,
             )
@@ -221,7 +235,9 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
-                content_type=ContentType(stream["media_type"]),
+                audio_format=AudioFormat(
+                    content_type=ContentType(stream["media_type"]),
+                ),
                 media_type=MediaType.RADIO,
                 data=url,
                 expires=time() + 24 * 3600,
@@ -246,11 +262,12 @@ class TuneInProvider(MusicProvider):
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
-        async with self._throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                result = await response.json()
-                if not result or "error" in result:
-                    self.logger.error(url)
-                    self.logger.error(kwargs)
-                    result = None
-                return result
+        async with self._throttler, self.mass.http_session.get(
+            url, params=kwargs, ssl=False
+        ) as response:
+            result = await response.json()
+            if not result or "error" in result:
+                self.logger.error(url)
+                self.logger.error(kwargs)
+                result = None
+            return result

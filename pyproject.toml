@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "music_assistant"
-dynamic = ["version"]
+# The version is set by GH action on release
+version = "0.0.0"
 license     = {text = "Apache-2.0"}
 description = "Music Assistant"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 authors     = [
     {name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
 ]
@@ -27,41 +28,40 @@ server = [
   "faust-cchardet>=2.1.18",
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
-  "aiohttp==3.8.4",
+  "aiohttp==3.8.5",
   "asyncio-throttle==1.0.2",
   "aiofiles==23.1.0",
   "aiorun==2022.11.1",
-  "coloredlogs==15.0.1",
+  "colorlog==6.7.0",
   "aiosqlite==0.19.0",
   "python-slugify==8.0.1",
-  "mashumaro==3.7",
+  "mashumaro==3.8.1",
   "memory-tempfile==2.2.3",
-  "music-assistant-frontend==20230616.0",
+  "music-assistant-frontend==2.0.5",
   "pillow==9.5.0",
   "unidecode==1.3.6",
   "xmltodict==0.13.0",
-  "orjson==3.9.1",
+  "orjson==3.9.2",
   "shortuuid==1.0.11",
-  "zeroconf==0.64.1",
-  "cryptography==41.0.1"
+  "zeroconf==0.71.0",
+  "cryptography==41.0.2",
+  "ifaddr==0.2.0",
+  "uvloop==0.17.0"
 ]
 test = [
-  "black==23.3.0",
-  "codespell==2.2.4",
+  "black==23.7.0",
+  "codespell==2.2.5",
   "mypy==1.3.0",
-  "ruff==0.0.272",
-  "pytest==7.3.2",
+  "ruff==0.0.277",
+  "pytest==7.4.0",
   "pytest-asyncio==0.21.0",
   "pytest-aiohttp==1.0.4",
   "pytest-cov==4.1.0",
-  "pre-commit==3.3.2"
+  "pre-commit==3.3.3"
 ]
 
 [project.scripts]
 mass = "music_assistant.__main__:main"
-
-[tool.setuptools.dynamic]
-version = {attr = "music_assistant.constants.__version__"}
 
 [tool.black]
 target-version = ['py311']
@@ -91,7 +91,6 @@ warn_unused_ignores = true
 ignore_missing_imports = true
 module = [
   "aiorun",
-  "coloredlogs",
 ]
 
 [tool.pytest.ini_options]

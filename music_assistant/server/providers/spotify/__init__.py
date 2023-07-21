@@ -10,7 +10,7 @@ import time
 from collections.abc import AsyncGenerator
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from asyncio_throttle import Throttler
@@ -21,13 +21,16 @@ from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     AlbumType,
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
     MediaType,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
@@ -244,7 +247,7 @@ class SpotifyProvider(MusicProvider):
             return await self._parse_playlist(playlist_obj)
         raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
-    async def get_album_tracks(self, prov_album_id) -> list[Track]:
+    async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
         return [
             await self._parse_track(item)
@@ -252,7 +255,7 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
         for item in await self._get_all_items(
@@ -260,9 +263,9 @@ class SpotifyProvider(MusicProvider):
         ):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
-            track = await self._parse_track(item["track"])
             # use count as position
-            track.position = count
+            item["track"]["position"] = count
+            track = await self._parse_track(item["track"])
             yield track
             count += 1
 
@@ -355,7 +358,9 @@ class SpotifyProvider(MusicProvider):
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
-            content_type=ContentType.OGG,
+            audio_format=AudioFormat(
+                content_type=ContentType.OGG,
+            ),
             duration=track.duration,
         )
 
@@ -431,10 +436,6 @@ class SpotifyProvider(MusicProvider):
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):
             album.metadata.images = [MediaItemImage(ImageType.THUMB, album_obj["images"][0]["url"])]
-        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            album.barcode.add(album_obj["external_ids"]["upc"])
-        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
-            album.barcode.add(album_obj["external_ids"]["ean"])
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]
         if album_obj.get("release_date"):
@@ -443,31 +444,52 @@ class SpotifyProvider(MusicProvider):
             album.metadata.copyright = album_obj["copyrights"][0]["text"]
         if album_obj.get("explicit"):
             album.metadata.explicit = album_obj["explicit"]
+        barcode = None
+        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
+            barcode = album_obj["external_ids"]["upc"]
+        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
+            barcode = album_obj["external_ids"]["ean"]
         album.add_provider_mapping(
             ProviderMapping(
                 item_id=album_obj["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
+                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                 url=album_obj["external_urls"]["spotify"],
+                barcode=barcode,
             )
         )
         return album
 
-    async def _parse_track(self, track_obj, artist=None):
+    async def _parse_track(
+        self,
+        track_obj: dict[str, Any],
+        artist=None,
+    ) -> Track | AlbumTrack | PlaylistTrack:
         """Parse spotify track object to generic layout."""
         name, version = parse_title_and_version(track_obj["name"])
-        track = Track(
+        if "position" in track_obj:
+            track_class = PlaylistTrack
+            extra_init_kwargs = {"position": track_obj["position"]}
+        elif "disc_number" in track_obj and "track_number" in track_obj:
+            track_class = AlbumTrack
+            extra_init_kwargs = {
+                "disc_number": track_obj["disc_number"],
+                "track_number": track_obj["track_number"],
+            }
+        else:
+            track_class = Track
+            extra_init_kwargs = {}
+
+        track = track_class(
             item_id=track_obj["id"],
             provider=self.domain,
             name=name,
             version=version,
             duration=track_obj["duration_ms"] / 1000,
-            disc_number=track_obj["disc_number"],
-            track_number=track_obj["track_number"],
-            position=track_obj.get("position"),
+            **extra_init_kwargs,
         )
+
         if artist:
             track.artists.append(artist)
         for track_artist in track_obj.get("artists", []):
@@ -478,8 +500,6 @@ class SpotifyProvider(MusicProvider):
         track.metadata.explicit = track_obj["explicit"]
         if "preview_url" in track_obj:
             track.metadata.preview = track_obj["preview_url"]
-        if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
-            track.isrc.add(track_obj["external_ids"]["isrc"])
         if "album" in track_obj:
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):
@@ -497,8 +517,11 @@ class SpotifyProvider(MusicProvider):
                 item_id=track_obj["id"],
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
+                audio_format=AudioFormat(
+                    content_type=ContentType.OGG,
+                    bit_rate=320,
+                ),
+                isrc=track_obj.get("external_ids", {}).get("isrc"),
                 url=track_obj["external_urls"]["spotify"],
                 available=not track_obj["is_local"] and track_obj["is_playable"],
             )
@@ -666,9 +689,7 @@ class SpotifyProvider(MusicProvider):
             offset += limit
             if not result or key not in result or not result[key]:
                 break
-            for item in result[key]:
-                item["position"] = len(all_items) + 1
-                all_items.append(item)
+            all_items += result[key]
             if len(result[key]) < limit:
                 break
         return all_items

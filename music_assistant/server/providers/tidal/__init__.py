@@ -30,11 +30,14 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
+    AudioFormat,
     ContentType,
     ItemMapping,
     MediaItemImage,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
@@ -265,8 +268,14 @@ class TidalProvider(MusicProvider):
         tidal_session = await self._get_tidal_session()
         async with self._throttler:
             return [
-                await self._parse_track(track_obj=track)
-                for track in await get_album_tracks(tidal_session, prov_album_id)
+                await self._parse_track(
+                    track_obj=track_obj,
+                    extra_init_kwargs={
+                        "disc_number": track_obj.volume_num,
+                        "track_number": track_obj.track_num,
+                    },
+                )
+                for track_obj in await get_album_tracks(tidal_session, prov_album_id)
             ]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -287,7 +296,9 @@ class TidalProvider(MusicProvider):
                 for track in await get_artist_toptracks(tidal_session, prov_artist_id)
             ]
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         tidal_session = await self._get_tidal_session()
         total_playlist_tracks = 0
@@ -296,8 +307,9 @@ class TidalProvider(MusicProvider):
             get_playlist_tracks, tidal_session, prov_playlist_id, limit=DEFAULT_LIMIT
         ):
             total_playlist_tracks += 1
-            track = await self._parse_track(track_obj=track_obj)
-            track.position = total_playlist_tracks
+            track = await self._parse_track(
+                track_obj=track_obj, extra_init_kwargs={"position": total_playlist_tracks}
+            )
             yield track
 
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
@@ -364,9 +376,11 @@ class TidalProvider(MusicProvider):
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
-            content_type=ContentType.FLAC,
-            sample_rate=44100,
-            bit_depth=16,
+            audio_format=AudioFormat(
+                content_type=ContentType.FLAC,
+                sample_rate=44100,
+                bit_depth=16,
+            ),
             duration=track.duration,
             direct=url,
         )
@@ -407,12 +421,12 @@ class TidalProvider(MusicProvider):
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
         return ItemMapping(
-            media_type,
-            key,
-            self.instance_id,
-            name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
+            media_type=media_type,
+            item_id=key,
+            provider=self.instance_id,
+            name=name,
+            uri=create_uri(media_type, self.instance_id, key),
+            sort_name=create_sort_name(self.name),
         )
 
     async def _get_tidal_session(self) -> TidalSession:
@@ -514,7 +528,9 @@ class TidalProvider(MusicProvider):
                 item_id=album_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                ),
                 url=f"http://www.tidal.com/album/{album_id}",
                 available=available,
             )
@@ -537,20 +553,31 @@ class TidalProvider(MusicProvider):
 
         return album
 
-    async def _parse_track(self, track_obj: TidalTrack, full_details: bool = False) -> Track:
+    async def _parse_track(
+        self,
+        track_obj: TidalTrack,
+        full_details: bool = False,
+        extra_init_kwargs: dict[str, Any] | None = None,
+    ) -> Track | AlbumTrack | PlaylistTrack:
         """Parse tidal track object to generic layout."""
         version = track_obj.version if track_obj.version is not None else None
         track_id = str(track_obj.id)
-        track = Track(
+        if extra_init_kwargs is None:
+            extra_init_kwargs = {}
+        if "position" in extra_init_kwargs:
+            track_class = PlaylistTrack
+        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
+            track_class = AlbumTrack
+        else:
+            track_class = Track
+        track = track_class(
             item_id=track_id,
             provider=self.instance_id,
             name=track_obj.name,
             version=version,
             duration=track_obj.duration,
-            disc_number=track_obj.volume_num,
-            track_number=track_obj.track_num,
+            **extra_init_kwargs,
         )
-        track.isrc.add(track_obj.isrc)
         track.album = self.get_item_mapping(
             media_type=MediaType.ALBUM,
             key=track_obj.album.id,
@@ -566,9 +593,12 @@ class TidalProvider(MusicProvider):
                 item_id=track_id,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
-                sample_rate=44100,
-                bit_depth=16,
+                audio_format=AudioFormat(
+                    content_type=ContentType.FLAC,
+                    sample_rate=44100,
+                    bit_depth=16,
+                ),
+                isrc=track_obj.isrc,
                 url=f"http://www.tidal.com/tracks/{track_id}",
                 available=available,
             )

@@ -7,13 +7,16 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_EQ_BASS,
+    CONF_ENTRY_EQ_MID,
+    CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_GROUPED_POWER_ON,
     CONF_ENTRY_HIDE_GROUP_MEMBERS,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -33,10 +36,12 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
 CONF_GROUP_MEMBERS = "group_members"
+CONF_MUTE_CHILDS = "mute_childs"
 
 CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO = ConfigEntry.from_dict(
     {
@@ -47,7 +52,28 @@ CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO = ConfigEntry.from_dict(
     }
 )
 CONF_ENTRY_FORCED_FLOW_MODE = ConfigEntry.from_dict(
-    {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True}
+    {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True, "hidden": True}
+)
+CONF_ENTRY_EQ_BASS_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_BASS.to_dict(), "hidden": True})
+CONF_ENTRY_EQ_MID_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_MID.to_dict(), "hidden": True})
+CONF_ENTRY_EQ_TREBLE_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_EQ_TREBLE.to_dict(), "hidden": True}
+)
+CONF_ENTRY_OUTPUT_CODEC_HIDDEN = ConfigEntry.from_dict(
+    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "hidden": True}
+)
+CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
+    key=CONF_GROUPED_POWER_ON,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    label="Forced Power ON of all group members",
+    description="Power ON all child players when the group player is powered on "
+    "(or playback started). \n"
+    "If this setting is disabled, playback will only start on players that "
+    "are already powered ON at the time of playback start.\n"
+    "When turning OFF the group player, all group members are turned off, "
+    "regardless of this setting.",
+    advanced=False,
 )
 # ruff: noqa: ARG002
 
@@ -112,6 +138,7 @@ class UniversalGroupProvider(PlayerProvider):
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.prev_sync_leaders = {}
+        self.muted_clients = set()
 
         for index in range(1, 100):
             conf_key = f"ugp_{index}"
@@ -154,8 +181,31 @@ class UniversalGroupProvider(PlayerProvider):
         return (
             CONF_ENTRY_HIDE_GROUP_MEMBERS,
             CONF_ENTRY_GROUPED_POWER_ON,
+            ConfigEntry(
+                key=CONF_MUTE_CHILDS,
+                type=ConfigEntryType.STRING,
+                label="Use muting for power commands",
+                multi_value=True,
+                options=(
+                    ConfigValueOption(x.display_name, x.player_id)
+                    for x in self._get_active_members(player_id, False, False)
+                ),
+                default_value=[],
+                description="To prevent a restart of the stream, when a child player "
+                "turns on while the group is already playing, you can enable a workaround "
+                "where Music Assistant uses muting to control the group players. \n\n"
+                "This means that while the group player is playing, power actions to these "
+                "child players will be treated as (un)mute commands to prevent the small "
+                "interruption of music when the stream is restarted.",
+            ),
             CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO,
             CONF_ENTRY_FORCED_FLOW_MODE,
+            # group player outputs to individual members so
+            # these settings make no sense, hide them
+            CONF_ENTRY_EQ_BASS_HIDDEN,
+            CONF_ENTRY_EQ_MID_HIDDEN,
+            CONF_ENTRY_EQ_TREBLE_HIDDEN,
+            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -177,49 +227,81 @@ class UniversalGroupProvider(PlayerProvider):
         group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
         async with asyncio.TaskGroup() as tg:
             for member in self._get_active_members(
-                player_id, only_powered=True, skip_sync_childs=True
+                player_id, only_powered=False, skip_sync_childs=True
             ):
                 tg.create_task(self.mass.players.cmd_play(member.player_id))
 
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player.
+        """Send PLAY URL command to given player.
 
-        This is called when the Queue wants the player to start playing a specific QueueItem.
-        The player implementation can decide how to process the request, such as playing
-        queue items one-by-one or enqueue all/some items.
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
 
             - player_id: player_id of the player to handle the command.
-            - queue_item: the QueueItem to start playing on the player.
-            - seek_position: start playing from this specific position.
-            - fade_in: fade in the music at start (e.g. at resume).
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
         # send stop first
         await self.cmd_stop(player_id)
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
+
+        active_members = self._get_active_members(
+            player_id, only_powered=True, skip_sync_childs=True
+        )
+        if len(active_members) == 0:
+            self.logger.warning(
+                "Play media requested for player %s but no member players are powered, "
+                "the request will be ignored",
+                group_player.display_name,
+            )
+            return
+
         group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
+
         # forward command to all (powered) group child's
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                player_id, only_powered=True, skip_sync_childs=True
-            ):
+            for member in active_members:
                 player_prov = self.mass.players.get_player_provider(member.player_id)
                 tg.create_task(
-                    player_prov.cmd_play_media(
-                        member.player_id,
-                        queue_item=queue_item,
-                        seek_position=seek_position,
-                        fade_in=fade_in,
-                        flow_mode=flow_mode,
-                    )
+                    player_prov.cmd_play_url(member.player_id, url=url, queue_item=queue_item)
+                )
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player."""
+        #  send stop first
+        await self.cmd_stop(player_id)
+        # power ON
+        await self.cmd_power(player_id, True)
+        group_player = self.mass.players.get(player_id)
+
+        active_members = self._get_active_members(
+            player_id, only_powered=True, skip_sync_childs=True
+        )
+        if len(active_members) == 0:
+            self.logger.warning(
+                "Play media requested for player %s but no member players are powered, "
+                "the request will be ignored",
+                group_player.display_name,
+            )
+            return
+
+        group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
+
+        # forward command to all (powered) group child's
+        async with asyncio.TaskGroup() as tg:
+            for member in active_members:
+                player_prov = self.mass.players.get_player_provider(member.player_id)
+                # we forward the stream_job to child to allow for nested groups etc
+                tg.create_task(
+                    player_prov.cmd_handle_stream_job(member.player_id, stream_job=stream_job)
                 )
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -237,31 +319,46 @@ class UniversalGroupProvider(PlayerProvider):
         group_power_on = await self.mass.config.get_player_config_value(
             player_id, CONF_GROUPED_POWER_ON
         )
+        mute_childs = self.mass.config.get_raw_player_config_value(player_id, CONF_MUTE_CHILDS, [])
         group_player = self.mass.players.get(player_id)
 
         async def set_child_power(child_player: Player) -> None:
+            # do not turn on the player if not explicitly requested
+            # so either the group player turns off OR
+            # it turns ON and we have the group_power_on config option enabled
+            if not (not powered or group_power_on):
+                return
+            # make sure to disable the mute as power workaround,
+            # otherwise the player keeps on playing "invisible"
+            if not powered and child_player.player_id in mute_childs:
+                child_player.mute_as_power = False
+                if child_player.volume_muted:
+                    await self.mass.players.cmd_volume_mute(child_player.player_id, False)
+            # send actual power command to child player
             await self.mass.players.cmd_power(child_player.player_id, powered)
+
             # set optimistic state on child player to prevent race conditions in other actions
             child_player.powered = powered
 
-        if not powered or group_power_on:
-            # turn on/off child players
-            async with asyncio.TaskGroup() as tg:
-                for member in self._get_active_members(
-                    player_id, only_powered=not powered, skip_sync_childs=False
-                ):
-                    if member.powered == member:
-                        continue
-                    tg.create_task(set_child_power(member))
+        # turn on/off child players if needed
+        async with asyncio.TaskGroup() as tg:
+            for member in self._get_active_members(
+                player_id, only_powered=False, skip_sync_childs=False
+            ):
+                tg.create_task(set_child_power(member))
+
+        # (re)set mute_as_power feature for group members
+        for child_player_id in mute_childs:
+            if child_player := self.mass.players.get(child_player_id):
+                child_player.mute_as_power = powered
 
         group_player.powered = powered
-        group_player.extra_data["optimistic_state"] = PlayerState.IDLE
+        if not powered:
+            group_player.extra_data["optimistic_state"] = PlayerState.IDLE
         self.mass.players.update(player_id)
         if powered:
             # sync all players on power on
             await self._sync_players(player_id)
-        else:
-            group_player.extra_data["optimistic_state"] = PlayerState.OFF
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -278,90 +375,112 @@ class UniversalGroupProvider(PlayerProvider):
     def update_attributes(self, player_id: str) -> None:
         """Update player attributes."""
         group_player = self.mass.players.get(player_id)
+        if not group_player.powered:
+            group_player.state = PlayerState.IDLE
+            return
+
         all_members = self._get_active_members(
             player_id, only_powered=False, skip_sync_childs=False
         )
         group_player.group_childs = list(x.player_id for x in all_members)
-        # read the state from the first powered child player
+        # read the state from the first active group member
         for member in all_members:
             if member.synced_to:
                 continue
-            if not member.powered:
+            if member.mute_as_power:
+                player_powered = member.powered and not member.volume_muted
+            else:
+                player_powered = member.powered
+            if not player_powered:
                 continue
-            if member.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
-                continue
-            group_player.current_item_id = member.current_item_id
             group_player.current_url = member.current_url
             group_player.elapsed_time = member.elapsed_time
             group_player.elapsed_time_last_updated = member.elapsed_time_last_updated
             group_player.state = member.state
             break
-        else:
-            group_player.state = PlayerState.IDLE
-            group_player.current_item_id = None
-            group_player.current_url = None
 
-    def on_child_state(
-        self, player_id: str, child_player: Player, changed_values: dict[str, tuple[Any, Any]]
-    ) -> None:
-        """Call when the state of a child player updates."""
-        self.update_attributes(player_id)
+    async def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
+        """
+        Call when a power command was executed on one of the child players.
+
+        This is used to handle special actions such as muting as power or (re)syncing.
+        """
         group_player = self.mass.players.get(player_id)
-        self.mass.players.update(player_id, skip_forward=True)
-        if "powered" in changed_values and (prev_power := changed_values["powered"][0]) != (
-            new_power := changed_values["powered"][1]
+
+        if not group_player.powered:
+            # guard, this should be caught in the player controller but just in case...
+            return
+
+        powered_childs = self._get_active_members(player_id, True, False)
+        if not new_power and child_player in powered_childs:
+            powered_childs.remove(child_player)
+
+        # if the last player of a group turned off, turn off the group
+        if len(powered_childs) == 0:
+            self.mass.create_task(self.cmd_power, player_id, False)
+            return False
+
+        # if a child player turned ON while the group player is already playing
+        # we need to resync/resume
+        if (
+            group_player.powered
+            and new_power
+            and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+            and child_player.state != PlayerState.PLAYING
         ):
-            powered_players = self._get_active_members(player_id, True, False)
-            if group_player.powered and prev_power is True and len(powered_players) == 0:
-                # the last player of a group turned off, turn off the group
-                self.mass.create_task(self.cmd_power, player_id, False)
-            # ruff: noqa: SIM114
-            elif (
-                new_power is True
-                and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+            if group_player.state == PlayerState.PLAYING and (
+                sync_leader := next(
+                    (
+                        x
+                        for x in child_player.can_sync_with
+                        if x in self.prev_sync_leaders[player_id]
+                    ),
+                    None,
+                )
             ):
-                # a child player turned ON while the group player is already playing
-                # we need to resync/resume
-                if group_player.state == PlayerState.PLAYING and (
-                    sync_leader := next(
-                        (
-                            x
-                            for x in child_player.can_sync_with
-                            if x in self.prev_sync_leaders[player_id]
-                        ),
-                        None,
-                    )
-                ):
-                    # prevent resume when player platform supports sync
-                    # and one of its players is already playing
-                    self.mass.create_task(
-                        self.mass.players.cmd_sync, child_player.player_id, sync_leader
-                    )
-                else:
-                    self.mass.create_task(self.mass.players.queues.resume, player_id)
-            elif (
-                not child_player.powered
-                and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
-                and child_player.player_id in self.prev_sync_leaders[player_id]
-            ):
-                # a sync master player turned OFF while the group player
-                # should still be playing - we need to resync/resume
-                self.mass.create_task(self.mass.players.queues.resume, player_id)
+                # prevent resume when player platform supports sync
+                # and one of its players is already playing
+                self.mass.create_task(
+                    self.mass.players.cmd_sync, child_player.player_id, sync_leader
+                )
+            else:
+                # send atcive source because the group may be within another group
+                self.mass.create_task(self.mass.player_queues.resume, group_player.active_source)
+        elif (
+            not new_power
+            and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+            and child_player.player_id in self.prev_sync_leaders[player_id]
+            and not child_player.mute_as_power
+        ):
+            # a sync master player turned OFF while the group player
+            # should still be playing - we need to resync/resume
+            # send atcive source because the group may be within another group
+            self.mass.create_task(self.mass.player_queues.resume, group_player.active_source)
 
     def _get_active_members(
-        self, player_id: str, only_powered: bool = False, skip_sync_childs: bool = True
+        self,
+        player_id: str,
+        only_powered: bool = False,
+        skip_sync_childs: bool = True,
     ) -> list[Player]:
         """Get (child) players attached to a grouped player."""
         child_players: list[Player] = []
         conf_members: list[str] = self.config.get_value(player_id)
         ignore_ids = set()
+        group_player = self.mass.players.get(player_id)
+        parent_source = group_player.active_source
         for child_id in conf_members:
             if child_player := self.mass.players.get(child_id, False):
-                if not (not only_powered or child_player.powered):
+                # work out power state
+                if child_player.mute_as_power:
+                    player_powered = child_player.powered and not child_player.volume_muted
+                else:
+                    player_powered = child_player.powered
+                if not (not only_powered or player_powered):
                     continue
                 if child_player.synced_to and skip_sync_childs:
                     continue
-                allowed_sources = [child_player.player_id, player_id] + conf_members
+                allowed_sources = [child_player.player_id, player_id, parent_source] + conf_members
                 if child_player.active_source not in allowed_sources:
                     # edge case: the child player has another group already active!
                     continue

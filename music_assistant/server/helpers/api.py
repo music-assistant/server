@@ -14,8 +14,6 @@ if TYPE_CHECKING:
     pass
 
 
-API_SCHEMA_VERSION = 1
-
 LOGGER = logging.getLogger(__name__)
 
 _F = TypeVar("_F", bound=Callable[..., Any])

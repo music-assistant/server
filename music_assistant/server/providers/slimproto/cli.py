@@ -145,8 +145,8 @@ class LmsCli:
         """Handle async initialization of the plugin."""
         if self.enable_json:
             self.logger.info("Registering jsonrpc endpoints on the webserver")
-            self.mass.webserver.register_route("/jsonrpc.js", self._handle_jsonrpc)
-            self.mass.webserver.register_route("/cometd", self._handle_cometd)
+            self.mass.streams.register_dynamic_route("/jsonrpc.js", self._handle_jsonrpc)
+            self.mass.streams.register_dynamic_route("/cometd", self._handle_cometd)
             self._unsub_callback = self.mass.subscribe(
                 self._on_mass_event,
                 (EventType.PLAYER_UPDATED, EventType.QUEUE_UPDATED),
@@ -163,8 +163,8 @@ class LmsCli:
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
-        self.mass.webserver.unregister_route("/jsonrpc.js")
-        self.mass.webserver.unregister_route("/cometd")
+        self.mass.streams.unregister_dynamic_route("/jsonrpc.js")
+        self.mass.streams.unregister_dynamic_route("/cometd")
         if self._unsub_callback:
             self._unsub_callback()
             self._unsub_callback = None
@@ -183,6 +183,8 @@ class LmsCli:
             while True:
                 raw_request = await reader.readline()
                 raw_request = raw_request.strip().decode("utf-8")
+                if not raw_request:
+                    break
                 # request comes in as url encoded strings, separated by space
                 raw_params = [urllib.parse.unquote(x) for x in raw_request.split(" ")]
                 # the first param is either a macaddress or a command
@@ -610,12 +612,12 @@ class LmsCli:
         player = self.mass.players.get(player_id)
         if player is None:
             return None
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         assert queue is not None
         start_index = queue.current_index or 0 if offset == "-" else offset
         queue_items: list[QueueItem] = []
         index = 0
-        async for item in self.mass.players.queues.items(queue.queue_id):
+        async for item in self.mass.player_queues.items(queue.queue_id):
             if index >= start_index:
                 queue_items.append(item)
             if len(queue_items) == limit:
@@ -644,7 +646,7 @@ class LmsCli:
                 "sleep": 0,
                 "will_sleep_in": 0,
                 "sync_master": player.synced_to,
-                "sync_slaves": ",".join(player.group_childs),
+                "sync_slaves": ",".join(x for x in player.group_childs if x != player_id),
                 "mixer volume": player.volume_level,
                 "playlist repeat": REPEATMODE_MAP[queue.repeat_mode],
                 "playlist shuffle": int(queue.shuffle_enabled),
@@ -743,8 +745,8 @@ class LmsCli:
             players.append(player_item_from_mass(start_index + index, mass_player))
         return ServerStatusResponse(
             {
-                "httpport": self.mass.webserver.port,
-                "ip": self.mass.base_ip,
+                "httpport": self.mass.streams.publish_port,
+                "ip": self.mass.streams.publish_ip,
                 "version": "7.999.999",
                 "uuid": self.mass.server_id,
                 # TODO: set these vars ?
@@ -841,7 +843,7 @@ class LmsCli:
         # You may jump to a particular position in a song by specifying a number of seconds
         # to seek to. You may also jump to a relative position within a song by putting an
         # explicit "-" or "+" character before a number of seconds you would like to seek.
-        player_queue = self.mass.players.queues.get_active_queue(player_id)
+        player_queue = self.mass.player_queues.get_active_queue(player_id)
         assert player_queue is not None
 
         if number == "?":
@@ -849,9 +851,9 @@ class LmsCli:
 
         if isinstance(number, str) and ("+" in number or "-" in number):
             jump = int(number.split("+")[1])
-            self.mass.create_task(self.mass.players.queues.skip, player_queue.queue_id, jump)
+            self.mass.create_task(self.mass.player_queues.skip, player_queue.queue_id, jump)
         else:
-            self.mass.create_task(self.mass.players.queues.seek, player_queue.queue_id, number)
+            self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, number)
 
     def _handle_power(self, player_id: str, value: str | int, *args, **kwargs) -> int | None:
         """Handle player `time` command."""
@@ -882,25 +884,25 @@ class LmsCli:
     ) -> int | None:
         """Handle player `playlist` command."""
         arg = args[0] if args else "?"
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         assert queue is not None
 
         # <playerid> playlist index <index|+index|-index|?> <fadeInSecs>
         if subcommand == "index" and isinstance(arg, int):
-            self.mass.create_task(self.mass.players.queues.play_index, player_id, arg)
+            self.mass.create_task(self.mass.player_queues.play_index, player_id, arg)
             return
         if subcommand == "index" and arg == "?":
             return queue.current_index
         if subcommand == "index" and "+" in arg:
             next_index = (queue.current_index or 0) + int(arg.split("+")[1])
-            self.mass.create_task(self.mass.players.queues.play_index, player_id, next_index)
+            self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
             return
         if subcommand == "index" and "-" in arg:
             next_index = (queue.current_index or 0) - int(arg.split("-")[1])
-            self.mass.create_task(self.mass.players.queues.play_index, player_id, next_index)
+            self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
             return
         if subcommand == "shuffle":
-            self.mass.players.queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
+            self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
             return
         if subcommand == "repeat":
             if queue.repeat_mode == RepeatMode.ALL:
@@ -909,10 +911,10 @@ class LmsCli:
                 new_repeat_mode = RepeatMode.ONE
             else:
                 new_repeat_mode = RepeatMode.ALL
-            self.mass.players.queues.set_repeat(queue.queue_id, new_repeat_mode)
+            self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
             return
         if subcommand == "crossfade":
-            self.mass.players.queues.set_crossfade(queue.queue_id, not queue.crossfade_enabled)
+            self.mass.player_queues.set_crossfade(queue.queue_id, not queue.crossfade_enabled)
             return
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
@@ -926,25 +928,25 @@ class LmsCli:
         **kwargs,
     ) -> int | None:
         """Handle player `playlistcontrol` command."""
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         if cmd == "play":
             self.mass.create_task(
-                self.mass.players.queues.play_media(queue.queue_id, uri, QueueOption.PLAY)
+                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.PLAY)
             )
             return
         if cmd == "load":
             self.mass.create_task(
-                self.mass.players.queues.play_media(queue.queue_id, uri, QueueOption.REPLACE)
+                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.REPLACE)
             )
             return
         if cmd == "add":
             self.mass.create_task(
-                self.mass.players.queues.play_media(queue.queue_id, uri, QueueOption.ADD)
+                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.ADD)
             )
             return
         if cmd == "insert":
             self.mass.create_task(
-                self.mass.players.queues.play_media(queue.queue_id, uri, QueueOption.IN)
+                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.IN)
             )
             return
         self.logger.warning("Unhandled command: playlistcontrol/%s", cmd)
@@ -956,9 +958,9 @@ class LmsCli:
         **kwargs,
     ) -> int | None:
         """Handle player `play` command."""
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         assert queue is not None
-        self.mass.create_task(self.mass.players.queues.play, player_id)
+        self.mass.create_task(self.mass.player_queues.play, player_id)
 
     def _handle_stop(
         self,
@@ -967,9 +969,9 @@ class LmsCli:
         **kwargs,
     ) -> int | None:
         """Handle player `stop` command."""
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         assert queue is not None
-        self.mass.create_task(self.mass.players.queues.stop, player_id)
+        self.mass.create_task(self.mass.player_queues.stop, player_id)
 
     def _handle_pause(
         self,
@@ -979,13 +981,13 @@ class LmsCli:
         **kwargs,
     ) -> int | None:
         """Handle player `stop` command."""
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         assert queue is not None
 
         if force or queue.state == PlayerState.PLAYING:
-            self.mass.create_task(self.mass.players.queues.pause, player_id)
+            self.mass.create_task(self.mass.player_queues.pause, player_id)
         else:
-            self.mass.create_task(self.mass.players.queues.play, player_id)
+            self.mass.create_task(self.mass.player_queues.play, player_id)
 
     def _handle_mode(
         self,
@@ -1031,21 +1033,21 @@ class LmsCli:
             self.mass.create_task(self.mass.players.cmd_power, player_id, not player.powered)
             return
         # queue related button commands
-        queue = self.mass.players.queues.get_active_queue(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         if subcommand == "jump_fwd":
-            self.mass.create_task(self.mass.players.queues.next, queue.queue_id)
+            self.mass.create_task(self.mass.player_queues.next, queue.queue_id)
             return
         if subcommand == "jump_rew":
-            self.mass.create_task(self.mass.players.queues.previous, queue.queue_id)
+            self.mass.create_task(self.mass.player_queues.previous, queue.queue_id)
             return
         if subcommand == "fwd":
-            self.mass.create_task(self.mass.players.queues.skip, queue.queue_id, 10)
+            self.mass.create_task(self.mass.player_queues.skip, queue.queue_id, 10)
             return
         if subcommand == "rew":
-            self.mass.create_task(self.mass.players.queues.skip, queue.queue_id, -10)
+            self.mass.create_task(self.mass.player_queues.skip, queue.queue_id, -10)
             return
         if subcommand == "shuffle":
-            self.mass.players.queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
+            self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
             return
         if subcommand == "repeat":
             if queue.repeat_mode == RepeatMode.ALL:
@@ -1054,7 +1056,7 @@ class LmsCli:
                 new_repeat_mode = RepeatMode.ONE
             else:
                 new_repeat_mode = RepeatMode.ALL
-            self.mass.players.queues.set_repeat(queue.queue_id, new_repeat_mode)
+            self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
             return
         if subcommand.startswith("preset_"):
             preset_index = subcommand.split("preset_")[1].split(".")[0]
@@ -1063,7 +1065,7 @@ class LmsCli:
             ):
                 option = QueueOption.REPLACE if "playlist" in preset_uri else QueueOption.PLAY
                 self.mass.create_task(
-                    self.mass.players.queues.play_media, queue.queue_id, preset_uri, option
+                    self.mass.player_queues.play_media, queue.queue_id, preset_uri, option
                 )
             return
 
@@ -1179,21 +1181,27 @@ class LmsCli:
                 await self.mass.music.artists.album_artists(True, limit=limit, offset=offset)
             ).items
         elif mode == "artists":
-            items = (await self.mass.music.artists.db_items(True, limit=limit, offset=offset)).items
+            items = (
+                await self.mass.music.artists.library_items(True, limit=limit, offset=offset)
+            ).items
         elif mode == "artist" and "uri" in kwargs:
             artist = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
         elif mode == "albums":
-            items = (await self.mass.music.albums.db_items(True, limit=limit, offset=offset)).items
+            items = (
+                await self.mass.music.albums.library_items(True, limit=limit, offset=offset)
+            ).items
         elif mode == "album" and "uri" in kwargs:
             album = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = await self.mass.music.albums.tracks(album.item_id, album.provider)
         elif mode == "playlists":
             items = (
-                await self.mass.music.playlists.db_items(True, limit=limit, offset=offset)
+                await self.mass.music.playlists.library_items(True, limit=limit, offset=offset)
             ).items
         elif mode == "radios":
-            items = (await self.mass.music.radio.db_items(True, limit=limit, offset=offset)).items
+            items = (
+                await self.mass.music.radio.library_items(True, limit=limit, offset=offset)
+            ).items
         elif mode == "playlist" and "uri" in kwargs:
             playlist = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = [

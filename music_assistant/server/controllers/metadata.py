@@ -29,30 +29,39 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
+from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
+    from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.metadata_provider import MetadataProvider
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
 
 
-class MetaDataController:
+class MetaDataController(CoreController):
     """Several helpers to search and store metadata for mediaitems."""
 
-    def __init__(self, mass: MusicAssistant) -> None:
+    domain: str = "metadata"
+
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
-        self.mass = mass
-        self.cache = mass.cache
+        super().__init__(*args, **kwargs)
+        self.cache = self.mass.cache
         self._pref_lang: str | None = None
         self.scan_busy: bool = False
+        self.manifest.name = "Metadata controller"
+        self.manifest.description = (
+            "Music Assistant's core controller which handles all metadata for music."
+        )
+        self.manifest.icon = "book-information-variant"
 
-    async def setup(self) -> None:
+    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""
-        self.mass.webserver.register_route("/imageproxy", self._handle_imageproxy)
+        self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
 
     async def close(self) -> None:
         """Handle logic on server stop."""
+        self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
     def providers(self) -> list[MetadataProvider]:
@@ -86,7 +95,7 @@ class MetaDataController:
 
             LOGGER.debug("Start scan for missing artist metadata")
             self.scan_busy = True
-            async for artist in self.mass.music.artists.iter_db_items():
+            async for artist in self.mass.music.artists.iter_library_items():
                 if artist.metadata.last_refresh is not None:
                     continue
                 # most important is to see artist thumb in listings
@@ -106,15 +115,10 @@ class MetaDataController:
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
-        # set timestamp, used to determine when this function was last called
-        artist.metadata.last_refresh = int(time())
-
-        if not artist.musicbrainz_id:
-            artist.musicbrainz_id = await self.get_artist_musicbrainz_id(artist)
-
-        if not artist.musicbrainz_id:
+        if not artist.mbid:
+            artist.mbid = await self.get_artist_mbid(artist)
+        if not artist.mbid:
             return
-
         # collect metadata from all providers
         for provider in self.providers:
             if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
@@ -126,13 +130,13 @@ class MetaDataController:
                     artist.name,
                     provider.name,
                 )
+        # set timestamp, used to determine when this function was last called
+        artist.metadata.last_refresh = int(time())
 
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
-        # set timestamp, used to determine when this function was last called
-        album.metadata.last_refresh = int(time())
         # ensure the album has a musicbrainz id or artist
-        if not (album.musicbrainz_id or album.artists):
+        if not (album.mbid or album.artists):
             return
         # collect metadata from all providers
         for provider in self.providers:
@@ -145,6 +149,8 @@ class MetaDataController:
                     album.name,
                     provider.name,
                 )
+        # set timestamp, used to determine when this function was last called
+        album.metadata.last_refresh = int(time())
 
     async def get_track_metadata(self, track: Track) -> None:
         """Get/update rich metadata for a track."""
@@ -219,12 +225,24 @@ class MetaDataController:
         # NOTE: we do not have any metadata for radio so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
 
-    async def get_artist_musicbrainz_id(self, artist: Artist) -> str | None:
+    async def get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
-        ref_albums = await self.mass.music.artists.albums(artist=artist)
-        ref_tracks = await self.mass.music.artists.tracks(artist=artist)
+        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
+        if len(ref_albums) < 10:
+            # fetch reference albums from provider(s) attached to the artist
+            for provider_mapping in artist.provider_mappings:
+                ref_albums += await self.mass.music.artists.albums(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
+        ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
+        if len(ref_tracks) < 10:
+            # fetch reference tracks from provider(s) attached to the artist
+            for provider_mapping in artist.provider_mappings:
+                ref_tracks += await self.mass.music.artists.tracks(
+                    provider_mapping.item_id, provider_mapping.provider_instance
+                )
 
-        # randomize providers so average the load
+        # randomize providers to average the load
         providers = self.providers
         shuffle(providers)
 
@@ -232,7 +250,7 @@ class MetaDataController:
         for provider in providers:
             if ProviderFeature.GET_ARTIST_MBID not in provider.supported_features:
                 continue
-            if musicbrainz_id := await provider.get_musicbrainz_artist_id(
+            if mbid := await provider.get_musicbrainz_artist_id(
                 artist, ref_albums=ref_albums, ref_tracks=ref_tracks
             ):
                 LOGGER.debug(
@@ -240,7 +258,7 @@ class MetaDataController:
                     artist.name,
                     provider.name,
                 )
-                return musicbrainz_id
+                return mbid
 
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
@@ -312,7 +330,7 @@ class MetaDataController:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
-            return f"{self.mass.webserver.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}"  # noqa: E501
+            return f"{self.mass.streams.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}"  # noqa: E501
         return image.path
 
     async def get_thumbnail(
@@ -325,7 +343,7 @@ class MetaDataController:
             thumbnail = f"data:image/png;base64,{enc_image}"
         return thumbnail
 
-    async def _handle_imageproxy(self, request: web.Request) -> web.Response:
+    async def handle_imageproxy(self, request: web.Request) -> web.Response:
         """Handle request for image proxy."""
         path = request.query["path"]
         provider = request.query.get("provider", "url")

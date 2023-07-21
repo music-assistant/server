@@ -9,10 +9,11 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
+import aiofiles
 from aiohttp import ClientSession, TCPConnector
 from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
 
-from music_assistant.common.helpers.util import get_ip, get_ip_pton
+from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.config_entries import ProviderConfig
 from music_assistant.common.models.enums import EventType, ProviderType
@@ -20,28 +21,35 @@ from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
+    API_SCHEMA_VERSION,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
+    CONFIGURABLE_CORE_CONTROLLERS,
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
-    SCHEMA_VERSION,
-    VERSION,
 )
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
 from music_assistant.server.controllers.metadata import MetaDataController
 from music_assistant.server.controllers.music import MusicController
+from music_assistant.server.controllers.player_queues import PlayerQueuesController
 from music_assistant.server.controllers.players import PlayerController
 from music_assistant.server.controllers.streams import StreamsController
 from music_assistant.server.controllers.webserver import WebserverController
 from music_assistant.server.helpers.api import APICommandHandler, api_command
 from music_assistant.server.helpers.images import get_icon_string
-from music_assistant.server.helpers.util import get_provider_module
+from music_assistant.server.helpers.util import (
+    get_package_version,
+    get_provider_module,
+    is_hass_supervisor,
+)
 
 from .models import ProviderInstanceType
 
 if TYPE_CHECKING:
     from types import TracebackType
+
+    from music_assistant.server.models.core_controller import CoreController
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = tuple[
@@ -66,32 +74,33 @@ class MusicAssistant:
     loop: asyncio.AbstractEventLoop
     http_session: ClientSession
     zeroconf: Zeroconf
+    config: ConfigController
+    webserver: WebserverController
+    cache: CacheController
+    metadata: MetaDataController
+    music: MusicController
+    players: PlayerController
+    player_queues: PlayerQueuesController
+    streams: StreamsController
 
     def __init__(self, storage_path: str) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
-        self.base_ip = get_ip()
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
-        self._available_providers: dict[str, ProviderManifest] = {}
+        self._provider_manifests: dict[str, ProviderManifest] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
-        # init core controllers
-        self.config = ConfigController(self)
-        self.webserver = WebserverController(self)
-        self.cache = CacheController(self)
-        self.metadata = MetaDataController(self)
-        self.music = MusicController(self)
-        self.players = PlayerController(self)
-        self.streams = StreamsController(self)
         self._tracked_tasks: dict[str, asyncio.Task] = {}
         self.closing = False
-        # register all api commands (methods with decorator)
-        self._register_api_commands()
+        self.running_as_hass_addon: bool = False
+        self.version: str = "0.0.0"
 
     async def start(self) -> None:
         """Start running the Music Assistant server."""
         self.loop = asyncio.get_running_loop()
+        self.running_as_hass_addon = await is_hass_supervisor()
+        self.version = await get_package_version("music_assistant")
         # create shared zeroconf instance
         self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
         # create shared aiohttp ClientSession
@@ -105,22 +114,34 @@ class MusicAssistant:
             ),
         )
         # setup config controller first and fetch important config values
+        self.config = ConfigController(self)
         await self.config.setup()
-        LOGGER.info(
-            "Starting Music Assistant Server (%s) - autodetected IP-address: %s",
-            self.server_id,
-            self.base_ip,
-        )
+        LOGGER.info("Starting Music Assistant Server (%s) version %s", self.server_id, self.version)
         # setup other core controllers
-        await self.cache.setup()
-        await self.webserver.setup()
-        await self.music.setup()
-        await self.metadata.setup()
-        await self.players.setup()
-        await self.streams.setup()
+        self.cache = CacheController(self)
+        self.webserver = WebserverController(self)
+        self.metadata = MetaDataController(self)
+        self.music = MusicController(self)
+        self.players = PlayerController(self)
+        self.player_queues = PlayerQueuesController(self)
+        self.streams = StreamsController(self)
+        # add manifests for core controllers
+        for controller_name in CONFIGURABLE_CORE_CONTROLLERS:
+            controller: CoreController = getattr(self, controller_name)
+            self._provider_manifests[controller.domain] = controller.manifest
+        await self.cache.setup(await self.config.get_core_config("cache"))
+        await self.webserver.setup(await self.config.get_core_config("webserver"))
+        await self.music.setup(await self.config.get_core_config("music"))
+        await self.metadata.setup(await self.config.get_core_config("metadata"))
+        await self.players.setup(await self.config.get_core_config("players"))
+        await self.player_queues.setup(await self.config.get_core_config("player_queues"))
+        await self.streams.setup(await self.config.get_core_config("streams"))
+        # register all api commands (methods with decorator)
+        self._register_api_commands()
+        # setup discovery
+        self.create_task(self._setup_discovery())
         # load providers
         await self._load_providers()
-        self._setup_discovery()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -131,13 +152,15 @@ class MusicAssistant:
         for task in self._tracked_tasks.values():
             task.cancel()
         # cleanup all providers
-        for prov_id in list(self._providers.keys()):
-            asyncio.create_task(self.unload_provider(prov_id))
+        async with asyncio.TaskGroup() as tg:
+            for prov_id in list(self._providers.keys()):
+                tg.create_task(self.unload_provider(prov_id))
         # stop core controllers
         await self.streams.close()
         await self.webserver.close()
         await self.metadata.close()
         await self.music.close()
+        await self.player_queues.close()
         await self.players.close()
         # cleanup cache and config
         await self.config.close()
@@ -158,16 +181,17 @@ class MusicAssistant:
         """Return Info of this server."""
         return ServerInfoMessage(
             server_id=self.server_id,
-            server_version=VERSION,
-            schema_version=SCHEMA_VERSION,
+            server_version=self.version,
+            schema_version=API_SCHEMA_VERSION,
             min_supported_schema_version=MIN_SCHEMA_VERSION,
             base_url=self.webserver.base_url,
+            homeassistant_addon=self.running_as_hass_addon,
         )
 
-    @api_command("providers/available")
-    def get_available_providers(self) -> list[ProviderManifest]:
-        """Return all available Providers."""
-        return list(self._available_providers.values())
+    @api_command("providers/manifests")
+    def get_provider_manifests(self) -> list[ProviderManifest]:
+        """Return all Provider manifests."""
+        return list(self._provider_manifests.values())
 
     @api_command("providers")
     def get_providers(
@@ -177,6 +201,13 @@ class MusicAssistant:
         return [
             x for x in self._providers.values() if provider_type is None or provider_type == x.type
         ]
+
+    @api_command("logging/get")
+    async def get_application_log(self) -> str:
+        """Return the application log from file."""
+        logfile = os.path.join(self.storage_path, "musicassistant.log")
+        async with aiofiles.open(logfile, "r") as _file:
+            return await _file.read()
 
     @property
     def providers(self) -> list[ProviderInstanceType]:
@@ -191,7 +222,7 @@ class MusicAssistant:
         if prov := self._providers.get(provider_instance_or_domain):
             if return_unavailable or prov.available:
                 return prov
-            if prov.is_unique:
+            if not prov.is_streaming_provider:
                 # no need to lookup other instances because this provider has unique data
                 return None
             provider_instance_or_domain = prov.domain
@@ -212,17 +243,6 @@ class MusicAssistant:
     ) -> None:
         """Signal event to subscribers."""
         if self.closing:
-            return
-        if (
-            event
-            in (
-                EventType.MEDIA_ITEM_ADDED,
-                EventType.MEDIA_ITEM_DELETED,
-                EventType.MEDIA_ITEM_UPDATED,
-            )
-            and self.music.in_progress_syncs
-        ):
-            # ignore media item events while sync is running because it clutters too much
             return
 
         if LOGGER.isEnabledFor(logging.DEBUG) and event != EventType.QUEUE_TIME_UPDATED:
@@ -276,6 +296,8 @@ class MusicAssistant:
 
         Tasks created by this helper will be properly cancelled on stop.
         """
+        if target is None:
+            raise RuntimeError("Target is missing")
         if existing := self._tracked_tasks.get(task_id):
             # prevent duplicate tasks if task_id is given and already present
             return existing
@@ -296,8 +318,9 @@ class MusicAssistant:
             if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
                 task_name = _task.get_name() if hasattr(_task, "get_name") else _task
                 LOGGER.exception(
-                    "Exception in task %s",
+                    "Exception in task %s - target: %s",
                     task_name,
+                    str(target),
                     exc_info=task.exception(),
                 )
 
@@ -321,7 +344,8 @@ class MusicAssistant:
         handler: Callable,
     ) -> None:
         """Dynamically register a command on the API."""
-        assert command not in self.command_handlers, "Command already registered"
+        if command in self.command_handlers:
+            raise RuntimeError(f"Command {command} is already registered")
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
     async def load_provider(self, conf: ProviderConfig) -> None:  # noqa: C901
@@ -339,7 +363,7 @@ class MusicAssistant:
             raise SetupFailedError("Configuration is invalid") from err
 
         domain = conf.domain
-        prov_manifest = self._available_providers.get(domain)
+        prov_manifest = self._provider_manifests.get(domain)
         # check for other instances of this provider
         existing = next((x for x in self.providers if x.domain == domain), None)
         if existing and not prov_manifest.multi_instance:
@@ -407,7 +431,7 @@ class MusicAssistant:
             self.metadata,
             self.music,
             self.players,
-            self.players.queues,
+            self.player_queues,
         ):
             for attr_name in dir(cls):
                 if attr_name.startswith("__"):
@@ -420,10 +444,10 @@ class MusicAssistant:
     async def _load_providers(self) -> None:
         """Load providers from config."""
         # load all available providers from manifest files
-        await self.__load_available_providers()
+        await self.__load_provider_manifests()
 
         # create default config for any 'load_by_default' providers (e.g. URL provider)
-        for prov_manifest in self._available_providers.values():
+        for prov_manifest in self._provider_manifests.values():
             if not prov_manifest.load_by_default:
                 continue
             await self.config.create_default_provider_config(prov_manifest.domain)
@@ -452,7 +476,7 @@ class MusicAssistant:
                     continue
                 tg.create_task(load_provider(prov_conf))
 
-    async def __load_available_providers(self) -> None:
+    async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""
         for dir_str in os.listdir(PROVIDERS_PATH):
             dir_path = os.path.join(PROVIDERS_PATH, dir_str)
@@ -467,21 +491,17 @@ class MusicAssistant:
                     continue
                 try:
                     provider_manifest = await ProviderManifest.parse(file_path)
-                    # check for icon file
-                    if not provider_manifest.icon:
-                        for icon_file in ("icon.svg", "icon.png"):
-                            icon_path = os.path.join(dir_path, icon_file)
-                            if os.path.isfile(icon_path):
-                                provider_manifest.icon = await get_icon_string(icon_path)
-                                break
+                    # check for icon.svg file
+                    if not provider_manifest.icon_svg:
+                        icon_path = os.path.join(dir_path, "icon.svg")
+                        if os.path.isfile(icon_path):
+                            provider_manifest.icon_svg = await get_icon_string(icon_path)
                     # check for dark_icon file
-                    if not provider_manifest.icon_dark:
-                        for icon_file in ("icon_dark.svg", "icon_dark.png"):
-                            icon_path = os.path.join(dir_path, icon_file)
-                            if os.path.isfile(icon_path):
-                                provider_manifest.icon_dark = await get_icon_string(icon_path)
-                                break
-                    self._available_providers[provider_manifest.domain] = provider_manifest
+                    if not provider_manifest.icon_svg_dark:
+                        icon_path = os.path.join(dir_path, "icon_dark.svg")
+                        if os.path.isfile(icon_path):
+                            provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
+                    self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", dir_str)
                 except Exception as exc:  # pylint: disable=broad-except
                     LOGGER.exception(
@@ -490,7 +510,7 @@ class MusicAssistant:
                         exc_info=exc,
                     )
 
-    def _setup_discovery(self) -> None:
+    async def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""
         zeroconf_type = "_mass._tcp.local."
         server_id = self.server_id
@@ -498,8 +518,8 @@ class MusicAssistant:
         info = ServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
-            addresses=[get_ip_pton(self.base_ip)],
-            port=self.webserver.port,
+            addresses=[await get_ip_pton(self.webserver.publish_ip)],
+            port=self.webserver.publish_port,
             properties=self.get_server_info().to_dict(),
             server="mass.local.",
         )
@@ -507,9 +527,9 @@ class MusicAssistant:
         try:
             existing = getattr(self, "mass_zc_service_set", None)
             if existing:
-                self.zeroconf.update_service(info)
+                await self.zeroconf.async_update_service(info)
             else:
-                self.zeroconf.register_service(info)
+                await self.zeroconf.async_register_service(info)
             setattr(self, "mass_zc_service_set", True)
         except NonUniqueNameException:
             LOGGER.error(

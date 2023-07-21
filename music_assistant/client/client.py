@@ -24,7 +24,7 @@ from music_assistant.common.models.enums import EventType
 from music_assistant.common.models.errors import ERROR_MAP
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.media_items import MediaItemImage
-from music_assistant.constants import SCHEMA_VERSION
+from music_assistant.constants import API_SCHEMA_VERSION
 
 from .connection import WebsocketsConnection
 from .music import Music
@@ -116,7 +116,7 @@ class MusicAssistantClient:
         info = ServerInfoMessage.from_dict(result)
 
         # basic check for server schema version compatibility
-        if info.min_supported_schema_version > SCHEMA_VERSION:
+        if info.min_supported_schema_version > API_SCHEMA_VERSION:
             # our schema version is too low and can't be handled by the server anymore.
             await self.connection.disconnect()
             raise InvalidServerVersion(

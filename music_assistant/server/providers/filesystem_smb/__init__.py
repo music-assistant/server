@@ -136,6 +136,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             await makedirs(self.base_path)
 
         try:
+            await self.unmount()
             await self.mount()
         except Exception as err:
             raise LoginFailed(f"Connection failed for the given details: {err}") from err

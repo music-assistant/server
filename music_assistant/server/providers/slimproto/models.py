@@ -16,7 +16,6 @@ if TYPE_CHECKING:
 PLAYMODE_MAP = {
     PlayerState.IDLE: "stop",
     PlayerState.PLAYING: "play",
-    PlayerState.OFF: "stop",
     PlayerState.PAUSED: "pause",
 }
 

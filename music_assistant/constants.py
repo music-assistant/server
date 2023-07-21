@@ -3,17 +3,15 @@
 import pathlib
 from typing import Final
 
-__version__: Final[str] = "2.0.0b38"
-
-VERSION: Final[int] = __version__
-SCHEMA_VERSION: Final[int] = 22
-MIN_SCHEMA_VERSION = 22
+API_SCHEMA_VERSION: Final[int] = 23
+MIN_SCHEMA_VERSION: Final[int] = 23
+DB_SCHEMA_VERSION: Final[int] = 24
 
 ROOT_LOGGER_NAME: Final[str] = "music_assistant"
 
 UNKNOWN_ARTIST: Final[str] = "Unknown Artist"
-VARIOUS_ARTISTS: Final[str] = "Various Artists"
-VARIOUS_ARTISTS_ID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
+VARIOUS_ARTISTS_NAME: Final[str] = "Various Artists"
+VARIOUS_ARTISTS_ID_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 
 
 RESOURCES_DIR: Final[pathlib.Path] = (
@@ -32,6 +30,7 @@ CONF_IP_ADDRESS: Final[str] = "ip_address"
 CONF_PORT: Final[str] = "port"
 CONF_PROVIDERS: Final[str] = "providers"
 CONF_PLAYERS: Final[str] = "players"
+CONF_CORE: Final[str] = "core"
 CONF_PATH: Final[str] = "path"
 CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
@@ -48,6 +47,10 @@ CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
 CONF_OUTPUT_CODEC: Final[str] = "output_codec"
 CONF_GROUPED_POWER_ON: Final[str] = "grouped_power_on"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
+CONF_BIND_IP: Final[str] = "bind_ip"
+CONF_BIND_PORT: Final[str] = "bind_port"
+CONF_PUBLISH_IP: Final[str] = "publish_ip"
+CONF_AUTO_PLAY: Final[str] = "auto_play"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -59,6 +62,7 @@ DB_TABLE_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
 DB_TABLE_TRACKS: Final[str] = "tracks"
+DB_TABLE_ALBUM_TRACKS: Final[str] = "albumtracks"
 DB_TABLE_PLAYLISTS: Final[str] = "playlists"
 DB_TABLE_RADIOS: Final[str] = "radios"
 DB_TABLE_CACHE: Final[str] = "cache"
@@ -72,3 +76,12 @@ MASS_LOGO_ONLINE: Final[
 ] = "https://github.com/home-assistant/brands/raw/master/custom_integrations/mass/icon%402x.png"
 ENCRYPT_SUFFIX = "_encrypted_"
 SECURE_STRING_SUBSTITUTE = "this_value_is_encrypted"
+CONFIGURABLE_CORE_CONTROLLERS = (
+    "streams",
+    "webserver",
+    "players",
+    "metadata",
+    "cache",
+    "music",
+    "player_queues",
+)

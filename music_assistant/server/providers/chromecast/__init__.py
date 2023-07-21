@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -103,8 +102,7 @@ class CastPlayer:
     logger: Logger
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
-    next_item: str | None = None
-    flow_mode_active: bool = False
+    next_url: str | None = None
     active_group: str | None = None
 
 
@@ -120,10 +118,6 @@ class ChromecastProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self._discover_lock = threading.Lock()
         self.castplayers = {}
-        # silence the cast logger a bit
-        logging.getLogger("pychromecast.socket_client").setLevel(logging.INFO)
-        logging.getLogger("pychromecast.controllers").setLevel(logging.INFO)
-        logging.getLogger("pychromecast.dial").setLevel(logging.INFO)
         self.mz_mgr = MultizoneManager()
         self.browser = CastBrowser(
             SimpleCastListener(
@@ -185,38 +179,32 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self.castplayers[player_id]
         await asyncio.to_thread(castplayer.cc.media_controller.play)
 
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player."""
-        castplayer = self.castplayers[player_id]
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=queue_item,
-            player_id=player_id,
-            seek_position=seek_position,
-            fade_in=fade_in,
-            flow_mode=flow_mode,
-        )
-        castplayer.flow_mode_active = flow_mode
+        """Send PLAY URL command to given player.
 
-        # in flow mode, we just send the url and the metadata is of no use
-        if flow_mode:
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
+
+            - player_id: player_id of the player to handle the command.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+        """
+        castplayer = self.castplayers[player_id]
+
+        # in flow/direct url mode, we just send the url and the metadata is of no use
+        if not queue_item:
             await asyncio.to_thread(
                 castplayer.cc.play_media,
                 url,
-                content_type=f"audio/{url.split('.')[-1]}",
+                content_type=f'audio/{url.split(".")[-1].split("?")[0]}',
                 title="Music Assistant",
                 thumb=MASS_LOGO_ONLINE,
-                media_info={
-                    "customData": {
-                        "queue_item_id": queue_item.queue_item_id,
-                    }
-                },
             )
             return
 
@@ -232,7 +220,7 @@ class ChromecastProvider(PlayerProvider):
         # make sure that media controller app is launched
         await self._launch_app(castplayer)
         # send queue info to the CC
-        castplayer.next_item = None
+        castplayer.next_url = None
         media_controller = castplayer.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, queuedata, True)
 
@@ -244,10 +232,11 @@ class ChromecastProvider(PlayerProvider):
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
         castplayer = self.castplayers[player_id]
-        # handle player that is hidden by active group player, use mute as power
-        if castplayer.active_group:
-            await self.cmd_volume_mute(player_id, not powered)
-            return
+        # set mute_as_power feature for group members
+        if castplayer.player.type == PlayerType.GROUP:
+            for child_player_id in castplayer.player.group_childs:
+                if child_player := self.mass.players.get(child_player_id):
+                    child_player.mute_as_power = powered
         if powered:
             await self._launch_app(castplayer)
         else:
@@ -330,6 +319,13 @@ class ChromecastProvider(PlayerProvider):
                 )
                 return
 
+            # Disable TV's by default
+            # (can be enabled manually by the user)
+            enabled_by_default = True
+            for exclude in ("tv", "/12", "PUS", "OLED"):
+                if exclude.lower() in cast_info.friendly_name.lower():
+                    enabled_by_default = False
+
             # Instantiate chromecast object
             castplayer = CastPlayer(
                 player_id,
@@ -356,6 +352,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.VOLUME_SET,
                     ),
                     max_sample_rate=96000,
+                    enabled_by_default=enabled_by_default,
                 ),
                 logger=self.logger.getChild(cast_info.friendly_name),
             )
@@ -384,6 +381,8 @@ class ChromecastProvider(PlayerProvider):
 
     def on_new_cast_status(self, castplayer: CastPlayer, status: CastStatus) -> None:
         """Handle updated CastStatus."""
+        if status is None:
+            return  # guard
         castplayer.logger.debug(
             "Received cast status - app_id: %s - volume: %s",
             status.app_id,
@@ -403,13 +402,13 @@ class ChromecastProvider(PlayerProvider):
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.STEREO_PAIR
-            castplayer.player.group_childs = []
+            castplayer.player.group_childs = set()
         # handle cast groups
         if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.GROUP
-            castplayer.player.group_childs = [
+            castplayer.player.group_childs = {
                 str(UUID(x)) for x in castplayer.mz_controller.members
-            ]
+            }
             castplayer.player.supported_features = (
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
@@ -421,7 +420,6 @@ class ChromecastProvider(PlayerProvider):
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus):
         """Handle updated MediaStatus."""
         castplayer.logger.debug("Received media status update: %s", status.player_state)
-        prev_item_id = castplayer.player.current_item_id
         # player state
         if status.player_is_playing:
             castplayer.player.state = PlayerState.PLAYING
@@ -438,20 +436,14 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.elapsed_time = status.current_time
 
         # current media
-        queue_item_id = status.media_custom_data.get("queue_item_id")
-        castplayer.player.current_item_id = queue_item_id
         castplayer.player.current_url = status.content_id
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
         # enqueue next item if needed
         if castplayer.player.state == PlayerState.PLAYING and (
-            prev_item_id != castplayer.player.current_item_id
-            or not castplayer.next_item
-            or castplayer.next_item == castplayer.player.current_item_id
+            not castplayer.next_url or castplayer.next_url == castplayer.player.current_url
         ):
-            asyncio.run_coroutine_threadsafe(
-                self._enqueue_next_track(castplayer, queue_item_id), self.mass.loop
-            )
+            asyncio.run_coroutine_threadsafe(self._enqueue_next_track(castplayer), self.mass.loop)
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
@@ -485,37 +477,36 @@ class ChromecastProvider(PlayerProvider):
 
     ### Helpers / utils
 
-    async def _enqueue_next_track(self, castplayer: CastPlayer, current_queue_item_id: str) -> None:
+    async def _enqueue_next_track(self, castplayer: CastPlayer) -> None:
         """Enqueue the next track of the MA queue on the CC queue."""
-        if castplayer.flow_mode_active:
-            # not possible when we're in flow mode
-            return
-
-        if not current_queue_item_id:
-            return  # guard
         try:
-            next_item, crossfade = await self.mass.players.queues.player_ready_for_next_track(
-                castplayer.player_id, current_queue_item_id
+            next_url, next_item, _ = await self.mass.player_queues.preload_next_url(
+                castplayer.player_id
             )
         except QueueEmpty:
             return
 
-        if castplayer.next_item == next_item.queue_item_id:
+        if castplayer.next_url == next_url:
             return  # already set ?!
-        castplayer.next_item = next_item.queue_item_id
+        castplayer.next_url = next_url
 
-        if crossfade:
-            self.logger.warning(
-                "Crossfade requested but Chromecast does not support crossfading,"
-                " consider using flow mode to enable crossfade on a Chromecast."
+        # in flow/direct url mode, we just send the url and the metadata is of no use
+        if not next_item:
+            await asyncio.to_thread(
+                castplayer.cc.play_media,
+                next_url,
+                content_type=f'audio/{next_url.split(".")[-1].split("?")[0]}',
+                title="Music Assistant",
+                thumb=MASS_LOGO_ONLINE,
+                enqueue=True,
+                media_info={
+                    "customData": {
+                        "queue_item_id": "flow",
+                    }
+                },
             )
-
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=next_item,
-            player_id=castplayer.player_id,
-            auto_start_runner=False,
-        )
-        cc_queue_items = [self._create_queue_item(next_item, url)]
+            return
+        cc_queue_items = [self._create_queue_item(next_item, next_url)]
 
         queuedata = {
             "type": "QUEUE_INSERT",
