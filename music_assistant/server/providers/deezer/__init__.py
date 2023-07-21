@@ -240,7 +240,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             return self.parse_album(album=await self.client.get_album(album_id=int(prov_album_id)))
         except deezer.exceptions.DeezerErrorResponse as error:
             self.logger.warning("Failed getting album: %s", error)
-            return Album(itemid=prov_album_id, provider=self.instance_id, name="Not Found")
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
@@ -277,7 +276,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         for count, deezer_track in enumerate(playlist.tracks, start=1):
             track = self.parse_track(track=deezer_track, user_country=self.gw_client.user_country)
             track.position = count
-            track.id = track.id
             yield track
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -530,10 +528,11 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         extra_init_kwargs: dict[str, Any] | None = None,
     ) -> Track | PlaylistTrack:
         """Parse the deezer-python track to a MASS track."""
-        if "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
-            track_class = AlbumTrack
+        if extra_init_kwargs:
+            if "position" in extra_init_kwargs:
+                track_class = PlaylistTrack
+            elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
+                track_class = AlbumTrack
         else:
             track_class = Track
         return track_class(
@@ -542,7 +541,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             name=track.title,
             media_type=MediaType.TRACK,
             sort_name=track.title_short,
-            position=track.track_position,
             duration=track.duration,
             artists=[
                 ItemMapping(
