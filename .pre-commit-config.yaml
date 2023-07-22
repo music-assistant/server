@@ -10,7 +10,7 @@ repos:
           - --branch=main
       - id: debug-statements
   - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: 'v0.0.278'
+    rev: 'v0.0.279'
     hooks:
       - id: ruff
   - repo: https://github.com/psf/black
