@@ -133,6 +133,12 @@ class TracksController(MediaControllerBase[Track]):
             item.album = await self.mass.music.albums.get_provider_item(
                 item.album.item_id, item.album.provider, fallback=item.album
             )
+            if isinstance(item.album, ItemMapping):
+                self.logger.warning(
+                    "Unable to resolve Album for track %s, "
+                    "track will be added to the library without album",
+                    item.uri,
+                )
         if item.album and not isinstance(item.album, ItemMapping):
             item.album.artists = [
                 await self.mass.music.artists.get_provider_item(
