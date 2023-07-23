@@ -287,7 +287,6 @@ class SoundcloudMusicProvider(MusicProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=ContentType.try_parse(stream_format),
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format),
             ),
