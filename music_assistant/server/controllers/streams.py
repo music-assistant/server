@@ -162,7 +162,7 @@ class MultiClientStreamJob:
     async def subscribe(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming chunks on the queue."""
         try:
-            self.subscribed_players[player_id] = sub_queue = asyncio.Queue(1)
+            self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
 
             if self._all_clients_connected.is_set():
                 # client subscribes while we're already started

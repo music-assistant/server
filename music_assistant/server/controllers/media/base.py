@@ -157,6 +157,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             add_to_library = True
         if library_item and force_refresh:
             # get (first) provider item id belonging to this library item
+            add_to_library = True
             provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)
         elif library_item:
             # we have a library item and no refreshing is needed, return the results!

@@ -154,7 +154,7 @@ class MusicController(CoreController):
         self,
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
-        limit: int = 10,
+        limit: int = 50,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
