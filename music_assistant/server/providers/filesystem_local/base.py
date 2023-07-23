@@ -272,7 +272,7 @@ class FileSystemProviderBase(MusicProvider):
                 elif playlist := await self.get_playlist(item.path):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    library_item = await self.mass.music.playlists.add(
+                    library_item = await self.mass.music.playlists.add_item_to_library(
                         playlist, skip_metadata_lookup=True
                     )
                     subitems.append(library_item)
@@ -574,7 +574,7 @@ class FileSystemProviderBase(MusicProvider):
         else:
             playlist_lines = await parse_pls(playlist_data)
 
-        for line_no, playlist_line in enumerate(playlist_lines):
+        for line_no, playlist_line in enumerate(playlist_lines, 1):
             if line_no not in positions_to_remove:
                 cur_lines.append(playlist_line)
 

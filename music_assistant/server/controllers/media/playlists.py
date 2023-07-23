@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -117,17 +118,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return library_item
 
     async def tracks(
-        self,
-        item_id: str,
-        provider_instance_id_or_domain: str,
+        self, item_id: str, provider_instance_id_or_domain: str, force_refresh: bool = False
     ) -> AsyncGenerator[Track, None]:
         """Return playlist tracks for the given provider playlist id."""
-        playlist = await self.get(item_id, provider_instance_id_or_domain)
+        playlist = await self.get(
+            item_id, provider_instance_id_or_domain, force_refresh=force_refresh
+        )
         prov = next(x for x in playlist.provider_mappings)
         async for track in self._get_provider_playlist_tracks(
             prov.item_id,
             prov.provider_instance,
-            cache_checksum=playlist.metadata.checksum,
+            cache_checksum=str(time.time()) if force_refresh else playlist.metadata.checksum,
         ):
             yield track
 
@@ -151,7 +152,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise ProviderUnavailableError("No provider available which allows playlists creation.")
 
         # create playlist on the provider
-        return await provider.create_playlist(name)
+        playlist = await provider.create_playlist(name)
+        # add the new playlist to the library
+        return await self.add_item_to_library(playlist, True)
 
     async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
