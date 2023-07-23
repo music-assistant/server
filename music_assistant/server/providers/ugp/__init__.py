@@ -467,8 +467,10 @@ class UniversalGroupProvider(PlayerProvider):
         child_players: list[Player] = []
         conf_members: list[str] = self.config.get_value(player_id)
         ignore_ids = set()
-        group_player = self.mass.players.get(player_id)
-        parent_source = group_player.active_source
+        if group_player := self.mass.players.get(player_id):
+            parent_source = group_player.active_source
+        else:
+            parent_source = player_id
         for child_id in conf_members:
             if child_player := self.mass.players.get(child_id, False):
                 # work out power state

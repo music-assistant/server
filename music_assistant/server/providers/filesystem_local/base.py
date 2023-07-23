@@ -574,7 +574,7 @@ class FileSystemProviderBase(MusicProvider):
         else:
             playlist_lines = await parse_pls(playlist_data)
 
-        for line_no, playlist_line in enumerate(playlist_lines):
+        for line_no, playlist_line in enumerate(playlist_lines, 1):
             if line_no not in positions_to_remove:
                 cur_lines.append(playlist_line)
 
