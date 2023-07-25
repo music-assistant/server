@@ -184,7 +184,7 @@ class MetaDataController(CoreController):
             async for track in self.mass.music.playlists.tracks(
                 playlist.item_id, playlist.provider
             ):
-                if not playlist.image and track.image:
+                if track.image:
                     images.add(track.image)
                 if track.media_type != MediaType.TRACK:
                     # filter out radio items
@@ -209,14 +209,14 @@ class MetaDataController(CoreController):
 
             # create collage thumb/fanart from playlist tracks
             if images:
-                if playlist.image and self.mass.storage_path in playlist.image:
-                    img_path = playlist.image
+                if playlist.image and self.mass.storage_path in playlist.image.path:
+                    img_path = playlist.image.path
                 else:
                     img_path = os.path.join(self.mass.storage_path, f"{uuid4().hex}.png")
-                    img_data = await create_collage(self.mass, list(images))
+                img_data = await create_collage(self.mass, list(images))
                 async with aiofiles.open(img_path, "wb") as _file:
                     await _file.write(img_data)
-                playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, True)]
+                playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, "file")]
         except Exception as err:
             LOGGER.debug("Error while creating playlist image", exc_info=err)
 
