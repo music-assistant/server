@@ -218,17 +218,25 @@ class TracksController(MediaControllerBase[Track]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> list[Track]:
-        """Return all versions of a track we can find on the provider."""
+        """Return all versions of a track we can find on all providers."""
         track = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
         search_query = f"{track.artists[0].name} - {track.name}"
-        return [
-            prov_item
-            for prov_item in await self.search(search_query, provider_instance_id_or_domain)
-            if loose_compare_strings(track.name, prov_item.name)
-            and compare_artists(prov_item.artists, track.artists, any_match=True)
-            # make sure that the 'base' version is NOT included
-            and prov_item.item_id != item_id
-        ]
+        result: list[Track] = []
+        for provider_id in self.mass.music.get_unique_providers():
+            provider = self.mass.get_provider(provider_id)
+            if not provider:
+                continue
+            if not provider.library_supported(MediaType.TRACK):
+                continue
+            result += [
+                prov_item
+                for prov_item in await self.search(search_query, provider_id)
+                if loose_compare_strings(track.name, prov_item.name)
+                and compare_artists(prov_item.artists, track.artists, any_match=True)
+                # make sure that the 'base' version is NOT included
+                and prov_item.item_id != item_id
+            ]
+        return result
 
     async def albums(
         self,
