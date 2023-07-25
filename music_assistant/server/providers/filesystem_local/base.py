@@ -291,11 +291,17 @@ class FileSystemProviderBase(MusicProvider):
         """Run library sync for this provider."""
         if MediaType.TRACK not in media_types or MediaType.PLAYLIST not in media_types:
             return
-        cache_key = f"{self.instance_id}.checksums"
-        prev_checksums = await self.mass.cache.get(cache_key, DB_SCHEMA_VERSION)
-        save_checksum_interval = 0
-        if prev_checksums is None:
-            prev_checksums = {}
+
+        # first build a listing of all current items and their checksums
+        prev_checksums = {}
+        for ctrl in (self.mass.music.tracks, self.mass.music.playlists):
+            async for db_item in ctrl.iter_library_items_by_prov_id(self.instance_id):
+                file_name = next(
+                    x.item_id
+                    for x in db_item.provider_mappings
+                    if x.provider_instance == self.instance_id
+                )
+                prev_checksums[file_name] = db_item.metadata.checksum
 
         # process all deleted (or renamed) files first
         cur_filenames = set()
@@ -314,7 +320,6 @@ class FileSystemProviderBase(MusicProvider):
 
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
-        cur_checksums = {}
         async for item in self.listdir("", recursive=True):
             if "." not in item.name or not item.ext:
                 # skip system files and files without extension
@@ -327,7 +332,6 @@ class FileSystemProviderBase(MusicProvider):
             try:
                 # continue if the item did not change (checksum still the same)
                 if item.checksum == prev_checksums.get(item.path):
-                    cur_checksums[item.path] = item.checksum
                     continue
 
                 if item.ext in TRACK_EXTENSIONS:
@@ -348,20 +352,6 @@ class FileSystemProviderBase(MusicProvider):
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
                 self.logger.exception("Error processing %s - %s", item.path, str(err))
-            else:
-                # save item's checksum only if the parse succeeded
-                cur_checksums[item.path] = item.checksum
-
-            # save checksums every 100 processed items
-            # this allows us to pickup where we leftoff when initial scan gets interrupted
-            if save_checksum_interval == 100:
-                await self.mass.cache.set(cache_key, cur_checksums, DB_SCHEMA_VERSION)
-                save_checksum_interval = 0
-            else:
-                save_checksum_interval += 1
-
-        # store (final) checksums in cache
-        await self.mass.cache.set(cache_key, cur_checksums, DB_SCHEMA_VERSION)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
