@@ -473,6 +473,8 @@ class UniversalGroupProvider(PlayerProvider):
             parent_source = player_id
         for child_id in conf_members:
             if child_player := self.mass.players.get(child_id, False):
+                if not child_player.available:
+                    continue
                 # work out power state
                 if child_player.mute_as_power:
                     player_powered = child_player.powered and not child_player.volume_muted
