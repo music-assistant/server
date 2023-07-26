@@ -151,6 +151,9 @@ class TracksController(MediaControllerBase[Track]):
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
+        # fallback track image from album
+        if not item.image and isinstance(item.album, Album) and item.album.image:
+            item.metadata.images.append(item.album.image)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
