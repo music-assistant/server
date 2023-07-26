@@ -287,11 +287,8 @@ class FileSystemProviderBase(MusicProvider):
             items=sorted(subitems, key=lambda x: (x.name.casefold(), x.name)),
         )
 
-    async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
+    async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:  # noqa: ARG002
         """Run library sync for this provider."""
-        if MediaType.TRACK not in media_types or MediaType.PLAYLIST not in media_types:
-            return
-
         # first build a listing of all current items and their checksums
         prev_checksums = {}
         for ctrl in (self.mass.music.tracks, self.mass.music.playlists):
