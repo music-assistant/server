@@ -127,7 +127,7 @@ class DLNAPlayer:
     last_seen: float = field(default_factory=time.time)
     next_url: str | None = None
     next_item: QueueItem | None = None
-    supports_next_uri = True
+    supports_next_uri: bool | None = None
     end_of_track_reached: float | None = None
     last_command: float = field(default_factory=time.time)
 
@@ -154,7 +154,6 @@ class DLNAPlayer:
                 self.device.media_duration
                 and self.player.corrected_elapsed_time
                 and self.player.state == PlayerState.PLAYING
-                and self.end_of_track_reached is None
                 and (self.device.media_duration - self.player.corrected_elapsed_time) <= 10
             ):
                 self.end_of_track_reached = time.time()
@@ -564,7 +563,7 @@ class DLNAPlayerProvider(PlayerProvider):
         dlna_player.next_item = next_item
 
         # no need to try setting the next url if we already know the player does not support it
-        if not dlna_player.supports_next_uri:
+        if dlna_player.supports_next_uri is False:
             return
 
         # send queue item to dlna queue
@@ -579,7 +578,10 @@ class DLNAPlayerProvider(PlayerProvider):
                 "gapless playback is not possible."
             )
         else:
-            self.logger.debug("Player supports the next transport uri feature.")
+            # log once if we detected that the player supports the next transport uri
+            if dlna_player.supports_next_uri is None:
+                dlna_player.supports_next_uri = True
+                self.logger.debug("Player supports the next transport uri feature.")
 
         self.logger.debug(
             "Enqued next track (%s) to player %s",
@@ -603,9 +605,9 @@ class DLNAPlayerProvider(PlayerProvider):
         self.mass.players.update(dlna_player.udn)
 
         # enqueue next item if needed
-        if dlna_player.player.state == PlayerState.PLAYING and (
-            not dlna_player.next_url
-            or dlna_player.next_url == current_url
+        if (
+            dlna_player.player.state == PlayerState.PLAYING
+            and (not dlna_player.next_url or dlna_player.next_url == current_url)
             # prevent race conditions at start/stop by doing this check
             and (time.time() - dlna_player.last_command) > 10
         ):
@@ -615,7 +617,7 @@ class DLNAPlayerProvider(PlayerProvider):
             dlna_player.end_of_track_reached
             and dlna_player.next_url
             and dlna_player.supports_next_uri
-            and time.time() - dlna_player.end_of_track_reached > 20
+            and time.time() - dlna_player.end_of_track_reached > 10
         ):
             self.logger.warning(
                 "Detected that the player is stuck at the end of the track, "
@@ -625,6 +627,7 @@ class DLNAPlayerProvider(PlayerProvider):
         # if player does not support next uri, manual play it
         if (
             not dlna_player.supports_next_uri
+            and prev_state == PlayerState.PLAYING
             and current_state == PlayerState.IDLE
             and dlna_player.next_url
         ):
