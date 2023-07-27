@@ -776,7 +776,7 @@ class SlimprotoProvider(PlayerProvider):
         # update all attributes
         await self._handle_player_update(client)
         # update existing players so they can update their `can_sync_with` field
-        for item in self._socket_clients.values():
+        for item in list(self._socket_clients.values()):
             if item.player_id == player_id:
                 continue
             await self._handle_player_update(item)
