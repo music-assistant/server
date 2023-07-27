@@ -202,6 +202,10 @@ class PlayerController(CoreController):
         # handle special mute_as_power feature
         if player.mute_as_power:
             player.powered = player.powered and not player.volume_muted
+        elif player.state == PlayerState.PLAYING and not player.powered:
+            # mark player as powered if its playing
+            # could happen for players that do not officially support power commands
+            player.powered = True
 
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
