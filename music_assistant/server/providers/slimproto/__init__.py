@@ -583,6 +583,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                 ),
                 max_sample_rate=int(client.max_sample_rate),
+                supports_24bit=int(client.max_sample_rate) > 44100,
             )
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback
@@ -776,7 +777,7 @@ class SlimprotoProvider(PlayerProvider):
         # update all attributes
         await self._handle_player_update(client)
         # update existing players so they can update their `can_sync_with` field
-        for item in self._socket_clients.values():
+        for item in list(self._socket_clients.values()):
             if item.player_id == player_id:
                 continue
             await self._handle_player_update(item)

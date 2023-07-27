@@ -441,6 +441,7 @@ class SonosPlayerProvider(PlayerProvider):
                     manufacturer=self.name,
                 ),
                 max_sample_rate=48000,
+                supports_24bit=True,
             ),
             speaker_info=speaker_info,
             speaker_info_updated=time.time(),

@@ -329,6 +329,8 @@ class ItemMapping(DataClassDictMixin):
 
     def __eq__(self, other: ItemMapping) -> bool:
         """Check equality of two items."""
+        if other is None:
+            return False  # guard
         return self.uri == other.uri
 
 
