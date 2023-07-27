@@ -170,7 +170,11 @@ class AudioDbMetadataProvider(MetadataProvider):
         # lookup by name
         for track_artist in track.artists:
             assert isinstance(track_artist, Artist)
-            result = await self._get_data("searchtrack.php?", s=track_artist.name, t=track.name)
+            # make sure to include the version in the track name
+            search_name = track.name
+            if track.version:
+                search_name += f" {track.version}"
+            result = await self._get_data("searchtrack.php?", s=track_artist.name, t=search_name)
             if result and result.get("track"):
                 for item in result["track"]:
                     if track_artist.mbid:

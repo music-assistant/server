@@ -276,6 +276,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         offset: int = 0,
     ) -> list[ItemCls]:
         """Fetch MediaItem records from database given a custom query."""
+        if custom_query is None:
+            custom_query = f"SELECT * FROM {self.db_table}"
         return [
             self.item_cls.from_db_row(db_row)
             for db_row in await self.mass.music.database.get_rows_from_query(
@@ -343,14 +345,19 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # we use the separate provider_mappings table to perform quick lookups
         # from provider id's to database id's because this is faster
         # (and more compatible) than querying the provider_mappings json column
-        subquery = f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-        subquery += f"WHERE (provider_instance = '{provider_instance_id_or_domain}'"
-        subquery += f" OR provider_domain = '{provider_instance_id_or_domain}')"
+        subquery = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            "WHERE ( "
+            f"(provider_instance = '{provider_instance_id_or_domain}' "
+            f"OR provider_domain = '{provider_instance_id_or_domain}') "
+            ")"
+        )
         if provider_item_ids is not None:
             prov_ids = str(tuple(provider_item_ids))
             if prov_ids.endswith(",)"):
                 prov_ids = prov_ids.replace(",)", ")")
             subquery += f" AND provider_item_id in {prov_ids}"
+        subquery += f" AND media_type = '{self.media_type.value}'"
         query = f"SELECT * FROM {self.db_table} WHERE item_id in ({subquery})"
         return await self.get_library_items_by_query(query, limit=limit, offset=offset)
 
@@ -358,8 +365,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         provider_instance_id_or_domain: str,
         provider_item_ids: tuple[str, ...] | None = None,
-        limit: int = 500,
-        offset: int = 0,
     ) -> AsyncGenerator[ItemCls, None]:
         """Iterate all records from database for given provider."""
         limit: int = 500

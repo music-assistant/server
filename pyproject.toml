@@ -43,7 +43,7 @@ server = [
   "xmltodict==0.13.0",
   "orjson==3.9.2",
   "shortuuid==1.0.11",
-  "zeroconf==0.71.0",
+  "zeroconf==0.71.4",
   "cryptography==41.0.2",
   "ifaddr==0.2.0",
   "uvloop==0.17.0"
@@ -51,10 +51,10 @@ server = [
 test = [
   "black==23.7.0",
   "codespell==2.2.5",
-  "mypy==1.3.0",
+  "mypy==1.4.1",
   "ruff==0.0.277",
   "pytest==7.4.0",
-  "pytest-asyncio==0.21.0",
+  "pytest-asyncio==0.21.1",
   "pytest-aiohttp==1.0.4",
   "pytest-cov==4.1.0",
   "pre-commit==3.3.3"

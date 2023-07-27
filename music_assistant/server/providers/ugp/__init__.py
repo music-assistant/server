@@ -169,6 +169,8 @@ class UniversalGroupProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                     PlayerFeature.SET_MEMBERS,
                 ),
+                max_sample_rate=96000,
+                supports_24bit=True,
                 active_source=conf_key,
                 group_childs=player_conf,
             )
@@ -382,6 +384,7 @@ class UniversalGroupProvider(PlayerProvider):
         all_members = self._get_active_members(
             player_id, only_powered=False, skip_sync_childs=False
         )
+        group_player.max_sample_rate = max(x.max_sample_rate for x in all_members)
         group_player.group_childs = list(x.player_id for x in all_members)
         # read the state from the first active group member
         for member in all_members:
@@ -473,6 +476,8 @@ class UniversalGroupProvider(PlayerProvider):
             parent_source = player_id
         for child_id in conf_members:
             if child_player := self.mass.players.get(child_id, False):
+                if not child_player.available:
+                    continue
                 # work out power state
                 if child_player.mute_as_power:
                     player_powered = child_player.powered and not child_player.volume_muted
