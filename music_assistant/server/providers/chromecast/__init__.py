@@ -352,6 +352,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.VOLUME_SET,
                     ),
                     max_sample_rate=96000,
+                    supports_24bit=True,
                     enabled_by_default=enabled_by_default,
                 ),
                 logger=self.logger.getChild(cast_info.friendly_name),

@@ -444,6 +444,8 @@ class DLNAPlayerProvider(PlayerProvider):
                     self.logger.debug("Ignoring disabled player: %s", udn)
                     return
 
+                is_sonos = "rincon" in udn.lower()
+
                 dlna_player = DLNAPlayer(
                     udn=udn,
                     player=Player(
@@ -460,10 +462,10 @@ class DLNAPlayerProvider(PlayerProvider):
                             address=description_url,
                             manufacturer="unknown",
                         ),
-                        max_sample_rate=192000,
+                        max_sample_rate=48000 if is_sonos else 192000,
                         supports_24bit=True,
                         # disable sonos players by default in dlna
-                        enabled_by_default="rincon" not in udn.lower(),
+                        enabled_by_default=not is_sonos,
                     ),
                     description_url=description_url,
                 )

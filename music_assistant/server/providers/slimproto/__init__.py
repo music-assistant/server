@@ -583,6 +583,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                 ),
                 max_sample_rate=int(client.max_sample_rate),
+                supports_24bit=int(client.max_sample_rate) > 44100,
             )
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback

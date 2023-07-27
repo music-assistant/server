@@ -144,7 +144,7 @@ class MultiClientStreamJob:
         # handle raw pcm
         if output_codec.is_pcm():
             player = self.stream_controller.mass.players.get(child_player_id)
-            player_max_bit_depth = 32 if player.supports_24bit else 16
+            player_max_bit_depth = 24 if player.supports_24bit else 16
             output_sample_rate = min(self.pcm_format.sample_rate, player.max_sample_rate)
             output_bit_depth = min(self.pcm_format.bit_depth, player_max_bit_depth)
             output_channels = await self.stream_controller.mass.config.get_player_config_value(
@@ -388,7 +388,7 @@ class StreamsController(CoreController):
         # handle raw pcm
         if output_codec.is_pcm():
             player = self.mass.players.get(queue_id)
-            player_max_bit_depth = 32 if player.supports_24bit else 16
+            player_max_bit_depth = 24 if player.supports_24bit else 16
             if flow_mode:
                 output_sample_rate = min(FLOW_MAX_SAMPLE_RATE, player.max_sample_rate)
                 output_bit_depth = min(FLOW_MAX_BIT_DEPTH, player_max_bit_depth)
@@ -999,7 +999,7 @@ class StreamsController(CoreController):
 
         else:
             output_sample_rate = min(default_sample_rate, queue_player.max_sample_rate)
-            player_max_bit_depth = 32 if queue_player.supports_24bit else 16
+            player_max_bit_depth = 24 if queue_player.supports_24bit else 16
             output_bit_depth = min(default_bit_depth, player_max_bit_depth)
             output_channels_str = await self.mass.config.get_player_config_value(
                 queue_player.player_id, CONF_OUTPUT_CHANNELS
