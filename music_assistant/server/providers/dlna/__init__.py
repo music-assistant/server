@@ -627,6 +627,7 @@ class DLNAPlayerProvider(PlayerProvider):
         # if player does not support next uri, manual play it
         if (
             not dlna_player.supports_next_uri
+            and prev_state == PlayerState.PLAYING
             and current_state == PlayerState.IDLE
             and dlna_player.next_url
         ):
