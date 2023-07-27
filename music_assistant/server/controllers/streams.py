@@ -63,7 +63,7 @@ DEFAULT_STREAM_HEADERS = {
     "icy-name": "Music Assistant",
     "icy-pub": "0",
 }
-FLOW_MAX_SAMPLE_RATE = 96000
+FLOW_MAX_SAMPLE_RATE = 192000
 FLOW_MAX_BIT_DEPTH = 24
 
 
@@ -433,16 +433,16 @@ class StreamsController(CoreController):
             # cleanup existing job first
             if not existing_job.finished:
                 existing_job.stop()
-
+        queue_player = self.mass.players.get(queue_id)
+        pcm_bit_depth = 24 if queue_player.supports_24bit else 16
+        pcm_sample_rate = min(queue_player.max_sample_rate, 96000)
         self.multi_client_jobs[queue_id] = stream_job = MultiClientStreamJob(
             self,
             queue_id=queue_id,
             pcm_format=AudioFormat(
-                # hardcoded pcm quality of 48/24 for now
-                # TODO: change this to the highest quality supported by all child players ?
-                content_type=ContentType.from_bit_depth(24),
-                sample_rate=48000,
-                bit_depth=24,
+                content_type=ContentType.from_bit_depth(pcm_bit_depth),
+                sample_rate=pcm_sample_rate,
+                bit_depth=pcm_bit_depth,
                 channels=2,
             ),
             start_queue_item=start_queue_item,
