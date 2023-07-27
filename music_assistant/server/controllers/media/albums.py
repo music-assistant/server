@@ -207,17 +207,25 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
     ) -> list[Album]:
-        """Return all versions of an album we can find on the provider."""
+        """Return all versions of an album we can find on all providers."""
         album = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
         search_query = f"{album.artists[0].name} - {album.name}"
-        return [
-            prov_item
-            for prov_item in await self.search(search_query, provider_instance_id_or_domain)
-            if loose_compare_strings(album.name, prov_item.name)
-            and compare_artists(prov_item.artists, album.artists, any_match=True)
-            # make sure that the 'base' version is NOT included
-            and prov_item.item_id != item_id
-        ]
+        result: list[Album] = []
+        for provider_id in self.mass.music.get_unique_providers():
+            provider = self.mass.get_provider(provider_id)
+            if not provider:
+                continue
+            if not provider.library_supported(MediaType.ALBUM):
+                continue
+            result += [
+                prov_item
+                for prov_item in await self.search(search_query, provider_id)
+                if loose_compare_strings(album.name, prov_item.name)
+                and compare_artists(prov_item.artists, album.artists, any_match=True)
+                # make sure that the 'base' version is NOT included
+                and prov_item.item_id != item_id
+            ]
+        return result
 
     async def _add_library_item(self, item: Album) -> Album:
         """Add a new record to the database."""
@@ -270,13 +278,15 @@ class AlbumsController(MediaControllerBase[Album]):
             return []
 
         full_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        # prefer cache items (if any)
+        # prefer cache items (if any) for streaming providers only
         cache_key = f"{prov.instance_id}.albumtracks.{item_id}"
         if isinstance(full_album, ItemMapping):
             cache_checksum = None
         else:
             cache_checksum = full_album.metadata.checksum
-        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
+        if prov.is_streaming_provider and (
+            cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)
+        ):
             return [AlbumTrack.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = []
@@ -289,9 +299,12 @@ class AlbumsController(MediaControllerBase[Album]):
                 track.metadata.images = full_album.metadata.images
             items.append(track)
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
-        )
+        if prov.is_streaming_provider:
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key, [x.to_dict() for x in items], checksum=cache_checksum
+                )
+            )
         return items
 
     async def _get_provider_dynamic_tracks(
