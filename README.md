@@ -12,7 +12,7 @@ Music Assistant is a free, opensource Media library manager that connects to you
 
 **Documentation and support**
 
-For issues, please go to [the issue tracker](https://github.com/music-assistant/hass-music-assistant/issues/issues).
+For issues, please go to [the issue tracker](https://github.com/music-assistant/hass-music-assistant/issues).
 
 For feature requests, please see [feature requests](https://github.com/music-assistant/hass-music-assistant/discussions/categories/feature-requests-and-ideas).
 

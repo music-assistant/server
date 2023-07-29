@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 from aioslimproto.client import PlayerState as SlimPlayerState
-from aioslimproto.client import SlimClient as SlimClientOrg
+from aioslimproto.client import SlimClient
 from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
@@ -249,7 +249,7 @@ class SlimprotoProvider(PlayerProvider):
         self.logger.debug("Socket client connected: %s", addr)
 
         def client_callback(
-            event_type: SlimEventType | str, client: SlimClient, data: Any = None  # noqa: ARG001
+            event_type: SlimEventType, client: SlimClient, data: Any = None  # noqa: ARG001
         ):
             if event_type == SlimEventType.PLAYER_DISCONNECTED:
                 self.mass.create_task(self._handle_disconnected(client))
@@ -267,20 +267,13 @@ class SlimprotoProvider(PlayerProvider):
                 self.mass.create_task(self._handle_buffer_ready(client))
                 return
 
-            if event_type == "output_underrun":
+            if event_type == SlimEventType.PLAYER_OUTPUT_UNDERRUN:
                 # player ran out of buffer
                 self.mass.create_task(self._handle_output_underrun(client))
                 return
 
             if event_type == SlimEventType.PLAYER_HEARTBEAT:
                 self._handle_player_heartbeat(client)
-                return
-
-            # ignore some uninteresting events
-            if event_type in (
-                SlimEventType.PLAYER_CLI_EVENT,
-                SlimEventType.PLAYER_DECODER_ERROR,
-            ):
                 return
 
             # forward player update to MA player controller
@@ -590,6 +583,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                 ),
                 max_sample_rate=int(client.max_sample_rate),
+                supports_24bit=int(client.max_sample_rate) > 44100,
             )
             if virtual_provider_info:
                 # if this player is part of a virtual provider run the callback
@@ -783,7 +777,7 @@ class SlimprotoProvider(PlayerProvider):
         # update all attributes
         await self._handle_player_update(client)
         # update existing players so they can update their `can_sync_with` field
-        for item in self._socket_clients.values():
+        for item in list(self._socket_clients.values()):
             if item.player_id == player_id:
                 continue
             await self._handle_player_update(item)
@@ -848,14 +842,14 @@ class SlimprotoProvider(PlayerProvider):
         return current_millis
 
 
-class SlimClient(SlimClientOrg):
-    """Patched SLIMProto socket client."""
+# class SlimClient(SlimClientOrg):
+#     """Patched SLIMProto socket client."""
 
-    def _process_stat_stmo(self, data: bytes) -> None:  # noqa: ARG002
-        """Process incoming stat STMo message: Output Underrun."""
-        self.callback("output_underrun", self)
+#     def _process_stat_stmo(self, data: bytes) -> None:  # noqa: ARG002
+#         """Process incoming stat STMo message: Output Underrun."""
+#         self.callback("output_underrun", self)
 
-    def _process_stat_stmf(self, data: bytes) -> None:  # noqa: ARG002
-        """Process incoming stat STMf message (connection closed)."""
-        self.logger.debug("STMf received - connection closed.")
-        # we should ignore this event, its not relevant
+# def _process_stat_stmf(self, data: bytes) -> None:  # noqa: ARG002
+#     """Process incoming stat STMf message (connection closed)."""
+#     self.logger.debug("STMf received - connection closed.")
+#     # we should ignore this event, its not relevant

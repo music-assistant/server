@@ -154,9 +154,6 @@ class MetaDataController(CoreController):
 
     async def get_track_metadata(self, track: Track) -> None:
         """Get/update rich metadata for a track."""
-        # set timestamp, used to determine when this function was last called
-        track.metadata.last_refresh = int(time())
-
         if not (track.album and track.artists):
             return
         # collect metadata from all providers
@@ -170,11 +167,11 @@ class MetaDataController(CoreController):
                     track.name,
                     provider.name,
                 )
+        # set timestamp, used to determine when this function was last called
+        track.metadata.last_refresh = int(time())
 
     async def get_playlist_metadata(self, playlist: Playlist) -> None:
         """Get/update rich metadata for a playlist."""
-        # set timestamp, used to determine when this function was last called
-        playlist.metadata.last_refresh = int(time())
         # retrieve genres from tracks
         # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
@@ -184,7 +181,7 @@ class MetaDataController(CoreController):
             async for track in self.mass.music.playlists.tracks(
                 playlist.item_id, playlist.provider
             ):
-                if not playlist.image and track.image:
+                if track.image:
                     images.add(track.image)
                 if track.media_type != MediaType.TRACK:
                     # filter out radio items
@@ -209,16 +206,18 @@ class MetaDataController(CoreController):
 
             # create collage thumb/fanart from playlist tracks
             if images:
-                if playlist.image and self.mass.storage_path in playlist.image:
-                    img_path = playlist.image
+                if playlist.image and self.mass.storage_path in playlist.image.path:
+                    img_path = playlist.image.path
                 else:
                     img_path = os.path.join(self.mass.storage_path, f"{uuid4().hex}.png")
-                    img_data = await create_collage(self.mass, list(images))
+                img_data = await create_collage(self.mass, list(images))
                 async with aiofiles.open(img_path, "wb") as _file:
                     await _file.write(img_data)
-                playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, True)]
+                playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, "file")]
         except Exception as err:
             LOGGER.debug("Error while creating playlist image", exc_info=err)
+        # set timestamp, used to determine when this function was last called
+        playlist.metadata.last_refresh = int(time())
 
     async def get_radio_metadata(self, radio: Radio) -> None:
         """Get/update rich metadata for a radio station."""

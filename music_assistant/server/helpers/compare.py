@@ -294,7 +294,7 @@ def compare_track(
     # check if both tracks are (not) explicit
     if base_item.metadata.explicit is None and isinstance(base_item.album, Album):
         base_item.metadata.explicit = base_item.album.metadata.explicit
-    if compare_item.metadata.explicit is None and isinstance(base_item.album, Album):
+    if compare_item.metadata.explicit is None and isinstance(compare_item.album, Album):
         compare_item.metadata.explicit = compare_item.album.metadata.explicit
     if strict and not compare_explicit(base_item.metadata, compare_item.metadata):
         return False
