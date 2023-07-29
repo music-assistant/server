@@ -60,6 +60,7 @@ DEFAULT_STREAM_HEADERS = {
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
     "Cache-Control": "no-cache",
     "Connection": "close",
+    # "Accept-Ranges": "none",
     "icy-name": "Music Assistant",
     "icy-pub": "0",
 }
@@ -565,7 +566,7 @@ class StreamsController(CoreController):
         )
         # prepare request, add some DLNA/UPNP compatible headers
         enable_icy = request.headers.get("Icy-MetaData", "") == "1"
-        icy_meta_interval = 65536 if output_format.content_type.is_lossless() else 8192
+        icy_meta_interval = 16384 * 4 if output_format.content_type.is_lossless() else 16384
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
@@ -651,6 +652,8 @@ class StreamsController(CoreController):
                 else:
                     title = "Music Assistant"
                 metadata = f"StreamTitle='{title}';".encode()
+                if current_item.image:
+                    metadata += f"StreamURL='{current_item.image.path}'".encode()
                 while len(metadata) % 16 != 0:
                     metadata += b"\x00"
                 length = len(metadata)
