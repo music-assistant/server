@@ -370,8 +370,11 @@ class FileSystemProviderBase(MusicProvider):
                 file_path, self.instance_id
             ):
                 if library_item.media_type == MediaType.TRACK:
-                    album_ids.add(library_item.album.item_id)
-                    for artist in library_item.artists + library_item.album.artists:
+                    if library_item.album:
+                        album_ids.add(library_item.album.item_id)
+                        for artist in library_item.album.artists:
+                            artist_ids.add(artist.item_id)
+                    for artist in library_item.artists:
                         artist_ids.add(artist.item_id)
                 await controller.remove_item_from_library(library_item.item_id)
         # check if any albums need to be cleaned up
