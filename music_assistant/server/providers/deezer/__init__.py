@@ -615,28 +615,35 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         self, query: str, user_country: str, limit: int = 5
     ) -> list[Track]:
         """Search for tracks and parse them."""
-        deezer_tracks = await self.client.search(query=query, limit=1)
-        return [
-            await self.parse_track(track, user_country) for track in islice(deezer_tracks, 0, limit)
-        ]
+        deezer_tracks = await self.client.search(query=query, limit=limit)
+        tracks = []
+        async for track in deezer_tracks:
+            tracks.append(await self.parse_track(track, user_country))
+        return tracks
 
     async def search_and_parse_artists(self, query: str, limit: int = 5) -> list[Artist]:
         """Search for artists and parse them."""
-        deezer_artist = await self.client.search_artists(query=query, limit=1)
-        return [self.parse_artist(artist=artist) for artist in islice(deezer_artist, 0, limit)]
+        deezer_artist = await self.client.search_artists(query=query, limit=limit)
+        artists = []
+        async for artist in deezer_artist:
+            artists.append(self.parse_artist(artist))
+            return artists
 
     async def search_and_parse_albums(self, query: str, limit: int = 5) -> list[Album]:
         """Search for album and parse them."""
-        deezer_albums = await self.client.search_albums(query=query, limit=1)
-        return [self.parse_album(album=album) for album in islice(deezer_albums, 0, limit)]
+        deezer_albums = await self.client.search_albums(query=query, limit=limit)
+        albums = []
+        async for album in deezer_albums:
+            albums.append(self.parse_album(album))
+        return albums
 
     async def search_and_parse_playlists(self, query: str, limit: int = 5) -> list[Playlist]:
         """Search for playlists and parse them."""
-        deezer_playlists = await self.client.search_playlists(query=query, limit=1)
-        return [
-            self.parse_playlist(playlist=playlist)
-            for playlist in islice(deezer_playlists, 0, limit)
-        ]
+        deezer_playlists = await self.client.search_playlists(query=query, limit=limit)
+        playlists = []
+        async for playlist in deezer_playlists:
+            playlists.append(self.parse_playlist(playlist))
+        return playlists
 
     ### OTHER PARSING FUNCTIONS ###
     def _get_album(self, track: deezer.Track) -> Album | None:
