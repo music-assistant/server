@@ -638,11 +638,10 @@ class StreamsController(CoreController):
                     continue
 
                 # if icy metadata is enabled, send the icy metadata after the chunk
-                current_item = self.mass.player_queues.get_item(
-                    queue.queue_id, queue.index_in_buffer
-                )
                 if (
-                    current_item
+                    # use current item here and not buffered item, otherwise
+                    # the icy metadata will be too much ahead
+                    (current_item := queue.current_item)
                     and current_item.streamdetails
                     and current_item.streamdetails.stream_title
                 ):
@@ -652,7 +651,7 @@ class StreamsController(CoreController):
                 else:
                     title = "Music Assistant"
                 metadata = f"StreamTitle='{title}';".encode()
-                if current_item.image:
+                if current_item and current_item.image:
                     metadata += f"StreamURL='{current_item.image.path}'".encode()
                 while len(metadata) % 16 != 0:
                     metadata += b"\x00"

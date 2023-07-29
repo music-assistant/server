@@ -131,6 +131,7 @@ class DLNAPlayer:
     supports_next_uri: bool | None = None
     end_of_track_reached: float | None = None
     last_command: float = field(default_factory=time.time)
+    need_elapsed_time_workaround: bool = False
 
     def update_attributes(self):
         """Update attributes of the MA Player from DLNA state."""
@@ -144,11 +145,13 @@ class DLNAPlayer:
             self.player.state = self.get_state(self.device)
             self.player.supported_features = self.get_supported_features(self.device)
             self.player.current_url = self.device.current_track_uri or ""
-            self.player.elapsed_time = float(self.device.media_position or 0)
-            if self.device.media_position_updated_at is not None:
-                self.player.elapsed_time_last_updated = (
-                    self.device.media_position_updated_at.timestamp()
-                )
+            if self.device.media_position:
+                # only update elapsed_time if the device actually reports it
+                self.player.elapsed_time = float(self.device.media_position)
+                if self.device.media_position_updated_at is not None:
+                    self.player.elapsed_time_last_updated = (
+                        self.device.media_position_updated_at.timestamp()
+                    )
             # some dlna players get stuck at the end of the track and won't
             # automatically play the next track, try to workaround that
             if (
@@ -291,7 +294,13 @@ class DLNAPlayerProvider(PlayerProvider):
         await dlna_player.device.async_set_transport_uri(url, title, didl_metadata)
         # Play it
         await dlna_player.device.async_wait_for_can_play(10)
+        # optimistically set this timestamp to help in case of a player
+        # that does not report the progress
+        now = time.time()
+        dlna_player.player.elapsed_time = 0
+        dlna_player.player.elapsed_time_last_updated = now
         await dlna_player.device.async_play()
+
         # force poll the device
         for sleep in (1, 2):
             await asyncio.sleep(sleep)

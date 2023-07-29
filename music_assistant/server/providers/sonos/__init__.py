@@ -79,7 +79,7 @@ class SonosPlayer:
     next_url: str | None = None
     elapsed_time: int = 0
     playback_started: float | None = None
-    radio_mode_active: bool = False
+    need_elapsed_time_workaround: bool = False
 
     subscriptions: list[SubscriptionBase] = field(default_factory=list)
 
@@ -116,10 +116,8 @@ class SonosPlayer:
             # sonos reports bullshit elapsed time while playing radio (or flow mode),
             # trying to be "smart" and resetting the counter when new ICY metadata is detected
             # we try to detect this and work around it
-            self.radio_mode_active = self.track_info["duration"] == "0:00:00"
-            if self.radio_mode_active and self.playback_started:
-                self.elapsed_time = int(time.time() - self.playback_started)
-            else:
+            self.need_elapsed_time_workaround = self.track_info["duration"] == "0:00:00"
+            if not self.need_elapsed_time_workaround:
                 self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
             self.track_info_updated = time.time()
 
@@ -139,6 +137,7 @@ class SonosPlayer:
 
     def update_attributes(self):
         """Update attributes of the MA Player from soco.SoCo state."""
+        now = time.time()
         # generic attributes (speaker_info)
         self.player.name = self.speaker_info["zone_name"]
         self.player.volume_level = int(self.rendering_control_info["volume"])
@@ -146,13 +145,18 @@ class SonosPlayer:
 
         # transport info (playback state)
         current_transport_state = self.transport_info["current_transport_state"]
-        new_state = _convert_state(current_transport_state)
-        self.player.state = new_state
+        self.player.state = current_state = _convert_state(current_transport_state)
+
+        if self.playback_started is not None and current_state == PlayerState.IDLE:
+            self.playback_started = None
+        elif self.playback_started is None and current_state == PlayerState.PLAYING:
+            self.playback_started = now
 
         # media info (track info)
         self.player.current_url = self.track_info["uri"]
-        self.player.elapsed_time = self.elapsed_time
-        self.player.elapsed_time_last_updated = self.track_info_updated
+        if not self.need_elapsed_time_workaround:
+            self.player.elapsed_time = self.elapsed_time
+            self.player.elapsed_time_last_updated = self.track_info_updated
 
         # zone topology (syncing/grouping) details
         if self.group_info and self.group_info.coordinator.uid == self.player_id:
@@ -305,7 +309,10 @@ class SonosPlayerProvider(PlayerProvider):
             await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
             await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
         # optimistically set this timestamp to help figure out elapsed time later
-        sonos_player.playback_started = time.time() + 1
+        now = time.time()
+        sonos_player.playback_started = now
+        sonos_player.player.elapsed_time = 0
+        sonos_player.player.elapsed_time_last_updated = now
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -315,6 +322,10 @@ class SonosPlayerProvider(PlayerProvider):
                 "Ignore PLAY command for %s: Player is synced to another player.",
                 player_id,
             )
+            return
+        if sonos_player.need_elapsed_time_workaround:
+            # no pause allowed when radio/flow mode is active
+            await self.cmd_stop()
             return
         await asyncio.to_thread(sonos_player.soco.pause)
 
@@ -594,8 +605,8 @@ class SonosPlayerProvider(PlayerProvider):
 
         if signal_update:
             # send update to the player manager right away only if we are triggered from an event
-            # when we're just updating from a manual poll, the player manager will
-            # update will detect changes to the player object itself
+            # when we're just updating from a manual poll, the player manager
+            # will detect changes to the player object itself
             self.mass.players.update(sonos_player.player_id)
 
         # enqueue next item if needed
