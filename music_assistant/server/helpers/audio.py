@@ -716,22 +716,22 @@ async def get_silence(
 
 
 def get_chunksize(
-    content_type: ContentType,
-    sample_rate: int = 44100,
-    bit_depth: int = 16,
+    fmt: AudioFormat,
     seconds: int = 1,
 ) -> int:
     """Get a default chunksize for given contenttype."""
-    pcm_size = int(sample_rate * (bit_depth / 8) * 2 * seconds)
-    if content_type.is_pcm() or content_type == ContentType.WAV:
+    pcm_size = int(fmt.sample_rate * (fmt.bit_depth / 8) * 2 * seconds)
+    if fmt.content_type.is_pcm() or fmt.content_type == ContentType.WAV:
         return pcm_size
-    if content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
+    if fmt.content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
         return pcm_size
-    if content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
-        return int(pcm_size * 0.6)
-    if content_type in (ContentType.MP3, ContentType.OGG, ContentType.M4A):
-        return int(640000 * seconds)
-    return 32000 * seconds
+    if fmt.content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
+        return int(pcm_size * 0.5)
+    if fmt.content_type in (ContentType.MP3, ContentType.OGG):
+        return int((320000 / 8) * seconds)
+    if fmt.content_type in (ContentType.AAC, ContentType.M4A):
+        return int((256000 / 8) * seconds)
+    return int((320000 / 8) * seconds)
 
 
 async def _get_ffmpeg_args(
