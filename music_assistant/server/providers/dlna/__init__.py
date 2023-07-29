@@ -13,6 +13,7 @@ import time
 from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
+from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
@@ -362,7 +363,7 @@ class DLNAPlayerProvider(PlayerProvider):
         finally:
             dlna_player.force_poll = False
 
-    async def _run_discovery(self) -> None:
+    async def _run_discovery(self, use_multicast: bool = False) -> None:
         """Discover DLNA players on the network."""
         if self._discovery_running:
             return
@@ -394,13 +395,17 @@ class DLNAPlayerProvider(PlayerProvider):
 
                 await self._device_discovered(ssdp_udn, discovery_info["location"])
 
-            await async_search(on_response)
+            # we iterate between using a regular and multicast search
+            if use_multicast:
+                await async_search(on_response, target=(str(IPv4Address("255.255.255.255")), 1900))
+            else:
+                await async_search(on_response)
 
         finally:
             self._discovery_running = False
 
         def reschedule():
-            self.mass.create_task(self._run_discovery())
+            self.mass.create_task(self._run_discovery(use_multicast=not use_multicast))
 
         # reschedule self once finished
         self.mass.loop.call_later(120, reschedule)
@@ -607,23 +612,12 @@ class DLNAPlayerProvider(PlayerProvider):
         # enqueue next item if needed
         if (
             dlna_player.player.state == PlayerState.PLAYING
+            and dlna_player.player.player_id in current_url
             and (not dlna_player.next_url or dlna_player.next_url == current_url)
             # prevent race conditions at start/stop by doing this check
-            and (time.time() - dlna_player.last_command) > 10
+            and (time.time() - dlna_player.last_command) > 4
         ):
             self.mass.create_task(self._enqueue_next_track(dlna_player))
-        # try to detect a player that gets stuck at the end of the track
-        if (
-            dlna_player.end_of_track_reached
-            and dlna_player.next_url
-            and dlna_player.supports_next_uri
-            and time.time() - dlna_player.end_of_track_reached > 10
-        ):
-            self.logger.warning(
-                "Detected that the player is stuck at the end of the track, "
-                "enabling workaround for this player."
-            )
-            dlna_player.supports_next_uri = False
         # if player does not support next uri, manual play it
         if (
             not dlna_player.supports_next_uri

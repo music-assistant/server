@@ -78,7 +78,8 @@ class SonosPlayer:
     is_stereo_pair: bool = False
     next_url: str | None = None
     elapsed_time: int = 0
-    radio_mode_started: float | None = None
+    playback_started: float | None = None
+    radio_mode_active: bool = False
 
     subscriptions: list[SubscriptionBase] = field(default_factory=list)
 
@@ -112,8 +113,15 @@ class SonosPlayer:
         # track info
         if update_track_info:
             self.track_info = self.soco.get_current_track_info()
+            # sonos reports bullshit elapsed time while playing radio (or flow mode),
+            # trying to be "smart" and resetting the counter when new ICY metadata is detected
+            # we try to detect this and work around it
+            self.radio_mode_active = self.track_info["duration"] == "0:00:00"
+            if self.radio_mode_active and self.playback_started:
+                self.elapsed_time = int(time.time() - self.playback_started)
+            else:
+                self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
             self.track_info_updated = time.time()
-            self.elapsed_time = _timespan_secs(self.track_info["position"]) or 0
 
         # speaker info
         if update_speaker_info:
@@ -143,17 +151,8 @@ class SonosPlayer:
 
         # media info (track info)
         self.player.current_url = self.track_info["uri"]
-
-        if self.radio_mode_started is not None:
-            # sonos reports bullshit elapsed time while playing radio,
-            # trying to be "smart" and resetting the counter when new ICY metadata is detected
-            if new_state == PlayerState.PLAYING:
-                now = time.time()
-                self.player.elapsed_time = int(now - self.radio_mode_started + 0.5)
-                self.player.elapsed_time_last_updated = now
-        else:
-            self.player.elapsed_time = self.elapsed_time
-            self.player.elapsed_time_last_updated = self.track_info_updated
+        self.player.elapsed_time = self.elapsed_time
+        self.player.elapsed_time_last_updated = self.track_info_updated
 
         # zone topology (syncing/grouping) details
         if self.group_info and self.group_info.coordinator.uid == self.player_id:
@@ -208,8 +207,9 @@ class SonosPlayer:
 class SonosPlayerProvider(PlayerProvider):
     """Sonos Player provider."""
 
-    sonosplayers: dict[str, SonosPlayer]
-    _discovery_running: bool
+    sonosplayers: dict[str, SonosPlayer] | None = None
+    _discovery_running: bool = False
+    _discovery_reschedule_timer: asyncio.TimerHandle | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -222,9 +222,19 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
-        if hasattr(self, "sonosplayers"):
-            for player in self.sonosplayers.values():
-                player.soco.end_direct_control_session
+        if self._discovery_reschedule_timer:
+            self._discovery_reschedule_timer.cancel()
+            self._discovery_reschedule_timer = None
+        # await any in-progress discovery
+        while self._discovery_running:
+            await asyncio.sleep(0.5)
+        # cleanup players
+        if self.sonosplayers:
+            for player_id in list(self.sonosplayers):
+                player = self.sonosplayers.pop(player_id)
+                player.player.available = False
+                player.soco.end_direct_control_session()
+        self.sonosplayers = None
 
     def on_player_config_changed(
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
@@ -244,6 +254,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
+        sonos_player.playback_started = None
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
@@ -287,14 +298,14 @@ class SonosPlayerProvider(PlayerProvider):
         if queue_item is None:
             # enforce mp3 radio mode for flow stream
             url = url.replace(".flac", ".mp3").replace(".wav", ".mp3")
-            sonos_player.radio_mode_started = time.time()
             await asyncio.to_thread(
                 sonos_player.soco.play_uri, url, title="Music Assistant", force_radio=True
             )
         else:
-            sonos_player.radio_mode_started = None
             await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
             await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
+        # optimistically set this timestamp to help figure out elapsed time later
+        sonos_player.playback_started = time.time() + 1
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -371,7 +382,7 @@ class SonosPlayerProvider(PlayerProvider):
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
-    async def _run_discovery(self) -> None:
+    async def _run_discovery(self, allow_network_scan=False) -> None:
         """Discover Sonos players on the network."""
         if self._discovery_running:
             return
@@ -379,7 +390,7 @@ class SonosPlayerProvider(PlayerProvider):
             self._discovery_running = True
             self.logger.debug("Sonos discovery started...")
             discovered_devices: set[soco.SoCo] = await asyncio.to_thread(
-                soco.discover, 120, allow_network_scan=True
+                soco.discover, allow_network_scan=allow_network_scan
             )
             if discovered_devices is None:
                 discovered_devices = set()
@@ -404,10 +415,11 @@ class SonosPlayerProvider(PlayerProvider):
             self._discovery_running = False
 
         def reschedule():
-            self.mass.create_task(self._run_discovery())
+            self._discovery_reschedule_timer = None
+            self.mass.create_task(self._run_discovery(allow_network_scan=not allow_network_scan))
 
         # reschedule self once finished
-        self.mass.loop.call_later(300, reschedule)
+        self._discovery_reschedule_timer = self.mass.loop.call_later(120, reschedule)
 
     async def _device_discovered(self, soco_device: soco.SoCo) -> None:
         """Handle discovered Sonos player."""
