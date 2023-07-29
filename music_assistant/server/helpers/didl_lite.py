@@ -27,7 +27,7 @@ def create_didl_metadata(
             f"<upnp:albumArtURI>{escape_string(MASS_LOGO_ONLINE)}</upnp:albumArtURI>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-            f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_string(url)}</res>'
+            f'<res duration="23:59:59.000" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_string(url)}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
@@ -37,13 +37,13 @@ def create_didl_metadata(
         # radio or other non-track item
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
-            f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
+            '<item id="1" parentID="0" restricted="1">'
             f"<dc:title>{escape_string(queue_item.name)}</dc:title>"
             f"<upnp:albumArtURI>{escape_string(image_url)}</upnp:albumArtURI>"
             f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"
             "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
             f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-            f'<res protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_string(url)}</res>'
+            f'<res duration="23:59:59.000" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_string(url)}</res>'
             "</item>"
             "</DIDL-Lite>"
         )
@@ -56,22 +56,21 @@ def create_didl_metadata(
         album = escape_string(queue_item.media_item.album.name)
     else:
         album = ""
-    item_class = "object.item.audioItem.musicTrack"
-    duration_str = str(datetime.timedelta(seconds=queue_item.duration))
+    duration_str = str(datetime.timedelta(seconds=queue_item.duration)) + ".000"
     return (
         '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
-        f'<item id="{queue_item.queue_item_id}" parentID="0" restricted="1">'
+        '<item id="1" parentID="0" restricted="1">'
         f"<dc:title>{title}</dc:title>"
         f"<dc:creator>{artist}</dc:creator>"
         f"<upnp:album>{album}</upnp:album>"
         f"<upnp:artist>{artist}</upnp:artist>"
-        f"<upnp:duration>{queue_item.duration}</upnp:duration>"
+        f"<upnp:duration>{int(queue_item.duration)}</upnp:duration>"
         "<upnp:playlistTitle>Music Assistant</upnp:playlistTitle>"
         f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"
         f"<upnp:albumArtURI>{escape_string(image_url)}</upnp:albumArtURI>"
-        f"<upnp:class>{item_class}</upnp:class>"
+        "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
         f"<upnp:mimeType>audio/{ext}</upnp:mimeType>"
-        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_string(url)}</res>'
+        f'<res duration="{duration_str}" protocolInfo="http-get:*:audio/{ext}:DLNA.ORG_PN={ext.upper()};DLNA.ORG_OP=01;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000">{escape_string(url)}</res>'
         "</item>"
         "</DIDL-Lite>"
     )
