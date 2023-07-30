@@ -626,11 +626,8 @@ class SlimprotoProvider(PlayerProvider):
         """Process SlimClient Output Underrun Event."""
         player = self.mass.players.get(client.player_id)
         self.logger.error("Player %s ran out of buffer", player.display_name)
-        if player.synced_to:
-            # if player is synced, resync it
-            await self.cmd_sync(player.player_id, player.synced_to)
-        else:
-            await self.cmd_stop(client.player_id)
+        player.state = PlayerState.IDLE
+        self.mass.players.update(client.player_id)
 
     def _handle_client_sync(self, client: SlimClient) -> None:
         """Synchronize audio of a sync client."""
