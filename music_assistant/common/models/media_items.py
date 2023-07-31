@@ -80,11 +80,16 @@ class ProviderMapping(DataClassDictMixin):
 
     def __hash__(self) -> int:
         """Return custom hash."""
-        return hash((self.provider_instance, self.item_id))
+        return hash((self.provider_instance, self.item_id.lower()))
 
     def __eq__(self, other: ProviderMapping) -> bool:
         """Check equality of two items."""
-        return self.provider_instance == other.provider_instance and self.item_id == other.item_id
+        if not other:
+            return False
+        return (
+            self.provider_instance == other.provider_instance
+            and self.item_id.lower() == other.item_id.lower()
+        )
 
 
 @dataclass(frozen=True)
@@ -317,16 +322,6 @@ class Track(MediaItem):
     def __hash__(self):
         """Return custom hash."""
         return hash((self.provider, self.item_id))
-
-    @property
-    def image(self) -> MediaItemImage | None:
-        """Return (first/random) image/thumb from metadata (if any)."""
-        if image := super().image:
-            return image
-        # fallback to album image (use getattr to guard for ItemMapping)
-        if self.album:
-            return getattr(self.album, "image", None)
-        return None
 
     @property
     def has_chapters(self) -> bool:
