@@ -52,7 +52,7 @@ test = [
   "black==23.7.0",
   "codespell==2.2.5",
   "mypy==1.4.1",
-  "ruff==0.0.277",
+  "ruff==0.0.280",
   "pytest==7.4.0",
   "pytest-asyncio==0.21.1",
   "pytest-aiohttp==1.0.4",
