@@ -6,7 +6,7 @@ import urllib.parse
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
-from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import AlbumType, EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -99,9 +99,13 @@ class TracksController(MediaControllerBase[Track]):
         except MediaNotFoundError:
             # edge case where playlist track has invalid albumdetails
             self.logger.warning("Unable to fetch album details %s", track.album.uri)
-        # prefer album image (otherwise it may look weird)
-        if track.album and track.album.image and track.metadata.images:
-            track.metadata.images = [track.album.image] + track.metadata.images
+        # prefer album image if album explicitly given or track has no image on its own
+        if (
+            (album_uri or not track.metadata.images)
+            and isinstance(track.album, Album)
+            and track.album.image
+        ):
+            track.metadata.images = [track.album.image]
         # append full artist details to full track item
         full_artists = []
         for artist in track.artists:
@@ -158,8 +162,13 @@ class TracksController(MediaControllerBase[Track]):
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
-        # fallback track image from album
-        if not item.image and isinstance(item.album, Album) and item.album.image:
+        # fallback track image from album (only if albumtype = single)
+        if (
+            not item.image
+            and isinstance(item.album, Album)
+            and item.album.image
+            and item.album.album_type == AlbumType.SINGLE
+        ):
             item.metadata.images.append(item.album.image)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice

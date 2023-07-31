@@ -206,7 +206,9 @@ class FileSystemProviderBase(MusicProvider):
         }
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
+            query = (
+                "WHERE tracks.name LIKE :name AND tracks.provider_mappings LIKE :provider_instance"
+            )
             result.tracks = (
                 await self.mass.music.tracks.library_items(
                     extra_query=query, extra_query_params=params
@@ -738,7 +740,7 @@ class FileSystemProviderBase(MusicProvider):
                     artist.mbid = tags.musicbrainz_artistids[index]
             track.artists.append(artist)
 
-        # cover image - prefer embedded image, fallback to album cover
+        # handle embedded cover image
         if tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
@@ -746,8 +748,6 @@ class FileSystemProviderBase(MusicProvider):
             track.metadata.images = [
                 MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
             ]
-        elif track.album and track.album.image:
-            track.metadata.images = [track.album.image]
 
         if track.album and not track.album.metadata.images:
             # set embedded cover on album if it does not have one yet
