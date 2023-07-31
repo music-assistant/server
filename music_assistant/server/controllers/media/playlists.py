@@ -260,13 +260,26 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # try name matching
         match = {"name": item.name, "owner": item.owner}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
-            cur_item = Playlist.from_db_row(db_row)
+            cur_item = Playlist.from_dict(self._parse_db_row(db_row))
             # existing item found: update it
             return await self.update_item_in_library(cur_item.item_id, item)
         # insert new item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
-        new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
+        new_item = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "owner": item.owner,
+                "is_editable": item.is_editable,
+                "favorite": item.favorite,
+                "metadata": serialize_to_json(item.metadata),
+                "provider_mappings": serialize_to_json(item.provider_mappings),
+                "timestamp_added": int(utc_timestamp()),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
         db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)

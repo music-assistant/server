@@ -175,18 +175,22 @@ class TuneInProvider(MusicProvider):
             content_type = ContentType.try_parse(stream["media_type"])
             bit_rate = stream.get("bitrate", 128)  # TODO !
 
-        radio = Radio(item_id=item_id, provider=self.domain, name=name)
-        radio.add_provider_mapping(
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=content_type,
-                    bit_rate=bit_rate,
-                ),
-                details=url,
-            )
+        radio = Radio(
+            item_id=item_id,
+            provider=self.domain,
+            name=name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=content_type,
+                        bit_rate=bit_rate,
+                    ),
+                    details=url,
+                )
+            },
         )
         # preset number is used for sorting (not present at stream time)
         preset_number = details.get("preset_number")

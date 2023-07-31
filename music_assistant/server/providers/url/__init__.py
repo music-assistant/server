@@ -105,23 +105,7 @@ class URLProvider(MusicProvider):
         """Parse plain URL to MediaItem of type Radio or Track."""
         item_id, url, media_info = await self._get_media_info(item_id_or_url, force_refresh)
         is_radio = media_info.get("icy-name") or not media_info.duration
-        if is_radio or force_radio:
-            # treat as radio
-            media_item = Radio(
-                item_id=item_id,
-                provider=self.domain,
-                name=media_info.get("icy-name") or media_info.title,
-            )
-        else:
-            media_item = Track(
-                item_id=item_id,
-                provider=self.domain,
-                name=media_info.title,
-                duration=int(media_info.duration or 0),
-                artists=[await self.get_artist(artist) for artist in media_info.artists],
-            )
-
-        media_item.provider_mappings = {
+        provider_mappings = {
             ProviderMapping(
                 item_id=item_id,
                 provider_domain=self.domain,
@@ -134,6 +118,24 @@ class URLProvider(MusicProvider):
                 ),
             )
         }
+        if is_radio or force_radio:
+            # treat as radio
+            media_item = Radio(
+                item_id=item_id,
+                provider=self.domain,
+                name=media_info.get("icy-name") or media_info.title,
+                provider_mappings=provider_mappings,
+            )
+        else:
+            media_item = Track(
+                item_id=item_id,
+                provider=self.domain,
+                name=media_info.title,
+                duration=int(media_info.duration or 0),
+                artists=[await self.get_artist(artist) for artist in media_info.artists],
+                provider_mappings=provider_mappings,
+            )
+
         if media_info.has_cover_image:
             media_item.metadata.images = [MediaItemImage(ImageType.THUMB, url, True)]
         return media_item

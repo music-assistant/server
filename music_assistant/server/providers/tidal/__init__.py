@@ -479,14 +479,18 @@ class TidalProvider(MusicProvider):
     async def _parse_artist(self, artist_obj: TidalArtist, full_details: bool = False) -> Artist:
         """Parse tidal artist object to generic layout."""
         artist_id = artist_obj.id
-        artist = Artist(item_id=artist_id, provider=self.instance_id, name=artist_obj.name)
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"http://www.tidal.com/artist/{artist_id}",
-            )
+        artist = Artist(
+            item_id=artist_id,
+            provider=self.instance_id,
+            name=artist_obj.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=f"http://www.tidal.com/artist/{artist_id}",
+                )
+            },
         )
         # metadata
         if full_details and artist_obj.name != "Various Artists":
@@ -508,7 +512,24 @@ class TidalProvider(MusicProvider):
         name = album_obj.name
         version = album_obj.version if album_obj.version is not None else None
         album_id = album_obj.id
-        album = Album(item_id=album_id, provider=self.instance_id, name=name, version=version)
+        album = Album(
+            item_id=album_id,
+            provider=self.instance_id,
+            name=name,
+            version=version,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.FLAC,
+                    ),
+                    url=f"http://www.tidal.com/album/{album_id}",
+                    available=album_obj.available,
+                )
+            },
+        )
         for artist_obj in album_obj.artists:
             album.artists.append(await self._parse_artist(artist_obj=artist_obj))
         if album_obj.type == "ALBUM":
@@ -522,19 +543,6 @@ class TidalProvider(MusicProvider):
 
         album.upc = album_obj.universal_product_number
         album.year = int(album_obj.year)
-        available = album_obj.available
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=album_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.FLAC,
-                ),
-                url=f"http://www.tidal.com/album/{album_id}",
-                available=available,
-            )
-        )
         # metadata
         album.metadata.copyright = album_obj.copyright
         album.metadata.explicit = album_obj.explicit
@@ -576,7 +584,22 @@ class TidalProvider(MusicProvider):
             name=track_obj.name,
             version=version,
             duration=track_obj.duration,
-            **extra_init_kwargs,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.FLAC,
+                        sample_rate=44100,
+                        bit_depth=16,
+                    ),
+                    isrc=track_obj.isrc,
+                    url=f"http://www.tidal.com/tracks/{track_id}",
+                    available=track_obj.available,
+                )
+            }
+            ** extra_init_kwargs,
         )
         track.album = self.get_item_mapping(
             media_type=MediaType.ALBUM,
@@ -587,22 +610,6 @@ class TidalProvider(MusicProvider):
         for track_artist in track_obj.artists:
             artist = await self._parse_artist(artist_obj=track_artist)
             track.artists.append(artist)
-        available = track_obj.available
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=track_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.FLAC,
-                    sample_rate=44100,
-                    bit_depth=16,
-                ),
-                isrc=track_obj.isrc,
-                url=f"http://www.tidal.com/tracks/{track_id}",
-                available=available,
-            )
-        )
         # metadata
         track.metadata.explicit = track_obj.explicit
         track.metadata.popularity = track_obj.popularity
@@ -627,14 +634,14 @@ class TidalProvider(MusicProvider):
             provider=self.instance_id,
             name=playlist_obj.name,
             owner=creator_name,
-        )
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"http://www.tidal.com/playlists/{playlist_id}",
-            )
+            provider_mappings={
+                ProviderMapping(
+                    item_id=playlist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=f"http://www.tidal.com/playlists/{playlist_id}",
+                )
+            },
         )
         is_editable = bool(creator_id and str(creator_id) == self._tidal_user_id)
         playlist.is_editable = is_editable

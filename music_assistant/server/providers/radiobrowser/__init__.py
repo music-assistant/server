@@ -299,13 +299,17 @@ class RadioBrowserProvider(MusicProvider):
 
     async def _parse_radio(self, radio_obj: dict) -> Radio:
         """Parse Radio object from json obj returned from api."""
-        radio = Radio(item_id=radio_obj.uuid, provider=self.domain, name=radio_obj.name)
-        radio.add_provider_mapping(
-            ProviderMapping(
-                item_id=radio_obj.uuid,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
+        radio = Radio(
+            item_id=radio_obj.uuid,
+            provider=self.domain,
+            name=radio_obj.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=radio_obj.uuid,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         radio.metadata.label = radio_obj.tags
         radio.metadata.popularity = radio_obj.votes
