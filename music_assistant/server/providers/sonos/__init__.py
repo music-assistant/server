@@ -155,6 +155,7 @@ class SonosPlayer:
         """Update attributes of the MA Player from soco.SoCo state."""
         now = time.time()
         # generic attributes (speaker_info)
+        self.player.available = True
         self.player.name = self.speaker_info["zone_name"]
         self.player.volume_level = int(self.rendering_control_info["volume"])
         self.player.volume_muted = self.rendering_control_info["mute"]
