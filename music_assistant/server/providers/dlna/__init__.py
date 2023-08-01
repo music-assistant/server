@@ -591,11 +591,6 @@ class DLNAPlayerProvider(PlayerProvider):
                 "Player does not support next transport uri feature, "
                 "gapless playback is not possible."
             )
-        else:
-            # log once if we detected that the player supports the next transport uri
-            if dlna_player.supports_next_uri is None:
-                dlna_player.supports_next_uri = True
-                self.logger.debug("Player supports the next transport uri feature.")
 
         self.logger.debug(
             "Enqued next track (%s) to player %s",
@@ -629,7 +624,10 @@ class DLNAPlayerProvider(PlayerProvider):
             self.mass.create_task(self._enqueue_next_track(dlna_player))
         # if player does not support next uri, manual play it
         if (
-            not dlna_player.supports_next_uri
+            (
+                dlna_player.supports_next_uri is False
+                or (dlna_player.supports_next_uri is None and dlna_player.end_of_track_reached)
+            )
             and prev_state == PlayerState.PLAYING
             and current_state == PlayerState.IDLE
             and dlna_player.next_url
@@ -641,3 +639,4 @@ class DLNAPlayerProvider(PlayerProvider):
             await self.cmd_play_url(dlna_player.udn, dlna_player.next_url, dlna_player.next_item)
             dlna_player.end_of_track_reached = False
             dlna_player.next_url = None
+            dlna_player.supports_next_uri = False

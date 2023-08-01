@@ -236,13 +236,13 @@ class AlbumsController(MediaControllerBase[Album]):
         if item.mbid:
             match = {"mbid": item.mbid}
             if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                cur_item = Album.from_db_row(db_row)
+                cur_item = Album.from_dict(self._parse_db_row(db_row))
                 # existing item found: update it
                 return await self.update_item_in_library(cur_item.item_id, item)
         # fallback to search and match
         match = {"sort_name": item.sort_name}
-        for row in await self.mass.music.database.get_rows(self.db_table, match):
-            row_album = Album.from_db_row(row)
+        for db_row in await self.mass.music.database.get_rows(self.db_table, match):
+            row_album = Album.from_dict(self._parse_db_row(db_row))
             if compare_album(row_album, item):
                 cur_item = row_album
                 # existing item found: update it
@@ -254,7 +254,15 @@ class AlbumsController(MediaControllerBase[Album]):
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
-                **item.to_db_row(),
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "version": item.version,
+                "favorite": item.favorite,
+                "album_type": item.album_type,
+                "year": item.year,
+                "mbid": item.mbid,
+                "metadata": serialize_to_json(item.metadata),
+                "provider_mappings": serialize_to_json(item.provider_mappings),
                 "artists": serialize_to_json(album_artists),
                 "sort_artist": sort_artist,
                 "timestamp_added": int(utc_timestamp()),
@@ -358,16 +366,14 @@ class AlbumsController(MediaControllerBase[Album]):
         db_id = int(item_id)  # ensure integer
         db_album = await self.get_library_item(db_id)
         result: list[AlbumTrack] = []
-        async for album_track_row in self.mass.music.database.iter_items(
-            DB_TABLE_ALBUM_TRACKS, {"album_id": db_id}
-        ):
-            # TODO: make this a nice join query
-            track_id = album_track_row["track_id"]
-            track_row = await self.mass.music.database.get_row(
-                DB_TABLE_TRACKS, {"item_id": track_id}
-            )
-            album_track = AlbumTrack.from_db_row(
-                {**track_row, **album_track_row, "album": db_album.to_dict()}
+        query = (
+            f"SELECT * FROM {DB_TABLE_TRACKS} INNER JOIN albumtracks "
+            "ON albumtracks.track_id = tracks.item_id WHERE albumtracks.album_id = :album_id"
+        )
+        track_rows = await self.mass.music.database.get_rows_from_query(query, {"album_id": db_id})
+        for album_track_row in track_rows:
+            album_track = AlbumTrack.from_dict(
+                self._parse_db_row({**album_track_row, "album": db_album.to_dict()})
             )
             if db_album.metadata.images:
                 album_track.metadata.images = db_album.metadata.images

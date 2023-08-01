@@ -301,20 +301,24 @@ class SoundcloudMusicProvider(MusicProvider):
             artist_id = artist_obj["id"]
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=artist_obj["username"], provider=self.domain)
+        artist = Artist(
+            item_id=artist_id,
+            name=artist_obj["username"],
+            provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=f"https://soundcloud.com/{permalink}",
+                )
+            },
+        )
         if artist_obj.get("description"):
             artist.metadata.description = artist_obj["description"]
         if artist_obj.get("avatar_url"):
             img_url = artist_obj["avatar_url"]
             artist.metadata.images = [MediaItemImage(ImageType.THUMB, img_url)]
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"https://soundcloud.com/{permalink}",
-            )
-        )
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
@@ -323,13 +327,13 @@ class SoundcloudMusicProvider(MusicProvider):
             item_id=playlist_obj["id"],
             provider=self.domain,
             name=playlist_obj["title"],
-        )
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
+            provider_mappings={
+                ProviderMapping(
+                    item_id=playlist_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         playlist.is_editable = False
         if playlist_obj.get("description"):
@@ -356,6 +360,17 @@ class SoundcloudMusicProvider(MusicProvider):
             name=name,
             version=version,
             duration=track_obj["duration"] / 1000,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.MP3,
+                    ),
+                    url=track_obj["permalink_url"],
+                )
+            },
             **{"position": playlist_position} if playlist_position else {},
         )
         user_id = track_obj["user"]["id"]
@@ -372,15 +387,4 @@ class SoundcloudMusicProvider(MusicProvider):
             track.metadata.genres = track_obj["genre"]
         if track_obj.get("tag_list"):
             track.metadata.style = track_obj["tag_list"]
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=track_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.MP3,
-                ),
-                url=track_obj["permalink_url"],
-            )
-        )
         return track

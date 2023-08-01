@@ -6,7 +6,7 @@ import urllib.parse
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
-from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import AlbumType, EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -33,6 +33,13 @@ class TracksController(MediaControllerBase[Track]):
     def __init__(self, *args, **kwargs):
         """Initialize class."""
         super().__init__(*args, **kwargs)
+        self.base_query = (
+            "SELECT tracks.*, albums.item_id as album_id, "
+            "albums.name AS album_name, albums.version as album_version, "
+            "albums.metadata as album_metadata FROM tracks "
+            "LEFT JOIN albumtracks on albumtracks.track_id = tracks.item_id  "
+            "LEFT JOIN albums on albums.item_id = albumtracks.album_id"
+        )
         self._db_add_lock = asyncio.Lock()
         # register api handlers
         self.mass.register_api_command("music/tracks/library_items", self.library_items)
@@ -92,9 +99,13 @@ class TracksController(MediaControllerBase[Track]):
         except MediaNotFoundError:
             # edge case where playlist track has invalid albumdetails
             self.logger.warning("Unable to fetch album details %s", track.album.uri)
-        # prefer album image (otherwise it may look weird)
-        if track.album and track.album.image and track.metadata.images:
-            track.metadata.images = [track.album.image] + track.metadata.images
+        # prefer album image if album explicitly given or track has no image on its own
+        if (
+            (album_uri or not track.metadata.images)
+            and isinstance(track.album, Album)
+            and track.album.image
+        ):
+            track.metadata.images = [track.album.image]
         # append full artist details to full track item
         full_artists = []
         for artist in track.artists:
@@ -151,8 +162,13 @@ class TracksController(MediaControllerBase[Track]):
         # grab additional metadata
         if not skip_metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
-        # fallback track image from album
-        if not item.image and isinstance(item.album, Album) and item.album.image:
+        # fallback track image from album (only if albumtype = single)
+        if (
+            not item.image
+            and isinstance(item.album, Album)
+            and item.album.image
+            and item.album.album_type == AlbumType.SINGLE
+        ):
             item.metadata.images.append(item.album.image)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
@@ -376,11 +392,11 @@ class TracksController(MediaControllerBase[Track]):
         if item.mbid:
             match = {"mbid": item.mbid}
             if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                cur_item = Track.from_db_row(db_row)
+                cur_item = Track.from_dict(self._parse_db_row(db_row))
                 return await self.update_item_in_library(cur_item.item_id, item)
         match = {"sort_name": item.sort_name}
-        for row in await self.mass.music.database.get_rows(self.db_table, match):
-            row_track = Track.from_db_row(row)
+        for db_row in await self.mass.music.database.get_rows(self.db_table, match):
+            row_track = Track.from_dict(self._parse_db_row(db_row))
             track_albums = await self.albums(row_track.item_id, row_track.provider)
             if compare_track(row_track, item, strict=True, track_albums=track_albums):
                 cur_item = row_track
@@ -390,7 +406,14 @@ class TracksController(MediaControllerBase[Track]):
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
-                **item.to_db_row(),
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "version": item.version,
+                "duration": item.duration,
+                "favorite": item.favorite,
+                "mbid": item.mbid,
+                "metadata": serialize_to_json(item.metadata),
+                "provider_mappings": serialize_to_json(item.provider_mappings),
                 "artists": serialize_to_json(track_artists),
                 "sort_artist": sort_artist,
                 "timestamp_added": int(utc_timestamp()),

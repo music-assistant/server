@@ -202,11 +202,17 @@ class PlayerQueuesController(CoreController):
             elif media_item.media_type == MediaType.PLAYLIST:
                 async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
                     tracks.append(playlist_track)
+                await self.mass.music.mark_item_played(
+                    media_item.media_type, media_item.item_id, media_item.provider
+                )
             elif media_item.media_type in (
                 MediaType.ARTIST,
                 MediaType.ALBUM,
             ):
                 tracks += await ctrl.tracks(media_item.item_id, media_item.provider)
+                await self.mass.music.mark_item_played(
+                    media_item.media_type, media_item.item_id, media_item.provider
+                )
             else:
                 # single track or radio item
                 tracks += [media_item]

@@ -20,7 +20,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import MusicAssistantError
+from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
@@ -281,6 +281,27 @@ class MusicController(CoreController):
         prov = self.mass.get_provider(provider_instance)
         return await prov.browse(path)
 
+    @api_command("music/recently_played_items")
+    async def recently_played(
+        self, limit: int = 10, media_types: list[MediaType] | None = None
+    ) -> list[MediaItemType]:
+        """Return a list of the last played items."""
+        if media_types is None:
+            media_types = [MediaType.TRACK, MediaType.RADIO]
+        media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
+        query = (
+            f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type "
+            f"in {media_types_str} ORDER BY timestamp DESC"
+        )
+        db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
+        result: list[MediaItemType] = []
+        for db_row in db_rows:
+            with suppress(MediaNotFoundError):
+                media_type = MediaType(db_row["media_type"])
+                item = await self.get_item(media_type, db_row["item_id"], db_row["provider"])
+                result.append(item)
+        return result
+
     @api_command("music/item_by_uri")
     async def get_item_by_uri(self, uri: str) -> MediaItemType:
         """Fetch MediaItem by uri."""
@@ -474,7 +495,9 @@ class MusicController(CoreController):
             return statistics.fmean(all_items)
         return None
 
-    async def mark_item_played(self, item_id: str, provider_instance_id_or_domain: str):
+    async def mark_item_played(
+        self, media_type: MediaType, item_id: str, provider_instance_id_or_domain: str
+    ):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
         await self.database.insert(
@@ -482,6 +505,7 @@ class MusicController(CoreController):
             {
                 "item_id": item_id,
                 "provider": provider_instance_id_or_domain,
+                "media_type": media_type.value,
                 "timestamp": timestamp,
             },
             allow_replace=True,
@@ -684,6 +708,13 @@ class MusicController(CoreController):
                     for item_id in item_ids_to_delete:
                         await self.database.delete(table, {"item_id": item_id})
 
+            if prev_version > 22 and prev_version < 25:
+                # extend playlog table with media_type column
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PLAYLOG} "
+                    "ADD COLUMN media_type TEXT NOT NULL DEFAULT 'track'"
+                )
+
             self.logger.info(
                 "Database migration to version %s completed",
                 DB_SCHEMA_VERSION,
@@ -719,8 +750,9 @@ class MusicController(CoreController):
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}(
                 item_id INTEGER NOT NULL,
                 provider TEXT NOT NULL,
+                media_type TEXT NOT NULL DEFAULT 'track',
                 timestamp INTEGER DEFAULT 0,
-                UNIQUE(item_id, provider));"""
+                UNIQUE(item_id, provider, media_type));"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(

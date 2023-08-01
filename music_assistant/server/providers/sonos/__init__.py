@@ -325,7 +325,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
         if sonos_player.need_elapsed_time_workaround:
             # no pause allowed when radio/flow mode is active
-            await self.cmd_stop()
+            await self.cmd_stop(player_id)
             return
         await asyncio.to_thread(sonos_player.soco.pause)
 

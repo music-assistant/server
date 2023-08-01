@@ -218,25 +218,29 @@ class PlexProvider(MusicProvider):
         )
 
     async def _get_or_create_artist_by_name(self, artist_name) -> Artist:
-        query = (
-            "SELECT * FROM artists WHERE name = :name AND provider_mappings = :provider_instance"
-        )
+        query = "WHERE name = :name AND provider_mappings = :provider_instance"
         params = {
             "name": f"%{artist_name}%",
             "provider_instance": f"%{self.instance_id}%",
         }
-        db_artists = await self.mass.music.artists.get_library_items_by_query(query, params)
-        if db_artists:
-            return ItemMapping.from_item(db_artists[0])
+        paged_list = await self.mass.music.artists.library_items(
+            extra_query=query, extra_query_params=params
+        )
+        if paged_list and paged_list.items:
+            return ItemMapping.from_item(paged_list.items[0])
 
         artist_id = FAKE_ARTIST_PREFIX + artist_name
-        artist = Artist(item_id=artist_id, name=artist_name, provider=self.domain)
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
+        artist = Artist(
+            item_id=artist_id,
+            name=artist_name,
+            provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         return artist
 
@@ -302,6 +306,14 @@ class PlexProvider(MusicProvider):
             item_id=album_id,
             provider=self.domain,
             name=plex_album.title,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(album_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_album.getWebURL(),
+                )
+            },
         )
         if plex_album.year:
             album.year = plex_album.year
@@ -313,15 +325,6 @@ class PlexProvider(MusicProvider):
         album.artists.append(
             self._get_item_mapping(MediaType.ARTIST, plex_album.parentKey, plex_album.parentTitle)
         )
-
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(album_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=plex_album.getWebURL(),
-            )
-        )
         return album
 
     async def _parse_artist(self, plex_artist: PlexArtist) -> Artist:
@@ -329,39 +332,45 @@ class PlexProvider(MusicProvider):
         artist_id = plex_artist.key
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=plex_artist.title, provider=self.domain)
+        artist = Artist(
+            item_id=artist_id,
+            name=plex_artist.title,
+            provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_artist.getWebURL(),
+                )
+            },
+        )
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
         if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             artist.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=plex_artist.getWebURL(),
-            )
-        )
         return artist
 
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
         """Parse a Plex Playlist response to a Playlist object."""
         playlist = Playlist(
-            item_id=plex_playlist.key, provider=self.domain, name=plex_playlist.title
+            item_id=plex_playlist.key,
+            provider=self.domain,
+            name=plex_playlist.title,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=plex_playlist.key,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=plex_playlist.getWebURL(),
+                )
+            },
         )
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
         if thumb := plex_playlist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             playlist.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
         playlist.is_editable = True
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=plex_playlist.key,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=plex_playlist.getWebURL(),
-            )
-        )
         return playlist
 
     async def _parse_track(
@@ -378,11 +387,31 @@ class PlexProvider(MusicProvider):
             track_class = AlbumTrack
         else:
             track_class = Track
+        if plex_track.media:
+            available = True
+            content = plex_track.media[0].container
+        else:
+            available = False
+            content = None
         track = track_class(
             item_id=plex_track.key,
             provider=self.instance_id,
             name=plex_track.title,
             **extra_init_kwargs or {},
+            provider_mappings={
+                ProviderMapping(
+                    item_id=plex_track.key,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=available,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.try_parse(content)
+                        if content
+                        else ContentType.UNKNOWN,
+                    ),
+                    url=plex_track.getWebURL(),
+                )
+            },
         )
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
@@ -418,22 +447,6 @@ class PlexProvider(MusicProvider):
         available = False
         content = None
 
-        if plex_track.media:
-            available = True
-            content = plex_track.media[0].container
-
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=plex_track.key,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                available=available,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(content) if content else ContentType.UNKNOWN,
-                ),
-                url=plex_track.getWebURL(),
-            )
-        )
         return track
 
     async def search(

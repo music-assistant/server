@@ -41,12 +41,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.constants import (
-    DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_TRACKS,
-    VARIOUS_ARTISTS_ID_MBID,
-    VARIOUS_ARTISTS_NAME,
-)
+from music_assistant.constants import VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
@@ -211,19 +206,35 @@ class FileSystemProviderBase(MusicProvider):
         }
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            query = "SELECT * FROM tracks WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.tracks = await self.mass.music.tracks.get_library_items_by_query(query, params)
-        if media_types is None or MediaType.ALBUM in media_types:
-            query = "SELECT * FROM albums WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.albums = await self.mass.music.albums.get_library_items_by_query(query, params)
-        if media_types is None or MediaType.ARTIST in media_types:
-            query = "SELECT * FROM artists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.artists = await self.mass.music.artists.get_library_items_by_query(query, params)
-        if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "SELECT * FROM playlists WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            result.playlists = await self.mass.music.playlists.get_library_items_by_query(
-                query, params
+            query = (
+                "WHERE tracks.name LIKE :name AND tracks.provider_mappings LIKE :provider_instance"
             )
+            result.tracks = (
+                await self.mass.music.tracks.library_items(
+                    extra_query=query, extra_query_params=params
+                )
+            ).items
+        if media_types is None or MediaType.ALBUM in media_types:
+            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
+            result.albums = (
+                await self.mass.music.albums.library_items(
+                    extra_query=query, extra_query_params=params
+                )
+            ).items
+        if media_types is None or MediaType.ARTIST in media_types:
+            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
+            result.artists = (
+                await self.mass.music.artists.library_items(
+                    extra_query=query, extra_query_params=params
+                )
+            ).items
+        if media_types is None or MediaType.PLAYLIST in media_types:
+            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
+            result.playlists = (
+                await self.mass.music.playlists.library_items(
+                    extra_query=query, extra_query_params=params
+                )
+            ).items
         return result
 
     async def browse(self, path: str) -> BrowseFolder:
@@ -372,7 +383,11 @@ class FileSystemProviderBase(MusicProvider):
                 if library_item.media_type == MediaType.TRACK:
                     if library_item.album:
                         album_ids.add(library_item.album.item_id)
-                        for artist in library_item.album.artists:
+                        # need to fetch the library album to resolve the itemmapping
+                        db_album = await self.mass.music.albums.get_library_item(
+                            library_item.album.item_id
+                        )
+                        for artist in db_album.artists:
                             artist_ids.add(artist.item_id)
                     for artist in library_item.artists:
                         artist_ids.add(artist.item_id)
@@ -429,16 +444,15 @@ class FileSystemProviderBase(MusicProvider):
             item_id=file_item.path,
             provider=self.instance_id,
             name=file_item.name.replace(f".{file_item.ext}", ""),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=file_item.path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
-
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=file_item.path,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
-        )
         playlist.owner = self.name
         checksum = f"{DB_SCHEMA_VERSION}.{file_item.checksum}"
         playlist.metadata.checksum = checksum
@@ -452,22 +466,12 @@ class FileSystemProviderBase(MusicProvider):
         )
         if db_album is None:
             raise MediaNotFoundError(f"Album not found: {prov_album_id}")
-        result: list[AlbumTrack] = []
-        async for album_track_row in self.mass.music.database.iter_items(
-            DB_TABLE_ALBUM_TRACKS, {"album_id": db_album.item_id}
-        ):
-            track_row = await self.mass.music.database.get_row(
-                DB_TABLE_TRACKS, {"item_id": album_track_row["track_id"]}
-            )
-            if f'"{self.instance_id}"' not in track_row["provider_mappings"]:
-                continue
-            album_track = AlbumTrack.from_db_row(
-                {**track_row, **album_track_row, "album": db_album.to_dict()}
-            )
-            if db_album.metadata.images:
-                album_track.metadata.images = db_album.metadata.images
-            result.append(album_track)
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
+        album_tracks = await self.mass.music.albums.tracks(db_album.item_id, db_album.provider)
+        return [
+            track
+            for track in album_tracks
+            if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
+        ]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get playlist tracks for given playlist id."""
@@ -642,6 +646,20 @@ class FileSystemProviderBase(MusicProvider):
             "provider": self.instance_id,
             "name": name,
             "version": version,
+            "provider_mappings": {
+                ProviderMapping(
+                    item_id=file_item.path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.try_parse(tags.format),
+                        sample_rate=tags.sample_rate,
+                        bit_depth=tags.bits_per_sample,
+                        bit_rate=tags.bit_rate,
+                    ),
+                    isrc=tags.isrc,
+                )
+            },
         }
         if playlist_position is not None:
             track = PlaylistTrack(
@@ -722,7 +740,7 @@ class FileSystemProviderBase(MusicProvider):
                     artist.mbid = tags.musicbrainz_artistids[index]
             track.artists.append(artist)
 
-        # cover image - prefer embedded image, fallback to album cover
+        # handle embedded cover image
         if tags.has_cover_image:
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
@@ -730,8 +748,6 @@ class FileSystemProviderBase(MusicProvider):
             track.metadata.images = [
                 MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
             ]
-        elif track.album and track.album.image:
-            track.metadata.images = [track.album.image]
 
         if track.album and not track.album.metadata.images:
             # set embedded cover on album if it does not have one yet
@@ -764,20 +780,6 @@ class FileSystemProviderBase(MusicProvider):
             for artist in track.album.artists:
                 artist.metadata.checksum = track.metadata.checksum
 
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=file_item.path,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(tags.format),
-                    sample_rate=tags.sample_rate,
-                    bit_depth=tags.bits_per_sample,
-                    bit_rate=tags.bit_rate,
-                ),
-                isrc=tags.isrc,
-            )
-        )
         return track
 
     async def _parse_artist(

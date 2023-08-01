@@ -78,14 +78,14 @@ class DatabaseConnection:
 
     async def search(self, table: str, search: str, column: str = "name") -> list[Mapping]:
         """Search table by column."""
-        sql_query = f"SELECT * FROM {table} WHERE {column} LIKE :search"
+        sql_query = f"SELECT * FROM {table} WHERE {table}.{column} LIKE :search"
         params = {"search": f"%{search}%"}
         return await self._db.execute_fetchall(sql_query, params)
 
     async def get_row(self, table: str, match: dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
-        sql_query += " AND ".join(f"{x} = :{x}" for x in match)
+        sql_query += " AND ".join(f"{table}.{x} = :{x}" for x in match)
         async with self._db.execute(sql_query, match) as cursor:
             return await cursor.fetchone()
 
