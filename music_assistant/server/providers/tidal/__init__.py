@@ -17,8 +17,6 @@ from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi.media import Lyrics as TidalLyrics
 
-from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
     AlbumType,
@@ -425,8 +423,6 @@ class TidalProvider(MusicProvider):
             item_id=key,
             provider=self.instance_id,
             name=name,
-            uri=create_uri(media_type, self.instance_id, key),
-            sort_name=create_sort_name(self.name),
         )
 
     async def _get_tidal_session(self) -> TidalSession:

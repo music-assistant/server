@@ -125,7 +125,8 @@ class MusicbrainzProvider(MetadataProvider):
         assert albumname or album_barcode
         for searchartist in (
             artistname,
-            re.sub(LUCENE_SPECIAL, r"\\\1", create_sort_name(artistname)),
+            re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
+            create_sort_name(artistname),
         ):
             if album_barcode:
                 # search by album barcode (EAN or UPC)
