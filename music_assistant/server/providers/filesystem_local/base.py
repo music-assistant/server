@@ -11,7 +11,7 @@ from dataclasses import dataclass
 import cchardet
 import xmltodict
 
-from music_assistant.common.helpers.util import parse_title_and_version
+from music_assistant.common.helpers.util import create_sort_name, parse_title_and_version
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigEntryType,
@@ -790,7 +790,26 @@ class FileSystemProviderBase(MusicProvider):
         """Lookup metadata in Artist folder."""
         assert name or artist_path
         if not artist_path:
-            artist_path = name
+            # check if we have an existing item
+            sort_name = create_sort_name(name)
+            async for item in self.mass.music.artists.iter_library_items(search=sort_name):
+                if not compare_strings(sort_name, item.sort_name):
+                    continue
+                for prov_mapping in item.provider_mappings:
+                    if prov_mapping.provider_instance == self.instance_id:
+                        artist_path = prov_mapping.url
+                        break
+                if artist_path:
+                    break
+            else:
+                # check if we have an artist folder for this artist at root level
+                if await self.exists(name):
+                    artist_path = name
+                elif await self.exists(name.title()):
+                    artist_path = name.title()
+                else:
+                    # use fake artist path as item id which is just the name
+                    artist_path = name
 
         if not name:
             name = artist_path.split(os.sep)[-1]

@@ -102,6 +102,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             if self.media_type in (MediaType.ALBUM, MediaType.TRACK):
                 query_parts.append(
                     f"({self.db_table}.name LIKE :search "
+                    f" OR {self.db_table}.sort_name LIKE :search"
                     f" OR {self.db_table}.artists LIKE :search)"
                 )
             else:

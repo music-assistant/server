@@ -80,16 +80,13 @@ class ProviderMapping(DataClassDictMixin):
 
     def __hash__(self) -> int:
         """Return custom hash."""
-        return hash((self.provider_instance, self.item_id.lower()))
+        return hash((self.provider_instance, self.item_id))
 
     def __eq__(self, other: ProviderMapping) -> bool:
         """Check equality of two items."""
         if not other:
             return False
-        return (
-            self.provider_instance == other.provider_instance
-            and self.item_id.lower() == other.item_id.lower()
-        )
+        return self.provider_instance == other.provider_instance and self.item_id == other.item_id
 
 
 @dataclass(frozen=True)
