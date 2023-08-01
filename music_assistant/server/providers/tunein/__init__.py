@@ -222,8 +222,8 @@ class TuneInProvider(MusicProvider):
                 media_type=MediaType.RADIO,
                 data=item_id,
             )
-        item_id, media_type = item_id.split("--", 1)
-        stream_info = await self.__get_data("Tune.ashx", id=item_id)
+        stream_item_id, media_type = item_id.split("--", 1)
+        stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] != media_type:
                 continue

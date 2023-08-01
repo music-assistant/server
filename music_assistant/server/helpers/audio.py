@@ -491,9 +491,11 @@ async def get_media_stream(
             raise err
         else:
             LOGGER.debug("finished media stream for: %s", streamdetails.uri)
-            await mass.music.mark_item_played(streamdetails.item_id, streamdetails.provider)
         finally:
             # report playback
+            await mass.music.mark_item_played(
+                streamdetails.media_type, streamdetails.item_id, streamdetails.provider
+            )
             if streamdetails.callback:
                 mass.create_task(streamdetails.callback, streamdetails)
             # send analyze job to background worker

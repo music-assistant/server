@@ -234,11 +234,13 @@ class PlexProvider(MusicProvider):
             item_id=artist_id,
             name=artist_name,
             provider=self.domain,
-            provider_mappings=ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            ),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         return artist
 
