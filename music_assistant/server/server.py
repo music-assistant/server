@@ -116,7 +116,12 @@ class MusicAssistant:
         # setup config controller first and fetch important config values
         self.config = ConfigController(self)
         await self.config.setup()
-        LOGGER.info("Starting Music Assistant Server (%s) version %s", self.server_id, self.version)
+        LOGGER.info(
+            "Starting Music Assistant Server (%s) version %s - uvloop: %s",
+            self.server_id,
+            self.version,
+            "uvloop" in str(self.loop),
+        )
         # setup other core controllers
         self.cache = CacheController(self)
         self.webserver = WebserverController(self)
