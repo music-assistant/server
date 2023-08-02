@@ -65,7 +65,6 @@ def create_didl_metadata(
         f"<upnp:album>{album}</upnp:album>"
         f"<upnp:artist>{artist}</upnp:artist>"
         f"<upnp:duration>{int(queue_item.duration)}</upnp:duration>"
-        "<upnp:playlistTitle>Music Assistant</upnp:playlistTitle>"
         f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"
         f"<upnp:albumArtURI>{escape_string(image_url)}</upnp:albumArtURI>"
         "<upnp:class>object.item.audioItem.audioBroadcast</upnp:class>"
