@@ -318,7 +318,7 @@ class SoundcloudMusicProvider(MusicProvider):
             artist.metadata.description = artist_obj["description"]
         if artist_obj.get("avatar_url"):
             img_url = artist_obj["avatar_url"]
-            artist.metadata.images = [MediaItemImage(ImageType.THUMB, img_url)]
+            artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img_url)]
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
@@ -340,7 +340,7 @@ class SoundcloudMusicProvider(MusicProvider):
             playlist.metadata.description = playlist_obj["description"]
         if playlist_obj.get("artwork_url"):
             playlist.metadata.images = [
-                MediaItemImage(ImageType.THUMB, playlist_obj["artwork_url"])
+                MediaItemImage(type=ImageType.THUMB, path=playlist_obj["artwork_url"])
             ]
         if playlist_obj.get("genre"):
             playlist.metadata.genres = playlist_obj["genre"]
@@ -380,7 +380,9 @@ class SoundcloudMusicProvider(MusicProvider):
             track.artists.append(artist)
 
         if track_obj.get("artwork_url"):
-            track.metadata.images = [MediaItemImage(ImageType.THUMB, track_obj["artwork_url"])]
+            track.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=track_obj["artwork_url"])
+            ]
         if track_obj.get("description"):
             track.metadata.description = track_obj["description"]
         if track_obj.get("genre"):

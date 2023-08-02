@@ -746,7 +746,7 @@ class FileSystemProviderBase(MusicProvider):
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
-                MediaItemImage(ImageType.THUMB, file_item.path, self.instance_id)
+                MediaItemImage(type=ImageType.THUMB, url=file_item.path, provider=self.instance_id)
             ]
 
         if track.album and not track.album.metadata.images:
@@ -819,7 +819,12 @@ class FileSystemProviderBase(MusicProvider):
             provider=self.instance_id,
             name=name,
             provider_mappings={
-                ProviderMapping(artist_path, self.instance_id, self.instance_id, url=artist_path)
+                ProviderMapping(
+                    item_id=artist_path,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=artist_path,
+                )
             },
             mbid=VARIOUS_ARTISTS_ID_MBID if compare_strings(name, VARIOUS_ARTISTS_NAME) else None,
         )
@@ -876,7 +881,11 @@ class FileSystemProviderBase(MusicProvider):
             artists=artists,
             provider_mappings={
                 ProviderMapping(
-                    album_path, self.instance_id, self.instance_id, url=album_path, barcode=barcode
+                    item_id=album_path,
+                    provider_domain=self.instance_id,
+                    provider_instance=self.instance_id,
+                    url=album_path,
+                    barcode=barcode,
                 )
             },
         )
@@ -933,12 +942,18 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext != ext:
                     continue
                 try:
-                    images.append(MediaItemImage(ImageType(item.name), item.path, self.instance_id))
+                    images.append(
+                        MediaItemImage(
+                            type=ImageType(item.name), path=item.path, provider=self.instance_id
+                        )
+                    )
                 except ValueError:
                     for filename in ("folder", "cover", "albumart", "artist"):
                         if item.name.lower().startswith(filename):
                             images.append(
-                                MediaItemImage(ImageType.THUMB, item.path, self.instance_id)
+                                MediaItemImage(
+                                    type=ImageType.THUMB, path=item.path, provider=self.instance_id
+                                )
                             )
                             break
         return images

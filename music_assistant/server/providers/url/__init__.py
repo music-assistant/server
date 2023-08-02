@@ -83,7 +83,12 @@ class URLProvider(MusicProvider):
             provider=self.domain,
             name=artist,
             provider_mappings={
-                ProviderMapping(artist, self.domain, self.instance_id, available=False)
+                ProviderMapping(
+                    item_id=artist,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=False,
+                )
             },
         )
 
@@ -137,7 +142,9 @@ class URLProvider(MusicProvider):
             )
 
         if media_info.has_cover_image:
-            media_item.metadata.images = [MediaItemImage(ImageType.THUMB, url, True)]
+            media_item.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=url, provider="embedded")
+            ]
         return media_item
 
     async def _get_media_info(

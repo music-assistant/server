@@ -237,7 +237,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.links = set()
         for key, link_type in LINK_MAPPING.items():
             if link := artist_obj.get(key):
-                metadata.links.add(MediaItemLink(link_type, link))
+                metadata.links.add(MediaItemLink(type=link_type, url=link))
         # description/biography
         if desc := artist_obj.get(f"strBiography{self.mass.metadata.preferred_language}"):
             metadata.description = desc
@@ -248,7 +248,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := artist_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(type=img_type, path=img))
                 else:
                     break
         return metadata
@@ -266,11 +266,11 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.links = set()
         if link := album_obj.get("strWikipediaID"):
             metadata.links.add(
-                MediaItemLink(LinkType.WIKIPEDIA, f"https://wikipedia.org/wiki/{link}")
+                MediaItemLink(type=LinkType.WIKIPEDIA, url=f"https://wikipedia.org/wiki/{link}")
             )
         if link := album_obj.get("strAllMusicID"):
             metadata.links.add(
-                MediaItemLink(LinkType.ALLMUSIC, f"https://www.allmusic.com/album/{link}")
+                MediaItemLink(type=LinkType.ALLMUSIC, url=f"https://www.allmusic.com/album/{link}")
             )
 
         # description
@@ -284,7 +284,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := album_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(type=img_type, path=img))
                 else:
                     break
         return metadata
@@ -308,7 +308,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := track_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(type=img_type, path=img))
                 else:
                     break
         return metadata

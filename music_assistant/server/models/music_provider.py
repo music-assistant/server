@@ -427,7 +427,9 @@ class MusicProvider(Provider):
                         )
                     cur_db_ids.add(library_item.item_id)
                 except MusicAssistantError as err:
-                    self.logger.warning("Skipping sync of item %s: %s", prov_item.uri, str(err))
+                    self.logger.warning(
+                        "Skipping sync of item %s - error details: %s", prov_item.uri, str(err)
+                    )
 
             # process deletions (= no longer in library)
             cache_key = f"library_items.{media_type}.{self.instance_id}"

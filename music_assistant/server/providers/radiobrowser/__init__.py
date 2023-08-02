@@ -199,7 +199,9 @@ class RadioBrowserProvider(MusicProvider):
                     name="",
                     label=country.name,
                 )
-                folder.metadata.images = [MediaItemImage(ImageType.THUMB, country.favicon)]
+                folder.metadata.images = [
+                    MediaItemImage(type=ImageType.THUMB, path=country.favicon)
+                ]
                 sub_items.append(folder)
             return BrowseFolder(
                 item_id="country",
@@ -313,8 +315,8 @@ class RadioBrowserProvider(MusicProvider):
         )
         radio.metadata.label = radio_obj.tags
         radio.metadata.popularity = radio_obj.votes
-        radio.metadata.links = [MediaItemLink(LinkType.WEBSITE, radio_obj.homepage)]
-        radio.metadata.images = [MediaItemImage(ImageType.THUMB, radio_obj.favicon)]
+        radio.metadata.links = [MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)]
+        radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=radio_obj.favicon)]
 
         return radio
 

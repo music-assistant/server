@@ -20,7 +20,7 @@ from music_assistant.common.models.enums import (
 MetadataTypes = int | bool | str | list[str]
 
 
-@dataclass
+@dataclass(kw_only=True)
 class AudioFormat(DataClassDictMixin):
     """Model for AudioFormat details."""
 
@@ -54,7 +54,7 @@ class AudioFormat(DataClassDictMixin):
         return int(self.sample_rate * (self.bit_depth / 8) * self.channels)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ProviderMapping(DataClassDictMixin):
     """Model for a MediaItem's provider mapping details."""
 
@@ -89,7 +89,7 @@ class ProviderMapping(DataClassDictMixin):
         return self.provider_instance == other.provider_instance and self.item_id == other.item_id
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MediaItemLink(DataClassDictMixin):
     """Model for a link."""
 
@@ -105,7 +105,7 @@ class MediaItemLink(DataClassDictMixin):
         return self.url == other.url
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MediaItemImage(DataClassDictMixin):
     """Model for a image."""
 
@@ -124,7 +124,7 @@ class MediaItemImage(DataClassDictMixin):
         return self.__hash__() == other.__hash__()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MediaItemChapter(DataClassDictMixin):
     """Model for a chapter."""
 
@@ -142,7 +142,7 @@ class MediaItemChapter(DataClassDictMixin):
         return self.chapter_id == other.chapter_id
 
 
-@dataclass
+@dataclass(kw_only=True)
 class MediaItemMetadata(DataClassDictMixin):
     """Model for a MediaItem's metadata."""
 
@@ -247,7 +247,7 @@ class MediaItem(DataClassDictMixin):
         return self.uri == other.uri
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
@@ -395,7 +395,7 @@ class BrowseFolder(MediaItem):
 MediaItemType = Artist | Album | Track | Radio | Playlist | BrowseFolder
 
 
-@dataclass
+@dataclass(kw_only=True)
 class PagedItems(DataClassDictMixin):
     """Model for a paged listing."""
 
@@ -417,7 +417,7 @@ class PagedItems(DataClassDictMixin):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SearchResults(DataClassDictMixin):
     """Model for results from a search query."""
 
@@ -443,7 +443,7 @@ def media_from_dict(media_item: dict) -> MediaItemType:
     return MediaItem.from_dict(media_item)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 
