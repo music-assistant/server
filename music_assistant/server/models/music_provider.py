@@ -410,6 +410,12 @@ class MusicProvider(Provider):
                     prov_item.provider_mappings,
                 )
                 try:
+                    if not library_item and not prov_item.available:
+                        # skip unavailable tracks
+                        self.logger.debg(
+                            "Skipping sync of item %s because it is unavailable", prov_item.uri
+                        )
+                        continue
                     if not library_item:
                         # create full db item
                         # note that we skip the metadata lookup purely to speed up the sync
