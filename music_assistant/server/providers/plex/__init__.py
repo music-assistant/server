@@ -211,10 +211,10 @@ class PlexProvider(MusicProvider):
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
-            media_type,
-            key,
-            self.instance_id,
-            name,
+            media_type=media_type,
+            item_id=key,
+            provider=self.instance_id,
+            name=name,
         )
 
     async def _get_or_create_artist_by_name(self, artist_name) -> Artist:

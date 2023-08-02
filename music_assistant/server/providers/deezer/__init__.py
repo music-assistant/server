@@ -546,17 +546,17 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             duration=track.duration,
             artists=[
                 ItemMapping(
-                    MediaType.ARTIST,
-                    str(track.artist.id),
-                    self.instance_id,
-                    track.artist.name,
+                    media_type=MediaType.ARTIST,
+                    item_id=str(track.artist.id),
+                    provider=self.domain,
+                    name=track.artist.name,
                 )
             ],
             album=ItemMapping(
-                MediaType.ALBUM,
-                str(track.album.id),
-                self.instance_id,
-                track.album.title,
+                media_type=MediaType.ALBUM,
+                item_id=str(track.album.id),
+                provider=self.domain,
+                name=track.album.title,
             ),
             provider_mappings={
                 ProviderMapping(
