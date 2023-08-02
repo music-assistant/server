@@ -746,7 +746,7 @@ class FileSystemProviderBase(MusicProvider):
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, url=file_item.path, provider=self.instance_id)
+                MediaItemImage(type=ImageType.THUMB, path=file_item.path, provider=self.instance_id)
             ]
 
         if track.album and not track.album.metadata.images:

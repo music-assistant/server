@@ -143,7 +143,7 @@ class URLProvider(MusicProvider):
 
         if media_info.has_cover_image:
             media_item.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=url, provider="embedded")
+                MediaItemImage(type=ImageType.THUMB, path=url, provider="file")
             ]
         return media_item
 
