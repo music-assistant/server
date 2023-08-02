@@ -122,7 +122,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             total = offset + count
         else:
             total = await self.mass.music.database.get_count_from_query(sql_query, params)
-        return PagedItems(items, count, limit, offset, total)
+        return PagedItems(items=items, count=count, limit=limit, offset=offset, total=total)
 
     async def iter_library_items(
         self,
