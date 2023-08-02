@@ -169,6 +169,8 @@ class TracksController(MediaControllerBase[Track]):
             and item.album.image
             and item.album.album_type == AlbumType.SINGLE
         ):
+            if not item.metadata.images:
+                item.metadata.images = []
             item.metadata.images.append(item.album.image)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
