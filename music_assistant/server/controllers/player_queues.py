@@ -16,7 +16,12 @@ from music_assistant.common.models.enums import (
     QueueOption,
     RepeatMode,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError, QueueEmpty
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    PlayerUnavailableError,
+    QueueEmpty,
+)
 from music_assistant.common.models.media_items import MediaItemType, media_from_dict
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -688,6 +693,8 @@ class PlayerQueuesController(CoreController):
         Raises QueueEmpty if there are no more tracks left.
         """
         queue = self.get(queue_id)
+        if not queue:
+            raise PlayerUnavailableError(f"PlayerQueue {queue_id} is not available")
         if current_item_id:
             cur_index = self.index_by_id(queue_id, current_item_id) or 0
         else:
