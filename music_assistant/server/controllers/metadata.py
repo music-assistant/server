@@ -213,7 +213,9 @@ class MetaDataController(CoreController):
                 img_data = await create_collage(self.mass, list(images))
                 async with aiofiles.open(img_path, "wb") as _file:
                     await _file.write(img_data)
-                playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, "file")]
+                playlist.metadata.images = [
+                    MediaItemImage(type=ImageType.THUMB, path=img_path, provider="file")
+                ]
         except Exception as err:
             LOGGER.debug("Error while creating playlist image", exc_info=err)
         # set timestamp, used to determine when this function was last called

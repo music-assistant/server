@@ -318,12 +318,16 @@ class PlexProvider(MusicProvider):
         if plex_album.year:
             album.year = plex_album.year
         if thumb := plex_album.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            album.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
+            album.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, url=thumb, provider=self.instance_id)
+            ]
         if plex_album.summary:
             album.metadata.description = plex_album.summary
 
         album.artists.append(
-            self._get_item_mapping(MediaType.ARTIST, plex_album.parentKey, plex_album.parentTitle)
+            self._get_item_mapping(
+                type=MediaType.ARTIST, url=plex_album.parentKey, provider=plex_album.parentTitle
+            )
         )
         return album
 
@@ -348,7 +352,9 @@ class PlexProvider(MusicProvider):
         if plex_artist.summary:
             artist.metadata.description = plex_artist.summary
         if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            artist.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
+            artist.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=thumb, url=self.instance_id)
+            ]
         return artist
 
     async def _parse_playlist(self, plex_playlist: PlexPlaylist) -> Playlist:
@@ -369,7 +375,9 @@ class PlexProvider(MusicProvider):
         if plex_playlist.summary:
             playlist.metadata.description = plex_playlist.summary
         if thumb := plex_playlist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
+            playlist.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, url=thumb, provider=self.instance_id)
+            ]
         playlist.is_editable = True
         return playlist
 
@@ -429,7 +437,9 @@ class PlexProvider(MusicProvider):
             raise InvalidDataError("No artist was found for track")
 
         if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
-            track.metadata.images = [MediaItemImage(ImageType.THUMB, thumb, self.instance_id)]
+            track.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, url=thumb, provider=self.instance_id)
+            ]
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM, plex_track.parentKey, plex_track.parentKey

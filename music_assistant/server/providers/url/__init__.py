@@ -83,7 +83,12 @@ class URLProvider(MusicProvider):
             provider=self.domain,
             name=artist,
             provider_mappings={
-                ProviderMapping(artist, self.domain, self.instance_id, available=False)
+                ProviderMapping(
+                    item_id=artist,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=False,
+                )
             },
         )
 

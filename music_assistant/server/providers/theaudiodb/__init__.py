@@ -237,7 +237,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.links = set()
         for key, link_type in LINK_MAPPING.items():
             if link := artist_obj.get(key):
-                metadata.links.add(MediaItemLink(link_type, link))
+                metadata.links.add(MediaItemLink(type=link_type, url=link))
         # description/biography
         if desc := artist_obj.get(f"strBiography{self.mass.metadata.preferred_language}"):
             metadata.description = desc
@@ -266,11 +266,11 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.links = set()
         if link := album_obj.get("strWikipediaID"):
             metadata.links.add(
-                MediaItemLink(LinkType.WIKIPEDIA, f"https://wikipedia.org/wiki/{link}")
+                MediaItemLink(type=LinkType.WIKIPEDIA, url=f"https://wikipedia.org/wiki/{link}")
             )
         if link := album_obj.get("strAllMusicID"):
             metadata.links.add(
-                MediaItemLink(LinkType.ALLMUSIC, f"https://www.allmusic.com/album/{link}")
+                MediaItemLink(type=LinkType.ALLMUSIC, url=f"https://www.allmusic.com/album/{link}")
             )
 
         # description
