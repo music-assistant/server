@@ -594,8 +594,8 @@ class TidalProvider(MusicProvider):
                     url=f"http://www.tidal.com/tracks/{track_id}",
                     available=track_obj.available,
                 )
-            }
-            ** extra_init_kwargs,
+            },
+            **extra_init_kwargs,
         )
         track.album = self.get_item_mapping(
             media_type=MediaType.ALBUM,
