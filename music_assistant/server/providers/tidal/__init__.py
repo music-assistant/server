@@ -494,8 +494,8 @@ class TidalProvider(MusicProvider):
                 image_url = await self._get_image_url(artist_obj, 750)
                 artist.metadata.images = [
                     MediaItemImage(
-                        ImageType.THUMB,
-                        image_url,
+                        type=ImageType.THUMB,
+                        path=image_url,
                     )
                 ]
             except Exception:
@@ -548,8 +548,8 @@ class TidalProvider(MusicProvider):
                 image_url = await self._get_image_url(album_obj, 1280)
                 album.metadata.images = [
                     MediaItemImage(
-                        ImageType.THUMB,
-                        image_url,
+                        type=ImageType.THUMB,
+                        path=image_url,
                     )
                 ]
             except Exception:
@@ -649,8 +649,8 @@ class TidalProvider(MusicProvider):
                 image_url = await self._get_image_url(playlist_obj, 1080)
                 playlist.metadata.images = [
                     MediaItemImage(
-                        ImageType.THUMB,
-                        image_url,
+                        type=ImageType.THUMB,
+                        path=image_url,
                     )
                 ]
             except Exception:

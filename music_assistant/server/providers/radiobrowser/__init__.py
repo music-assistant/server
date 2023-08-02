@@ -199,7 +199,9 @@ class RadioBrowserProvider(MusicProvider):
                     name="",
                     label=country.name,
                 )
-                folder.metadata.images = [MediaItemImage(ImageType.THUMB, country.favicon)]
+                folder.metadata.images = [
+                    MediaItemImage(type=ImageType.THUMB, path=country.favicon)
+                ]
                 sub_items.append(folder)
             return BrowseFolder(
                 item_id="country",
