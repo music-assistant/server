@@ -449,7 +449,10 @@ class PlexProvider(MusicProvider):
         if plex_track.chapters:
             track.metadata.chapters = [
                 MediaItemChapter(
-                    plex_chapter.id, plex_chapter.start, plex_chapter.end, plex_chapter.title
+                    chapter_id=plex_chapter.id,
+                    position_start=plex_chapter.start,
+                    position_end=plex_chapter.end,
+                    title=plex_chapter.title,
                 )
                 for plex_chapter in plex_track.chapters
             ]
