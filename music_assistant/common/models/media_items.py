@@ -330,6 +330,13 @@ class Track(MediaItem):
         """
         return self.metadata and self.metadata.chapters and len(self.metadata.chapters) > 1
 
+    @property
+    def image(self) -> MediaItemImage | None:
+        """Return (first) image from metadata (prefer album)."""
+        if isinstance(self.album, Album) and self.album.image:
+            return self.album.image
+        return super().image
+
 
 @dataclass(kw_only=True)
 class AlbumTrack(Track):

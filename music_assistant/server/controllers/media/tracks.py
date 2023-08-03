@@ -130,7 +130,7 @@ class TracksController(MediaControllerBase[Track]):
         # grab additional metadata
         if metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
-        # fallback track image from album (only if albumtype = single)
+        # allow track image from album (only if albumtype = single)
         if (
             not item.image
             and isinstance(item.album, Album)

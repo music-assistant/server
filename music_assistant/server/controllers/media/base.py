@@ -717,8 +717,4 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 "version": db_row_dict["album_version"],
             }
             db_row_dict["album"] = ItemMapping.from_dict(db_row_dict["album"])
-            if not db_row_dict["metadata"]["images"]:
-                # copy album image in case the track has no image
-                album_metadata = json_loads(db_row_dict["album_metadata"])
-                db_row_dict["metadata"]["images"] = album_metadata["images"]
         return db_row_dict
