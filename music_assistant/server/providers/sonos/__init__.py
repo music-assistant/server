@@ -254,7 +254,8 @@ class SonosPlayerProvider(PlayerProvider):
             for player_id in list(self.sonosplayers):
                 player = self.sonosplayers.pop(player_id)
                 player.player.available = False
-                player.soco.end_direct_control_session()
+                if player.soco.is_coordinator:
+                    player.soco.end_direct_control_session()
         self.sonosplayers = None
 
     def on_player_config_changed(
