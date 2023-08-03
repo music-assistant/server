@@ -232,6 +232,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
     ) -> list[Track]:
         """Return top tracks for an artist on given provider."""
+        items = []
         assert provider_instance_id_or_domain != "library"
         artist = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
         cache_checksum = artist.metadata.checksum
@@ -247,7 +248,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             items = await prov.get_artist_toptracks(item_id)
         else:
             # fallback implementation using the db
-            items = []
             if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
                 item_id,
                 provider_instance_id_or_domain,
@@ -257,8 +257,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 query += (
                     f" AND tracks.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
                 )
-                if paged_list := await self.mass.music.tracks.library_items(extra_query=query):
-                    items = paged_list.items
+                paged_list = await self.mass.music.tracks.library_items(extra_query=query)
+                return paged_list.items
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
@@ -281,6 +281,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         provider_instance_id_or_domain: str,
     ) -> list[Album]:
         """Return albums for an artist on given provider."""
+        items = []
         assert provider_instance_id_or_domain != "library"
         artist = await self.get_provider_item(item_id, provider_instance_id_or_domain)
         cache_checksum = artist.metadata.checksum
@@ -307,10 +308,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     f" AND albums.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
                 )
                 paged_list = await self.mass.music.albums.library_items(extra_query=query)
-                items = paged_list.items
-            else:
-                # edge case
-                items = []
+                return paged_list.items
         # store (serializable items) in cache
         self.mass.create_task(
             self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)

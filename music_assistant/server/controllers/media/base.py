@@ -253,7 +253,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         else:
             items = searchresult.radio
         # store (serializable items) in cache
-        if not prov.domain.startswith("filesystem"):  # do not cache filesystem results
+        if prov.is_streaming_provider:  # do not cache filesystem results
             self.mass.create_task(
                 self.mass.cache.set(cache_key, [x.to_dict() for x in items], expiration=86400 * 7)
             )

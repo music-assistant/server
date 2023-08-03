@@ -239,7 +239,7 @@ class MusicController(CoreController):
         cache_key = f"{prov.instance_id}.search.{search_query}.{limit}.{media_types_str}"
         cache_key += "".join(x for x in media_types)
 
-        if cache := await self.mass.cache.get(cache_key):
+        if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
             return SearchResults.from_dict(cache)
         # no items in cache - get listing from provider
         result = await prov.search(
@@ -248,9 +248,10 @@ class MusicController(CoreController):
             limit,
         )
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(cache_key, result.to_dict(), expiration=86400 * 7)
-        )
+        if prov.is_streaming_provider:
+            self.mass.create_task(
+                self.mass.cache.set(cache_key, result.to_dict(), expiration=86400 * 7)
+            )
         return result
 
     @api_command("music/browse")
