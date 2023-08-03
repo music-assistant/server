@@ -135,7 +135,7 @@ class MetaDataController(CoreController):
 
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
-        # ensure the album has a musicbrainz id or artist
+        # ensure the album has a musicbrainz id or artist(s)
         if not (album.mbid or album.artists):
             return
         # collect metadata from all providers

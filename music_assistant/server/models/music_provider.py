@@ -422,7 +422,7 @@ class MusicProvider(Provider):
                         # the additional metadata is then lazy retrieved afterwards
                         prov_item.favorite = True
                         library_item = await controller.add_item_to_library(
-                            prov_item, skip_metadata_lookup=True
+                            prov_item, metadata_lookup=False
                         )
                     elif (
                         library_item.metadata.checksum and prov_item.metadata.checksum

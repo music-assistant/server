@@ -271,7 +271,7 @@ class FileSystemProviderBase(MusicProvider):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
                     library_item = await self.mass.music.tracks.add_item_to_library(
-                        track, skip_metadata_lookup=True
+                        track, metadata_lookup=False
                     )
                     subitems.append(library_item)
                 continue
@@ -284,7 +284,7 @@ class FileSystemProviderBase(MusicProvider):
                     # make sure that the item exists
                     # https://github.com/music-assistant/hass-music-assistant/issues/707
                     library_item = await self.mass.music.playlists.add_item_to_library(
-                        playlist, skip_metadata_lookup=True
+                        playlist, metadata_lookup=False
                     )
                     subitems.append(library_item)
                 continue
@@ -345,9 +345,7 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)
-                    await self.mass.music.tracks.add_item_to_library(
-                        track, skip_metadata_lookup=True
-                    )
+                    await self.mass.music.tracks.add_item_to_library(track, metadata_lookup=False)
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
@@ -355,7 +353,7 @@ class FileSystemProviderBase(MusicProvider):
                     # playlist is always in-library
                     playlist.favorite = True
                     await self.mass.music.playlists.add_item_to_library(
-                        playlist, skip_metadata_lookup=True
+                        playlist, metadata_lookup=False
                     )
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here

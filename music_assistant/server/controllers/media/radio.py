@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from typing import Any
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -62,13 +63,15 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add_item_to_library(self, item: Radio, skip_metadata_lookup: bool = False) -> Radio:
+    async def add_item_to_library(
+        self, item: Radio, metadata_lookup: bool = True, **kwargs: dict[str, Any]  # noqa: ARG002
+    ) -> Radio:
         """Add radio to library and return the new database item."""
         if not isinstance(item, Radio):
             raise InvalidDataError("Not a valid Radio object (ItemMapping can not be added to db)")
         if not item.provider_mappings:
             raise InvalidDataError("Radio is missing provider mapping(s)")
-        if not skip_metadata_lookup:
+        if not metadata_lookup:
             await self.mass.metadata.get_radio_metadata(item)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
