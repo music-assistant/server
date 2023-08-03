@@ -46,7 +46,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
-    async def add_item_to_library(self, item: ItemCls, **kwargs: dict[str, Any]) -> ItemCls:
+    async def add_item_to_library(self, item: ItemCls, metadata_lookup: bool = True) -> ItemCls:
         """Add item to library and return the database item."""
         raise NotImplementedError
 
@@ -153,7 +153,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         lazy: bool = True,
         details: ItemCls = None,
         add_to_library: bool = False,
-        **kwargs: dict[str, Any],
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         if provider_instance_id_or_domain == "database":
@@ -203,9 +202,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # only if we really need to wait for the result (e.g. to prevent race conditions),
         # we can set lazy to false and we await the job to complete.
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(
-            self.add_item_to_library, item=details, task_id=task_id, **kwargs
-        )
+        add_task = self.mass.create_task(self.add_item_to_library, item=details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
@@ -684,17 +681,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return ItemMapping.from_item(db_artist)
 
         # try to request the full item
+        artist = await self.mass.music.artists.get_provider_item(
+            artist.item_id, artist.provider, fallback=artist
+        )
         with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
             db_artist = await self.mass.music.artists.add_item_to_library(
                 artist, metadata_lookup=False
             )
             return ItemMapping.from_item(db_artist)
         # fallback to just the provider item
-        artist = await self.mass.music.artists.get_provider_item(
-            artist.item_id, artist.provider, fallback=artist
-        )
+        # this can happen for unavailable items
         if isinstance(artist, ItemMapping):
-            # this can happen for unavailable items
             return artist
         return ItemMapping.from_item(artist)
 

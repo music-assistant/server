@@ -59,7 +59,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item: Artist | ItemMapping,
         metadata_lookup: bool = True,
-        **kwargs: dict[str, Any],  # noqa: ARG002
     ) -> Artist:
         """Add artist to library and return the database item."""
         if isinstance(item, ItemMapping):

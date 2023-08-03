@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from random import choice, random
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -65,7 +65,6 @@ class AlbumsController(MediaControllerBase[Album]):
         lazy: bool = True,
         details: Album | ItemMapping = None,
         add_to_library: bool = False,
-        **kwargs: dict[str, Any],
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
@@ -75,7 +74,6 @@ class AlbumsController(MediaControllerBase[Album]):
             lazy=lazy,
             details=details,
             add_to_library=add_to_library,
-            **kwargs,
         )
         # append full artist details to full album item
         album.artists = [
@@ -85,7 +83,6 @@ class AlbumsController(MediaControllerBase[Album]):
                 lazy=lazy,
                 details=item,
                 add_to_library=add_to_library,
-                **kwargs,
             )
             for item in album.artists
         ]
@@ -95,25 +92,13 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item: Album,
         metadata_lookup: bool = True,
-        add_album_tracks: bool = True,
-        **kwargs: dict[str, Any],  # noqa: ARG002
+        add_album_tracks: bool = False,
     ) -> Album:
         """Add album to library and return the database item."""
         if not isinstance(item, Album):
             raise InvalidDataError("Not a valid Album object (ItemMapping can not be added to db)")
         if not item.provider_mappings:
             raise InvalidDataError("Album is missing provider mapping(s)")
-        # resolve any ItemMapping artists
-        item.artists = [
-            await self.mass.music.artists.get_provider_item(
-                artist.item_id, artist.provider, fallback=artist
-            )
-            if isinstance(artist, ItemMapping)
-            else artist
-            for artist in item.artists
-        ]
-        if not item.artists:
-            raise InvalidDataError("Album is missing artist(s)")
         # grab additional metadata
         if not metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
@@ -131,9 +116,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 for track in await self._get_provider_album_tracks(item.item_id, item.provider):
                     track.album = library_item
                     tg.create_task(
-                        self.mass.music.tracks.add_item_to_library(
-                            track, metadata_lookup=metadata_lookup
-                        )
+                        self.mass.music.tracks.add_item_to_library(track, metadata_lookup=False)
                     )
         self.mass.signal_event(
             EventType.MEDIA_ITEM_ADDED,

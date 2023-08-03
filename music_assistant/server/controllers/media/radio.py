@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -63,9 +62,7 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add_item_to_library(
-        self, item: Radio, metadata_lookup: bool = True, **kwargs: dict[str, Any]  # noqa: ARG002
-    ) -> Radio:
+    async def add_item_to_library(self, item: Radio, metadata_lookup: bool = True) -> Radio:
         """Add radio to library and return the new database item."""
         if not isinstance(item, Radio):
             raise InvalidDataError("Not a valid Radio object (ItemMapping can not be added to db)")
