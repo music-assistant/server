@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import logging
 import os
 import time
@@ -11,31 +10,80 @@ from collections import OrderedDict
 from collections.abc import Iterator, MutableMapping
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.common.helpers.json import json_dumps, json_loads
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.constants import (
+    DB_SCHEMA_VERSION,
     DB_TABLE_CACHE,
     DB_TABLE_SETTINGS,
     ROOT_LOGGER_NAME,
-    SCHEMA_VERSION,
 )
 from music_assistant.server.helpers.database import DatabaseConnection
+from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
+    from music_assistant.common.models.config_entries import CoreConfig
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
+CONF_CLEAR_CACHE = "clear_cache"
 
 
-class CacheController:
+class CacheController(CoreController):
     """Basic cache controller using both memory and database."""
 
-    database: DatabaseConnection | None = None
+    domain: str = "cache"
 
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize our caching class."""
-        self.mass = mass
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize core controller."""
+        super().__init__(*args, **kwargs)
+        self.database: DatabaseConnection | None = None
         self._mem_cache = MemoryCache(500)
+        self.manifest.name = "Cache controller"
+        self.manifest.description = (
+            "Music Assistant's core controller for caching data throughout the application."
+        )
+        self.manifest.icon = "memory"
 
-    async def setup(self) -> None:
+    async def get_config_entries(
+        self,
+        action: str | None = None,  # noqa: ARG002
+        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+    ) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        if action == CONF_CLEAR_CACHE:
+            await self.clear()
+            return (
+                ConfigEntry(
+                    key=CONF_CLEAR_CACHE,
+                    type=ConfigEntryType.LABEL,
+                    label="The cache has been cleared",
+                ),
+            )
+        return (
+            ConfigEntry(
+                key=CONF_CLEAR_CACHE,
+                type=ConfigEntryType.ACTION,
+                label="Clear cache",
+                description="Reset/clear all items in the cache. ",
+            ),
+            # ConfigEntry(
+            #     key=CONF_BIND_IP,
+            #     type=ConfigEntryType.STRING,
+            #     default_value=default_ip,
+            #     label="Bind to IP/interface",
+            #     description="Start the streamserver on this specific interface. \n"
+            #     "This IP address is communicated to players where to find this server. "
+            #     "Override the default in advanced scenarios, such as multi NIC configurations. \n"
+            #     "Make sure that this server can be reached "
+            #     "on the given IP and TCP port by players on the local network. \n"
+            #     "This is an advanced setting that should normally "
+            #     "not be adjusted in regular setups.",
+            #     advanced=True,
+            # ),
+        )
+
+    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of cache module."""
         await self._setup_database()
         self.__schedule_cleanup_task()
@@ -66,7 +114,7 @@ class CacheController:
             not checksum or db_row["checksum"] == checksum and db_row["expires"] >= cur_time
         ):
             try:
-                data = await asyncio.to_thread(json.loads, db_row["data"])
+                data = await asyncio.to_thread(json_loads, db_row["data"])
             except Exception as exc:  # pylint: disable=broad-except
                 LOGGER.exception("Error parsing cache data for %s", cache_key, exc_info=exc)
             else:
@@ -90,7 +138,7 @@ class CacheController:
         if (expires - time.time()) < 3600 * 4:
             # do not cache items in db with short expiration
             return
-        data = await asyncio.to_thread(json.dumps, data)
+        data = await asyncio.to_thread(json_dumps, data)
         await self.database.insert(
             DB_TABLE_CACHE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},
@@ -134,14 +182,14 @@ class CacheController:
         except (KeyError, ValueError):
             prev_version = 0
 
-        if prev_version not in (0, SCHEMA_VERSION):
+        if prev_version not in (0, DB_SCHEMA_VERSION):
             LOGGER.info(
                 "Performing database migration from %s to %s",
                 prev_version,
-                SCHEMA_VERSION,
+                DB_SCHEMA_VERSION,
             )
 
-            if prev_version < SCHEMA_VERSION:
+            if prev_version < DB_SCHEMA_VERSION:
                 # for now just keep it simple and just recreate the table(s)
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
 
@@ -151,7 +199,7 @@ class CacheController:
         # store current schema version
         await self.database.insert_or_replace(
             DB_TABLE_SETTINGS,
-            {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
+            {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
         # compact db
         await self.database.execute("VACUUM")

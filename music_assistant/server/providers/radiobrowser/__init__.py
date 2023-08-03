@@ -10,6 +10,7 @@ from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
 from music_assistant.common.models.media_items import (
+    AudioFormat,
     BrowseFolder,
     ContentType,
     ImageType,
@@ -21,7 +22,6 @@ from music_assistant.common.models.media_items import (
     SearchResults,
     StreamDetails,
 )
-from music_assistant.constants import __version__ as MASS_VERSION  # noqa: N812
 from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -71,7 +71,7 @@ class RadioBrowserProvider(MusicProvider):
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.radios = RadioBrowser(
-            session=self.mass.http_session, user_agent=f"MusicAssistant/{MASS_VERSION}"
+            session=self.mass.http_session, user_agent=f"MusicAssistant/{self.mass.version}"
         )
         try:
             # Try to get some stats to check connection to RadioBrowser API
@@ -199,8 +199,9 @@ class RadioBrowserProvider(MusicProvider):
                     name="",
                     label=country.name,
                 )
-                # When folder icons become available.
-                # folder.metadata.images = [MediaItemImage(ImageType.THUMB, country.favicon)]
+                folder.metadata.images = [
+                    MediaItemImage(type=ImageType.THUMB, path=country.favicon)
+                ]
                 sub_items.append(folder)
             return BrowseFolder(
                 item_id="country",
@@ -300,18 +301,22 @@ class RadioBrowserProvider(MusicProvider):
 
     async def _parse_radio(self, radio_obj: dict) -> Radio:
         """Parse Radio object from json obj returned from api."""
-        radio = Radio(item_id=radio_obj.uuid, provider=self.domain, name=radio_obj.name)
-        radio.add_provider_mapping(
-            ProviderMapping(
-                item_id=radio_obj.uuid,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
+        radio = Radio(
+            item_id=radio_obj.uuid,
+            provider=self.domain,
+            name=radio_obj.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=radio_obj.uuid,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         radio.metadata.label = radio_obj.tags
         radio.metadata.popularity = radio_obj.votes
-        radio.metadata.links = [MediaItemLink(LinkType.WEBSITE, radio_obj.homepage)]
-        radio.metadata.images = [MediaItemImage(ImageType.THUMB, radio_obj.favicon)]
+        radio.metadata.links = [MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)]
+        radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=radio_obj.favicon)]
 
         return radio
 
@@ -323,7 +328,9 @@ class RadioBrowserProvider(MusicProvider):
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
-            content_type=ContentType.try_parse(stream.codec),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(stream.codec),
+            ),
             media_type=MediaType.RADIO,
             data=url_resolved,
             expires=time() + 24 * 3600,

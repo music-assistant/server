@@ -47,7 +47,7 @@ def try_parse_bool(possible_bool: Any) -> str:
 def create_sort_name(input_str: str) -> str:
     """Create sort name/title from string."""
     input_str = input_str.lower().strip()
-    for item in ["the ", "de ", "les "]:
+    for item in ["the ", "de ", "les ", "dj ", ".", "-", "'", "`"]:
         if input_str.startswith(item):
             input_str = input_str.replace(item, "")
     return input_str.strip()
@@ -129,32 +129,36 @@ def get_version_substitute(version_str: str):
     return version_str.strip()
 
 
-def get_ip():
+async def get_ip():
     """Get primary IP-address for this host."""
-    # pylint: disable=broad-except,no-member
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # doesn't even have to be reachable
-        sock.connect(("10.255.255.255", 1))
-        _ip = sock.getsockname()[0]
-    except Exception:
-        _ip = "127.0.0.1"
-    finally:
-        sock.close()
-    return _ip
 
-
-def is_port_in_use(port: int) -> bool:
-    """Check if port is in use."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+    def _get_ip():
+        """Get primary IP-address for this host."""
+        # pylint: disable=broad-except,no-member
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            return _sock.connect_ex(("localhost", port)) == 0
-        except socket.gaierror:
-            return True
+            # doesn't even have to be reachable
+            sock.connect(("10.255.255.255", 1))
+            _ip = sock.getsockname()[0]
+        except Exception:
+            _ip = "127.0.0.1"
+        finally:
+            sock.close()
+        return _ip
+
+    return await asyncio.to_thread(_get_ip)
 
 
 async def select_free_port(range_start: int, range_end: int) -> int:
     """Automatically find available port within range."""
+
+    def is_port_in_use(port: int) -> bool:
+        """Check if port is in use."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+            try:
+                _sock.bind(("127.0.0.1", port))
+            except OSError:
+                return True
 
     def _select_free_port():
         for port in range(range_start, range_end):
@@ -178,13 +182,15 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-def get_ip_pton(ip_string: str = get_ip()):
+async def get_ip_pton(ip_string: str | None = None):
     """Return socket pton for local ip."""
+    if ip_string is None:
+        ip_string = await get_ip()
     # pylint:disable=no-member
     try:
-        return socket.inet_pton(socket.AF_INET, ip_string)
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
-        return socket.inet_pton(socket.AF_INET6, ip_string)
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
 def get_folder_size(folderpath):
@@ -231,21 +237,36 @@ def get_changed_keys(
     ignore_keys: list[str] | None = None,
 ) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
+    return get_changed_values(dict1, dict2, ignore_keys).keys()
+
+
+def get_changed_values(
+    dict1: dict[str, Any],
+    dict2: dict[str, Any],
+    ignore_keys: list[str] | None = None,
+) -> dict[str, tuple[Any, Any]]:
+    """
+    Compare 2 dicts and return dict of changed values.
+
+    dict key is the changed key, value is tuple of old and new values.
+    """
+    if not dict1 and not dict2:
+        return {}
     if not dict1:
-        return set(dict2.keys())
+        return {key: (None, value) for key, value in dict2.items()}
     if not dict2:
-        return set(dict1.keys())
-    changed_keys = set()
+        return {key: (None, value) for key, value in dict1.items()}
+    changed_values = {}
     for key, value in dict2.items():
         if ignore_keys and key in ignore_keys:
             continue
         if key not in dict1:
-            changed_keys.add(key)
+            changed_values[key] = (None, value)
         elif isinstance(value, dict):
-            changed_keys.update(get_changed_keys(dict1[key], value))
+            changed_values.update(get_changed_values(dict1[key], value, ignore_keys))
         elif dict1[key] != value:
-            changed_keys.add(key)
-    return changed_keys
+            changed_values[key] = (dict1[key], value)
+    return changed_values
 
 
 def empty_queue(q: asyncio.Queue) -> None:

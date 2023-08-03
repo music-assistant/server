@@ -16,21 +16,31 @@ from cryptography.fernet import Fernet, InvalidToken
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
+    DEFAULT_CORE_CONFIG_ENTRIES,
     DEFAULT_PLAYER_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ConfigEntry,
     ConfigValueType,
+    CoreConfig,
     PlayerConfig,
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, ProviderType
 from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
-from music_assistant.constants import CONF_PLAYERS, CONF_PROVIDERS, CONF_SERVER_ID, ENCRYPT_SUFFIX
+from music_assistant.constants import (
+    CONF_CORE,
+    CONF_PLAYERS,
+    CONF_PROVIDERS,
+    CONF_SERVER_ID,
+    CONFIGURABLE_CORE_CONTROLLERS,
+    ENCRYPT_SUFFIX,
+)
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.util import get_provider_module
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from music_assistant.server.models.core_controller import CoreController
     from music_assistant.server.server import MusicAssistant
 
 LOGGER = logging.getLogger(__name__)
@@ -153,7 +163,7 @@ class ConfigController:
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
-        prov_entries = {x.domain for x in self.mass.get_available_providers()}
+        prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
         return [
             await self.get_provider_config(prov_conf["instance_id"])
             for prov_conf in raw_values.values()
@@ -170,16 +180,21 @@ class ConfigController:
             config_entries = await self.get_provider_config_entries(
                 raw_conf["domain"], instance_id=instance_id, values=raw_conf.get("values")
             )
+            for prov in self.mass.get_provider_manifests():
+                if prov.domain == raw_conf["domain"]:
+                    break
+            else:
+                raise KeyError(f'Unknown provider domain: {raw_conf["domain"]}')
             return ProviderConfig.parse(config_entries, raw_conf)
         raise KeyError(f"No config found for provider id {instance_id}")
 
     @api_command("config/providers/get_value")
-    def get_provider_config_value(self, instance_id: str, key: str) -> ConfigValueType:
+    async def get_provider_config_value(self, instance_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a provider."""
         cache_key = f"prov_conf_value_{instance_id}.{key}"
         if cached_value := self._value_cache.get(cache_key) is not None:
             return cached_value
-        conf = self.get_provider_config(instance_id)
+        conf = await self.get_provider_config(instance_id)
         val = (
             conf.values[key].value
             if conf.values[key].value is not None
@@ -206,7 +221,7 @@ class ConfigController:
         values: the (intermediate) raw values for config entries sent with the action.
         """
         # lookup provider manifest and module
-        for prov in self.mass.get_available_providers():
+        for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 prov_mod = await get_provider_module(provider_domain)
                 break
@@ -234,7 +249,6 @@ class ConfigController:
         provider_domain: (mandatory) domain of the provider.
         values: the raw values for config entries that need to be stored/updated.
         instance_id: id of an existing provider instance (None for new instance setup).
-        action: [optional] action key called from config entries UI.
         """
         if instance_id is not None:
             config = await self._update_provider_config(instance_id, values)
@@ -275,14 +289,14 @@ class ConfigController:
     async def reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
         config = await self.get_provider_config(instance_id)
-        await self.mass.load_provider(config)
+        await self._load_provider_config(config)
 
     @api_command("config/players")
-    def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
+    async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
         available_providers = {x.domain for x in self.mass.providers}
         return [
-            self.get_player_config(player_id)
+            await self.get_player_config(player_id)
             for player_id, raw_conf in self.get(CONF_PLAYERS).items()
             # filter out unavailable providers
             if raw_conf["provider"] in available_providers
@@ -291,11 +305,11 @@ class ConfigController:
         ]
 
     @api_command("config/players/get")
-    def get_player_config(self, player_id: str) -> PlayerConfig:
+    async def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
-                prov_entries = prov.get_player_config_entries(player_id)
+                prov_entries = await prov.get_player_config_entries(player_id)
                 if player := self.mass.players.get(player_id, False):
                     raw_conf["default_name"] = player.display_name
             else:
@@ -312,12 +326,12 @@ class ConfigController:
         raise KeyError(f"No config found for player id {player_id}")
 
     @api_command("config/players/get_value")
-    def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
+    async def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a player."""
         cache_key = f"player_conf_value_{player_id}.{key}"
         if (cached_value := self._value_cache.get(cache_key)) and cached_value is not None:
             return cached_value
-        conf = self.get_player_config(player_id)
+        conf = await self.get_player_config(player_id)
         val = (
             conf.values[key].value
             if conf.values[key].value is not None
@@ -327,12 +341,22 @@ class ConfigController:
         self._value_cache[cache_key] = val
         return val
 
+    def get_raw_player_config_value(
+        self, player_id: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return (raw) single configentry value for a player.
+
+        Note that this only returns the stored value without any validation or default.
+        """
+        return self.get(f"{CONF_PLAYERS}/{player_id}/values/{key}", default)
+
     @api_command("config/players/save")
-    def save_player_config(
+    async def save_player_config(
         self, player_id: str, values: dict[str, ConfigValueType]
     ) -> PlayerConfig:
         """Save/update PlayerConfig."""
-        config = self.get_player_config(player_id)
+        config = await self.get_player_config(player_id)
         changed_keys = config.update(values)
 
         if not changed_keys:
@@ -348,8 +372,11 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
-        with suppress(PlayerUnavailableError, AttributeError):
+        with suppress(PlayerUnavailableError, AttributeError, KeyError):
             player = self.mass.players.get(config.player_id)
+            if config.enabled:
+                player_prov = self.mass.players.get_player_provider(player_id)
+                await player_prov.poll_player(player_id)
             player.enabled = config.enabled
             self.mass.players.update(config.player_id, force_update=True)
 
@@ -358,7 +385,7 @@ class ConfigController:
             if provider := self.mass.get_provider(config.provider):
                 provider.on_player_config_changed(config, changed_keys)
         # return full player config (just in case)
-        return self.get_player_config(player_id)
+        return await self.get_player_config(player_id)
 
     @api_command("config/players/remove")
     async def remove_player_config(self, player_id: str) -> None:
@@ -372,7 +399,9 @@ class ConfigController:
             assert isinstance(provider, PlayerProvider)
             provider.on_player_config_removed(player_id)
 
-    def create_default_player_config(self, player_id: str, provider: str, name: str) -> None:
+    def create_default_player_config(
+        self, player_id: str, provider: str, name: str, enabled: bool
+    ) -> None:
         """
         Create default/empty PlayerConfig.
 
@@ -387,7 +416,7 @@ class ConfigController:
         # config does not yet exist, create a default one
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
-            values={}, provider=provider, player_id=player_id, default_name=name
+            values={}, provider=provider, player_id=player_id, enabled=enabled, default_name=name
         )
         self.set(
             conf_key,
@@ -404,7 +433,7 @@ class ConfigController:
         for conf in await self.get_provider_configs(provider_domain=provider_domain):
             # return if there is already a config
             return
-        for prov in self.mass.get_available_providers():
+        for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 manifest = prov
                 break
@@ -426,6 +455,89 @@ class ConfigController:
         default_config.validate()
         conf_key = f"{CONF_PROVIDERS}/{default_config.instance_id}"
         self.set(conf_key, default_config.to_raw())
+
+    @api_command("config/core")
+    async def get_core_configs(
+        self,
+    ) -> list[CoreConfig]:
+        """Return all core controllers config options."""
+        return [
+            await self.get_core_config(core_controller)
+            for core_controller in CONFIGURABLE_CORE_CONTROLLERS
+        ]
+
+    @api_command("config/core/get")
+    async def get_core_config(self, domain: str) -> CoreConfig:
+        """Return configuration for a single core controller."""
+        raw_conf = self.get(f"{CONF_CORE}/{domain}", {"domain": domain})
+        config_entries = await self.get_core_config_entries(domain)
+        return CoreConfig.parse(config_entries, raw_conf)
+
+    @api_command("config/core/get_value")
+    async def get_core_config_value(self, domain: str, key: str) -> ConfigValueType:
+        """Return single configentry value for a core controller."""
+        conf = await self.get_core_config(domain)
+        return (
+            conf.values[key].value
+            if conf.values[key].value is not None
+            else conf.values[key].default_value
+        )
+
+    @api_command("config/core/get_entries")
+    async def get_core_config_entries(
+        self,
+        domain: str,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """
+        Return Config entries to configure a core controller.
+
+        core_controller: name of the core controller
+        action: [optional] action key called from config entries UI.
+        values: the (intermediate) raw values for config entries sent with the action.
+        """
+        if values is None:
+            values = self.get(f"{CONF_CORE}/{domain}/values", {})
+        controller: CoreController = getattr(self.mass, domain)
+        return (
+            await controller.get_config_entries(action=action, values=values)
+            + DEFAULT_CORE_CONFIG_ENTRIES
+        )
+
+    @api_command("config/core/save")
+    async def save_core_config(
+        self,
+        domain: str,
+        values: dict[str, ConfigValueType],
+    ) -> CoreConfig:
+        """Save CoreController Config values."""
+        config = await self.get_core_config(domain)
+        changed_keys = config.update(values)
+        # validate the new config
+        config.validate()
+        if not changed_keys:
+            # no changes
+            return config
+        # try to load the provider first to catch errors before we save it.
+        controller: CoreController = getattr(self.mass, domain)
+        await controller.reload(config)
+        # reload succeeded, save new config
+        config.last_error = None
+        conf_key = f"{CONF_CORE}/{domain}"
+        self.set(conf_key, config.to_raw())
+        # return full config, just in case
+        return await self.get_core_config(domain)
+
+    def get_raw_core_config_value(
+        self, core_module: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return (raw) single configentry value for a core controller.
+
+        Note that this only returns the stored value without any validation or default.
+        """
+        return self.get(f"{CONF_CORE}/{core_module}/{key}", default)
 
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""
@@ -504,8 +616,13 @@ class ConfigController:
             return config
         # try to load the provider first to catch errors before we save it.
         if config.enabled:
-            await self.mass.load_provider(config)
+            await self._load_provider_config(config)
         else:
+            # disable provider
+            # also unload any other providers dependent of this provider
+            for dep_prov in self.mass.providers:
+                if dep_prov.manifest.depends_on == config.domain:
+                    await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
         # load succeeded, save new config
         config.last_error = None
@@ -528,7 +645,7 @@ class ConfigController:
         Returns: newly created ProviderConfig.
         """
         # lookup provider manifest and module
-        for prov in self.mass.get_available_providers():
+        for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
                 manifest = prov
                 break
@@ -569,3 +686,18 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
         return config
+
+    async def _load_provider_config(self, config: ProviderConfig) -> None:
+        """Load given provider config."""
+        # check if there are no other providers dependent of this provider
+        deps = set()
+        for dep_prov in self.mass.providers:
+            if dep_prov.manifest.depends_on == config.domain:
+                deps.add(dep_prov.instance_id)
+                await self.mass.unload_provider(dep_prov.instance_id)
+        # (re)load the provider
+        await self.mass.load_provider(config)
+        # reload any dependants
+        for dep in deps:
+            conf = await self.get_provider_config(dep)
+            await self.mass.load_provider(conf)

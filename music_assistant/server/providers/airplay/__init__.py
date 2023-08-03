@@ -10,21 +10,27 @@ import asyncio
 import os
 import platform
 import xml.etree.ElementTree as ET  # noqa: N817
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import aiofiles
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_OUTPUT_CODEC,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_PLAYERS
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.slimproto import SlimprotoProvider
 
@@ -42,7 +48,7 @@ PLAYER_CONFIG_ENTRIES = (
         key="read_ahead",
         type=ConfigEntryType.INTEGER,
         range=(0, 2000),
-        default_value=500,
+        default_value=1000,
         label="Read ahead buffer",
         description="Sets the number of milliseconds of audio buffer in the player. "
         "This is important to absorb network throughput jitter. "
@@ -67,6 +73,9 @@ PLAYER_CONFIG_ENTRIES = (
         description="Save some network bandwidth by sending the audio as "
         "(lossless) ALAC at the cost of a bit CPU.",
         advanced=True,
+    ),
+    ConfigEntry.from_dict(
+        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "pcm", "hidden": True}
     ),
 )
 
@@ -107,6 +116,7 @@ class AirplayProvider(PlayerProvider):
     _timer_handle: asyncio.TimerHandle | None = None
     _closing: bool = False
     _config_file: str | None = None
+    _log_reader_task: asyncio.Task | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -124,17 +134,19 @@ class AirplayProvider(PlayerProvider):
         )
         await self._check_config_xml()
         # start running the bridge
-        asyncio.create_task(self._bridge_process_runner())
+        asyncio.create_task(self._bridge_process_runner(slimproto_prov))
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         self._closing = True
+        if slimproto_prov := self.mass.get_provider("slimproto"):
+            slimproto_prov.unregister_virtual_provider("RaopBridge")
         await self._stop_bridge()
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         slimproto_prov = self.mass.get_provider("slimproto")
-        base_entries = slimproto_prov.get_player_config_entries(player_id)
+        base_entries = await slimproto_prov.get_player_config_entries(player_id)
         return tuple(base_entries + PLAYER_CONFIG_ENTRIES)
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
@@ -162,24 +174,35 @@ class AirplayProvider(PlayerProvider):
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.cmd_play(player_id)
 
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player."""
+        """Send PLAY URL command to given player.
+
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
+
+            - player_id: player_id of the player to handle the command.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+        """
         # simply forward to underlying slimproto player
         slimproto_prov = self.mass.get_provider("slimproto")
-        await slimproto_prov.cmd_play_media(
+        await slimproto_prov.cmd_play_url(
             player_id,
+            url=url,
             queue_item=queue_item,
-            seek_position=seek_position,
-            fade_in=fade_in,
-            flow_mode=flow_mode,
         )
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player."""
+        # simply forward to underlying slimproto player
+        slimproto_prov = self.mass.get_provider("slimproto")
+        await slimproto_prov.cmd_handle_stream_job(player_id=player_id, stream_job=stream_job)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -217,7 +240,7 @@ class AirplayProvider(PlayerProvider):
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.cmd_unsync(player_id)
 
-    def _handle_player_register_callback(self, player: Player) -> None:
+    async def _handle_player_register_callback(self, player: Player) -> None:
         """Handle player register callback from slimproto source player."""
         # TODO: Can we get better device info from mDNS ?
         player.provider = self.domain
@@ -227,6 +250,30 @@ class AirplayProvider(PlayerProvider):
             manufacturer="Generic",
         )
         player.supports_24bit = False
+
+        # extend info from the discovery xml
+        async with aiofiles.open(self._config_file, "r") as _file:
+            xml_data = await _file.read()
+            with suppress(ET.ParseError):
+                xml_root = ET.XML(xml_data)
+                for device_elem in xml_root.findall("device"):
+                    player_id = device_elem.find("mac").text
+                    if player_id != player.player_id:
+                        continue
+                    # prefer name from UDN because default name is often wrong
+                    udn = device_elem.find("udn").text
+                    udn_name = udn.split("@")[1].split("._")[0]
+                    player.name = udn_name
+                    # disable sonos by default
+                    if "sonos" in (device_elem.find("friendly_name").text or "").lower():
+                        player.enabled_by_default = False
+                        # TODO: query more info directly from the device
+                        player.device_info = DeviceInfo(
+                            model="Airplay device",
+                            address=player.device_info.address,
+                            manufacturer="SONOS",
+                        )
+                    break
 
     def _handle_player_update_callback(self, player: Player) -> None:
         """Handle player update callback from slimproto source player."""
@@ -297,53 +344,59 @@ class AirplayProvider(PlayerProvider):
             f"Unable to locate RaopBridge for {platform.system()} ({platform.machine()})"
         )
 
-    async def _bridge_process_runner(self) -> None:
+    async def _bridge_process_runner(self, slimproto_prov: SlimprotoProvider) -> None:
         """Run the bridge binary in the background."""
         self.logger.debug(
             "Starting Airplay bridge using config file %s",
             self._config_file,
         )
+        conf_log_level = self.config.get_value(CONF_LOG_LEVEL)
+        enable_debug_log = conf_log_level == "DEBUG"
         args = [
             self._bridge_bin,
             "-s",
-            "localhost",
+            f"localhost:{slimproto_prov.port}",
             "-x",
             self._config_file,
             "-I",
             "-Z",
             "-d",
-            "all=warn",
-            # filter out macbooks and apple tv's
+            f'all={"debug" if enable_debug_log else "warn"}',
+            # filter out apple tv's for now until we fix auth
             "-m",
-            "macbook,apple-tv,appletv",
+            "apple-tv,appletv",
         ]
         start_success = False
         while True:
             try:
                 self._bridge_proc = await asyncio.create_subprocess_shell(
                     " ".join(args),
-                    stdout=asyncio.subprocess.DEVNULL,
-                    stderr=asyncio.subprocess.DEVNULL,
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
                 )
+                self._log_reader_task = asyncio.create_task(self._log_reader())
                 await self._bridge_proc.wait()
             except Exception as err:
                 if not start_success:
                     raise err
                 self.logger.exception("Error in Airplay bridge", exc_info=err)
-            else:
-                self.logger.debug("Airplay Bridge process stopped")
             if self._closing:
                 break
-            await asyncio.sleep(1)
+            await asyncio.sleep(10)
 
     async def _stop_bridge(self) -> None:
         """Stop the bridge process."""
         if self._bridge_proc:
             try:
+                self.logger.info("Stopping bridge process...")
                 self._bridge_proc.terminate()
                 await self._bridge_proc.wait()
+                self.logger.info("Bridge process stopped.")
+                await asyncio.sleep(5)
             except ProcessLookupError:
                 pass
+        if self._log_reader_task and not self._log_reader_task.done():
+            self._log_reader_task.cancel()
 
     async def _check_config_xml(self, recreate: bool = False) -> None:
         """Check the bridge config XML file."""
@@ -425,6 +478,13 @@ class AirplayProvider(PlayerProvider):
         # save config file
         async with aiofiles.open(self._config_file, "w") as _file:
             await _file.write(ET.tostring(xml_root).decode())
+
+    async def _log_reader(self) -> None:
+        """Read log output from bridge process."""
+        bridge_logger = self.logger.getChild("squeeze2raop")
+        while self._bridge_proc.returncode is None:
+            async for line in self._bridge_proc.stdout:
+                bridge_logger.debug(line.decode().strip())
 
     def restart_bridge(self) -> None:
         """Schedule restart of bridge process."""

@@ -79,35 +79,39 @@ class MusicbrainzProvider(MetadataProvider):
         """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
         for ref_album in ref_albums:
             # try matching on album musicbrainz id
-            if ref_album.musicbrainz_id:  # noqa: SIM102
-                if musicbrainz_id := await self._search_artist_by_album_mbid(
-                    artistname=artist.name, album_mbid=ref_album.musicbrainz_id
+            if ref_album.mbid:  # noqa: SIM102
+                if mbid := await self._search_artist_by_album_mbid(
+                    artistname=artist.name, album_mbid=ref_album.mbid
                 ):
-                    return musicbrainz_id
+                    return mbid
             # try matching on album barcode
-            for barcode in ref_album.barcode:
-                if musicbrainz_id := await self._search_artist_by_album(
+            for provider_mapping in ref_album.provider_mappings:
+                if not provider_mapping.barcode:
+                    continue
+                if mbid := await self._search_artist_by_album(
                     artistname=artist.name,
-                    album_barcode=barcode,
+                    album_barcode=provider_mapping.barcode,
                 ):
-                    return musicbrainz_id
+                    return mbid
 
         # try again with matching on track isrc
         for ref_track in ref_tracks:
-            for isrc in ref_track.isrc:
-                if musicbrainz_id := await self._search_artist_by_track(
+            for provider_mapping in ref_track.provider_mappings:
+                if not provider_mapping.isrc:
+                    continue
+                if mbid := await self._search_artist_by_track(
                     artistname=artist.name,
-                    track_isrc=isrc,
+                    track_isrc=provider_mapping.isrc,
                 ):
-                    return musicbrainz_id
+                    return mbid
 
         # last restort: track matching by name
         for ref_track in ref_tracks:
-            if musicbrainz_id := await self._search_artist_by_track(
+            if mbid := await self._search_artist_by_track(
                 artistname=artist.name,
                 trackname=ref_track.name,
             ):
-                return musicbrainz_id
+                return mbid
 
         return None
 
@@ -118,10 +122,12 @@ class MusicbrainzProvider(MetadataProvider):
         album_barcode: str | None = None,
     ) -> str | None:
         """Retrieve musicbrainz artist id by providing the artist name and albumname or barcode."""
-        assert albumname or album_barcode
+        if not (albumname or album_barcode):
+            return None  # may not happen, but guard just in case
         for searchartist in (
             artistname,
-            re.sub(LUCENE_SPECIAL, r"\\\1", create_sort_name(artistname)),
+            re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
+            create_sort_name(artistname),
         ):
             if album_barcode:
                 # search by album barcode (EAN or UPC)
@@ -154,7 +160,8 @@ class MusicbrainzProvider(MetadataProvider):
         track_isrc: str | None = None,
     ) -> str | None:
         """Retrieve artist id by providing the artist name and trackname or track isrc."""
-        assert trackname or track_isrc
+        if not (trackname or track_isrc):
+            return None  # may not happen, but guard just in case
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
         if track_isrc:
             result = await self.get_data(f"isrc/{track_isrc}", inc="artist-credits")
@@ -194,17 +201,16 @@ class MusicbrainzProvider(MetadataProvider):
         url = f"http://musicbrainz.org/ws/2/{endpoint}"
         headers = {"User-Agent": "Music Assistant/1.0.0 https://github.com/music-assistant"}
         kwargs["fmt"] = "json"  # type: ignore[assignment]
-        async with self.throttler:
-            async with self.mass.http_session.get(
-                url, headers=headers, params=kwargs, ssl=False
-            ) as response:
-                try:
-                    result = await response.json()
-                except (
-                    aiohttp.client_exceptions.ContentTypeError,
-                    JSONDecodeError,
-                ) as exc:
-                    msg = await response.text()
-                    self.logger.warning("%s - %s", str(exc), msg)
-                    result = None
-                return result
+        async with self.throttler, self.mass.http_session.get(
+            url, headers=headers, params=kwargs, ssl=False
+        ) as response:
+            try:
+                result = await response.json()
+            except (
+                aiohttp.client_exceptions.ContentTypeError,
+                JSONDecodeError,
+            ) as exc:
+                msg = await response.text()
+                self.logger.warning("%s - %s", str(exc), msg)
+                result = None
+            return result

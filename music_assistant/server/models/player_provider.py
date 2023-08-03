@@ -11,6 +11,7 @@ from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ConfigEntry, PlayerConfig
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
 
 # ruff: noqa: ARG001, ARG002
 
@@ -21,7 +22,7 @@ class PlayerProvider(Provider):
     Player Provider implementations should inherit from this base model.
     """
 
-    def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         return tuple()
 
@@ -53,26 +54,37 @@ class PlayerProvider(Provider):
         """
 
     @abstractmethod
-    async def cmd_play_media(
+    async def cmd_play_url(
         self,
         player_id: str,
-        queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
-        flow_mode: bool = False,
+        url: str,
+        queue_item: QueueItem | None,
     ) -> None:
-        """Send PLAY MEDIA command to given player.
+        """Send PLAY URL command to given player.
 
-        This is called when the Queue wants the player to start playing a specific QueueItem.
-        The player implementation can decide how to process the request, such as playing
-        queue items one-by-one or enqueue all/some items.
+        This is called when the Queue wants the player to start playing a specific url.
+        If an item from the Queue is being played, the QueueItem will be provided with
+        all metadata present.
 
             - player_id: player_id of the player to handle the command.
-            - queue_item: the QueueItem to start playing on the player.
-            - seek_position: start playing from this specific position.
-            - fade_in: fade in the music at start (e.g. at resume).
-            - flow_mode: enable flow mode where the queue tracks are streamed as continuous stream.
+            - url: the url that the player should start playing.
+            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
+
+    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle StreamJob play command on given player.
+
+        This is called when the Queue wants the player to start playing media
+        to multiple subscribers at the same time using a MultiClientStreamJob.
+        The default implementation is that the URL to the stream is resolved for the player
+        and played like any regular play_url command, but implementation may override
+        this behavior for any more sophisticated handling (e.g. when syncing etc.)
+
+            - player_id: player_id of the player to handle the command.
+            - stream_job: the MultiClientStreamJob that the player should start playing.
+        """
+        url = await stream_job.resolve_stream_url(player_id)
+        await self.cmd_play_url(player_id=player_id, url=url, queue_item=None)
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
@@ -141,10 +153,12 @@ class PlayerProvider(Provider):
         If the player does not need any polling, simply do not override this method.
         """
 
-    def on_child_state(self, player_id: str, child_player: Player, changed_keys: set[str]) -> None:
-        """Call when the state of a child player updates."""
-        # default implementation: simply update the state of the group player
-        self.mass.players.update(player_id, skip_forward=True)
+    async def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
+        """
+        Call when a power command was executed on one of the child players.
+
+        This is used to handle special actions such as muting as power or (re)syncing.
+        """
 
     # DO NOT OVERRIDE BELOW
 

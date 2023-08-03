@@ -11,11 +11,12 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.constants import (
+    CONF_AUTO_PLAY,
+    CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
-    CONF_GROUPED_POWER_ON,
     CONF_HIDE_GROUP_CHILDS,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
@@ -166,7 +167,9 @@ class Config(DataClassDictMixin):
         for entry in config_entries:
             # create a copy of the entry
             conf.values[entry.key] = ConfigEntry.from_dict(entry.to_dict())
-            conf.values[entry.key].parse_value(raw["values"].get(entry.key), allow_none=True)
+            conf.values[entry.key].parse_value(
+                raw.get("values", {}).get(entry.key), allow_none=True
+            )
         return conf
 
     def to_raw(self) -> dict[str, Any]:
@@ -178,14 +181,13 @@ class Config(DataClassDictMixin):
                 return ENCRYPT_CALLBACK(value.value)
             return value.value
 
-        return {
-            **self.to_dict(),
-            "values": {
-                x.key: _handle_value(x)
-                for x in self.values.values()
-                if (x.value != x.default_value and x.type not in UI_ONLY)
-            },
+        res = self.to_dict()
+        res["values"] = {
+            x.key: _handle_value(x)
+            for x in self.values.values()
+            if (x.value != x.default_value and x.type not in UI_ONLY)
         }
+        return res
 
     def __post_serialize__(self, d: dict[str, Any]) -> dict[str, Any]:
         """Adjust dict object after it has been serialized."""
@@ -204,9 +206,9 @@ class Config(DataClassDictMixin):
         # root values (enabled, name)
         root_values = ("enabled", "name")
         for key in root_values:
-            cur_val = getattr(self, key)
             if key not in update:
                 continue
+            cur_val = getattr(self, key)
             new_val = update[key]
             if new_val == cur_val:
                 continue
@@ -217,7 +219,7 @@ class Config(DataClassDictMixin):
         for key, new_val in update.items():
             if key in root_values:
                 continue
-            cur_val = self.values[key].value
+            cur_val = self.values[key].value if key in self.values else None
             # parse entry to do type validation
             parsed_val = self.values[key].parse_value(new_val)
             if cur_val != parsed_val:
@@ -264,23 +266,33 @@ class PlayerConfig(Config):
     default_name: str | None = None
 
 
+@dataclass
+class CoreConfig(Config):
+    """CoreController Configuration."""
+
+    domain: str  # domain/name of the core module
+    # last_error: an optional error message if the module could not be setup with this config
+    last_error: str | None = None
+
+
 CONF_ENTRY_LOG_LEVEL = ConfigEntry(
     key=CONF_LOG_LEVEL,
     type=ConfigEntryType.STRING,
     label="Log level",
-    options=[
+    options=(
         ConfigValueOption("global", "GLOBAL"),
         ConfigValueOption("info", "INFO"),
         ConfigValueOption("warning", "WARNING"),
         ConfigValueOption("error", "ERROR"),
         ConfigValueOption("debug", "DEBUG"),
-    ],
+    ),
     default_value="GLOBAL",
     description="Set the log verbosity for this provider",
     advanced=True,
 )
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
+DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 
 # some reusable player config entries
 
@@ -293,6 +305,7 @@ CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
         ConfigValueOption("AAC (lossy, superior quality)", "aac"),
         ConfigValueOption("MP3 (lossy, average quality)", "mp3"),
         ConfigValueOption("WAV (lossless, huge file size)", "wav"),
+        ConfigValueOption("PCM (lossless, huge file size)", "pcm"),
     ],
     default_value="flac",
     description="Define the codec that is sent to the player when streaming audio. "
@@ -311,6 +324,15 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     "audio stream. Use for players that do not natively support gapless and/or "
     "crossfading or if the player has trouble transitioning between tracks.",
     advanced=False,
+)
+
+CONF_ENTRY_AUTO_PLAY = ConfigEntry(
+    key=CONF_AUTO_PLAY,
+    type=ConfigEntryType.BOOLEAN,
+    label="Automatically play/resume on power on",
+    default_value=False,
+    description="When this player is turned ON, automatically start playing "
+    "(if there are items in the queue).",
 )
 
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
@@ -394,26 +416,27 @@ CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
     advanced=False,
 )
 
-CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
-    key=CONF_GROUPED_POWER_ON,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=True,
-    label="Forced Power ON of all group members",
-    description="Power ON all child players when the group player is powered on "
-    "(or playback started). \n"
-    "If this setting is disabled, playback will only start on players that "
-    "are already powered ON at the time of playback start.\n"
-    "When turning OFF the group player, all group members are turned off, "
-    "regardless of this setting.",
-    advanced=False,
+CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
+    key=CONF_CROSSFADE_DURATION,
+    type=ConfigEntryType.INTEGER,
+    range=(1, 20),
+    default_value=8,
+    label="Crossfade duration",
+    description="Duration in seconds of the crossfade between tracks (if enabled)",
+    depends_on=CONF_FLOW_MODE,
+    advanced=True,
 )
+
 
 DEFAULT_PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_OUTPUT_CODEC,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_CROSSFADE_DURATION,
 )

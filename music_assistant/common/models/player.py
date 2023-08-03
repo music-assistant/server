@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -34,7 +35,6 @@ class Player(DataClassDictMixin):
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()
     current_url: str | None = None
-    current_item_id: str | None = None
     state: PlayerState = PlayerState.IDLE
 
     volume_level: int = 100
@@ -44,8 +44,9 @@ class Player(DataClassDictMixin):
     # - If this player is a dedicated group player,
     #   returns all child id's of the players in the group.
     # - If this is a syncgroup of players from the same platform (e.g. sonos),
-    #   this will return the id's of players synced to this player.
-    group_childs: list[str] = field(default_factory=list)
+    #   this will return the id's of players synced to this player,
+    #   and this may include the player's own id.
+    group_childs: set[str] = field(default_factory=set)
 
     # active_source: return player_id of the active queue for this player
     # if the player is grouped and a group is active, this will be set to the group's player_id
@@ -92,6 +93,13 @@ class Player(DataClassDictMixin):
     # display_name: return final/corrected name of the player
     # always prefers any overridden name from settings
     display_name: str = ""
+
+    # extra_data: any additional data to store on the player object
+    # and pass along freely
+    extra_data: dict[str, Any] = field(default_factory=dict)
+
+    # mute_as_power: special feature from the universal group
+    mute_as_power: bool = False
 
     @property
     def corrected_elapsed_time(self) -> float:

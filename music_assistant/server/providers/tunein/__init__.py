@@ -10,8 +10,9 @@ from asyncio_throttle import Throttler
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -99,13 +100,21 @@ class TuneInProvider(MusicProvider):
                 if item_type == "audio":
                     if "preset_id" not in item:
                         continue
+                    if "- Not Supported" in item.get("name", ""):
+                        continue
+                    if "- Not Supported" in item.get("text", ""):
+                        continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
                     for stream in stream_info["body"]:
                         yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link" and item.get("item") == "url":
                     # custom url
-                    yield await self._parse_radio(item)
+                    try:
+                        yield await self._parse_radio(item)
+                    except InvalidDataError as err:
+                        # there may be invalid custom urls, ignore those
+                        self.logger.warning(str(err))
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
@@ -166,16 +175,22 @@ class TuneInProvider(MusicProvider):
             content_type = ContentType.try_parse(stream["media_type"])
             bit_rate = stream.get("bitrate", 128)  # TODO !
 
-        radio = Radio(item_id=item_id, provider=self.domain, name=name)
-        radio.add_provider_mapping(
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=content_type,
-                bit_rate=bit_rate,
-                details=url,
-            )
+        radio = Radio(
+            item_id=item_id,
+            provider=self.domain,
+            name=name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=content_type,
+                        bit_rate=bit_rate,
+                    ),
+                    details=url,
+                )
+            },
         )
         # preset number is used for sorting (not present at stream time)
         preset_number = details.get("preset_number")
@@ -188,9 +203,9 @@ class TuneInProvider(MusicProvider):
             radio.metadata.description = details["text"]
         # images
         if img := details.get("image"):
-            radio.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
+            radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
         if img := details.get("logo"):
-            radio.metadata.images = [MediaItemImage(ImageType.LOGO, img)]
+            radio.metadata.images = [MediaItemImage(type=ImageType.LOGO, path=img)]
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -201,11 +216,14 @@ class TuneInProvider(MusicProvider):
                 provider=self.instance_id,
                 item_id=item_id,
                 content_type=ContentType.UNKNOWN,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
                 media_type=MediaType.RADIO,
                 data=item_id,
             )
-        item_id, media_type = item_id.split("--", 1)
-        stream_info = await self.__get_data("Tune.ashx", id=item_id)
+        stream_item_id, media_type = item_id.split("--", 1)
+        stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] != media_type:
                 continue
@@ -221,7 +239,9 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
-                content_type=ContentType(stream["media_type"]),
+                audio_format=AudioFormat(
+                    content_type=ContentType(stream["media_type"]),
+                ),
                 media_type=MediaType.RADIO,
                 data=url,
                 expires=time() + 24 * 3600,
@@ -246,11 +266,12 @@ class TuneInProvider(MusicProvider):
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
-        async with self._throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                result = await response.json()
-                if not result or "error" in result:
-                    self.logger.error(url)
-                    self.logger.error(kwargs)
-                    result = None
-                return result
+        async with self._throttler, self.mass.http_session.get(
+            url, params=kwargs, ssl=False
+        ) as response:
+            result = await response.json()
+            if not result or "error" in result:
+                self.logger.error(url)
+                self.logger.error(kwargs)
+                result = None
+            return result

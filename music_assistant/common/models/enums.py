@@ -212,7 +212,6 @@ class PlayerState(StrEnum):
     IDLE = "idle"
     PAUSED = "paused"
     PLAYING = "playing"
-    OFF = "off"
 
 
 class PlayerType(StrEnum):
@@ -338,6 +337,7 @@ class ProviderType(StrEnum):
     PLAYER = "player"
     METADATA = "metadata"
     PLUGIN = "plugin"
+    CORE = "core"
 
 
 class ConfigEntryType(StrEnum):

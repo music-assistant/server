@@ -17,8 +17,6 @@ from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi.media import Lyrics as TidalLyrics
 
-from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
     AlbumType,
@@ -30,11 +28,14 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
+    AudioFormat,
     ContentType,
     ItemMapping,
     MediaItemImage,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
@@ -265,8 +266,14 @@ class TidalProvider(MusicProvider):
         tidal_session = await self._get_tidal_session()
         async with self._throttler:
             return [
-                await self._parse_track(track_obj=track)
-                for track in await get_album_tracks(tidal_session, prov_album_id)
+                await self._parse_track(
+                    track_obj=track_obj,
+                    extra_init_kwargs={
+                        "disc_number": track_obj.volume_num,
+                        "track_number": track_obj.track_num,
+                    },
+                )
+                for track_obj in await get_album_tracks(tidal_session, prov_album_id)
             ]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -287,7 +294,9 @@ class TidalProvider(MusicProvider):
                 for track in await get_artist_toptracks(tidal_session, prov_artist_id)
             ]
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         tidal_session = await self._get_tidal_session()
         total_playlist_tracks = 0
@@ -296,8 +305,9 @@ class TidalProvider(MusicProvider):
             get_playlist_tracks, tidal_session, prov_playlist_id, limit=DEFAULT_LIMIT
         ):
             total_playlist_tracks += 1
-            track = await self._parse_track(track_obj=track_obj)
-            track.position = total_playlist_tracks
+            track = await self._parse_track(
+                track_obj=track_obj, extra_init_kwargs={"position": total_playlist_tracks}
+            )
             yield track
 
     async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:
@@ -364,9 +374,11 @@ class TidalProvider(MusicProvider):
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
-            content_type=ContentType.FLAC,
-            sample_rate=44100,
-            bit_depth=16,
+            audio_format=AudioFormat(
+                content_type=ContentType.FLAC,
+                sample_rate=44100,
+                bit_depth=16,
+            ),
             duration=track.duration,
             direct=url,
         )
@@ -407,12 +419,10 @@ class TidalProvider(MusicProvider):
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
         return ItemMapping(
-            media_type,
-            key,
-            self.instance_id,
-            name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
+            media_type=media_type,
+            item_id=key,
+            provider=self.instance_id,
+            name=name,
         )
 
     async def _get_tidal_session(self) -> TidalSession:
@@ -465,14 +475,18 @@ class TidalProvider(MusicProvider):
     async def _parse_artist(self, artist_obj: TidalArtist, full_details: bool = False) -> Artist:
         """Parse tidal artist object to generic layout."""
         artist_id = artist_obj.id
-        artist = Artist(item_id=artist_id, provider=self.instance_id, name=artist_obj.name)
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"http://www.tidal.com/artist/{artist_id}",
-            )
+        artist = Artist(
+            item_id=artist_id,
+            provider=self.instance_id,
+            name=artist_obj.name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=f"http://www.tidal.com/artist/{artist_id}",
+                )
+            },
         )
         # metadata
         if full_details and artist_obj.name != "Various Artists":
@@ -480,8 +494,8 @@ class TidalProvider(MusicProvider):
                 image_url = await self._get_image_url(artist_obj, 750)
                 artist.metadata.images = [
                     MediaItemImage(
-                        ImageType.THUMB,
-                        image_url,
+                        type=ImageType.THUMB,
+                        path=image_url,
                     )
                 ]
             except Exception:
@@ -494,7 +508,24 @@ class TidalProvider(MusicProvider):
         name = album_obj.name
         version = album_obj.version if album_obj.version is not None else None
         album_id = album_obj.id
-        album = Album(item_id=album_id, provider=self.instance_id, name=name, version=version)
+        album = Album(
+            item_id=album_id,
+            provider=self.instance_id,
+            name=name,
+            version=version,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.FLAC,
+                    ),
+                    url=f"http://www.tidal.com/album/{album_id}",
+                    available=album_obj.available,
+                )
+            },
+        )
         for artist_obj in album_obj.artists:
             album.artists.append(await self._parse_artist(artist_obj=artist_obj))
         if album_obj.type == "ALBUM":
@@ -508,17 +539,6 @@ class TidalProvider(MusicProvider):
 
         album.upc = album_obj.universal_product_number
         album.year = int(album_obj.year)
-        available = album_obj.available
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=album_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
-                url=f"http://www.tidal.com/album/{album_id}",
-                available=available,
-            )
-        )
         # metadata
         album.metadata.copyright = album_obj.copyright
         album.metadata.explicit = album_obj.explicit
@@ -528,8 +548,8 @@ class TidalProvider(MusicProvider):
                 image_url = await self._get_image_url(album_obj, 1280)
                 album.metadata.images = [
                     MediaItemImage(
-                        ImageType.THUMB,
-                        image_url,
+                        type=ImageType.THUMB,
+                        path=image_url,
                     )
                 ]
             except Exception:
@@ -537,20 +557,46 @@ class TidalProvider(MusicProvider):
 
         return album
 
-    async def _parse_track(self, track_obj: TidalTrack, full_details: bool = False) -> Track:
+    async def _parse_track(
+        self,
+        track_obj: TidalTrack,
+        full_details: bool = False,
+        extra_init_kwargs: dict[str, Any] | None = None,
+    ) -> Track | AlbumTrack | PlaylistTrack:
         """Parse tidal track object to generic layout."""
         version = track_obj.version if track_obj.version is not None else None
         track_id = str(track_obj.id)
-        track = Track(
+        if extra_init_kwargs is None:
+            extra_init_kwargs = {}
+        if "position" in extra_init_kwargs:
+            track_class = PlaylistTrack
+        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
+            track_class = AlbumTrack
+        else:
+            track_class = Track
+        track = track_class(
             item_id=track_id,
             provider=self.instance_id,
             name=track_obj.name,
             version=version,
             duration=track_obj.duration,
-            disc_number=track_obj.volume_num,
-            track_number=track_obj.track_num,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.FLAC,
+                        sample_rate=44100,
+                        bit_depth=16,
+                    ),
+                    isrc=track_obj.isrc,
+                    url=f"http://www.tidal.com/tracks/{track_id}",
+                    available=track_obj.available,
+                )
+            },
+            **extra_init_kwargs,
         )
-        track.isrc.add(track_obj.isrc)
         track.album = self.get_item_mapping(
             media_type=MediaType.ALBUM,
             key=track_obj.album.id,
@@ -560,19 +606,6 @@ class TidalProvider(MusicProvider):
         for track_artist in track_obj.artists:
             artist = await self._parse_artist(artist_obj=track_artist)
             track.artists.append(artist)
-        available = track_obj.available
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=track_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.FLAC,
-                sample_rate=44100,
-                bit_depth=16,
-                url=f"http://www.tidal.com/tracks/{track_id}",
-                available=available,
-            )
-        )
         # metadata
         track.metadata.explicit = track_obj.explicit
         track.metadata.popularity = track_obj.popularity
@@ -597,14 +630,14 @@ class TidalProvider(MusicProvider):
             provider=self.instance_id,
             name=playlist_obj.name,
             owner=creator_name,
-        )
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"http://www.tidal.com/playlists/{playlist_id}",
-            )
+            provider_mappings={
+                ProviderMapping(
+                    item_id=playlist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=f"http://www.tidal.com/playlists/{playlist_id}",
+                )
+            },
         )
         is_editable = bool(creator_id and str(creator_id) == self._tidal_user_id)
         playlist.is_editable = is_editable
@@ -616,8 +649,8 @@ class TidalProvider(MusicProvider):
                 image_url = await self._get_image_url(playlist_obj, 1080)
                 playlist.metadata.images = [
                     MediaItemImage(
-                        ImageType.THUMB,
-                        image_url,
+                        type=ImageType.THUMB,
+                        path=image_url,
                     )
                 ]
             except Exception:

@@ -3,6 +3,7 @@ import hashlib
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from math import ceil
+from typing import Any
 
 import deezer
 from aiohttp import ClientTimeout
@@ -25,12 +26,15 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
+    AudioFormat,
     BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
@@ -236,7 +240,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             return self.parse_album(album=await self.client.get_album(album_id=int(prov_album_id)))
         except deezer.exceptions.DeezerErrorResponse as error:
             self.logger.warning("Failed getting album: %s", error)
-            return Album(prov_album_id, self.instance_id, "Not Found")
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
@@ -251,22 +254,29 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             user_country=self.gw_client.user_country,
         )
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
-        """Get all albums in a playlist."""
+    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+        """Get all tracks in a album."""
         album = await self.client.get_album(album_id=int(prov_album_id))
-        return [
-            self.parse_track(track=track, user_country=self.gw_client.user_country)
-            for track in album.tracks
-        ]
+        result = []
+        for count, deezer_track in enumerate(album.tracks, start=1):
+            result.append(
+                self.parse_track(
+                    track=deezer_track,
+                    user_country=self.gw_client.user_country,
+                    extra_init_kwargs={"disc_number": 0, "track_number": count},
+                )
+            )
+        return result
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
-        for count, track in enumerate(playlist.tracks, start=1):
-            track_parsed = self.parse_track(track=track, user_country=self.gw_client.user_country)
-            track_parsed.position = count
-            track_parsed.id = track.id
-            yield track_parsed
+        for count, deezer_track in enumerate(playlist.tracks, start=1):
+            track = self.parse_track(track=deezer_track, user_country=self.gw_client.user_country)
+            track.position = count
+            yield track
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -286,7 +296,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Add an item to the library."""
+        """Add an item to the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
             result = await self.client.add_user_artists(
@@ -309,7 +319,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         return result
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
-        """Remove an item to the library."""
+        """Remove an item from the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
             result = await self.client.remove_user_artists(
@@ -378,7 +388,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
-            content_type=ContentType.try_parse(url_details["format"].split("_")[0]),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(url_details["format"].split("_")[0])
+            ),
             duration=int(song_data["DURATION"]),
             data=url,
             expires=url_details["exp"],
@@ -509,29 +521,42 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             is_editable=playlist.creator.id == self.client.user.id,
         )
 
-    def parse_track(self, track: deezer.Track, user_country: str) -> Track:
+    def parse_track(
+        self,
+        track: deezer.Track,
+        user_country: str,
+        extra_init_kwargs: dict[str, Any] | None = None,
+    ) -> Track | PlaylistTrack:
         """Parse the deezer-python track to a MASS track."""
-        return Track(
+        if extra_init_kwargs is None:
+            extra_init_kwargs = {}
+            track_class = Track
+        elif "position" in extra_init_kwargs:
+            track_class = PlaylistTrack
+        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
+            track_class = AlbumTrack
+        else:
+            track_class = Track
+        return track_class(
             item_id=str(track.id),
             provider=self.domain,
             name=track.title,
             media_type=MediaType.TRACK,
             sort_name=track.title_short,
-            position=track.track_position,
             duration=track.duration,
             artists=[
                 ItemMapping(
-                    MediaType.ARTIST,
-                    str(track.artist.id),
-                    self.instance_id,
-                    track.artist.name,
+                    media_type=MediaType.ARTIST,
+                    item_id=str(track.artist.id),
+                    provider=self.domain,
+                    name=track.artist.name,
                 )
             ],
             album=ItemMapping(
-                MediaType.ALBUM,
-                str(track.album.id),
-                self.instance_id,
-                track.album.title,
+                media_type=MediaType.ALBUM,
+                item_id=str(track.album.id),
+                provider=self.domain,
+                name=track.album.title,
             ),
             provider_mappings={
                 ProviderMapping(
@@ -542,6 +567,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 )
             },
             metadata=self.parse_metadata_track(track=track),
+            **extra_init_kwargs,
         )
 
     ### SEARCH AND PARSE FUNCTIONS ###

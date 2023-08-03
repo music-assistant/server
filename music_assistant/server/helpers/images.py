@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import asyncio
 import random
-from base64 import b64encode
 from io import BytesIO
 from typing import TYPE_CHECKING
 
 import aiofiles
 from PIL import Image
 
+from music_assistant.common.models.media_items import MediaItemImage
 from music_assistant.server.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
@@ -49,7 +49,7 @@ async def get_image_thumb(
     return await asyncio.to_thread(_create_image)
 
 
-async def create_collage(mass: MusicAssistant, images: list[str]) -> bytes:
+async def create_collage(mass: MusicAssistant, images: list[MediaItemImage]) -> bytes:
     """Create a basic collage image from multiple image urls."""
 
     def _new_collage():
@@ -65,7 +65,8 @@ async def create_collage(mass: MusicAssistant, images: list[str]) -> bytes:
 
     for x_co in range(0, 1500, 500):
         for y_co in range(0, 1500, 500):
-            img_data = await get_image_data(mass, random.choice(images))
+            img = random.choice(images)
+            img_data = await get_image_data(mass, img.path, img.provider)
             await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
 
     def _save_collage():
@@ -77,12 +78,10 @@ async def create_collage(mass: MusicAssistant, images: list[str]) -> bytes:
 
 
 async def get_icon_string(icon_path: str) -> str:
-    """Get icon as (base64 encoded) string."""
+    """Get svg icon as string."""
     ext = icon_path.rsplit(".")[-1]
-    assert ext in ("png", "svg", "ico", "jpg")
-    async with aiofiles.open(icon_path, "rb") as _file:
-        img_data = await _file.read()
-    enc_image = b64encode(img_data).decode()
-    if ext == "svg":
-        return f"data:image/svg+xml;base64,{enc_image}"
-    return f"data:image/{ext};base64,{enc_image}"
+    assert ext == "svg"
+    async with aiofiles.open(icon_path, "r") as _file:
+        xml_data = await _file.read()
+        xml_data = xml_data.replace("\n", "").strip()
+        return xml_data

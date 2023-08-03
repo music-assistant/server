@@ -80,10 +80,10 @@ class FanartTvMetadataProvider(MetadataProvider):
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on fanart.tv."""
-        if not artist.musicbrainz_id:
+        if not artist.mbid:
             return None
         self.logger.debug("Fetching metadata for Artist %s on Fanart.tv", artist.name)
-        if data := await self._get_data(f"music/{artist.musicbrainz_id}"):
+        if data := await self._get_data(f"music/{artist.mbid}"):
             metadata = MediaItemMetadata()
             metadata.images = []
             for key, img_type in IMG_MAPPING.items():
@@ -91,18 +91,18 @@ class FanartTvMetadataProvider(MetadataProvider):
                 if not items:
                     continue
                 for item in items:
-                    metadata.images.append(MediaItemImage(img_type, item["url"]))
+                    metadata.images.append(MediaItemImage(type=img_type, path=item["url"]))
             return metadata
         return None
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on fanart.tv."""
-        if not album.musicbrainz_id:
+        if not album.mbid:
             return None
         self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
-        if data := await self._get_data(f"music/albums/{album.musicbrainz_id}"):  # noqa: SIM102
+        if data := await self._get_data(f"music/albums/{album.mbid}"):  # noqa: SIM102
             if data and data.get("albums"):
-                data = data["albums"][album.musicbrainz_id]
+                data = data["albums"][album.mbid]
                 metadata = MediaItemMetadata()
                 metadata.images = []
                 for key, img_type in IMG_MAPPING.items():
@@ -110,7 +110,7 @@ class FanartTvMetadataProvider(MetadataProvider):
                     if not items:
                         continue
                     for item in items:
-                        metadata.images.append(MediaItemImage(img_type, item["url"]))
+                        metadata.images.append(MediaItemImage(type=img_type, path=item["url"]))
                 return metadata
         return None
 
@@ -119,25 +119,26 @@ class FanartTvMetadataProvider(MetadataProvider):
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         kwargs["api_key"] = app_var(4)
-        async with self.throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                try:
-                    result = await response.json()
-                except (
-                    aiohttp.client_exceptions.ContentTypeError,
-                    JSONDecodeError,
-                ):
-                    self.logger.error("Failed to retrieve %s", endpoint)
-                    text_result = await response.text()
-                    self.logger.debug(text_result)
-                    return None
-                except (
-                    aiohttp.client_exceptions.ClientConnectorError,
-                    aiohttp.client_exceptions.ServerDisconnectedError,
-                ):
-                    self.logger.warning("Failed to retrieve %s", endpoint)
-                    return None
-                if "error" in result and "limit" in result["error"]:
-                    self.logger.warning(result["error"])
-                    return None
-                return result
+        async with self.throttler, self.mass.http_session.get(
+            url, params=kwargs, ssl=False
+        ) as response:
+            try:
+                result = await response.json()
+            except (
+                aiohttp.client_exceptions.ContentTypeError,
+                JSONDecodeError,
+            ):
+                self.logger.error("Failed to retrieve %s", endpoint)
+                text_result = await response.text()
+                self.logger.debug(text_result)
+                return None
+            except (
+                aiohttp.client_exceptions.ClientConnectorError,
+                aiohttp.client_exceptions.ServerDisconnectedError,
+            ):
+                self.logger.warning("Failed to retrieve %s", endpoint)
+                return None
+            if "error" in result and "limit" in result["error"]:
+                self.logger.warning(result["error"])
+                return None
+            return result

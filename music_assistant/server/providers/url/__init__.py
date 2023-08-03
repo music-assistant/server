@@ -9,6 +9,7 @@ from music_assistant.common.models.config_entries import ConfigEntry, ConfigValu
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Artist,
+    AudioFormat,
     MediaItemImage,
     MediaItemType,
     ProviderMapping,
@@ -63,7 +64,7 @@ class URLProvider(MusicProvider):
         Called when provider is registered.
         """
         self._full_url = {}
-        # self.mass.register_api_command("music/tracks", self.db_items)
+        # self.mass.register_api_command("music/tracks", self.library_items)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -78,11 +79,16 @@ class URLProvider(MusicProvider):
         artist = prov_artist_id
         # this is here for compatibility reasons only
         return Artist(
-            artist,
-            self.domain,
-            artist,
+            item_id=artist,
+            provider=self.domain,
+            name=artist,
             provider_mappings={
-                ProviderMapping(artist, self.domain, self.instance_id, available=False)
+                ProviderMapping(
+                    item_id=artist,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=False,
+                )
             },
         )
 
@@ -104,12 +110,26 @@ class URLProvider(MusicProvider):
         """Parse plain URL to MediaItem of type Radio or Track."""
         item_id, url, media_info = await self._get_media_info(item_id_or_url, force_refresh)
         is_radio = media_info.get("icy-name") or not media_info.duration
+        provider_mappings = {
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(media_info.format),
+                    sample_rate=media_info.sample_rate,
+                    bit_depth=media_info.bits_per_sample,
+                    bit_rate=media_info.bit_rate,
+                ),
+            )
+        }
         if is_radio or force_radio:
             # treat as radio
             media_item = Radio(
                 item_id=item_id,
                 provider=self.domain,
                 name=media_info.get("icy-name") or media_info.title,
+                provider_mappings=provider_mappings,
             )
         else:
             media_item = Track(
@@ -118,21 +138,13 @@ class URLProvider(MusicProvider):
                 name=media_info.title,
                 duration=int(media_info.duration or 0),
                 artists=[await self.get_artist(artist) for artist in media_info.artists],
+                provider_mappings=provider_mappings,
             )
 
-        media_item.provider_mappings = {
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                bit_rate=media_info.bit_rate,
-            )
-        }
         if media_info.has_cover_image:
-            media_item.metadata.images = [MediaItemImage(ImageType.THUMB, url, True)]
+            media_item.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=url, provider="file")
+            ]
         return media_item
 
     async def _get_media_info(
@@ -181,10 +193,12 @@ class URLProvider(MusicProvider):
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=ContentType.try_parse(media_info.format),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(media_info.format),
+                sample_rate=media_info.sample_rate,
+                bit_depth=media_info.bits_per_sample,
+            ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            sample_rate=media_info.sample_rate,
-            bit_depth=media_info.bits_per_sample,
             direct=None if is_radio and not mpeg_dash_stream else url,
             data=url,
         )

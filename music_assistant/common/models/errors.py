@@ -13,7 +13,7 @@ class MusicAssistantError(Exception):
 
 
 # mapping from error_code to Exception class
-ERROR_MAP: dict[int, type] = {0: MusicAssistantError}
+ERROR_MAP: dict[int, type] = {0: MusicAssistantError, 999: MusicAssistantError}
 
 
 class ProviderUnavailableError(MusicAssistantError):
