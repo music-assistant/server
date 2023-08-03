@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import urllib.parse
+from typing import Any
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -63,7 +64,7 @@ class TracksController(MediaControllerBase[Track]):
         details: Track = None,
         album_uri: str | None = None,
         add_to_library: bool = False,
-        skip_metadata_lookup: bool = False,
+        **kwargs: dict[str, Any],
     ) -> Track:
         """Return (full) details for a single media item."""
         track = await super().get(
@@ -73,7 +74,7 @@ class TracksController(MediaControllerBase[Track]):
             lazy=lazy,
             details=details,
             add_to_library=add_to_library,
-            skip_metadata_lookup=skip_metadata_lookup,
+            **kwargs,
         )
         # append full album details to full track item
         try:
@@ -86,7 +87,7 @@ class TracksController(MediaControllerBase[Track]):
                     lazy=lazy,
                     details=None if isinstance(track.album, ItemMapping) else track.album,
                     add_to_library=add_to_library,
-                    skip_metadata_lookup=skip_metadata_lookup,
+                    **kwargs,
                 )
             elif provider_instance_id_or_domain == "library":
                 # grab the first album this track is attached to
@@ -116,13 +117,15 @@ class TracksController(MediaControllerBase[Track]):
                     lazy=lazy,
                     details=None if isinstance(artist, ItemMapping) else artist,
                     add_to_library=add_to_library,
-                    skip_metadata_lookup=skip_metadata_lookup,
+                    **kwargs,
                 )
             )
         track.artists = full_artists
         return track
 
-    async def add_item_to_library(self, item: Track, skip_metadata_lookup: bool = False) -> Track:
+    async def add_item_to_library(
+        self, item: Track, metadata_lookup: bool = True, **kwargs: dict[str, Any]  # noqa: ARG002
+    ) -> Track:
         """Add track to library and return the new database item."""
         if not isinstance(item, Track):
             raise InvalidDataError("Not a valid Track object (ItemMapping can not be added to db)")
@@ -160,7 +163,7 @@ class TracksController(MediaControllerBase[Track]):
                 for artist in item.album.artists
             ]
         # grab additional metadata
-        if not skip_metadata_lookup:
+        if not metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
         # fallback track image from album (only if albumtype = single)
         if (
@@ -177,7 +180,7 @@ class TracksController(MediaControllerBase[Track]):
         async with self._db_add_lock:
             library_item = await self._add_library_item(item)
         # also fetch same track on all providers (will also get other quality versions)
-        if not skip_metadata_lookup:
+        if not metadata_lookup:
             await self._match(library_item)
             library_item = await self.get_library_item(library_item.item_id)
         self.mass.signal_event(
@@ -448,7 +451,8 @@ class TracksController(MediaControllerBase[Track]):
                 lazy=False,
                 details=album,
                 add_to_library=True,
-                skip_metadata_lookup=True,
+                metadata_lookup=False,
+                add_album_tracks=False,
             )
         album_mapping = {"track_id": db_id, "album_id": int(db_album.item_id)}
         if db_row := await self.mass.music.database.get_row(DB_TABLE_ALBUM_TRACKS, album_mapping):

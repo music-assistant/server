@@ -53,9 +53,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
 
-    async def add_item_to_library(
-        self, item: Playlist, skip_metadata_lookup: bool = False
-    ) -> Playlist:
+    async def add_item_to_library(self, item: Playlist, metadata_lookup: bool = True) -> Playlist:
         """Add playlist to library and return the new database item."""
         if not isinstance(item, Playlist):
             raise InvalidDataError(
@@ -72,7 +70,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async for _ in self.tracks(item.item_id, item.provider):
             pass
         # metadata lookup we need to do after adding it to the db
-        if not skip_metadata_lookup:
+        if not metadata_lookup:
             await self.mass.metadata.get_playlist_metadata(library_item)
             library_item = await self.update_item_in_library(library_item.item_id, library_item)
         self.mass.signal_event(

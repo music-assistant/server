@@ -46,9 +46,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
-    async def add_item_to_library(
-        self, item: ItemCls, skip_metadata_lookup: bool = False
-    ) -> ItemCls:
+    async def add_item_to_library(self, item: ItemCls, **kwargs: dict[str, Any]) -> ItemCls:
         """Add item to library and return the database item."""
         raise NotImplementedError
 
@@ -155,7 +153,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         lazy: bool = True,
         details: ItemCls = None,
         add_to_library: bool = False,
-        skip_metadata_lookup: bool = False,
+        **kwargs: dict[str, Any],
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         if provider_instance_id_or_domain == "database":
@@ -206,10 +204,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # we can set lazy to false and we await the job to complete.
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
         add_task = self.mass.create_task(
-            self.add_item_to_library,
-            item=details,
-            skip_metadata_lookup=skip_metadata_lookup,
-            task_id=task_id,
+            self.add_item_to_library, item=details, task_id=task_id, **kwargs
         )
         if not lazy:
             await add_task
@@ -691,7 +686,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # try to request the full item
         with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
             db_artist = await self.mass.music.artists.add_item_to_library(
-                artist, skip_metadata_lookup=True
+                artist, metadata_lookup=False
             )
             return ItemMapping.from_item(db_artist)
         # fallback to just the provider item

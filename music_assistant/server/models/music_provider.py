@@ -410,13 +410,19 @@ class MusicProvider(Provider):
                     prov_item.provider_mappings,
                 )
                 try:
+                    if not library_item and not prov_item.available:
+                        # skip unavailable tracks
+                        self.logger.debg(
+                            "Skipping sync of item %s because it is unavailable", prov_item.uri
+                        )
+                        continue
                     if not library_item:
                         # create full db item
                         # note that we skip the metadata lookup purely to speed up the sync
                         # the additional metadata is then lazy retrieved afterwards
                         prov_item.favorite = True
                         library_item = await controller.add_item_to_library(
-                            prov_item, skip_metadata_lookup=True
+                            prov_item, metadata_lookup=False
                         )
                     elif (
                         library_item.metadata.checksum and prov_item.metadata.checksum

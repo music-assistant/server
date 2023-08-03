@@ -4,7 +4,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from random import choice, random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -65,7 +65,7 @@ class AlbumsController(MediaControllerBase[Album]):
         lazy: bool = True,
         details: Album | ItemMapping = None,
         add_to_library: bool = False,
-        skip_metadata_lookup: bool = False,
+        **kwargs: dict[str, Any],
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
@@ -75,7 +75,7 @@ class AlbumsController(MediaControllerBase[Album]):
             lazy=lazy,
             details=details,
             add_to_library=add_to_library,
-            skip_metadata_lookup=skip_metadata_lookup,
+            **kwargs,
         )
         # append full artist details to full album item
         album.artists = [
@@ -85,12 +85,19 @@ class AlbumsController(MediaControllerBase[Album]):
                 lazy=lazy,
                 details=item,
                 add_to_library=add_to_library,
+                **kwargs,
             )
             for item in album.artists
         ]
         return album
 
-    async def add_item_to_library(self, item: Album, skip_metadata_lookup: bool = False) -> Album:
+    async def add_item_to_library(
+        self,
+        item: Album,
+        metadata_lookup: bool = True,
+        add_album_tracks: bool = True,
+        **kwargs: dict[str, Any],  # noqa: ARG002
+    ) -> Album:
         """Add album to library and return the database item."""
         if not isinstance(item, Album):
             raise InvalidDataError("Not a valid Album object (ItemMapping can not be added to db)")
@@ -108,24 +115,24 @@ class AlbumsController(MediaControllerBase[Album]):
         if not item.artists:
             raise InvalidDataError("Album is missing artist(s)")
         # grab additional metadata
-        if not skip_metadata_lookup:
+        if not metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
             library_item = await self._add_library_item(item)
         # also fetch the same album on all providers
-        if not skip_metadata_lookup:
+        if not metadata_lookup:
             await self._match(library_item)
             library_item = await self.get_library_item(library_item.item_id)
         # also add album tracks
-        if not skip_metadata_lookup and item.provider != "library":
+        if add_album_tracks and item.provider != "library":
             async with asyncio.TaskGroup() as tg:
                 for track in await self._get_provider_album_tracks(item.item_id, item.provider):
                     track.album = library_item
                     tg.create_task(
                         self.mass.music.tracks.add_item_to_library(
-                            track, skip_metadata_lookup=skip_metadata_lookup
+                            track, metadata_lookup=metadata_lookup
                         )
                     )
         self.mass.signal_event(

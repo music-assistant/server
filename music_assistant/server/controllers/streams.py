@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import urllib.parse
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -414,8 +415,11 @@ class StreamsController(CoreController):
             query_params["seek_position"] = str(seek_position)
         if fade_in:
             query_params["fade_in"] = "1"
-        if query_params:
-            url += "?" + urllib.parse.urlencode(query_params)
+        # we add a timestamp as basic checksum
+        # most importantly this is to invalidate any caches
+        # but also to handle edge cases such as single track repeat
+        query_params["ts"] = str(int(time.time()))
+        url += "?" + urllib.parse.urlencode(query_params)
         return url
 
     async def create_multi_client_stream_job(
