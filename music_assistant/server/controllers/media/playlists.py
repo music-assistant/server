@@ -70,7 +70,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async for _ in self.tracks(item.item_id, item.provider):
             pass
         # metadata lookup we need to do after adding it to the db
-        if not metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_playlist_metadata(library_item)
             library_item = await self.update_item_in_library(library_item.item_id, library_item)
         self.mass.signal_event(

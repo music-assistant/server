@@ -68,7 +68,7 @@ class RadioController(MediaControllerBase[Radio]):
             raise InvalidDataError("Not a valid Radio object (ItemMapping can not be added to db)")
         if not item.provider_mappings:
             raise InvalidDataError("Radio is missing provider mapping(s)")
-        if not metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_radio_metadata(item)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice

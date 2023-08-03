@@ -128,7 +128,7 @@ class TracksController(MediaControllerBase[Track]):
         if not item.provider_mappings:
             raise InvalidDataError("Track is missing provider mapping(s)")
         # grab additional metadata
-        if not metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
         # fallback track image from album (only if albumtype = single)
         if (
@@ -145,7 +145,7 @@ class TracksController(MediaControllerBase[Track]):
         async with self._db_add_lock:
             library_item = await self._add_library_item(item)
         # also fetch same track on all providers (will also get other quality versions)
-        if not metadata_lookup:
+        if metadata_lookup:
             await self._match(library_item)
             library_item = await self.get_library_item(library_item.item_id)
         self.mass.signal_event(

@@ -100,14 +100,14 @@ class AlbumsController(MediaControllerBase[Album]):
         if not item.provider_mappings:
             raise InvalidDataError("Album is missing provider mapping(s)")
         # grab additional metadata
-        if not metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
             library_item = await self._add_library_item(item)
         # also fetch the same album on all providers
-        if not metadata_lookup:
+        if metadata_lookup:
             await self._match(library_item)
             library_item = await self.get_library_item(library_item.item_id)
         # also add album tracks

@@ -64,14 +64,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         if isinstance(item, ItemMapping):
             metadata_lookup = True
         # grab musicbrainz id and additional metadata
-        if not metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_artist_metadata(item)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
         async with self._db_add_lock:
             library_item = await self._add_library_item(item)
         # also fetch same artist on all providers
-        if not metadata_lookup:
+        if metadata_lookup:
             await self.match_artist(library_item)
             library_item = await self.get_library_item(library_item.item_id)
         self.mass.signal_event(
