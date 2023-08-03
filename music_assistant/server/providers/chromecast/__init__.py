@@ -441,8 +441,10 @@ class ChromecastProvider(PlayerProvider):
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
         # enqueue next item if needed
-        if castplayer.player.state == PlayerState.PLAYING and (
-            not castplayer.next_url or castplayer.next_url == castplayer.player.current_url
+        if (
+            castplayer.player.state == PlayerState.PLAYING
+            and castplayer.player.active_source == castplayer.player.player_id
+            and castplayer.next_url in (None, castplayer.player.current_url)
         ):
             asyncio.run_coroutine_threadsafe(self._enqueue_next_track(castplayer), self.mass.loop)
         # handle end of MA queue - set current item to None
