@@ -62,7 +62,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> Artist:
         """Add artist to library and return the database item."""
         if isinstance(item, ItemMapping):
-            metadata_lookup = True
+            metadata_lookup = False
         # grab musicbrainz id and additional metadata
         if metadata_lookup:
             await self.mass.metadata.get_artist_metadata(item)
