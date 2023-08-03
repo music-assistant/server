@@ -326,7 +326,9 @@ class PlexProvider(MusicProvider):
 
         album.artists.append(
             self._get_item_mapping(
-                type=MediaType.ARTIST, url=plex_album.parentKey, provider=plex_album.parentTitle
+                media_type=MediaType.ARTIST,
+                url=plex_album.parentKey,
+                provider=plex_album.parentTitle,
             )
         )
         return album
