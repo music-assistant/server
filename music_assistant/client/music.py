@@ -8,7 +8,6 @@ from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
-    BrowseFolder,
     MediaItemType,
     PagedItems,
     Playlist,
@@ -457,11 +456,12 @@ class Music:
     async def browse(
         self,
         path: str | None = None,
-    ) -> BrowseFolder:
+    ) -> list[MediaItemType]:
         """Browse Music providers."""
-        return BrowseFolder.from_dict(
-            await self.client.send_command("music/browse", path=path),
-        )
+        return [
+            media_from_dict(item)
+            for item in await self.client.send_command("music/browse", path=path)
+        ]
 
     async def search(
         self, search_query: str, media_types: tuple[MediaType] = MediaType.ALL, limit: int = 25

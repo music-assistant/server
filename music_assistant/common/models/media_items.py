@@ -380,8 +380,6 @@ class BrowseFolder(MediaItem):
     path: str = ""
     # label: a labelid that needs to be translated by the frontend
     label: str = ""
-    # subitems of this folder when expanding
-    items: list[MediaItemType | BrowseFolder] | None = None
     provider_mappings: set[ProviderMapping] = field(default_factory=set)
 
     def __post_init__(self):
@@ -437,6 +435,8 @@ class SearchResults(DataClassDictMixin):
 
 def media_from_dict(media_item: dict) -> MediaItemType:
     """Return MediaItem from dict."""
+    if "provider_mappings" not in media_item:
+        return ItemMapping.from_dict(media_item)
     if media_item["media_type"] == "artist":
         return Artist.from_dict(media_item)
     if media_item["media_type"] == "album":
