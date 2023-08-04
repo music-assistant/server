@@ -764,9 +764,14 @@ class SlimprotoProvider(PlayerProvider):
     async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
         player_id = client.player_id
+        self.logger.warning("Player %s connected", client.name or player_id)
         if existing := self._socket_clients.pop(player_id, None):
             # race condition: new socket client connected while
             # the old one has not yet been cleaned up
+            self.logger.warning(
+                "Player %s connected while previous session still existing!",
+                client.name or player_id,
+            )
             with suppress(RuntimeError):
                 existing.disconnect()
 
@@ -797,6 +802,10 @@ class SlimprotoProvider(PlayerProvider):
             # store last state in cache
             await self.mass.cache.set(
                 f"{CACHE_KEY_PREV_STATE}.{player_id}", (client.powered, client.volume_level)
+            )
+            self.logger.warning(
+                "Player %s disconnected",
+                client.name or player_id,
             )
         if player := self.mass.players.get(player_id):
             player.available = False
