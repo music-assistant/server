@@ -31,7 +31,9 @@ from music_assistant.common.models.media_items import (
     BrowseFolder,
     ContentType,
     ImageType,
+    ItemMapping,
     MediaItemImage,
+    MediaItemType,
     MediaType,
     Playlist,
     PlaylistTrack,
@@ -237,24 +239,21 @@ class FileSystemProviderBase(MusicProvider):
             ).items
         return result
 
-    async def browse(self, path: str) -> BrowseFolder:
+    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        _, item_path = path.split("://")
+        item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
-        subitems = []
         async for item in self.listdir(item_path, recursive=False):
             if item.is_dir:
-                subitems.append(
-                    BrowseFolder(
-                        item_id=item.path,
-                        provider=self.instance_id,
-                        path=f"{self.instance_id}://{item.path}",
-                        name=item.name,
-                    )
+                yield BrowseFolder(
+                    item_id=item.path,
+                    provider=self.instance_id,
+                    path=f"{self.instance_id}://{item.path}",
+                    name=item.name,
                 )
                 continue
 
@@ -263,40 +262,20 @@ class FileSystemProviderBase(MusicProvider):
                 continue
 
             if item.ext in TRACK_EXTENSIONS:
-                if library_item := await self.mass.music.tracks.get_library_item_by_prov_id(
-                    item.path, self.instance_id
-                ):
-                    subitems.append(library_item)
-                elif track := await self.get_track(item.path):
-                    # make sure that the item exists
-                    # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    library_item = await self.mass.music.tracks.add_item_to_library(
-                        track, metadata_lookup=False
-                    )
-                    subitems.append(library_item)
+                yield ItemMapping(
+                    media_type=MediaType.TRACK,
+                    item_id=item.path,
+                    provider=self.instance_id,
+                    name=item.name,
+                )
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
-                if library_item := await self.mass.music.playlists.get_library_item_by_prov_id(
-                    item.path, self.instance_id
-                ):
-                    subitems.append(library_item)
-                elif playlist := await self.get_playlist(item.path):
-                    # make sure that the item exists
-                    # https://github.com/music-assistant/hass-music-assistant/issues/707
-                    library_item = await self.mass.music.playlists.add_item_to_library(
-                        playlist, metadata_lookup=False
-                    )
-                    subitems.append(library_item)
-                continue
-
-        return BrowseFolder(
-            item_id=item_path,
-            provider=self.instance_id,
-            path=path,
-            name=item_path or self.name,
-            # make sure to sort the resulting listing
-            items=sorted(subitems, key=lambda x: (x.name.casefold(), x.name)),
-        )
+                yield ItemMapping(
+                    media_type=MediaType.PLAYLIST,
+                    item_id=item.path,
+                    provider=self.instance_id,
+                    name=item.name,
+                )
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:  # noqa: ARG002
         """Run library sync for this provider."""
