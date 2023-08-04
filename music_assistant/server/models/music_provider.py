@@ -412,7 +412,7 @@ class MusicProvider(Provider):
                 try:
                     if not library_item and not prov_item.available:
                         # skip unavailable tracks
-                        self.logger.debg(
+                        self.logger.debug(
                             "Skipping sync of item %s because it is unavailable", prov_item.uri
                         )
                         continue

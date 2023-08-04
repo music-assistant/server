@@ -75,7 +75,7 @@ PLAYER_CONFIG_ENTRIES = (
         advanced=True,
     ),
     ConfigEntry.from_dict(
-        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "pcm", "hidden": True}
+        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
     ),
 )
 
@@ -431,9 +431,9 @@ class AirplayProvider(PlayerProvider):
 
         # set codecs and sample rate to airplay default
         common_elem = xml_root.find("common")
-        common_elem.find("codecs").text = "pcm"
+        common_elem.find("codecs").text = "flc,pcm"
         common_elem.find("sample_rate").text = "44100"
-        common_elem.find("resample").text = "0"
+        common_elem.find("resample").text = "1"
         common_elem.find("player_volume").text = "20"
 
         # default values for players

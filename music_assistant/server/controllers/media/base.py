@@ -253,7 +253,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         else:
             items = searchresult.radio
         # store (serializable items) in cache
-        if not prov.domain.startswith("filesystem"):  # do not cache filesystem results
+        if prov.is_streaming_provider:  # do not cache filesystem results
             self.mass.create_task(
                 self.mass.cache.set(cache_key, [x.to_dict() for x in items], expiration=86400 * 7)
             )
@@ -717,8 +717,4 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 "version": db_row_dict["album_version"],
             }
             db_row_dict["album"] = ItemMapping.from_dict(db_row_dict["album"])
-            if not db_row_dict["metadata"]["images"]:
-                # copy album image in case the track has no image
-                album_metadata = json_loads(db_row_dict["album_metadata"])
-                db_row_dict["metadata"]["images"] = album_metadata["images"]
         return db_row_dict

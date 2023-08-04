@@ -441,10 +441,20 @@ class ChromecastProvider(PlayerProvider):
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
         # enqueue next item if needed
-        if castplayer.player.state == PlayerState.PLAYING and (
-            not castplayer.next_url or castplayer.next_url == castplayer.player.current_url
+        if (
+            castplayer.player.state == PlayerState.PLAYING
+            and castplayer.player.active_source == castplayer.player.player_id
+            and castplayer.next_url in (None, castplayer.player.current_url)
         ):
             asyncio.run_coroutine_threadsafe(self._enqueue_next_track(castplayer), self.mass.loop)
+        # handle end of MA queue - set current item to None
+        if (
+            castplayer.player.state == PlayerState.IDLE
+            and castplayer.player.current_url
+            and (queue := self.mass.player_queues.get(castplayer.player_id))
+            and queue.next_item is None
+        ):
+            castplayer.player.current_url = None
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
@@ -583,7 +593,7 @@ class ChromecastProvider(PlayerProvider):
                 "artist": queue_item.media_item.artists[0].name
                 if queue_item.media_item.artists
                 else "",
-                "title": queue_item.name,
+                "title": queue_item.media_item.name,
                 "images": [{"url": image_url}] if image_url else None,
             }
         else:

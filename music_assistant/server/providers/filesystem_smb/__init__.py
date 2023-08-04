@@ -136,7 +136,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             await makedirs(self.base_path)
 
         try:
-            await self.unmount()
+            # do unmount first to cleanup any unexpected state
+            await self.unmount(ignore_error=True)
             await self.mount()
         except Exception as err:
             raise LoginFailed(f"Connection failed for the given details: {err}") from err
@@ -193,7 +194,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         if proc.returncode != 0:
             raise LoginFailed(f"SMB mount failed with error: {stderr.decode()}")
 
-    async def unmount(self) -> None:
+    async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
         proc = await asyncio.create_subprocess_shell(
             f"umount {self.base_path}",
@@ -201,5 +202,5 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
-        if proc.returncode != 0:
+        if proc.returncode != 0 and not ignore_error:
             self.logger.warning("SMB unmount failed with error: %s", stderr.decode())

@@ -254,7 +254,8 @@ class SonosPlayerProvider(PlayerProvider):
             for player_id in list(self.sonosplayers):
                 player = self.sonosplayers.pop(player_id)
                 player.player.available = False
-                player.soco.end_direct_control_session()
+                if player.soco.is_coordinator:
+                    player.soco.end_direct_control_session()
         self.sonosplayers = None
 
     def on_player_config_changed(
@@ -620,9 +621,10 @@ class SonosPlayerProvider(PlayerProvider):
             self.mass.players.update(sonos_player.player_id)
 
         # enqueue next item if needed
-        if sonos_player.player.state == PlayerState.PLAYING and (
-            sonos_player.next_url is None
-            or sonos_player.next_url == sonos_player.player.current_url
+        if (
+            sonos_player.player.state == PlayerState.PLAYING
+            and sonos_player.player.active_source == sonos_player.player.player_id
+            and sonos_player.next_url in (None, sonos_player.player.current_url)
         ):
             self.mass.create_task(self._enqueue_next_track(sonos_player))
 

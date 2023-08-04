@@ -633,8 +633,8 @@ class DLNAPlayerProvider(PlayerProvider):
         # enqueue next item if needed
         if (
             dlna_player.player.state == PlayerState.PLAYING
-            and dlna_player.player.player_id in current_url
-            and (not dlna_player.next_url or dlna_player.next_url == current_url)
+            and dlna_player.player.active_source == dlna_player.player.player_id
+            and dlna_player.next_url in (None, dlna_player.player.current_url)
             # prevent race conditions at start/stop by doing this check
             and (time.time() - dlna_player.last_command) > 4
         ):
