@@ -421,6 +421,9 @@ class UniversalGroupProvider(PlayerProvider):
 
         # if the last player of a group turned off, turn off the group
         if len(powered_childs) == 0:
+            self.logger.debug(
+                "Group %s has no more powered members, turning off group player", player_id
+            )
             self.mass.create_task(self.cmd_power, player_id, False)
             return False
 
@@ -444,11 +447,17 @@ class UniversalGroupProvider(PlayerProvider):
             ):
                 # prevent resume when player platform supports sync
                 # and one of its players is already playing
+                self.logger.debug(
+                    "Groupplayer %s forced resync due to groupmember change", player_id
+                )
                 self.mass.create_task(
                     self.mass.players.cmd_sync, child_player.player_id, sync_leader
                 )
             else:
-                # send atcive source because the group may be within another group
+                # send active source because the group may be within another group
+                self.logger.debug(
+                    "Groupplayer %s forced resume due to groupmember change", player_id
+                )
                 self.mass.create_task(self.mass.player_queues.resume, group_player.active_source)
         elif (
             not new_power
@@ -459,6 +468,7 @@ class UniversalGroupProvider(PlayerProvider):
             # a sync master player turned OFF while the group player
             # should still be playing - we need to resync/resume
             # send atcive source because the group may be within another group
+            self.logger.debug("Groupplayer %s forced resume due to groupmember change", player_id)
             self.mass.create_task(self.mass.player_queues.resume, group_player.active_source)
 
     def _get_active_members(

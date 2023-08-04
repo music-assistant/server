@@ -271,6 +271,7 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
+        self.logger.debug("Processing STOP command for player %s", player_id)
         player_id = self._check_redirect(player_id)
         if player_provider := self.get_player_provider(player_id):
             await player_provider.cmd_stop(player_id)
@@ -281,6 +282,7 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
+        self.logger.debug("Processing PLAY command for player %s", player_id)
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_play(player_id)
@@ -291,6 +293,7 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
+        self.logger.debug("Processing PAUSE command for player %s", player_id)
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_pause(player_id)
@@ -335,6 +338,9 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         - powered: bool if player should be powered on or off.
         """
+        self.logger.debug(
+            "Processing POWER %s command for player %s", "ON" if powered else "OFF", player_id
+        )
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
 
@@ -404,6 +410,7 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         - volume_level: volume level (0..100) to set on the player.
         """
+        self.logger.debug("Processing VOLUME_SET command for player %s", player_id)
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
         if player.type == PlayerType.GROUP:
@@ -468,6 +475,7 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         - muted: bool if player should be muted.
         """
+        self.logger.debug("Processing VOLUME_MUTE command for player %s", player_id)
         player = self.get(player_id, True)
         assert player
         if PlayerFeature.VOLUME_MUTE not in player.supported_features:
@@ -499,6 +507,7 @@ class PlayerController(CoreController):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
+        self.logger.debug("Processing SYNC command for player %s", player_id)
         child_player = self.get(player_id, True)
         parent_player = self.get(target_player, True)
         assert child_player
@@ -541,6 +550,7 @@ class PlayerController(CoreController):
 
             - player_id: player_id of the player to handle the command.
         """
+        self.logger.debug("Processing UNSYNC command for player %s", player_id)
         player = self.get(player_id, True)
         if PlayerFeature.SYNC not in player.supported_features:
             raise UnsupportedFeaturedException(f"Player {player.name} does not support syncing")
