@@ -37,7 +37,7 @@ server = [
   "python-slugify==8.0.1",
   "mashumaro==3.8.1",
   "memory-tempfile==2.2.3",
-  "music-assistant-frontend==2.0.10",
+  "music-assistant-frontend==2.0.11",
   "pillow==10.0.0",
   "unidecode==1.3.6",
   "xmltodict==0.13.0",
