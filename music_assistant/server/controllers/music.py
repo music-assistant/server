@@ -5,6 +5,7 @@ import asyncio
 import os
 import shutil
 import statistics
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
@@ -255,32 +256,35 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(self, path: str | None = None) -> BrowseFolder:
+    async def browse(self, path: str | None = None) -> AsyncGenerator[MediaItemType, None]:
         """Browse Music providers."""
-        # root level; folder per provider
         if not path or path == "root":
-            return BrowseFolder(
-                item_id="root",
-                provider="library",
-                path="root",
-                label="browse",
-                name="",
-                items=[
-                    BrowseFolder(
-                        item_id="root",
-                        provider=prov.domain,
-                        path=f"{prov.instance_id}://",
-                        uri=f"{prov.instance_id}://",
-                        name=prov.name,
-                    )
-                    for prov in self.providers
-                    if ProviderFeature.BROWSE in prov.supported_features
-                ],
-            )
+            # root level; folder per provider
+            for prov in self.providers:
+                if ProviderFeature.BROWSE not in prov.supported_features:
+                    continue
+                yield BrowseFolder(
+                    item_id="root",
+                    provider=prov.domain,
+                    path=f"{prov.instance_id}://",
+                    uri=f"{prov.instance_id}://",
+                    name=prov.name,
+                )
+            return
+
         # provider level
-        provider_instance = path.split("://", 1)[0]
+        provider_instance, sub_path = path.split("://", 1)
         prov = self.mass.get_provider(provider_instance)
-        return await prov.browse(path)
+        # handle regular provider listing, always add back folder first
+        if not prov or not sub_path:
+            yield BrowseFolder(item_id="root", provider="library", path="root", name="..")
+        else:
+            back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
+            yield BrowseFolder(
+                item_id="back", provider=provider_instance, path=back_path, name=".."
+            )
+        async for item in prov.browse(path):
+            yield item
 
     @api_command("music/recently_played_items")
     async def recently_played(
