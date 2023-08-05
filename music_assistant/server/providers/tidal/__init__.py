@@ -616,6 +616,13 @@ class TidalProvider(MusicProvider):
                     track.metadata.lyrics = lyrics_obj.text
             except Exception:
                 self.logger.info(f"Track {track_obj.id} has no available lyrics")
+        if not track.image and track_obj.album and (image_url := track_obj.album.image(640, None)):
+            track.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                )
+            ]
         return track
 
     async def _parse_playlist(
