@@ -38,7 +38,6 @@ from music_assistant.common.models.media_items import (
     Playlist,
     PlaylistTrack,
     ProviderMapping,
-    Radio,
     SearchResults,
     StreamDetails,
     Track,
@@ -450,7 +449,9 @@ class FileSystemProviderBase(MusicProvider):
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get playlist tracks for given playlist id."""
         if not await self.exists(prov_playlist_id):
             raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
@@ -480,7 +481,7 @@ class FileSystemProviderBase(MusicProvider):
 
     async def _parse_playlist_line(
         self, line: str, playlist_path: str, position: int
-    ) -> Track | Radio | None:
+    ) -> PlaylistTrack | None:
         """Try to parse a track from a playlist line."""
         try:
             if "://" in line:
@@ -488,7 +489,6 @@ class FileSystemProviderBase(MusicProvider):
                 media_item = await self.mass.music.get_item_by_uri(line)
                 if isinstance(media_item, Track):
                     return PlaylistTrack.from_dict({**media_item.to_dict(), "position": position})
-                return media_item
 
             # if a relative path was given in an upper level from the playlist,
             # try to resolve it

@@ -274,8 +274,11 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
         for count, deezer_track in enumerate(playlist.tracks, start=1):
-            track = self.parse_track(track=deezer_track, user_country=self.gw_client.user_country)
-            track.position = count
+            track = self.parse_track(
+                track=deezer_track,
+                user_country=self.gw_client.user_country,
+                extra_init_kwargs={"position": count},
+            )
             yield track
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
