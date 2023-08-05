@@ -47,7 +47,7 @@ PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
         key="read_ahead",
         type=ConfigEntryType.INTEGER,
-        range=(0, 2000),
+        range=(200, 3000),
         default_value=1000,
         label="Read ahead buffer",
         description="Sets the number of milliseconds of audio buffer in the player. "
@@ -433,8 +433,11 @@ class AirplayProvider(PlayerProvider):
         common_elem = xml_root.find("common")
         common_elem.find("codecs").text = "flc,pcm"
         common_elem.find("sample_rate").text = "44100"
-        common_elem.find("resample").text = "1"
-        common_elem.find("player_volume").text = "20"
+        common_elem.find("resample").text = "0"
+        common_elem.find("player_volume").text = "-1"
+        common_elem.find("prevent_playback").text = "off"
+        common_elem.find("remove_timeout").text = "1800"
+        common_elem.find("read_ahead").text = "1000"
 
         # default values for players
         for conf_entry in PLAYER_CONFIG_ENTRIES:
