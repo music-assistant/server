@@ -100,3 +100,13 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           build-args: |
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
+
+  addon-version-update:
+    name: Server repo PR
+    needs: build-and-publish-pypi
+    runs-on: ubuntu-latest
+    steps:
+      - uses: music-assistant/addon-update-action@main
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          new_release_version: ${{ needs.build-and-publish-pypi.outputs.version }}
