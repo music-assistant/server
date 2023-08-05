@@ -627,7 +627,6 @@ class SlimprotoProvider(PlayerProvider):
         player = self.mass.players.get(client.player_id)
         self.logger.error("Player %s ran out of buffer", player.display_name)
         player.state = PlayerState.IDLE
-        player.powered = False
         self.mass.players.update(client.player_id)
 
     def _handle_client_sync(self, client: SlimClient) -> None:
