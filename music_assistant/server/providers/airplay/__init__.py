@@ -429,15 +429,15 @@ class AirplayProvider(PlayerProvider):
             await self._check_config_xml(True)
             return
 
-        # set codecs and sample rate to airplay default
+        # set common/global values
         common_elem = xml_root.find("common")
-        common_elem.find("codecs").text = "flc,pcm"
-        common_elem.find("sample_rate").text = "44100"
-        common_elem.find("resample").text = "0"
-        common_elem.find("player_volume").text = "-1"
-        common_elem.find("prevent_playback").text = "off"
-        common_elem.find("remove_timeout").text = "1800"
-        common_elem.find("read_ahead").text = "1000"
+        for key, value in {
+            "codecs": "flc,pcm",
+            "sample_rate": "44100",
+            "resample": "0",
+        }.items():
+            xml_elem = common_elem.find(key)
+            xml_elem.text = value
 
         # default values for players
         for conf_entry in PLAYER_CONFIG_ENTRIES:
@@ -466,6 +466,18 @@ class AirplayProvider(PlayerProvider):
             device_elem.find("name").text = udn_name
             device_elem.find("enabled").text = "1" if raw_player_conf["enabled"] else "0"
 
+            # set some values that are not (yet) configurable
+            for key, value in {
+                "player_volume": "-1",
+                "prevent_playback": "off",
+                "remove_timeout": "1800",
+            }.items():
+                xml_elem = device_elem.find(key)
+                if xml_elem is None:
+                    xml_elem = ET.SubElement(device_elem, key)
+                xml_elem.text = value
+
+            # set values based on config entries
             for conf_entry in PLAYER_CONFIG_ENTRIES:
                 if conf_entry.type == ConfigEntryType.LABEL:
                     continue
@@ -480,7 +492,8 @@ class AirplayProvider(PlayerProvider):
 
         # save config file
         async with aiofiles.open(self._config_file, "w") as _file:
-            await _file.write(ET.tostring(xml_root).decode())
+            xml_str = ET.tostring(xml_root)
+            await _file.write(xml_str.decode())
 
     async def _log_reader(self) -> None:
         """Read log output from bridge process."""
