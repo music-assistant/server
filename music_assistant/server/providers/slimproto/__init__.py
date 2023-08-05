@@ -48,7 +48,7 @@ CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
-MIN_REQ_PLAYPOINTS = 4  # we need at least 4 measurements
+MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
 ENABLE_EXPERIMENTAL_SYNC_JOIN = False  # WIP
 
 # TODO: Implement display support
