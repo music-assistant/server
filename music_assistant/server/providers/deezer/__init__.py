@@ -74,14 +74,8 @@ SUPPORTED_FEATURES = (
 
 
 @dataclass
-class Credential:
+class DeezerCredentials:
     """Class for storing credentials."""
-
-    def __init__(self, app_id: int, app_secret: str, access_token: str):
-        """Set the correct things."""
-        self.app_id = app_id
-        self.app_secret = app_secret
-        self.access_token = access_token
 
     app_id: int
     app_secret: str
@@ -145,26 +139,24 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     client: deezer.Client
     gw_client: GWClient
-    creds: Credential
+    creds: DeezerCredentials
     _throttler: Throttler
     user: deezer.resources.User
 
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
         self._throttler = Throttler(rate_limit=50, period=5)
-        self.creds = Credential(
+        self.creds = DeezerCredentials(
             app_id=DEEZER_APP_ID,
             app_secret=DEEZER_APP_SECRET,
             access_token=self.config.get_value(CONF_ACCESS_TOKEN),  # type: ignore
         )
-        try:
-            self.client = deezer.Client(
-                app_id=self.creds.app_id,
-                app_secret=self.creds.app_secret,
-                access_token=self.creds.access_token,
-            )
-        except Exception as error:
-            raise LoginFailed("Invalid login credentials") from error
+
+        self.client = deezer.Client(
+            app_id=self.creds.app_id,
+            app_secret=self.creds.app_secret,
+            access_token=self.creds.access_token,
+        )
 
         self.user = await self.client.get_user()
 
@@ -289,7 +281,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
-        for count, deezer_track in enumerate(await playlist.get_tracks(), start=1):
+        playlist_tracks = await playlist.get_tracks()
+        for count, deezer_track in enumerate(playlist_tracks, start=1):
             track = await self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
@@ -551,25 +544,23 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     ) -> Track | PlaylistTrack | AlbumTrack:
         """Parse the deezer-python track to a MASS track."""
         try:
-            deezer_artist = await track.get_artist()
             artist = ItemMapping(
-                MediaType.ARTIST,
-                str(deezer_artist.id),
-                self.instance_id,
-                deezer_artist.name,
+                media_type=MediaType.ARTIST,
+                item_id=str(track.artist.id),
+                provider=self.instance_id,
+                name=track.artist.name,
             )
         except deezer.exceptions.DeezerErrorResponse:
             artist = ItemMapping(
-                MediaType.ARTIST,
-                self.instance_id,
+                media_type=MediaType.ARTIST,
+                provider=self.instance_id,
             )
         try:
-            deezer_album = await track.get_album()
             album = ItemMapping(
-                MediaType.ALBUM,
-                str(deezer_album.id),
-                self.instance_id,
-                deezer_album.title,
+                media_type=MediaType.ALBUM,
+                item_id=str(track.album.id),
+                provider=self.instance_id,
+                name=track.album.name,
             )
         except deezer.exceptions.DeezerErrorResponse:
             album = None
