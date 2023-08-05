@@ -437,6 +437,7 @@ class StreamsController(CoreController):
         if existing_job := self.multi_client_jobs.pop(queue_id, None):  # noqa: SIM102
             # cleanup existing job first
             if not existing_job.finished:
+                self.logger.warning("Detected existing (running) stream job for queue %s", queue_id)
                 existing_job.stop()
         queue_player = self.mass.players.get(queue_id)
         pcm_bit_depth = 24 if queue_player.supports_24bit else 16
