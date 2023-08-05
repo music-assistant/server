@@ -178,7 +178,7 @@ class LmsCli:
         """Handle new connection on the legacy CLI."""
         # https://raw.githubusercontent.com/Logitech/slimserver/public/7.8/HTML/EN/html/docs/cli-api.html
         # https://github.com/elParaguayo/LMS-CLI-Documentation/blob/master/LMS-CLI.md
-        self.logger.info("Client connected on Telnet CLI")
+        self.logger.debug("Client connected on Telnet CLI")
         try:
             while True:
                 raw_request = await reader.readline()
