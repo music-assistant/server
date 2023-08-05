@@ -765,7 +765,7 @@ class SlimprotoProvider(PlayerProvider):
     async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
         player_id = client.player_id
-        self.logger.warning("Player %s connected", client.name or player_id)
+        self.logger.debug("Player %s connected", client.name or player_id)
         if existing := self._socket_clients.pop(player_id, None):
             # race condition: new socket client connected while
             # the old one has not yet been cleaned up
@@ -804,7 +804,7 @@ class SlimprotoProvider(PlayerProvider):
             await self.mass.cache.set(
                 f"{CACHE_KEY_PREV_STATE}.{player_id}", (client.powered, client.volume_level)
             )
-            self.logger.warning(
+            self.logger.info(
                 "Player %s disconnected",
                 client.name or player_id,
             )
@@ -847,16 +847,3 @@ class SlimprotoProvider(PlayerProvider):
         if sync_delay != 0:
             return current_millis - sync_delay
         return current_millis
-
-
-# class SlimClient(SlimClientOrg):
-#     """Patched SLIMProto socket client."""
-
-#     def _process_stat_stmo(self, data: bytes) -> None:  # noqa: ARG002
-#         """Process incoming stat STMo message: Output Underrun."""
-#         self.callback("output_underrun", self)
-
-# def _process_stat_stmf(self, data: bytes) -> None:  # noqa: ARG002
-#     """Process incoming stat STMf message (connection closed)."""
-#     self.logger.debug("STMf received - connection closed.")
-#     # we should ignore this event, its not relevant
