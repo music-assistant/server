@@ -511,6 +511,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def parse_playlist(self, playlist: deezer.Playlist) -> Playlist:
         """Parse the deezer-python playlist to a MASS playlist."""
+        creator = self.get_playlist_creator(playlist)
         return Playlist(
             item_id=str(playlist.id),
             provider=self.domain,
@@ -526,7 +527,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             metadata=MediaItemMetadata(
                 images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
             ),
-            is_editable=self.get_playlist_creator(playlist).id == self.user.id,
+            is_editable=creator.id == self.user.id,
+            owner=creator,
         )
 
     def get_playlist_creator(self, playlist: deezer.Playlist):
@@ -550,7 +552,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 provider=self.instance_id,
                 name=track.artist.name,
             )
-        except deezer.exceptions.DeezerErrorResponse:
+        except (deezer.exceptions.DeezerErrorResponse, AttributeError):
             artist = ItemMapping(
                 media_type=MediaType.ARTIST,
                 provider=self.instance_id,
@@ -562,7 +564,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 provider=self.instance_id,
                 name=track.album.name,
             )
-        except deezer.exceptions.DeezerErrorResponse:
+        except (deezer.exceptions.DeezerErrorResponse, AttributeError):
             album = None
         if extra_init_kwargs is None:
             extra_init_kwargs = {}
