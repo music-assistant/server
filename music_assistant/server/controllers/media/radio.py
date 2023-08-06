@@ -62,13 +62,13 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add_item_to_library(self, item: Radio, skip_metadata_lookup: bool = False) -> Radio:
+    async def add_item_to_library(self, item: Radio, metadata_lookup: bool = True) -> Radio:
         """Add radio to library and return the new database item."""
         if not isinstance(item, Radio):
             raise InvalidDataError("Not a valid Radio object (ItemMapping can not be added to db)")
         if not item.provider_mappings:
             raise InvalidDataError("Radio is missing provider mapping(s)")
-        if not skip_metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_radio_metadata(item)
         # actually add (or update) the item in the library db
         # use the lock to prevent a race condition of the same item being added twice
@@ -125,13 +125,24 @@ class RadioController(MediaControllerBase[Radio]):
         # try name matching
         match = {"name": item.name}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
-            cur_item = Radio.from_db_row(db_row)
+            cur_item = Radio.from_dict(self._parse_db_row(db_row))
             # existing item found: update it
             return await self.update_item_in_library(cur_item.item_id, item)
         # insert new item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
-        new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
+        new_item = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "favorite": item.favorite,
+                "metadata": serialize_to_json(item.metadata),
+                "provider_mappings": serialize_to_json(item.provider_mappings),
+                "timestamp_added": int(utc_timestamp()),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
         db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)

@@ -438,21 +438,23 @@ class QobuzProvider(MusicProvider):
     async def _parse_artist(self, artist_obj: dict):
         """Parse qobuz artist object to generic layout."""
         artist = Artist(
-            item_id=str(artist_obj["id"]), provider=self.domain, name=artist_obj["name"]
+            item_id=str(artist_obj["id"]),
+            provider=self.domain,
+            name=artist_obj["name"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_obj["id"]),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=artist_obj.get("url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'),
+                )
+            },
         )
         if artist.item_id == VARIOUS_ARTISTS_ID:
             artist.mbid = VARIOUS_ARTISTS_ID_MBID
             artist.name = VARIOUS_ARTISTS_NAME
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_obj["id"]),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=artist_obj.get("url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'),
-            )
-        )
         if img := self.__get_image(artist_obj):
-            artist.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
+            artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
@@ -468,23 +470,22 @@ class QobuzProvider(MusicProvider):
             provider=self.domain,
             name=name,
             version=version,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(album_obj["id"]),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=album_obj["streamable"] and album_obj["displayable"],
+                    barcode=album_obj["upc"],
+                    audio_format=AudioFormat(
+                        content_type=ContentType.FLAC,
+                        sample_rate=album_obj["maximum_sampling_rate"] * 1000,
+                        bit_depth=album_obj["maximum_bit_depth"],
+                    ),
+                    url=album_obj.get("url", f'https://open.qobuz.com/album/{album_obj["id"]}'),
+                )
+            },
         )
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(album_obj["id"]),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                available=album_obj["streamable"] and album_obj["displayable"],
-                barcode=album_obj["upc"],
-                audio_format=AudioFormat(
-                    content_type=ContentType.FLAC,
-                    sample_rate=album_obj["maximum_sampling_rate"] * 1000,
-                    bit_depth=album_obj["maximum_bit_depth"],
-                ),
-                url=album_obj.get("url", f'https://open.qobuz.com/album/{album_obj["id"]}'),
-            )
-        )
-
         album.artists.append(await self._parse_artist(artist_obj or album_obj["artist"]))
         if (
             album_obj.get("product_type", "") == "single"
@@ -503,7 +504,7 @@ class QobuzProvider(MusicProvider):
         if "genre" in album_obj:
             album.metadata.genres = {album_obj["genre"]["name"]}
         if img := self.__get_image(album_obj):
-            album.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
+            album.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
         if (released_at := album_obj.get("released_at")) and released_at != 0:
@@ -538,6 +539,21 @@ class QobuzProvider(MusicProvider):
             name=name,
             version=version,
             duration=track_obj["duration"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(track_obj["id"]),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=track_obj["streamable"] and track_obj["displayable"],
+                    audio_format=AudioFormat(
+                        content_type=ContentType.FLAC,
+                        sample_rate=track_obj["maximum_sampling_rate"] * 1000,
+                        bit_depth=track_obj["maximum_bit_depth"],
+                    ),
+                    url=track_obj.get("url", f'https://open.qobuz.com/track/{track_obj["id"]}'),
+                    isrc=track_obj.get("isrc"),
+                )
+            },
             **extra_init_kwargs,
         )
         if track_obj.get("performer") and "Various " not in track_obj["performer"]:
@@ -576,23 +592,8 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("parental_warning"):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):
-            track.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
+            track.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
 
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(track_obj["id"]),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                available=track_obj["streamable"] and track_obj["displayable"],
-                audio_format=AudioFormat(
-                    content_type=ContentType.FLAC,
-                    sample_rate=track_obj["maximum_sampling_rate"] * 1000,
-                    bit_depth=track_obj["maximum_bit_depth"],
-                ),
-                url=track_obj.get("url", f'https://open.qobuz.com/track/{track_obj["id"]}'),
-                isrc=track_obj.get("isrc"),
-            )
-        )
         return track
 
     async def _parse_playlist(self, playlist_obj):
@@ -602,23 +603,23 @@ class QobuzProvider(MusicProvider):
             provider=self.domain,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["name"],
-        )
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(playlist_obj["id"]),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=playlist_obj.get(
-                    "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
-                ),
-            )
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(playlist_obj["id"]),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=playlist_obj.get(
+                        "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
+                    ),
+                )
+            },
         )
         playlist.is_editable = (
             playlist_obj["owner"]["id"] == self._user_auth_info["user"]["id"]
             or playlist_obj["is_collaborative"]
         )
         if img := self.__get_image(playlist_obj):
-            playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
+            playlist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
         playlist.metadata.checksum = str(playlist_obj["updated_at"])
         return playlist
 

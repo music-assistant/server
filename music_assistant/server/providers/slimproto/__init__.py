@@ -48,7 +48,7 @@ CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
 # sync constants
 MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
-MIN_REQ_PLAYPOINTS = 4  # we need at least 4 measurements
+MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
 ENABLE_EXPERIMENTAL_SYNC_JOIN = False  # WIP
 
 # TODO: Implement display support
@@ -626,11 +626,8 @@ class SlimprotoProvider(PlayerProvider):
         """Process SlimClient Output Underrun Event."""
         player = self.mass.players.get(client.player_id)
         self.logger.error("Player %s ran out of buffer", player.display_name)
-        if player.synced_to:
-            # if player is synced, resync it
-            await self.cmd_sync(player.player_id, player.synced_to)
-        else:
-            await self.cmd_stop(client.player_id)
+        player.state = PlayerState.IDLE
+        self.mass.players.update(client.player_id)
 
     def _handle_client_sync(self, client: SlimClient) -> None:
         """Synchronize audio of a sync client."""
@@ -767,9 +764,14 @@ class SlimprotoProvider(PlayerProvider):
     async def _handle_connected(self, client: SlimClient) -> None:
         """Handle a client connected event."""
         player_id = client.player_id
+        self.logger.debug("Player %s connected", client.name or player_id)
         if existing := self._socket_clients.pop(player_id, None):
             # race condition: new socket client connected while
             # the old one has not yet been cleaned up
+            self.logger.warning(
+                "Player %s connected while previous session still existing!",
+                client.name or player_id,
+            )
             with suppress(RuntimeError):
                 existing.disconnect()
 
@@ -800,6 +802,10 @@ class SlimprotoProvider(PlayerProvider):
             # store last state in cache
             await self.mass.cache.set(
                 f"{CACHE_KEY_PREV_STATE}.{player_id}", (client.powered, client.volume_level)
+            )
+            self.logger.info(
+                "Player %s disconnected",
+                client.name or player_id,
             )
         if player := self.mass.players.get(player_id):
             player.available = False
@@ -840,16 +846,3 @@ class SlimprotoProvider(PlayerProvider):
         if sync_delay != 0:
             return current_millis - sync_delay
         return current_millis
-
-
-# class SlimClient(SlimClientOrg):
-#     """Patched SLIMProto socket client."""
-
-#     def _process_stat_stmo(self, data: bytes) -> None:  # noqa: ARG002
-#         """Process incoming stat STMo message: Output Underrun."""
-#         self.callback("output_underrun", self)
-
-# def _process_stat_stmf(self, data: bytes) -> None:  # noqa: ARG002
-#     """Process incoming stat STMf message (connection closed)."""
-#     self.logger.debug("STMf received - connection closed.")
-#     # we should ignore this event, its not relevant

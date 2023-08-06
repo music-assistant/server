@@ -17,7 +17,7 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import Playlist, Track
+from music_assistant.common.models.media_items import Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 
 from .base import MediaControllerBase
@@ -53,9 +53,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
 
-    async def add_item_to_library(
-        self, item: Playlist, skip_metadata_lookup: bool = False
-    ) -> Playlist:
+    async def add_item_to_library(self, item: Playlist, metadata_lookup: bool = True) -> Playlist:
         """Add playlist to library and return the new database item."""
         if not isinstance(item, Playlist):
             raise InvalidDataError(
@@ -72,7 +70,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async for _ in self.tracks(item.item_id, item.provider):
             pass
         # metadata lookup we need to do after adding it to the db
-        if not skip_metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_playlist_metadata(library_item)
             library_item = await self.update_item_in_library(library_item.item_id, library_item)
         self.mass.signal_event(
@@ -119,7 +117,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def tracks(
         self, item_id: str, provider_instance_id_or_domain: str, force_refresh: bool = False
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(
             item_id, provider_instance_id_or_domain, force_refresh=force_refresh
@@ -260,13 +258,26 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # try name matching
         match = {"name": item.name, "owner": item.owner}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
-            cur_item = Playlist.from_db_row(db_row)
+            cur_item = Playlist.from_dict(self._parse_db_row(db_row))
             # existing item found: update it
             return await self.update_item_in_library(cur_item.item_id, item)
         # insert new item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
-        new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
+        new_item = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "owner": item.owner,
+                "is_editable": item.is_editable,
+                "favorite": item.favorite,
+                "metadata": serialize_to_json(item.metadata),
+                "provider_mappings": serialize_to_json(item.provider_mappings),
+                "timestamp_added": int(utc_timestamp()),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
         db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
@@ -279,7 +290,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         cache_checksum: Any = None,
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Return album tracks for the given provider album id."""
         assert provider_instance_id_or_domain != "library"
         provider = self.mass.get_provider(provider_instance_id_or_domain)
@@ -289,7 +300,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cache_key = f"{provider.instance_id}.playlist.{item_id}.tracks"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             for track_dict in cache:
-                yield Track.from_dict(track_dict)
+                yield PlaylistTrack.from_dict(track_dict)
             return
         # no items in cache - get listing from provider
         all_items = []

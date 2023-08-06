@@ -15,7 +15,12 @@ from soco.events_base import SubscriptionBase
 from soco.groups import ZoneGroup
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+)
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -36,6 +41,8 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
 )
+
+CONF_NETWORK_SCAN = "network_scan"
 
 # set event listener port to something other than 1400
 # to allow coextistence with HA on the same host
@@ -65,7 +72,16 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            key=CONF_NETWORK_SCAN,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable network scan for discovery",
+            default_value=False,
+            description="Enable network scan for discovery of players. \n"
+            "Can be used if (some of) your players are not automatically discovered.",
+        ),
+    )
 
 
 @dataclass
@@ -139,6 +155,7 @@ class SonosPlayer:
         """Update attributes of the MA Player from soco.SoCo state."""
         now = time.time()
         # generic attributes (speaker_info)
+        self.player.available = True
         self.player.name = self.speaker_info["zone_name"]
         self.player.volume_level = int(self.rendering_control_info["volume"])
         self.player.volume_muted = self.rendering_control_info["mute"]
@@ -237,7 +254,8 @@ class SonosPlayerProvider(PlayerProvider):
             for player_id in list(self.sonosplayers):
                 player = self.sonosplayers.pop(player_id)
                 player.player.available = False
-                player.soco.end_direct_control_session()
+                if player.soco.is_coordinator:
+                    player.soco.end_direct_control_session()
         self.sonosplayers = None
 
     def on_player_config_changed(
@@ -325,7 +343,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
         if sonos_player.need_elapsed_time_workaround:
             # no pause allowed when radio/flow mode is active
-            await self.cmd_stop()
+            await self.cmd_stop(player_id)
             return
         await asyncio.to_thread(sonos_player.soco.pause)
 
@@ -393,7 +411,7 @@ class SonosPlayerProvider(PlayerProvider):
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
-    async def _run_discovery(self, allow_network_scan=False) -> None:
+    async def _run_discovery(self) -> None:
         """Discover Sonos players on the network."""
         if self._discovery_running:
             return
@@ -401,20 +419,13 @@ class SonosPlayerProvider(PlayerProvider):
             self._discovery_running = True
             self.logger.debug("Sonos discovery started...")
             discovered_devices: set[soco.SoCo] = await asyncio.to_thread(
-                soco.discover, allow_network_scan=allow_network_scan
+                soco.discover, allow_network_scan=self.config.get_value(CONF_NETWORK_SCAN)
             )
             if discovered_devices is None:
                 discovered_devices = set()
             new_device_ids = {item.uid for item in discovered_devices}
             cur_player_ids = set(self.sonosplayers.keys())
             added_devices = new_device_ids.difference(cur_player_ids)
-            removed_devices = cur_player_ids.difference(new_device_ids)
-
-            # mark any disconnected players as unavailable...
-            for player_id in removed_devices:
-                if player := self.mass.players.get(player_id):
-                    player.available = False
-                    self.mass.players.update(player_id)
 
             # process new players
             for device in discovered_devices:
@@ -427,10 +438,10 @@ class SonosPlayerProvider(PlayerProvider):
 
         def reschedule():
             self._discovery_reschedule_timer = None
-            self.mass.create_task(self._run_discovery(allow_network_scan=not allow_network_scan))
+            self.mass.create_task(self._run_discovery())
 
         # reschedule self once finished
-        self._discovery_reschedule_timer = self.mass.loop.call_later(120, reschedule)
+        self._discovery_reschedule_timer = self.mass.loop.call_later(300, reschedule)
 
     async def _device_discovered(self, soco_device: soco.SoCo) -> None:
         """Handle discovered Sonos player."""
@@ -610,9 +621,10 @@ class SonosPlayerProvider(PlayerProvider):
             self.mass.players.update(sonos_player.player_id)
 
         # enqueue next item if needed
-        if sonos_player.player.state == PlayerState.PLAYING and (
-            sonos_player.next_url is None
-            or sonos_player.next_url == sonos_player.player.current_url
+        if (
+            sonos_player.player.state == PlayerState.PLAYING
+            and sonos_player.player.active_source == sonos_player.player.player_id
+            and sonos_player.next_url in (None, sonos_player.player.current_url)
         ):
             self.mass.create_task(self._enqueue_next_track(sonos_player))
 

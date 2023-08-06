@@ -135,7 +135,7 @@ class MetaDataController(CoreController):
 
     async def get_album_metadata(self, album: Album) -> None:
         """Get/update rich metadata for an album."""
-        # ensure the album has a musicbrainz id or artist
+        # ensure the album has a musicbrainz id or artist(s)
         if not (album.mbid or album.artists):
             return
         # collect metadata from all providers
@@ -205,15 +205,19 @@ class MetaDataController(CoreController):
             playlist.metadata.genres.update(playlist_genres_filtered)
 
             # create collage thumb/fanart from playlist tracks
-            if images:
+            # if playlist has no default image (e.g. a local playlist)
+            if images and (not playlist.image or playlist.image.provider != "url"):
                 if playlist.image and self.mass.storage_path in playlist.image.path:
+                    # re-use previous created path
                     img_path = playlist.image.path
                 else:
                     img_path = os.path.join(self.mass.storage_path, f"{uuid4().hex}.png")
                 img_data = await create_collage(self.mass, list(images))
                 async with aiofiles.open(img_path, "wb") as _file:
                     await _file.write(img_data)
-                playlist.metadata.images = [MediaItemImage(ImageType.THUMB, img_path, "file")]
+                playlist.metadata.images = [
+                    MediaItemImage(type=ImageType.THUMB, path=img_path, provider="file")
+                ]
         except Exception as err:
             LOGGER.debug("Error while creating playlist image", exc_info=err)
         # set timestamp, used to determine when this function was last called

@@ -16,7 +16,12 @@ from music_assistant.common.models.enums import (
     QueueOption,
     RepeatMode,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError, QueueEmpty
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    MusicAssistantError,
+    PlayerUnavailableError,
+    QueueEmpty,
+)
 from music_assistant.common.models.media_items import MediaItemType, media_from_dict
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -202,11 +207,17 @@ class PlayerQueuesController(CoreController):
             elif media_item.media_type == MediaType.PLAYLIST:
                 async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
                     tracks.append(playlist_track)
+                await self.mass.music.mark_item_played(
+                    media_item.media_type, media_item.item_id, media_item.provider
+                )
             elif media_item.media_type in (
                 MediaType.ARTIST,
                 MediaType.ALBUM,
             ):
                 tracks += await ctrl.tracks(media_item.item_id, media_item.provider)
+                await self.mass.music.mark_item_played(
+                    media_item.media_type, media_item.item_id, media_item.provider
+                )
             else:
                 # single track or radio item
                 tracks += [media_item]
@@ -234,21 +245,29 @@ class PlayerQueuesController(CoreController):
             cur_index = queue.index_in_buffer or 0
         else:
             cur_index = queue.current_index or 0
-        shuffle = queue.shuffle_enabled and len(queue_items) >= 5
+        shuffle = queue.shuffle_enabled and len(queue_items) > 1
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            self.load(queue_id, queue_items=queue_items, shuffle=shuffle)
+            self.load(
+                queue_id,
+                queue_items=queue_items,
+                keep_remaining=False,
+                keep_played=False,
+                shuffle=shuffle,
+            )
             await self.play_index(queue_id, 0)
+            return
         # handle next: add item(s) in the index next to the playing/loaded/buffered index
-        elif option == QueueOption.NEXT:
+        if option == QueueOption.NEXT:
             self.load(
                 queue_id,
                 queue_items=queue_items,
                 insert_at_index=cur_index + 1,
                 shuffle=shuffle,
             )
-        elif option == QueueOption.REPLACE_NEXT:
+            return
+        if option == QueueOption.REPLACE_NEXT:
             self.load(
                 queue_id,
                 queue_items=queue_items,
@@ -256,19 +275,20 @@ class PlayerQueuesController(CoreController):
                 keep_remaining=False,
                 shuffle=shuffle,
             )
+            return
         # handle play: replace current loaded/playing index with new item(s)
-        elif option == QueueOption.PLAY:
-            if cur_index <= len(self._queue_items[queue_id]) - 1:
-                cur_index = 0
+        if option == QueueOption.PLAY:
             self.load(
                 queue_id,
                 queue_items=queue_items,
-                insert_at_index=cur_index,
+                insert_at_index=cur_index + 1,
                 shuffle=shuffle,
             )
-            await self.play_index(queue_id, cur_index)
+            next_index = min(cur_index + 1, len(self._queue_items[queue_id]) - 1)
+            await self.play_index(queue_id, next_index)
+            return
         # handle add: add/append item(s) to the remaining queue items
-        elif option == QueueOption.ADD:
+        if option == QueueOption.ADD:
             if queue.shuffle_enabled:
                 # shuffle the new items with remaining queue items
                 insert_at_index = cur_index + 1
@@ -682,6 +702,8 @@ class PlayerQueuesController(CoreController):
         Raises QueueEmpty if there are no more tracks left.
         """
         queue = self.get(queue_id)
+        if not queue:
+            raise PlayerUnavailableError(f"PlayerQueue {queue_id} is not available")
         if current_item_id:
             cur_index = self.index_by_id(queue_id, current_item_id) or 0
         else:
@@ -731,6 +753,7 @@ class PlayerQueuesController(CoreController):
         queue_items: list[QueueItem],
         insert_at_index: int = 0,
         keep_remaining: bool = True,
+        keep_played: bool = True,
         shuffle: bool = False,
     ) -> None:
         """Load new items at index.
@@ -741,11 +764,10 @@ class PlayerQueuesController(CoreController):
         - keep_remaining: keep the remaining items after the insert
         - shuffle: (re)shuffle the items after insert index
         """
-        # keep previous/played items, append the new ones
-        prev_items = self._queue_items[queue_id][:insert_at_index]
+        prev_items = self._queue_items[queue_id][:insert_at_index] if keep_played else []
         next_items = queue_items
 
-        # if keep_remaining, append the old previous items
+        # if keep_remaining, append the old 'next' items
         if keep_remaining:
             next_items += self._queue_items[queue_id][insert_at_index:]
 

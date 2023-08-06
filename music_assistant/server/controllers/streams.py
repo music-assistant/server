@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 import urllib.parse
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -414,8 +415,11 @@ class StreamsController(CoreController):
             query_params["seek_position"] = str(seek_position)
         if fade_in:
             query_params["fade_in"] = "1"
-        if query_params:
-            url += "?" + urllib.parse.urlencode(query_params)
+        # we add a timestamp as basic checksum
+        # most importantly this is to invalidate any caches
+        # but also to handle edge cases such as single track repeat
+        query_params["ts"] = str(int(time.time()))
+        url += "?" + urllib.parse.urlencode(query_params)
         return url
 
     async def create_multi_client_stream_job(
@@ -433,6 +437,7 @@ class StreamsController(CoreController):
         if existing_job := self.multi_client_jobs.pop(queue_id, None):  # noqa: SIM102
             # cleanup existing job first
             if not existing_job.finished:
+                self.logger.warning("Detected existing (running) stream job for queue %s", queue_id)
                 existing_job.stop()
         queue_player = self.mass.players.get(queue_id)
         pcm_bit_depth = 24 if queue_player.supports_24bit else 16

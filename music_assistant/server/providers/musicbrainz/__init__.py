@@ -122,10 +122,12 @@ class MusicbrainzProvider(MetadataProvider):
         album_barcode: str | None = None,
     ) -> str | None:
         """Retrieve musicbrainz artist id by providing the artist name and albumname or barcode."""
-        assert albumname or album_barcode
+        if not (albumname or album_barcode):
+            return None  # may not happen, but guard just in case
         for searchartist in (
             artistname,
-            re.sub(LUCENE_SPECIAL, r"\\\1", create_sort_name(artistname)),
+            re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
+            create_sort_name(artistname),
         ):
             if album_barcode:
                 # search by album barcode (EAN or UPC)
@@ -158,7 +160,8 @@ class MusicbrainzProvider(MetadataProvider):
         track_isrc: str | None = None,
     ) -> str | None:
         """Retrieve artist id by providing the artist name and trackname or track isrc."""
-        assert trackname or track_isrc
+        if not (trackname or track_isrc):
+            return None  # may not happen, but guard just in case
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
         if track_isrc:
             result = await self.get_data(f"isrc/{track_isrc}", inc="artist-credits")

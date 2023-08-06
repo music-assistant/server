@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import logging
 from abc import ABCMeta, abstractmethod
-from collections.abc import AsyncGenerator, Iterable
+from collections.abc import AsyncGenerator, Iterable, Mapping
 from contextlib import suppress
 from time import time
-from typing import TYPE_CHECKING, Generic, TypeVar
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from music_assistant.common.helpers.json import serialize_to_json
+from music_assistant.common.helpers.json import json_loads, serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -29,6 +29,7 @@ if TYPE_CHECKING:
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
+JSON_KEYS = ("artists", "metadata", "provider_mappings")
 
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
@@ -41,12 +42,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant):
         """Initialize class."""
         self.mass = mass
+        self.base_query = f"SELECT * FROM {self.db_table}"
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
-    async def add_item_to_library(
-        self, item: ItemCls, skip_metadata_lookup: bool = False
-    ) -> ItemCls:
+    async def add_item_to_library(self, item: ItemCls, metadata_lookup: bool = True) -> ItemCls:
         """Add item to library and return the database item."""
         raise NotImplementedError
 
@@ -83,31 +83,44 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
-        query_parts: list[str] | None = None,
+        extra_query: str | None = None,
+        extra_query_params: dict[str, Any] | None = None,
     ) -> PagedItems:
         """Get in-database items."""
-        sql_query = f"SELECT * FROM {self.db_table}"
-        params = {}
-        query_parts = query_parts or []
+        sql_query = self.base_query
+        params = extra_query_params or {}
+        query_parts: list[str] = []
+        if extra_query:
+            # prevent duplicate where statement
+            if extra_query.lower().startswith("where "):
+                extra_query = extra_query[5:]
+            query_parts.append(extra_query)
         if search:
             params["search"] = f"%{search}%"
             if self.media_type in (MediaType.ALBUM, MediaType.TRACK):
-                query_parts.append("(name LIKE :search or artists LIKE :search)")
+                query_parts.append(
+                    f"({self.db_table}.name LIKE :search "
+                    f" OR {self.db_table}.sort_name LIKE :search"
+                    f" OR {self.db_table}.artists LIKE :search)"
+                )
             else:
-                query_parts.append("name LIKE :search")
+                query_parts.append(f"{self.db_table}.name LIKE :search")
         if favorite is not None:
-            query_parts.append("favorite = :favorite")
+            query_parts.append(f"{self.db_table}.favorite = :favorite")
             params["favorite"] = favorite
         if query_parts:
+            # concetenate all where queries
             sql_query += " WHERE " + " AND ".join(query_parts)
         sql_query += f" ORDER BY {order_by}"
-        items = await self.get_library_items_by_query(sql_query, params, limit=limit, offset=offset)
+        items = await self._get_library_items_by_query(
+            sql_query, params, limit=limit, offset=offset
+        )
         count = len(items)
         if 0 < count < limit:
             total = offset + count
         else:
             total = await self.mass.music.database.get_count_from_query(sql_query, params)
-        return PagedItems(items, count, limit, offset, total)
+        return PagedItems(items=items, count=count, limit=limit, offset=offset, total=total)
 
     async def iter_library_items(
         self,
@@ -140,7 +153,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         lazy: bool = True,
         details: ItemCls = None,
         add_to_library: bool = False,
-        skip_metadata_lookup: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         if provider_instance_id_or_domain == "database":
@@ -190,12 +202,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # only if we really need to wait for the result (e.g. to prevent race conditions),
         # we can set lazy to false and we await the job to complete.
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(
-            self.add_item_to_library,
-            item=details,
-            skip_metadata_lookup=skip_metadata_lookup,
-            task_id=task_id,
-        )
+        add_task = self.mass.create_task(self.add_item_to_library, item=details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
@@ -213,7 +220,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
             return [
-                self.item_cls.from_db_row(db_row)
+                self.item_cls.from_dict(self._parse_db_row(db_row))
                 for db_row in await self.mass.music.database.search(self.db_table, search_query)
             ]
         prov = self.mass.get_provider(provider_instance_id_or_domain)
@@ -246,7 +253,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         else:
             items = searchresult.radio
         # store (serializable items) in cache
-        if not prov.domain.startswith("filesystem"):  # do not cache filesystem results
+        if prov.is_streaming_provider:  # do not cache filesystem results
             self.mass.create_task(
                 self.mass.cache.set(cache_key, [x.to_dict() for x in items], expiration=86400 * 7)
             )
@@ -268,29 +275,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     return (prov_mapping.provider_instance, prov_mapping.item_id)
         return (None, None)
 
-    async def get_library_items_by_query(
-        self,
-        custom_query: str | None = None,
-        query_params: dict | None = None,
-        limit: int = 500,
-        offset: int = 0,
-    ) -> list[ItemCls]:
-        """Fetch MediaItem records from database given a custom query."""
-        if custom_query is None:
-            custom_query = f"SELECT * FROM {self.db_table}"
-        return [
-            self.item_cls.from_db_row(db_row)
-            for db_row in await self.mass.music.database.get_rows_from_query(
-                custom_query, query_params, limit=limit, offset=offset
-            )
-        ]
-
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get record by id."""
         db_id = int(item_id)  # ensure integer
         match = {"item_id": db_id}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
-            return self.item_cls.from_db_row(db_row)
+            return self.item_cls.from_dict(self._parse_db_row(db_row))
         raise MediaNotFoundError(f"{self.media_type.value} not found in library: {db_id}")
 
     async def get_library_item_by_prov_id(
@@ -340,26 +330,37 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> list[ItemCls]:
         """Fetch all records from library for given provider."""
         if provider_instance_id_or_domain == "library":
-            return await self.get_library_items_by_query(limit=limit, offset=offset)
+            if provider_item_ids is not None:
+                prov_ids_string = str(tuple(int(x) for x in provider_item_ids))
+                if prov_ids_string.endswith(",)"):
+                    prov_ids_string = prov_ids_string.replace(",)", ")")
+                extra_query = f"item_id in {prov_ids_string}"
+            else:
+                extra_query = None
+            paged_list = await self.library_items(
+                limit=limit, offset=offset, extra_query=extra_query
+            )
+            return paged_list.items
 
         # we use the separate provider_mappings table to perform quick lookups
         # from provider id's to database id's because this is faster
         # (and more compatible) than querying the provider_mappings json column
         subquery = (
-            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
-            "WHERE ( "
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} WHERE "
+            f" media_type = '{self.media_type.value}' AND "
             f"(provider_instance = '{provider_instance_id_or_domain}' "
-            f"OR provider_domain = '{provider_instance_id_or_domain}') "
-            ")"
+            f"OR provider_domain = '{provider_instance_id_or_domain}')"
         )
         if provider_item_ids is not None:
             prov_ids = str(tuple(provider_item_ids))
             if prov_ids.endswith(",)"):
                 prov_ids = prov_ids.replace(",)", ")")
             subquery += f" AND provider_item_id in {prov_ids}"
-        subquery += f" AND media_type = '{self.media_type.value}'"
-        query = f"SELECT * FROM {self.db_table} WHERE item_id in ({subquery})"
-        return await self.get_library_items_by_query(query, limit=limit, offset=offset)
+        # final query is a where query from the subquery
+        # that queries the provider_mappings table
+        query = f"WHERE {self.db_table}.item_id in ({subquery})"
+        paged_list = await self.library_items(limit=limit, offset=offset, extra_query=query)
+        return paged_list.items
 
     async def iter_library_items_by_prov_id(
         self,
@@ -577,6 +578,23 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def _get_dynamic_tracks(self, media_item: ItemCls, limit: int = 25) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
 
+    async def _get_library_items_by_query(
+        self,
+        query: str,
+        query_params: dict | None = None,
+        limit: int = 500,
+        offset: int = 0,
+    ) -> list[ItemCls]:
+        """Fetch MediaItem records from database given a custom (WHERE) clause."""
+        if query_params is None:
+            query_params = {}
+        return [
+            self.item_cls.from_dict(self._parse_db_row(db_row))
+            for db_row in await self.mass.music.database.get_rows_from_query(
+                query, query_params, limit=limit, offset=offset
+            )
+        ]
+
     async def _set_provider_mappings(
         self, item_id: str | int, provider_mappings: Iterable[ProviderMapping]
     ) -> None:
@@ -663,16 +681,45 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return ItemMapping.from_item(db_artist)
 
         # try to request the full item
-        with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
-            db_artist = await self.mass.music.artists.add_item_to_library(
-                artist, skip_metadata_lookup=True
-            )
-            return ItemMapping.from_item(db_artist)
-        # fallback to just the provider item
         artist = await self.mass.music.artists.get_provider_item(
             artist.item_id, artist.provider, fallback=artist
         )
+        with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
+            db_artist = await self.mass.music.artists.add_item_to_library(
+                artist, metadata_lookup=False
+            )
+            return ItemMapping.from_item(db_artist)
+        # fallback to just the provider item
+        # this can happen for unavailable items
         if isinstance(artist, ItemMapping):
-            # this can happen for unavailable items
             return artist
         return ItemMapping.from_item(artist)
+
+    @staticmethod
+    def _parse_db_row(db_row: Mapping) -> dict[str, Any]:
+        """Parse raw db Mapping into a dict."""
+        db_row_dict = dict(db_row)
+        db_row_dict["provider"] = "library"
+        for key in JSON_KEYS:
+            if key in db_row_dict and db_row_dict[key] not in (None, ""):
+                db_row_dict[key] = json_loads(db_row_dict[key])
+        if "favorite" in db_row_dict:
+            db_row_dict["favorite"] = bool(db_row_dict["favorite"])
+        if "item_id" in db_row_dict:
+            db_row_dict["item_id"] = str(db_row_dict["item_id"])
+        if "album" not in db_row_dict and (album_id := db_row_dict.get("album_id")):
+            # handle joined result with (limited) album data as ItemMapping
+            db_row_dict["album"] = {
+                "media_type": "album",
+                "item_id": str(album_id),
+                "provider": "library",
+                "name": db_row_dict["album_name"],
+                "version": db_row_dict["album_version"],
+            }
+            db_row_dict["album"] = ItemMapping.from_dict(db_row_dict["album"])
+            if db_row_dict["album_metadata"]:
+                # copy album image
+                album_metadata = json_loads(db_row_dict["album_metadata"])
+                if album_metadata and album_metadata["images"]:
+                    db_row_dict["metadata"]["images"] = album_metadata["images"]
+        return db_row_dict

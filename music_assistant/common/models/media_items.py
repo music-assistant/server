@@ -1,14 +1,12 @@
 """Models and helpers for media items."""
 from __future__ import annotations
 
-from collections.abc import Mapping
 from dataclasses import dataclass, field, fields
 from time import time
 from typing import Any
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name, merge_lists
 from music_assistant.common.models.enums import (
@@ -21,10 +19,8 @@ from music_assistant.common.models.enums import (
 
 MetadataTypes = int | bool | str | list[str]
 
-JSON_KEYS = ("artists", "metadata", "provider_mappings")
 
-
-@dataclass
+@dataclass(kw_only=True)
 class AudioFormat(DataClassDictMixin):
     """Model for AudioFormat details."""
 
@@ -58,7 +54,7 @@ class AudioFormat(DataClassDictMixin):
         return int(self.sample_rate * (self.bit_depth / 8) * self.channels)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ProviderMapping(DataClassDictMixin):
     """Model for a MediaItem's provider mapping details."""
 
@@ -88,10 +84,12 @@ class ProviderMapping(DataClassDictMixin):
 
     def __eq__(self, other: ProviderMapping) -> bool:
         """Check equality of two items."""
+        if not other:
+            return False
         return self.provider_instance == other.provider_instance and self.item_id == other.item_id
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MediaItemLink(DataClassDictMixin):
     """Model for a link."""
 
@@ -107,7 +105,7 @@ class MediaItemLink(DataClassDictMixin):
         return self.url == other.url
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MediaItemImage(DataClassDictMixin):
     """Model for a image."""
 
@@ -126,7 +124,7 @@ class MediaItemImage(DataClassDictMixin):
         return self.__hash__() == other.__hash__()
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class MediaItemChapter(DataClassDictMixin):
     """Model for a chapter."""
 
@@ -144,7 +142,7 @@ class MediaItemChapter(DataClassDictMixin):
         return self.chapter_id == other.chapter_id
 
 
-@dataclass
+@dataclass(kw_only=True)
 class MediaItemMetadata(DataClassDictMixin):
     """Model for a MediaItem's metadata."""
 
@@ -198,16 +196,19 @@ class MediaItemMetadata(DataClassDictMixin):
         return self
 
 
-@dataclass
+@dataclass(kw_only=True)
 class MediaItem(DataClassDictMixin):
     """Base representation of a media item."""
 
+    media_type: MediaType
     item_id: str
     provider: str  # provider instance id or provider domain
     name: str
-    provider_mappings: set[ProviderMapping] = field(default_factory=set)
+    metadata: MediaItemMetadata
+    provider_mappings: set[ProviderMapping]
 
     # optional fields below
+    # provider_mappings: set[ProviderMapping] = field(default_factory=set)
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
     media_type: MediaType = MediaType.UNKNOWN
@@ -225,44 +226,6 @@ class MediaItem(DataClassDictMixin):
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
 
-    @classmethod
-    def from_db_row(cls, db_row: Mapping):
-        """Create MediaItem object from database row."""
-        db_row = dict(db_row)
-        db_row["provider"] = "library"
-        for key in JSON_KEYS:
-            if key in db_row and db_row[key] is not None:
-                db_row[key] = json_loads(db_row[key])
-        if "favorite" in db_row:
-            db_row["favorite"] = bool(db_row["favorite"])
-        db_row["item_id"] = str(db_row["item_id"])
-        return cls.from_dict(db_row)
-
-    def to_db_row(self) -> dict:
-        """Create dict from item suitable for db."""
-
-        def get_db_value(key, value) -> Any:
-            """Transform value for db storage."""
-            if key in JSON_KEYS:
-                return json_dumps(value)
-            return value
-
-        return {
-            key: get_db_value(key, value)
-            for key, value in self.to_dict().items()
-            if key
-            not in [
-                "item_id",
-                "provider",
-                "media_type",
-                "uri",
-                "album",
-                "position",
-                "track_number",
-                "disc_number",
-            ]
-        }
-
     @property
     def available(self):
         """Return (calculated) availability."""
@@ -275,18 +238,6 @@ class MediaItem(DataClassDictMixin):
             return None
         return next((x for x in self.metadata.images if x.type == ImageType.THUMB), None)
 
-    def add_provider_mapping(self, prov_mapping: ProviderMapping) -> None:
-        """Add provider ID, overwrite existing entry."""
-        self.provider_mappings = {
-            x
-            for x in self.provider_mappings
-            if not (
-                x.item_id == prov_mapping.item_id
-                and x.provider_instance == prov_mapping.provider_instance
-            )
-        }
-        self.provider_mappings.add(prov_mapping)
-
     def __hash__(self) -> int:
         """Return custom hash."""
         return hash(self.uri)
@@ -296,7 +247,7 @@ class MediaItem(DataClassDictMixin):
         return self.uri == other.uri
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ItemMapping(DataClassDictMixin):
     """Representation of a minimized item object."""
 
@@ -334,7 +285,7 @@ class ItemMapping(DataClassDictMixin):
         return self.uri == other.uri
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Artist(MediaItem):
     """Model for an artist."""
 
@@ -342,7 +293,7 @@ class Artist(MediaItem):
     mbid: str | None = None
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Album(MediaItem):
     """Model for an album."""
 
@@ -354,7 +305,7 @@ class Album(MediaItem):
     mbid: str | None = None  # release group id
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Track(MediaItem):
     """Model for a track."""
 
@@ -370,16 +321,6 @@ class Track(MediaItem):
         return hash((self.provider, self.item_id))
 
     @property
-    def image(self) -> MediaItemImage | None:
-        """Return (first/random) image/thumb from metadata (if any)."""
-        if image := super().image:
-            return image
-        # fallback to album image (use getattr to guard for ItemMapping)
-        if self.album:
-            return getattr(self.album, "image", None)
-        return None
-
-    @property
     def has_chapters(self) -> bool:
         """
         Return boolean if this Track has chapters.
@@ -388,6 +329,13 @@ class Track(MediaItem):
         Podcast or AudioBook.
         """
         return self.metadata and self.metadata.chapters and len(self.metadata.chapters) > 1
+
+    @property
+    def image(self) -> MediaItemImage | None:
+        """Return (first) image from metadata (prefer album)."""
+        if isinstance(self.album, Album) and self.album.image:
+            return self.album.image
+        return super().image
 
 
 @dataclass(kw_only=True)
@@ -406,7 +354,7 @@ class PlaylistTrack(Track):
     position: int  # required
 
 
-@dataclass
+@dataclass(kw_only=True)
 class Playlist(MediaItem):
     """Model for a playlist."""
 
@@ -414,30 +362,16 @@ class Playlist(MediaItem):
     owner: str = ""
     is_editable: bool = False
 
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.provider, self.item_id))
 
-
-@dataclass
+@dataclass(kw_only=True)
 class Radio(MediaItem):
     """Model for a radio station."""
 
     media_type: MediaType = MediaType.RADIO
     duration: int = 172800
 
-    def to_db_row(self) -> dict:
-        """Create dict from item suitable for db."""
-        val = super().to_db_row()
-        val.pop("duration", None)
-        return val
 
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.provider, self.item_id))
-
-
-@dataclass
+@dataclass(kw_only=True)
 class BrowseFolder(MediaItem):
     """Representation of a Folder used in Browse (which contains media items)."""
 
@@ -446,20 +380,27 @@ class BrowseFolder(MediaItem):
     path: str = ""
     # label: a labelid that needs to be translated by the frontend
     label: str = ""
-    # subitems of this folder when expanding
-    items: list[MediaItemType | BrowseFolder] | None = None
+    provider_mappings: set[ProviderMapping] = field(default_factory=set)
 
     def __post_init__(self):
         """Call after init."""
         super().__post_init__()
         if not self.path:
             self.path = f"{self.provider}://{self.item_id}"
+        if not self.provider_mappings:
+            self.provider_mappings.add(
+                ProviderMapping(
+                    item_id=self.item_id,
+                    provider_domain=self.provider,
+                    provider_instance=self.provider,
+                )
+            )
 
 
 MediaItemType = Artist | Album | Track | Radio | Playlist | BrowseFolder
 
 
-@dataclass
+@dataclass(kw_only=True)
 class PagedItems(DataClassDictMixin):
     """Model for a paged listing."""
 
@@ -481,7 +422,7 @@ class PagedItems(DataClassDictMixin):
         )
 
 
-@dataclass
+@dataclass(kw_only=True)
 class SearchResults(DataClassDictMixin):
     """Model for results from a search query."""
 
@@ -494,6 +435,8 @@ class SearchResults(DataClassDictMixin):
 
 def media_from_dict(media_item: dict) -> MediaItemType:
     """Return MediaItem from dict."""
+    if "provider_mappings" not in media_item:
+        return ItemMapping.from_dict(media_item)
     if media_item["media_type"] == "artist":
         return Artist.from_dict(media_item)
     if media_item["media_type"] == "album":
@@ -507,7 +450,7 @@ def media_from_dict(media_item: dict) -> MediaItemType:
     return MediaItem.from_dict(media_item)
 
 
-@dataclass
+@dataclass(kw_only=True)
 class StreamDetails(DataClassDictMixin):
     """Model for streamdetails."""
 

@@ -403,14 +403,18 @@ class SpotifyProvider(MusicProvider):
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
-        artist = Artist(item_id=artist_obj["id"], provider=self.domain, name=artist_obj["name"])
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=artist_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=artist_obj["external_urls"]["spotify"],
-            )
+        artist = Artist(
+            item_id=artist_obj["id"],
+            provider=self.domain,
+            name=artist_obj["name"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=artist_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=artist_obj["external_urls"]["spotify"],
+                )
+            },
         )
         if "genres" in artist_obj:
             artist.metadata.genres = set(artist_obj["genres"])
@@ -418,14 +422,34 @@ class SpotifyProvider(MusicProvider):
             for img in artist_obj["images"]:
                 img_url = img["url"]
                 if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
-                    artist.metadata.images = [MediaItemImage(ImageType.THUMB, img_url)]
+                    artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img_url)]
                     break
         return artist
 
     async def _parse_album(self, album_obj: dict):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
-        album = Album(item_id=album_obj["id"], provider=self.domain, name=name, version=version)
+        barcode = None
+        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
+            barcode = album_obj["external_ids"]["upc"]
+        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
+            barcode = album_obj["external_ids"]["ean"]
+        album = Album(
+            item_id=album_obj["id"],
+            provider=self.domain,
+            name=name,
+            version=version,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
+                    url=album_obj["external_urls"]["spotify"],
+                    barcode=barcode,
+                )
+            },
+        )
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
 
@@ -435,7 +459,9 @@ class SpotifyProvider(MusicProvider):
         if "genres" in album_obj:
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):
-            album.metadata.images = [MediaItemImage(ImageType.THUMB, album_obj["images"][0]["url"])]
+            album.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=album_obj["images"][0]["url"])
+            ]
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]
         if album_obj.get("release_date"):
@@ -444,21 +470,6 @@ class SpotifyProvider(MusicProvider):
             album.metadata.copyright = album_obj["copyrights"][0]["text"]
         if album_obj.get("explicit"):
             album.metadata.explicit = album_obj["explicit"]
-        barcode = None
-        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            barcode = album_obj["external_ids"]["upc"]
-        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
-            barcode = album_obj["external_ids"]["ean"]
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=album_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
-                url=album_obj["external_urls"]["spotify"],
-                barcode=barcode,
-            )
-        )
         return album
 
     async def _parse_track(
@@ -487,6 +498,20 @@ class SpotifyProvider(MusicProvider):
             name=name,
             version=version,
             duration=track_obj["duration_ms"] / 1000,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.OGG,
+                        bit_rate=320,
+                    ),
+                    isrc=track_obj.get("external_ids", {}).get("isrc"),
+                    url=track_obj["external_urls"]["spotify"],
+                    available=not track_obj["is_local"] and track_obj["is_playable"],
+                )
+            },
             **extra_init_kwargs,
         )
 
@@ -504,7 +529,9 @@ class SpotifyProvider(MusicProvider):
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):
                 track.metadata.images = [
-                    MediaItemImage(ImageType.THUMB, track_obj["album"]["images"][0]["url"])
+                    MediaItemImage(
+                        type=ImageType.THUMB, path=track_obj["album"]["images"][0]["url"]
+                    )
                 ]
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
@@ -512,20 +539,6 @@ class SpotifyProvider(MusicProvider):
             track.metadata.explicit = True
         if track_obj.get("popularity"):
             track.metadata.popularity = track_obj["popularity"]
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=track_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType.OGG,
-                    bit_rate=320,
-                ),
-                isrc=track_obj.get("external_ids", {}).get("isrc"),
-                url=track_obj["external_urls"]["spotify"],
-                available=not track_obj["is_local"] and track_obj["is_playable"],
-            )
-        )
         return track
 
     async def _parse_playlist(self, playlist_obj):
@@ -535,21 +548,21 @@ class SpotifyProvider(MusicProvider):
             provider=self.domain,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["display_name"],
-        )
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=playlist_obj["external_urls"]["spotify"],
-            )
+            provider_mappings={
+                ProviderMapping(
+                    item_id=playlist_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=playlist_obj["external_urls"]["spotify"],
+                )
+            },
         )
         playlist.is_editable = (
             playlist_obj["owner"]["id"] == self._sp_user["id"] or playlist_obj["collaborative"]
         )
         if playlist_obj.get("images"):
             playlist.metadata.images = [
-                MediaItemImage(ImageType.THUMB, playlist_obj["images"][0]["url"])
+                MediaItemImage(type=ImageType.THUMB, path=playlist_obj["images"][0]["url"])
             ]
         playlist.metadata.checksum = str(playlist_obj["snapshot_id"])
         return playlist

@@ -175,18 +175,22 @@ class TuneInProvider(MusicProvider):
             content_type = ContentType.try_parse(stream["media_type"])
             bit_rate = stream.get("bitrate", 128)  # TODO !
 
-        radio = Radio(item_id=item_id, provider=self.domain, name=name)
-        radio.add_provider_mapping(
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                audio_format=AudioFormat(
-                    content_type=content_type,
-                    bit_rate=bit_rate,
-                ),
-                details=url,
-            )
+        radio = Radio(
+            item_id=item_id,
+            provider=self.domain,
+            name=name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=content_type,
+                        bit_rate=bit_rate,
+                    ),
+                    details=url,
+                )
+            },
         )
         # preset number is used for sorting (not present at stream time)
         preset_number = details.get("preset_number")
@@ -199,9 +203,9 @@ class TuneInProvider(MusicProvider):
             radio.metadata.description = details["text"]
         # images
         if img := details.get("image"):
-            radio.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
+            radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
         if img := details.get("logo"):
-            radio.metadata.images = [MediaItemImage(ImageType.LOGO, img)]
+            radio.metadata.images = [MediaItemImage(type=ImageType.LOGO, path=img)]
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -218,8 +222,8 @@ class TuneInProvider(MusicProvider):
                 media_type=MediaType.RADIO,
                 data=item_id,
             )
-        item_id, media_type = item_id.split("--", 1)
-        stream_info = await self.__get_data("Tune.ashx", id=item_id)
+        stream_item_id, media_type = item_id.split("--", 1)
+        stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] != media_type:
                 continue

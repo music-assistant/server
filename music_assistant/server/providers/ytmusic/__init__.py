@@ -10,8 +10,6 @@ from urllib.parse import unquote
 
 import pytube
 
-from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import (
@@ -481,8 +479,7 @@ class YoutubeMusicProvider(MusicProvider):
                     if track:
                         tracks.append(track)
                 except InvalidDataError:
-                    track = await self.get_track(track["videoId"])
-                    if track:
+                    if track := await self.get_track(track["videoId"]):
                         tracks.append(track)
             return tracks
         return []
@@ -495,6 +492,8 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers,
             signature_timestamp=self._signature_timestamp,
         )
+        if not track_obj:
+            raise MediaNotFoundError(f"Item {item_id} not found")
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):
@@ -599,6 +598,13 @@ class YoutubeMusicProvider(MusicProvider):
             item_id=album_id,
             name=name,
             provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(album_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -626,13 +632,6 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 album_type = AlbumType.UNKNOWN
             album.album_type = album_type
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(album_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
-        )
         return album
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
@@ -646,19 +645,23 @@ class YoutubeMusicProvider(MusicProvider):
             artist_id = VARIOUS_ARTISTS_YTM_ID
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=artist_obj["name"], provider=self.domain)
+        artist = Artist(
+            item_id=artist_id,
+            name=artist_obj["name"],
+            provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=f"https://music.youtube.com/channel/{artist_id}",
+                )
+            },
+        )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
         if "thumbnails" in artist_obj and artist_obj["thumbnails"]:
             artist.metadata.images = await self._parse_thumbnails(artist_obj["thumbnails"])
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"https://music.youtube.com/channel/{artist_id}",
-            )
-        )
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
@@ -670,7 +673,18 @@ class YoutubeMusicProvider(MusicProvider):
         if playlist_id in YT_PERSONAL_PLAYLISTS:
             playlist_id = f"{playlist_id}{YT_PLAYLIST_ID_DELIMITER}{self.instance_id}"
             playlist_name = f"{playlist_name} ({self.name})"
-        playlist = Playlist(item_id=playlist_id, provider=self.domain, name=playlist_name)
+        playlist = Playlist(
+            item_id=playlist_id,
+            provider=self.domain,
+            name=playlist_name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=playlist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
+        )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
@@ -679,13 +693,6 @@ class YoutubeMusicProvider(MusicProvider):
         if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
             is_editable = True
         playlist.is_editable = is_editable
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
-        )
         if authors := playlist_obj.get("author"):
             if isinstance(authors, str):
                 playlist.owner = authors
@@ -719,6 +726,17 @@ class YoutubeMusicProvider(MusicProvider):
             item_id=track_obj["videoId"],
             provider=self.domain,
             name=track_obj["title"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(track_obj["videoId"]),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=track_obj.get("isAvailable", True),
+                    audio_format=AudioFormat(
+                        content_type=ContentType.M4A,
+                    ),
+                )
+            },
             **extra_init_kwargs,
         )
 
@@ -748,20 +766,6 @@ class YoutubeMusicProvider(MusicProvider):
             track.duration = int(track_obj["duration"])
         elif "duration_seconds" in track_obj and str(track_obj["duration_seconds"]).isdigit():
             track.duration = int(track_obj["duration_seconds"])
-        available = True
-        if "isAvailable" in track_obj:
-            available = track_obj["isAvailable"]
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(track_obj["videoId"]),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                available=available,
-                audio_format=AudioFormat(
-                    content_type=ContentType.M4A,
-                ),
-            )
-        )
         return track
 
     async def _get_signature_timestamp(self):
@@ -829,12 +833,10 @@ class YoutubeMusicProvider(MusicProvider):
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
-            media_type,
-            key,
-            self.instance_id,
-            name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
+            media_type=media_type,
+            item_id=key,
+            provider=self.instance_id,
+            name=name,
         )
 
     def _get_artist_item_mapping(self, artist_obj: dict) -> ItemMapping:
@@ -847,7 +849,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
         """Parse and sort a list of thumbnails and return the highest quality."""
         thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
-        return [MediaItemImage(ImageType.THUMB, thumb["url"])]
+        return [MediaItemImage(type=ImageType.THUMB, path=thumb["url"])]
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:

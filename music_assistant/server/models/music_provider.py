@@ -266,130 +266,88 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> BrowseFolder:
+    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
         """Browse this provider's items.
 
-        :param path: The path to browse, (e.g. provid://artists).
+        :param path: The path to browse, (e.g. provider_id://artists).
         """
         if ProviderFeature.BROWSE not in self.supported_features:
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
 
-        _, subpath = path.split("://")
-
+        subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
-        if not subpath:
-            # return main listing
-            root_items: list[BrowseFolder] = []
-            if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="artists",
-                        provider=self.domain,
-                        path=path + "artists",
-                        name="",
-                        label="artists",
-                    )
-                )
-            if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="albums",
-                        provider=self.domain,
-                        path=path + "albums",
-                        name="",
-                        label="albums",
-                    )
-                )
-            if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="tracks",
-                        provider=self.domain,
-                        path=path + "tracks",
-                        name="",
-                        label="tracks",
-                    )
-                )
-            if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="playlists",
-                        provider=self.domain,
-                        path=path + "playlists",
-                        name="",
-                        label="playlists",
-                    )
-                )
-            if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="radios",
-                        provider=self.domain,
-                        path=path + "radios",
-                        name="",
-                        label="radios",
-                    )
-                )
-            return BrowseFolder(
-                item_id="root",
-                provider=self.domain,
-                path=path,
-                name=self.name,
-                items=root_items,
-            )
-        # sublevel
         if subpath == "artists":
-            return BrowseFolder(
+            async for artist in self.get_library_artists():
+                yield artist
+            return
+        if subpath == "albums":
+            async for album in self.get_library_albums():
+                yield album
+            return
+        if subpath == "tracks":
+            async for track in self.get_library_tracks():
+                yield track
+            return
+        if subpath == "radios":
+            async for radio in self.get_library_radios():
+                yield radio
+            return
+        if subpath == "playlists":
+            async for playlist in self.get_library_playlists():
+                yield playlist
+            return
+        if subpath:
+            # unknown path
+            raise KeyError("Invalid subpath")
+        # no subpath: return main listing
+        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
+            yield BrowseFolder(
                 item_id="artists",
                 provider=self.domain,
-                path=path,
+                path=path + "artists",
                 name="",
                 label="artists",
-                items=[x async for x in self.get_library_artists()],
             )
-        if subpath == "albums":
-            return BrowseFolder(
+        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
+            yield BrowseFolder(
                 item_id="albums",
                 provider=self.domain,
-                path=path,
+                path=path + "albums",
                 name="",
                 label="albums",
-                items=[x async for x in self.get_library_albums()],
             )
-        if subpath == "tracks":
-            return BrowseFolder(
+        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
+            yield BrowseFolder(
                 item_id="tracks",
                 provider=self.domain,
-                path=path,
+                path=path + "tracks",
                 name="",
                 label="tracks",
-                items=[x async for x in self.get_library_tracks()],
             )
-        if subpath == "radios":
-            return BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path,
-                name="",
-                label="radios",
-                items=[x async for x in self.get_library_radios()],
-            )
-        if subpath == "playlists":
-            return BrowseFolder(
+        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
+            yield BrowseFolder(
                 item_id="playlists",
                 provider=self.domain,
-                path=path,
+                path=path + "playlists",
                 name="",
                 label="playlists",
-                items=[x async for x in self.get_library_playlists()],
             )
-        raise KeyError("Invalid subpath")
+        if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
+            yield BrowseFolder(
+                item_id="radios",
+                provider=self.domain,
+                path=path + "radios",
+                name="",
+                label="radios",
+            )
 
-    async def recommendations(self) -> list[BrowseFolder]:
+    async def recommendations(self) -> list[MediaItemType]:
         """Get this provider's recommendations.
 
-        Returns a list of BrowseFolder items with (max 25) mediaitems in the items attribute.
+        Returns a actual and personalised list of Media items with recommendations
+        form this provider for the user/account. It may return nested levels with
+        BrowseFolder items.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
@@ -410,13 +368,23 @@ class MusicProvider(Provider):
                     prov_item.provider_mappings,
                 )
                 try:
+                    if not library_item and not prov_item.available:
+                        # skip unavailable tracks
+                        self.logger.debug(
+                            "Skipping sync of item %s because it is unavailable", prov_item.uri
+                        )
+                        continue
                     if not library_item:
                         # create full db item
                         # note that we skip the metadata lookup purely to speed up the sync
                         # the additional metadata is then lazy retrieved afterwards
+
                         prov_item.favorite = True
+                        extra_kwargs = (
+                            {"add_album_tracks": True} if media_type == MediaType.ALBUM else {}
+                        )
                         library_item = await controller.add_item_to_library(
-                            prov_item, skip_metadata_lookup=True
+                            prov_item, metadata_lookup=False, **extra_kwargs
                         )
                     elif (
                         library_item.metadata.checksum and prov_item.metadata.checksum
@@ -427,7 +395,9 @@ class MusicProvider(Provider):
                         )
                     cur_db_ids.add(library_item.item_id)
                 except MusicAssistantError as err:
-                    self.logger.warning("Skipping sync of item %s: %s", prov_item.uri, str(err))
+                    self.logger.warning(
+                        "Skipping sync of item %s - error details: %s", prov_item.uri, str(err)
+                    )
 
             # process deletions (= no longer in library)
             cache_key = f"library_items.{media_type}.{self.instance_id}"
