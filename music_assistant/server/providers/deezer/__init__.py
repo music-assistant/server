@@ -526,7 +526,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
             ),
             is_editable=creator.id == self.user.id,
-            owner=creator,
+            owner=creator.name,
         )
 
     def get_playlist_creator(self, playlist: deezer.Playlist):
