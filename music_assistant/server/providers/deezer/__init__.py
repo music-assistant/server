@@ -379,7 +379,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         playlist_track_ids = []
         async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
-                playlist_track_ids.append(track.id)
+                playlist_track_ids.append(int(track.item_id))
             if len(playlist_track_ids) == len(positions_to_remove):
                 break
         playlist = await self.client.get_playlist(prov_playlist_id)
