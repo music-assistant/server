@@ -42,7 +42,7 @@ An alternative way to run the Music Assistant server is by running the docker im
 docker run --network host --privileged -v <dir>:/data ghcr.io/music-assistant/server
 ```
 
-You must run the docker container with host network mode. The data volume is `/data` - replace `<dir>` with a writeable directory to ensure the data volume persists between updates.
+You must run the docker container with host network mode. The data volume is `/data` - replace `<dir>` with a writable directory to ensure the data volume persists between updates.
 If you want access to your local music files from within MA, make sure to also mount that, e.g. /media.
 Note that accessing remote (SMB) shares can be done from within MA itself using the SMB File provider (but requires the privileged flag).
 
