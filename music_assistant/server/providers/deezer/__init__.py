@@ -546,6 +546,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     ) -> Track | PlaylistTrack | AlbumTrack:
         """Parse the deezer-python track to a MASS track."""
         try:
+            isrc = track.isrc
+        except AttributeError:
+            isrc = None
+        try:
             artist = ItemMapping(
                 media_type=MediaType.ARTIST,
                 item_id=str(track.artist.id),
@@ -591,7 +595,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     provider_instance=self.instance_id,
                     available=self.track_available(track, user_country, track_class),
                     url=track.link,
-                    isrc=track.isrc,
+                    isrc=isrc,
                 )
             },
             metadata=self.parse_metadata_track(track=track),
