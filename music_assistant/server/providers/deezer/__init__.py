@@ -9,7 +9,6 @@ from typing import Any
 
 import deezer
 from aiohttp import ClientTimeout
-from asyncio_throttle.throttler import Throttler
 from Crypto.Cipher import Blowfish
 
 from music_assistant.common.models.config_entries import (
@@ -140,12 +139,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     client: deezer.Client
     gw_client: GWClient
     creds: DeezerCredentials
-    _throttler: Throttler
     user: deezer.resources.User
 
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
-        self._throttler = Throttler(rate_limit=50, period=5)
         self.creds = DeezerCredentials(
             app_id=DEEZER_APP_ID,
             app_secret=DEEZER_APP_SECRET,
@@ -437,14 +434,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     ### PARSING METADATA FUNCTIONS ###
 
-    async def parse_metadata_track(self, track: deezer.Track) -> MediaItemMetadata:
+    def parse_metadata_track(self, track: deezer.Track) -> MediaItemMetadata:
         """Parse the track metadata."""
         try:
             return MediaItemMetadata(
                 images=[
                     MediaItemImage(
                         type=ImageType.THUMB,
-                        path=(await track.get_album()).cover_big,
+                        path=track.album.cover_big,
                     )
                 ],
             )
@@ -590,7 +587,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     available=self.track_available(track, user_country, track_class),
                 )
             },
-            metadata=await self.parse_metadata_track(track=track),
+            metadata=self.parse_metadata_track(track=track),
             **extra_init_kwargs,
         )
 
@@ -603,37 +600,53 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     ### SEARCH AND PARSE FUNCTIONS ###
     async def search_and_parse_tracks(
-        self, query: str, user_country: str, limit: int = 5
+        self, query: str, user_country: str, limit: int = 20
     ) -> list[Track]:
         """Search for tracks and parse them."""
         deezer_tracks = await self.client.search(query=query, limit=limit)
         tracks = []
+        index = 0
         async for track in deezer_tracks:
             tracks.append(await self.parse_track(track, user_country))
+            index += 1
+            if index >= limit:
+                return tracks
         return tracks
 
-    async def search_and_parse_artists(self, query: str, limit: int = 5) -> list[Artist]:
+    async def search_and_parse_artists(self, query: str, limit: int = 20) -> list[Artist]:
         """Search for artists and parse them."""
         deezer_artist = await self.client.search_artists(query=query, limit=limit)
         artists = []
+        index = 0
         async for artist in deezer_artist:
             artists.append(self.parse_artist(artist))
-            return artists
+            index += 1
+            if index >= limit:
+                return artists
+        return artists
 
-    async def search_and_parse_albums(self, query: str, limit: int = 5) -> list[Album]:
+    async def search_and_parse_albums(self, query: str, limit: int = 20) -> list[Album]:
         """Search for album and parse them."""
         deezer_albums = await self.client.search_albums(query=query, limit=limit)
         albums = []
+        index = 0
         async for album in deezer_albums:
             albums.append(self.parse_album(album))
+            index += 1
+            if index >= limit:
+                return albums
         return albums
 
-    async def search_and_parse_playlists(self, query: str, limit: int = 5) -> list[Playlist]:
+    async def search_and_parse_playlists(self, query: str, limit: int = 20) -> list[Playlist]:
         """Search for playlists and parse them."""
         deezer_playlists = await self.client.search_playlists(query=query, limit=limit)
         playlists = []
+        index = 0
         async for playlist in deezer_playlists:
             playlists.append(self.parse_playlist(playlist))
+            index += 1
+            if index >= limit:
+                return playlists
         return playlists
 
     ### OTHER PARSING FUNCTIONS ###
