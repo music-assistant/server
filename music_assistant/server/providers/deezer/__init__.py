@@ -526,6 +526,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             },
             metadata=MediaItemMetadata(
                 images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
+                checksum=playlist.checksum,
             ),
             is_editable=creator.id == self.user.id,
             owner=creator.name,
@@ -583,7 +584,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             item_id=str(track.id),
             provider=self.domain,
             name=track.title,
-            media_type=MediaType.TRACK,
             sort_name=self.get_short_title(track, track_class),
             duration=track.duration,
             artists=[artist],
