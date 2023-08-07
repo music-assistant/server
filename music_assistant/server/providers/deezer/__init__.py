@@ -279,12 +279,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
         playlist_tracks = await playlist.get_tracks()
-        for count, deezer_track in enumerate(playlist_tracks, start=1):
+        count = 1
+        async for deezer_track in playlist_tracks:
             yield await self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
                 extra_init_kwargs={"position": count},
             )
+            count += 1
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -371,7 +373,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
-    ):
+    ) -> None:
         """Remove track(s) to playlist."""
         playlist_track_ids = []
         async for track in self.get_playlist_tracks(prov_playlist_id):
@@ -473,6 +475,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(artist.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=artist.link,
                 )
             },
             metadata=self.parse_metadata_artist(artist=artist),
@@ -499,6 +502,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(album.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=album.link,
                 )
             },
             metadata=self.parse_metadata_album(album=album),
@@ -517,6 +521,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(playlist.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=playlist.link,
                 )
             },
             metadata=MediaItemMetadata(
@@ -585,6 +590,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     available=self.track_available(track, user_country, track_class),
+                    url=track.link,
+                    isrc=track.isrc,
                 )
             },
             metadata=self.parse_metadata_track(track=track),
