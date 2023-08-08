@@ -169,6 +169,11 @@ class GWClient:
             payload["next_media"] = {"media": {"id": next_track, "type": "song"}}
 
         if last_track:
+            seconds_streamed = min(
+                datetime.datetime.utcnow().timestamp() - last_track.data["start_ts"],
+                last_track.seconds_streamed,
+            )
+
             payload["params"] = {
                 "media": {
                     "id": last_track.item_id,
@@ -182,7 +187,7 @@ class GWClient:
                     "sync": 0,
                     "next": bool(next_track),
                 },
-                "lt": int(last_track.seconds_streamed),
+                "lt": int(seconds_streamed),
                 "ctxt": {"t": "search_page", "id": last_track.item_id},
                 "dev": {"v": "10020230525142740", "t": 0},
                 "ls": [],
