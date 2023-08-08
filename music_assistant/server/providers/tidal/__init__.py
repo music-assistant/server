@@ -341,8 +341,9 @@ class TidalProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
+        tidal_session = await self._get_tidal_session()
         return await add_remove_playlist_tracks(
-            self._tidal_session, prov_playlist_id, prov_track_ids, add=True
+            tidal_session, prov_playlist_id, prov_track_ids, add=True
         )
 
     async def remove_playlist_tracks(
@@ -350,12 +351,15 @@ class TidalProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         prov_track_ids = []
+        tidal_session = await self._get_tidal_session()
         async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
                 prov_track_ids.append(track.item_id)
             if len(prov_track_ids) == len(positions_to_remove):
                 break
-        return await add_remove_playlist_tracks(self, prov_playlist_id, prov_track_ids, add=False)
+        return await add_remove_playlist_tracks(
+            tidal_session, prov_playlist_id, prov_track_ids, add=False
+        )
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
