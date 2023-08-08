@@ -476,7 +476,7 @@ class TidalProvider(MusicProvider):
         """Parse tidal artist object to generic layout."""
         artist_id = artist_obj.id
         artist = Artist(
-            item_id=artist_id,
+            item_id=str(artist_id),
             provider=self.instance_id,
             name=artist_obj.name,
             provider_mappings={
@@ -509,13 +509,13 @@ class TidalProvider(MusicProvider):
         version = album_obj.version if album_obj.version is not None else None
         album_id = album_obj.id
         album = Album(
-            item_id=album_id,
+            item_id=str(album_id),
             provider=self.instance_id,
             name=name,
             version=version,
             provider_mappings={
                 ProviderMapping(
-                    item_id=album_id,
+                    item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
@@ -575,14 +575,14 @@ class TidalProvider(MusicProvider):
         else:
             track_class = Track
         track = track_class(
-            item_id=track_id,
+            item_id=str(track_id),
             provider=self.instance_id,
             name=track_obj.name,
             version=version,
             duration=track_obj.duration,
             provider_mappings={
                 ProviderMapping(
-                    item_id=track_id,
+                    item_id=str(track_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
@@ -597,9 +597,10 @@ class TidalProvider(MusicProvider):
             },
             **extra_init_kwargs,
         )
+        # Here we use an ItemMapping as Tidal return minimal data when getting an Album from a Track
         track.album = self.get_item_mapping(
             media_type=MediaType.ALBUM,
-            key=track_obj.album.id,
+            key=str(track_obj.album.id),
             name=track_obj.album.name,
         )
         track.artists = []
@@ -633,13 +634,13 @@ class TidalProvider(MusicProvider):
         creator_id = playlist_obj.creator.id if playlist_obj.creator else None
         creator_name = playlist_obj.creator.name if playlist_obj.creator else "Tidal"
         playlist = Playlist(
-            item_id=playlist_id,
+            item_id=str(playlist_id),
             provider=self.instance_id,
             name=playlist_obj.name,
             owner=creator_name,
             provider_mappings={
                 ProviderMapping(
-                    item_id=playlist_id,
+                    item_id=str(playlist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=f"http://www.tidal.com/playlists/{playlist_id}",
