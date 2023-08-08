@@ -559,18 +559,15 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             isrc = track.isrc
         except AttributeError:
             isrc = None
-        try:
+        if hasattr(track, "artist"):
             artist = ItemMapping(
                 media_type=MediaType.ARTIST,
                 item_id=str(track.artist.id),
                 provider=self.instance_id,
                 name=track.artist.name,
             )
-        except (deezer.exceptions.DeezerErrorResponse, AttributeError):
-            artist = ItemMapping(
-                media_type=MediaType.ARTIST,
-                provider=self.instance_id,
-            )
+        else:
+            artist = None
         try:
             album = ItemMapping(
                 media_type=MediaType.ALBUM,
