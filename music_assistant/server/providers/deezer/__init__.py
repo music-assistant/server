@@ -544,10 +544,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def get_playlist_creator(self, playlist: deezer.Playlist):
         """See https://twitter.com/Un10cked/status/1682709413889540097."""
-        try:
+        if hasattr(playlist, "creator"):
             return playlist.creator
-        except AttributeError:
-            return playlist.user
+        return playlist.user
 
     async def parse_track(
         self,
