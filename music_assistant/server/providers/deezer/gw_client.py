@@ -112,9 +112,6 @@ class GWClient:
         )
         result_json = await result.json()
 
-        if method == "log.listen":
-            print(result_json)
-
         if result_json["error"]:
             if retry:
                 await self._update_user_data()
@@ -195,7 +192,5 @@ class GWClient:
                 "is_shuffle": False,
                 "stream_id": str(last_track.data["stream_id"]),
             }
-
-        print(payload)
 
         await self._gw_api_call("log.listen", args=payload)
