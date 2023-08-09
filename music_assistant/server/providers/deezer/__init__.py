@@ -327,19 +327,19 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Add an item to the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await self.client.add_user_artists(
+            result = await self.client.add_user_artist(
                 artist_id=int(prov_item_id),
             )
         elif media_type == MediaType.ALBUM:
-            result = await self.client.add_user_albums(
+            result = await self.client.add_user_album(
                 album_id=int(prov_item_id),
             )
         elif media_type == MediaType.TRACK:
-            result = await self.client.add_user_tracks(
+            result = await self.client.add_user_track(
                 track_id=int(prov_item_id),
             )
         elif media_type == MediaType.PLAYLIST:
-            result = await self.client.add_user_playlists(
+            result = await self.client.add_user_playlist(
                 playlist_id=int(prov_item_id),
             )
         else:
@@ -350,19 +350,19 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Remove an item from the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await self.client.remove_user_artists(
+            result = await self.client.remove_user_artist(
                 artist_id=int(prov_item_id),
             )
         elif media_type == MediaType.ALBUM:
-            result = await self.client.remove_user_albums(
+            result = await self.client.remove_user_album(
                 album_id=int(prov_item_id),
             )
         elif media_type == MediaType.TRACK:
-            result = await self.client.remove_user_tracks(
+            result = await self.client.remove_user_track(
                 track_id=int(prov_item_id),
             )
         elif media_type == MediaType.PLAYLIST:
-            result = await self.client.remove_user_playlists(
+            result = await self.client.remove_user_playlist(
                 playlist_id=int(prov_item_id),
             )
         else:
