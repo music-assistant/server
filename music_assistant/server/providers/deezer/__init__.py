@@ -622,7 +622,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(track.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    available=self.track_available(track, user_country),
+                    available=self.track_available(track=track, user_country=user_country),
                     url=track.link,
                     isrc=isrc,
                 )
@@ -701,11 +701,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
         raise NotImplementedError("Unsupported contenttype")
 
-    def track_available(
-        self, track: deezer.Track, user_country: str, track_type: Track | PlaylistTrack | AlbumTrack
-    ) -> bool:
+    def track_available(self, track: deezer.Track, user_country: str) -> bool:
         """Check if a given track is available in the users country."""
-        if isinstance(track_type, Track):
+        if hasattr(track, "available_countries"):
             return user_country in track.available_countries
         return True
 
