@@ -5,7 +5,6 @@ import uuid
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
-from itertools import islice
 from math import ceil
 from typing import Any
 
@@ -316,12 +315,12 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get top 25 tracks of an artist."""
+        """Get top 50 tracks of an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
-        top_tracks = await artist.get_top()
+        top_tracks = await artist.get_top(limit=50)
         return [
             self.parse_track(track=track, user_country=self.gw_client.user_country)
-            for track in islice(top_tracks, 0, 25)
+            async for track in top_tracks
         ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
