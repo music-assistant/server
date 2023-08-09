@@ -10,7 +10,7 @@ from math import ceil
 from typing import Any
 
 import deezer
-from aiohttp import ClientTimeout
+from aiohttp import ClientSession, ClientTimeout
 from Crypto.Cipher import Blowfish
 
 from music_assistant.common.models.config_entries import (
@@ -93,6 +93,24 @@ DEEZER_APP_ID = app_var(6)
 DEEZER_APP_SECRET = app_var(7)
 
 
+async def update_access_token(
+    app_id: str, app_secret: str, code: str, http_session: ClientSession
+) -> str:
+    """Update the access_token."""
+    response = await http_session.post(
+        "https://connect.deezer.com/oauth/access_token.php",
+        json={"code": code, "app_id": app_id, "secret": app_secret},
+        ssl=False,
+    )
+    if response.status != 200:
+        raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
+    response_text = await response.text()
+    try:
+        return response_text.split("=")[1].split("&")[0]
+    except Exception as error:
+        raise LoginFailed("Invalid auth code") from error
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -117,8 +135,8 @@ async def get_config_entries(
             url = f"{DEEZER_AUTH_URL}?app_id={DEEZER_APP_ID}&redirect_uri={RELAY_URL}\
 &perms={DEEZER_PERMS}&state={callback_url}"
             code = (await auth_helper.authenticate(url))["code"]
-            values[CONF_ACCESS_TOKEN] = await DeezerProvider.update_access_token(  # type: ignore
-                DeezerProvider, DEEZER_APP_ID, DEEZER_APP_SECRET, code, mass.http_session
+            values[CONF_ACCESS_TOKEN] = await update_access_token(  # type: ignore
+                DEEZER_APP_ID, DEEZER_APP_SECRET, code, mass.http_session
             )
 
     return (
@@ -279,10 +297,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         self, prov_playlist_id: str
     ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all tracks in a playlist."""
-        playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
-        playlist_tracks = await playlist.get_tracks()
+        playlist = await self.client.get_playlist(int(prov_playlist_id))
         count = 1
-        async for deezer_track in playlist_tracks:
+        async for deezer_track in await playlist.get_tracks():
             yield self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
@@ -370,7 +387,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add tra ck(s) to playlist."""
-        playlist = await self.client.get_playlist(prov_playlist_id)
+        playlist = await self.client.get_playlist(int(prov_playlist_id))
         await playlist.add_tracks(tracks=[int(i) for i in prov_track_ids])
 
     async def remove_playlist_tracks(
@@ -383,12 +400,13 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 playlist_track_ids.append(int(track.item_id))
             if len(playlist_track_ids) == len(positions_to_remove):
                 break
-        playlist = await self.client.get_playlist(prov_playlist_id)
+        playlist = await self.client.get_playlist(int(prov_playlist_id))
         await playlist.delete_tracks(playlist_track_ids)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
-        playlist = await self.client.create_playlist(playlist_name=name)
+        playlist_id = await self.client.create_playlist(playlist_name=name)
+        playlist = await self.client.get_playlist(playlist_id)
         return self.parse_playlist(playlist=playlist)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
@@ -605,7 +623,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(track.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    available=self.track_available(track, user_country, track_class),
+                    available=self.track_available(track, user_country),
                     url=track.link,
                     isrc=isrc,
                 )
@@ -672,39 +690,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         return playlists
 
     ### OTHER FUNCTIONS ###
-    async def update_access_token(self, app_id, app_secret, code, http_session=None) -> str:
-        """Update the access_token."""
-        if not http_session:
-            http_session = self.mass.http_session
-        response = await self._post_http(  # pylint: disable=E1124
-            self=self,
-            http_session=http_session,
-            url="https://connect.deezer.com/oauth/access_token.php",
-            data={
-                "code": code,
-                "app_id": app_id,
-                "secret": app_secret,
-            },
-            params={
-                "code": code,
-                "app_id": app_id,
-                "secret": app_secret,
-            },
-            headers=None,
-        )
-        try:
-            return response.split("=")[1].split("&")[0]
-        except Exception as error:
-            raise LoginFailed("Invalid auth code") from error
-
-    async def _post_http(self, http_session, url, data, params=None, headers=None) -> str:
-        async with http_session.post(
-            url, headers=headers, params=params, json=data, ssl=False
-        ) as response:
-            if response.status != 200:
-                raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
-            response_text = await response.text()
-            return response_text
 
     async def get_track_content_type(self, gw_client: GWClient, track_id: int):
         """Get a tracks contentType."""
