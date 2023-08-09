@@ -235,7 +235,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve all library tracks from Deezer."""
         for track in await self.client.get_user_tracks():
-            yield await self.parse_track(track=track, user_country=self.gw_client.user_country)
+            yield self.parse_track(track=track, user_country=self.gw_client.user_country)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
@@ -256,7 +256,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        return await self.parse_track(
+        return self.parse_track(
             track=await self.client.get_track(track_id=int(prov_track_id)),
             user_country=self.gw_client.user_country,
         )
@@ -267,7 +267,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         result = []
         for count, deezer_track in enumerate(await album.get_tracks(), start=1):
             result.append(
-                await self.parse_track(
+                self.parse_track(
                     track=deezer_track,
                     user_country=self.gw_client.user_country,
                     extra_init_kwargs={"disc_number": 0, "track_number": count},
@@ -283,7 +283,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         playlist_tracks = await playlist.get_tracks()
         count = 1
         async for deezer_track in playlist_tracks:
-            yield await self.parse_track(
+            yield self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
                 extra_init_kwargs={"position": count},
@@ -303,7 +303,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
         top_tracks = await artist.get_top()
         return [
-            await self.parse_track(track=track, user_country=self.gw_client.user_country)
+            self.parse_track(track=track, user_country=self.gw_client.user_country)
             for track in islice(top_tracks, 0, 25)
         ]
 
@@ -362,7 +362,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             name="Recommendations",
             label="recommendations",
             items=[
-                await self.parse_track(track=track, user_country=self.gw_client.user_country)
+                self.parse_track(track=track, user_country=self.gw_client.user_country)
                 for track in await self.client.get_recommended_tracks()
             ],
         )
@@ -448,21 +448,30 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def parse_metadata_track(self, track: deezer.Track) -> MediaItemMetadata:
         """Parse the track metadata."""
-        try:
-            return MediaItemMetadata(
-                images=[
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=track.album.cover_big,
-                    )
-                ],
-            )
-        except (deezer.exceptions.DeezerErrorResponse, AttributeError):
-            return MediaItemMetadata()
+        metadata = MediaItemMetadata()
+        if hasattr(track, "preview"):
+            metadata.preview = track.preview
+        if hasattr(track, "explicit_lyrics"):
+            metadata.explicit = track.explicit_lyrics
+        if hasattr(track, "duration"):
+            metadata.duration = track.duration
+        if hasattr(track, "rank"):
+            metadata.popularity = track.rank
+        if hasattr(track, "release_date"):
+            metadata.release_date = track.release_date
+        if hasattr(track, "album"):
+            metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=track.album.cover_big,
+                )
+            ]
+        return metadata
 
     def parse_metadata_album(self, album: deezer.Album) -> MediaItemMetadata:
         """Parse the album metadata."""
         return MediaItemMetadata(
+            explicit=album.explicit_lyrics,
             images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
         )
 
@@ -548,17 +557,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             return playlist.creator
         return playlist.user
 
-    async def parse_track(
+    def parse_track(
         self,
         track: deezer.Track,
         user_country: str,
         extra_init_kwargs: dict[str, Any] | None = None,
     ) -> Track | PlaylistTrack | AlbumTrack:
         """Parse the deezer-python track to a MASS track."""
-        try:
-            isrc = track.isrc
-        except AttributeError:
-            isrc = None
+        isrc = track.isrc if hasattr(track, "isrc") else None
         if hasattr(track, "artist"):
             artist = ItemMapping(
                 media_type=MediaType.ARTIST,
@@ -568,14 +574,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             )
         else:
             artist = None
-        try:
+        if hasattr(track, "album"):
             album = ItemMapping(
                 media_type=MediaType.ALBUM,
                 item_id=str(track.album.id),
                 provider=self.instance_id,
-                name=track.album.name,
+                name=track.album.title,
             )
-        except (deezer.exceptions.DeezerErrorResponse, AttributeError):
+        else:
             album = None
         if extra_init_kwargs is None:
             extra_init_kwargs = {}
@@ -590,9 +596,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             item_id=str(track.id),
             provider=self.domain,
             name=track.title,
-            sort_name=self.get_short_title(track, track_class),
+            sort_name=self.get_short_title(track),
             duration=track.duration,
-            artists=[artist],
+            artists=[artist] if artist else [],
             album=album,
             provider_mappings={
                 ProviderMapping(
@@ -608,12 +614,11 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             **extra_init_kwargs,
         )
 
-    def get_short_title(self, track: deezer.Track, track_type: Track | PlaylistTrack | AlbumTrack):
-        """Short names only available on normal tracks."""
-        if isinstance(track_type, Track):
+    def get_short_title(self, track: deezer.Track):
+        """Short names only returned, if available."""
+        if hasattr(track, "title_short"):
             return track.title_short
-        else:
-            return track.title
+        return track.title
 
     ### SEARCH AND PARSE FUNCTIONS ###
     async def search_and_parse_tracks(
@@ -624,7 +629,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         tracks = []
         index = 0
         async for track in deezer_tracks:
-            tracks.append(await self.parse_track(track, user_country))
+            tracks.append(self.parse_track(track, user_country))
             index += 1
             if index >= limit:
                 return tracks
@@ -665,13 +670,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             if index >= limit:
                 return playlists
         return playlists
-
-    ### OTHER PARSING FUNCTIONS ###
-    def _get_album(self, track: deezer.Track) -> Album | None:
-        try:
-            return self.parse_album(album=track.get_album())
-        except AttributeError:
-            return None
 
     ### OTHER FUNCTIONS ###
     async def update_access_token(self, app_id, app_secret, code, http_session=None) -> str:
@@ -725,8 +723,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Check if a given track is available in the users country."""
         if isinstance(track_type, Track):
             return user_country in track.available_countries
-        else:
-            return True
+        return True
 
     def _md5(self, data, data_type="ascii"):
         md5sum = hashlib.md5()
@@ -735,7 +732,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def get_blowfish_key(self, track_id):
         """Get blowfish key to decrypt a chunk of a track."""
-        secret = "g4el58wc" + "0zvf9na1"
+        secret = app_var(5)
         id_md5 = self._md5(track_id)
         return "".join(
             chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i])) for i in range(16)
