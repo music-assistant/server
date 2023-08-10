@@ -98,7 +98,7 @@ async def update_access_token(
     """Update the access_token."""
     response = await http_session.post(
         "https://connect.deezer.com/oauth/access_token.php",
-        json={"code": code, "app_id": app_id, "secret": app_secret},
+        params={"code": code, "app_id": app_id, "secret": app_secret},
         ssl=False,
     )
     if response.status != 200:
