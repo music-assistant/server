@@ -2,7 +2,7 @@
 
 Brotli>=1.0.9
 aiodns>=3.0.0
-aiofiles==23.1.0
+aiofiles==23.2.1
 aiohttp==3.8.5
 aiorun==2023.7.2
 aioslimproto==2.3.3

@@ -30,7 +30,7 @@ server = [
   "Brotli>=1.0.9",
   "aiohttp==3.8.5",
   "asyncio-throttle==1.0.2",
-  "aiofiles==23.1.0",
+  "aiofiles==23.2.1",
   "aiorun==2023.7.2",
   "colorlog==6.7.0",
   "aiosqlite==0.19.0",
