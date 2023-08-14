@@ -497,10 +497,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             name=album.title,
             artists=[
                 ItemMapping(
-                    MediaType.ARTIST,
-                    str(album.artist.id),
-                    self.instance_id,
-                    album.artist.name,
+                    media_type=MediaType.ARTIST,
+                    item_id=str(album.artist.id),
+                    provider=self.instance_id,
+                    name=album.artist.name,
                 )
             ],
             media_type=MediaType.ALBUM,
