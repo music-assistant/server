@@ -109,4 +109,4 @@ jobs:
       - uses: music-assistant/addon-update-action@main
         with:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          new_release_version: ${{ needs.build-and-publish-pypi.outputs.version }}
+          new_release_tag: ${{ needs.build-and-publish-pypi.outputs.version }}
