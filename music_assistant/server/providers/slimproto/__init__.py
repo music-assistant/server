@@ -758,6 +758,10 @@ class SlimprotoProvider(PlayerProvider):
         async with asyncio.TaskGroup() as tg:
             for client in self._get_sync_clients(player.player_id):
                 timestamp = client.jiffies + 20
+                sync_delay = self.mass.config.get_raw_player_config_value(
+                    client.player_id, CONF_SYNC_ADJUST, 0
+                )
+                timestamp -= sync_delay
                 self._do_not_resync_before[client.player_id] = time.time() + 1
                 tg.create_task(client.send_strm(b"u", replay_gain=int(timestamp)))
 

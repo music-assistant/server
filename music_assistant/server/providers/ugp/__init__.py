@@ -9,6 +9,8 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import shortuuid
+
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
@@ -134,6 +136,7 @@ class UniversalGroupProvider(PlayerProvider):
     """Base/builtin provider for universally grouping players."""
 
     prev_sync_leaders: dict[str, tuple[str]] | None = None
+    debounce_id: str | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -251,6 +254,14 @@ class UniversalGroupProvider(PlayerProvider):
         """
         # send stop first
         await self.cmd_stop(player_id)
+        # debounce
+        # this can potentially be called multiple times at the (near) exact time
+        # due to many child players being powered on (or resynced) at the same time
+        # debounce the command a bit by only letting through the last one.
+        self.debounce_id = debounce_id = shortuuid.uuid()
+        await asyncio.sleep(200)
+        if self.debounce_id != debounce_id:
+            return
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
