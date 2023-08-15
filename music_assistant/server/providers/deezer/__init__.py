@@ -70,6 +70,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.RECOMMENDATIONS,
+    ProviderFeature.SIMILAR_TRACKS,
 )
 
 
@@ -407,6 +408,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         playlist_id = await self.client.create_playlist(playlist_name=name)
         playlist = await self.client.get_playlist(playlist_id)
         return self.parse_playlist(playlist=playlist)
+
+    async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
+        """Retrieve a dynamic list of tracks based on the provided item."""
+        endpoint = "song.getSearchTrackMix"
+        tracks = (await self.gw_client._gw_api_call(endpoint, args={"SNG_ID": prov_track_id}))[
+            "results"
+        ]["data"][:limit]
+        return [await self.get_track(track["SNG_ID"]) for track in tracks]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Return the content details for the given track when it will be streamed."""
