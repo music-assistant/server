@@ -4,12 +4,12 @@ import hashlib
 import uuid
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
+from dataclasses import dataclass
 from math import ceil
 from typing import Any
 
 import deezer
-from aiohttp import ClientTimeout
-from asyncio_throttle.throttler import Throttler
+from aiohttp import ClientSession, ClientTimeout
 from Crypto.Cipher import Blowfish
 
 from music_assistant.common.models.config_entries import (
@@ -50,7 +50,6 @@ from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
 
 from .gw_client import GWClient
-from .helpers import Credential, DeezerClient
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -73,6 +72,16 @@ SUPPORTED_FEATURES = (
     ProviderFeature.RECOMMENDATIONS,
 )
 
+
+@dataclass
+class DeezerCredentials:
+    """Class for storing credentials."""
+
+    app_id: int
+    app_secret: str
+    access_token: str
+
+
 CONF_ACCESS_TOKEN = "access_token"
 CONF_ACTION_AUTH = "auth"
 DEEZER_AUTH_URL = "https://connect.deezer.com/oauth/auth.php"
@@ -81,6 +90,24 @@ DEEZER_PERMS = "basic_access,email,offline_access,manage_library,\
 manage_community,delete_library,listening_history"
 DEEZER_APP_ID = app_var(6)
 DEEZER_APP_SECRET = app_var(7)
+
+
+async def update_access_token(
+    app_id: str, app_secret: str, code: str, http_session: ClientSession
+) -> str:
+    """Update the access_token."""
+    response = await http_session.post(
+        "https://connect.deezer.com/oauth/access_token.php",
+        params={"code": code, "app_id": app_id, "secret": app_secret},
+        ssl=False,
+    )
+    if response.status != 200:
+        raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
+    response_text = await response.text()
+    try:
+        return response_text.split("=")[1].split("&")[0]
+    except Exception as error:
+        raise LoginFailed("Invalid auth code") from error
 
 
 async def setup(
@@ -107,8 +134,8 @@ async def get_config_entries(
             url = f"{DEEZER_AUTH_URL}?app_id={DEEZER_APP_ID}&redirect_uri={RELAY_URL}\
 &perms={DEEZER_PERMS}&state={callback_url}"
             code = (await auth_helper.authenticate(url))["code"]
-            values[CONF_ACCESS_TOKEN] = await DeezerProvider.update_access_token(  # type: ignore
-                DeezerProvider, DEEZER_APP_ID, DEEZER_APP_SECRET, code, mass.http_session
+            values[CONF_ACCESS_TOKEN] = await update_access_token(  # type: ignore
+                DEEZER_APP_ID, DEEZER_APP_SECRET, code, mass.http_session
             )
 
     return (
@@ -128,31 +155,26 @@ async def get_config_entries(
 class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     """Deezer provider support."""
 
-    client: DeezerClient
+    client: deezer.Client
     gw_client: GWClient
-    creds: Credential
-    _throttler: Throttler
-
-    @property
-    def name(self) -> str:
-        """Return (custom) friendly name for this provider instance."""
-        if client := getattr(self, "client", None):
-            return f"Deezer - {client.user.name}"
-        return super().name
+    creds: DeezerCredentials
+    user: deezer.resources.User
 
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
-        self._throttler = Throttler(rate_limit=50, period=5)
-        self.creds = Credential(
+        self.creds = DeezerCredentials(
             app_id=DEEZER_APP_ID,
             app_secret=DEEZER_APP_SECRET,
             access_token=self.config.get_value(CONF_ACCESS_TOKEN),  # type: ignore
         )
-        try:
-            deezer_client = await DeezerClient.get_deezer_client(self=None, creds=self.creds)
-            self.client = DeezerClient(creds=self.creds, client=deezer_client)
-        except Exception as error:
-            raise LoginFailed("Invalid login credentials") from error
+
+        self.client = deezer.Client(
+            app_id=self.creds.app_id,
+            app_secret=self.creds.app_secret,
+            access_token=self.creds.access_token,
+        )
+
+        self.user = await self.client.get_user()
 
         self.gw_client = GWClient(self.mass.http_session, self.config.get_value(CONF_ACCESS_TOKEN))
         await self.gw_client.setup()
@@ -224,7 +246,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Deezer."""
-        for playlist in await self.client.get_user_playlists():
+        for playlist in await self.user.get_playlists():
             yield self.parse_playlist(playlist=playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -260,7 +282,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Get all tracks in a album."""
         album = await self.client.get_album(album_id=int(prov_album_id))
         result = []
-        for count, deezer_track in enumerate(album.tracks, start=1):
+        for count, deezer_track in enumerate(await album.get_tracks(), start=1):
             result.append(
                 self.parse_track(
                     track=deezer_track,
@@ -274,49 +296,50 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         self, prov_playlist_id: str
     ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all tracks in a playlist."""
-        playlist = await self.client.get_playlist(playlist_id=prov_playlist_id)
-        for count, deezer_track in enumerate(playlist.tracks, start=1):
-            track = self.parse_track(
+        playlist = await self.client.get_playlist(int(prov_playlist_id))
+        count = 1
+        async for deezer_track in await playlist.get_tracks():
+            yield self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
                 extra_init_kwargs={"position": count},
             )
-            yield track
+            count += 1
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
         albums = []
-        for album in await self.client.get_albums_by_artist(artist=artist):
+        for album in await artist.get_albums():
             albums.append(self.parse_album(album=album))
         return albums
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
-        """Get top 25 tracks of an artist."""
+        """Get top 50 tracks of an artist."""
         artist = await self.client.get_artist(artist_id=int(prov_artist_id))
-        top_tracks = await self.client.get_artist_top(artist=artist, limit=25)
+        top_tracks = await artist.get_top(limit=50)
         return [
             self.parse_track(track=track, user_country=self.gw_client.user_country)
-            for track in top_tracks
+            async for track in top_tracks
         ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Add an item to the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await self.client.add_user_artists(
+            result = await self.client.add_user_artist(
                 artist_id=int(prov_item_id),
             )
         elif media_type == MediaType.ALBUM:
-            result = await self.client.add_user_albums(
+            result = await self.client.add_user_album(
                 album_id=int(prov_item_id),
             )
         elif media_type == MediaType.TRACK:
-            result = await self.client.add_user_tracks(
+            result = await self.client.add_user_track(
                 track_id=int(prov_item_id),
             )
         elif media_type == MediaType.PLAYLIST:
-            result = await self.client.add_user_playlists(
+            result = await self.client.add_user_playlist(
                 playlist_id=int(prov_item_id),
             )
         else:
@@ -327,19 +350,19 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Remove an item from the provider's library/favorites."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await self.client.remove_user_artists(
+            result = await self.client.remove_user_artist(
                 artist_id=int(prov_item_id),
             )
         elif media_type == MediaType.ALBUM:
-            result = await self.client.remove_user_albums(
+            result = await self.client.remove_user_album(
                 album_id=int(prov_item_id),
             )
         elif media_type == MediaType.TRACK:
-            result = await self.client.remove_user_tracks(
+            result = await self.client.remove_user_track(
                 track_id=int(prov_item_id),
             )
         elif media_type == MediaType.PLAYLIST:
-            result = await self.client.remove_user_playlists(
+            result = await self.client.remove_user_playlist(
                 playlist_id=int(prov_item_id),
             )
         else:
@@ -363,27 +386,26 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add tra ck(s) to playlist."""
-        await self.client.add_playlist_tracks(
-            playlist_id=prov_playlist_id, tracks=[int(i) for i in prov_track_ids]
-        )
+        playlist = await self.client.get_playlist(int(prov_playlist_id))
+        await playlist.add_tracks(tracks=[int(i) for i in prov_track_ids])
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
-    ):
+    ) -> None:
         """Remove track(s) to playlist."""
         playlist_track_ids = []
         async for track in self.get_playlist_tracks(prov_playlist_id):
             if track.position in positions_to_remove:
-                playlist_track_ids.append(track.id)
+                playlist_track_ids.append(int(track.item_id))
             if len(playlist_track_ids) == len(positions_to_remove):
                 break
-        await self.client.remove_playlist_tracks(
-            playlist_id=prov_playlist_id, tracks=list(playlist_track_ids)
-        )
+        playlist = await self.client.get_playlist(int(prov_playlist_id))
+        await playlist.delete_tracks(playlist_track_ids)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
-        playlist = await self.client.create_playlist(playlist_name=name)
+        playlist_id = await self.client.create_playlist(playlist_name=name)
+        playlist = await self.client.get_playlist(playlist_id)
         return self.parse_playlist(playlist=playlist)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
@@ -443,24 +465,30 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def parse_metadata_track(self, track: deezer.Track) -> MediaItemMetadata:
         """Parse the track metadata."""
-        try:
-            return MediaItemMetadata(
-                preview=track.preview,
-                images=[
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=track.album.cover_big,
-                    )
-                ],
-            )
-        except AttributeError:
-            return MediaItemMetadata(
-                preview=track.preview,
-            )
+        metadata = MediaItemMetadata()
+        if hasattr(track, "preview"):
+            metadata.preview = track.preview
+        if hasattr(track, "explicit_lyrics"):
+            metadata.explicit = track.explicit_lyrics
+        if hasattr(track, "duration"):
+            metadata.duration = track.duration
+        if hasattr(track, "rank"):
+            metadata.popularity = track.rank
+        if hasattr(track, "release_date"):
+            metadata.release_date = track.release_date
+        if hasattr(track, "album"):
+            metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=track.album.cover_big,
+                )
+            ]
+        return metadata
 
     def parse_metadata_album(self, album: deezer.Album) -> MediaItemMetadata:
         """Parse the album metadata."""
         return MediaItemMetadata(
+            explicit=album.explicit_lyrics,
             images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
         )
 
@@ -483,6 +511,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(artist.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=artist.link,
                 )
             },
             metadata=self.parse_metadata_artist(artist=artist),
@@ -509,6 +538,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(album.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=album.link,
                 )
             },
             metadata=self.parse_metadata_album(album=album),
@@ -516,6 +546,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def parse_playlist(self, playlist: deezer.Playlist) -> Playlist:
         """Parse the deezer-python playlist to a MASS playlist."""
+        creator = self.get_playlist_creator(playlist)
         return Playlist(
             item_id=str(playlist.id),
             provider=self.domain,
@@ -526,21 +557,49 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     item_id=str(playlist.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=playlist.link,
                 )
             },
             metadata=MediaItemMetadata(
                 images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
+                checksum=playlist.checksum,
             ),
-            is_editable=playlist.creator.id == self.client.user.id,
+            is_editable=creator.id == self.user.id,
+            owner=creator.name,
         )
+
+    def get_playlist_creator(self, playlist: deezer.Playlist):
+        """See https://twitter.com/Un10cked/status/1682709413889540097."""
+        if hasattr(playlist, "creator"):
+            return playlist.creator
+        return playlist.user
 
     def parse_track(
         self,
         track: deezer.Track,
         user_country: str,
         extra_init_kwargs: dict[str, Any] | None = None,
-    ) -> Track | PlaylistTrack:
+    ) -> Track | PlaylistTrack | AlbumTrack:
         """Parse the deezer-python track to a MASS track."""
+        isrc = track.isrc if hasattr(track, "isrc") else None
+        if hasattr(track, "artist"):
+            artist = ItemMapping(
+                media_type=MediaType.ARTIST,
+                item_id=str(track.artist.id),
+                provider=self.instance_id,
+                name=track.artist.name,
+            )
+        else:
+            artist = None
+        if hasattr(track, "album"):
+            album = ItemMapping(
+                media_type=MediaType.ALBUM,
+                item_id=str(track.album.id),
+                provider=self.instance_id,
+                name=track.album.title,
+            )
+        else:
+            album = None
         if extra_init_kwargs is None:
             extra_init_kwargs = {}
             track_class = Track
@@ -554,99 +613,82 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             item_id=str(track.id),
             provider=self.domain,
             name=track.title,
-            media_type=MediaType.TRACK,
-            sort_name=track.title_short,
+            sort_name=self.get_short_title(track),
             duration=track.duration,
-            artists=[
-                ItemMapping(
-                    media_type=MediaType.ARTIST,
-                    item_id=str(track.artist.id),
-                    provider=self.domain,
-                    name=track.artist.name,
-                )
-            ],
-            album=ItemMapping(
-                media_type=MediaType.ALBUM,
-                item_id=str(track.album.id),
-                provider=self.domain,
-                name=track.album.title,
-            ),
+            artists=[artist] if artist else [],
+            album=album,
             provider_mappings={
                 ProviderMapping(
                     item_id=str(track.id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    available=self.track_available(track, user_country),
+                    available=self.track_available(track=track, user_country=user_country),
+                    url=track.link,
+                    isrc=isrc,
                 )
             },
             metadata=self.parse_metadata_track(track=track),
             **extra_init_kwargs,
         )
 
+    def get_short_title(self, track: deezer.Track):
+        """Short names only returned, if available."""
+        if hasattr(track, "title_short"):
+            return track.title_short
+        return track.title
+
     ### SEARCH AND PARSE FUNCTIONS ###
     async def search_and_parse_tracks(
-        self, query: str, user_country: str, limit: int = 5
+        self, query: str, user_country: str, limit: int = 20
     ) -> list[Track]:
         """Search for tracks and parse them."""
-        deezer_tracks = await self.client.search_track(query=query, limit=limit)
-        return [self.parse_track(track, user_country) for track in deezer_tracks]
+        deezer_tracks = await self.client.search(query=query, limit=limit)
+        tracks = []
+        index = 0
+        async for track in deezer_tracks:
+            tracks.append(self.parse_track(track, user_country))
+            index += 1
+            if index >= limit:
+                return tracks
+        return tracks
 
-    async def search_and_parse_artists(self, query: str, limit: int = 5) -> list[Artist]:
+    async def search_and_parse_artists(self, query: str, limit: int = 20) -> list[Artist]:
         """Search for artists and parse them."""
-        deezer_artist = await self.client.search_artist(query=query, limit=limit)
-        return [self.parse_artist(artist=artist) for artist in deezer_artist]
+        deezer_artist = await self.client.search_artists(query=query, limit=limit)
+        artists = []
+        index = 0
+        async for artist in deezer_artist:
+            artists.append(self.parse_artist(artist))
+            index += 1
+            if index >= limit:
+                return artists
+        return artists
 
-    async def search_and_parse_albums(self, query: str, limit: int = 5) -> list[Album]:
+    async def search_and_parse_albums(self, query: str, limit: int = 20) -> list[Album]:
         """Search for album and parse them."""
-        deezer_albums = await self.client.search_album(query=query, limit=limit)
-        return [self.parse_album(album=album) for album in deezer_albums]
+        deezer_albums = await self.client.search_albums(query=query, limit=limit)
+        albums = []
+        index = 0
+        async for album in deezer_albums:
+            albums.append(self.parse_album(album))
+            index += 1
+            if index >= limit:
+                return albums
+        return albums
 
-    async def search_and_parse_playlists(self, query: str, limit: int = 5) -> list[Playlist]:
+    async def search_and_parse_playlists(self, query: str, limit: int = 20) -> list[Playlist]:
         """Search for playlists and parse them."""
-        deezer_playlists = await self.client.search_playlist(query=query, limit=limit)
-        return [self.parse_playlist(playlist=playlist) for playlist in deezer_playlists]
-
-    ### OTHER PARSING FUNCTIONS ###
-    def _get_album(self, track: deezer.Track) -> Album | None:
-        try:
-            return self.parse_album(album=track.get_album())
-        except AttributeError:
-            return None
+        deezer_playlists = await self.client.search_playlists(query=query, limit=limit)
+        playlists = []
+        index = 0
+        async for playlist in deezer_playlists:
+            playlists.append(self.parse_playlist(playlist))
+            index += 1
+            if index >= limit:
+                return playlists
+        return playlists
 
     ### OTHER FUNCTIONS ###
-    async def update_access_token(self, app_id, app_secret, code, http_session=None) -> str:
-        """Update the access_token."""
-        if not http_session:
-            http_session = self.mass.http_session
-        response = await self._post_http(  # pylint: disable=E1124
-            self=self,
-            http_session=http_session,
-            url="https://connect.deezer.com/oauth/access_token.php",
-            data={
-                "code": code,
-                "app_id": app_id,
-                "secret": app_secret,
-            },
-            params={
-                "code": code,
-                "app_id": app_id,
-                "secret": app_secret,
-            },
-            headers=None,
-        )
-        try:
-            return response.split("=")[1].split("&")[0]
-        except Exception as error:
-            raise LoginFailed("Invalid auth code") from error
-
-    async def _post_http(self, http_session, url, data, params=None, headers=None) -> str:
-        async with http_session.post(
-            url, headers=headers, params=params, json=data, ssl=False
-        ) as response:
-            if response.status != 200:
-                raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
-            response_text = await response.text()
-            return response_text
 
     async def get_track_content_type(self, gw_client: GWClient, track_id: int):
         """Get a tracks contentType."""
@@ -661,7 +703,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def track_available(self, track: deezer.Track, user_country: str) -> bool:
         """Check if a given track is available in the users country."""
-        return user_country in track.available_countries
+        if hasattr(track, "available_countries"):
+            return user_country in track.available_countries
+        return True
 
     def _md5(self, data, data_type="ascii"):
         md5sum = hashlib.md5()
@@ -670,7 +714,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
     def get_blowfish_key(self, track_id):
         """Get blowfish key to decrypt a chunk of a track."""
-        secret = "g4el58wc" + "0zvf9na1"
+        secret = app_var(5)
         id_md5 = self._md5(track_id)
         return "".join(
             chr(ord(id_md5[i]) ^ ord(id_md5[i + 16]) ^ ord(secret[i])) for i in range(16)

@@ -11,10 +11,10 @@ async-upnp-client==0.34.1
 asyncio-throttle==1.0.2
 colorlog==6.7.0
 cryptography==41.0.3
-deezer-python==6.0.0
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
 git+https://github.com/gieljnssns/python-radios.git@main
+git+https://github.com/music-assistant/deezer-python-async@v0.1.0
 ifaddr==0.2.0
 mashumaro==3.9
 memory-tempfile==2.2.3
