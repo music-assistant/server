@@ -378,7 +378,7 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-async def get_media_stream(
+async def get_media_stream(  # noqa: PLR0915
     mass: MusicAssistant,
     streamdetails: StreamDetails,
     pcm_format: AudioFormat,
