@@ -101,12 +101,12 @@ jobs:
           build-args: |
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
 
-  addon-version-update:
-    name: Server repo PR
-    needs: build-and-publish-pypi
-    runs-on: ubuntu-latest
-    steps:
-      - uses: music-assistant/addon-update-action@main
-        with:
-          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          new_release_version: ${{ needs.build-and-publish-pypi.outputs.version }}
+  #addon-version-update:
+  #  name: Server repo PR
+  #  needs: build-and-publish-pypi
+  #  runs-on: ubuntu-latest
+  #  steps:
+  #    - uses: music-assistant/addon-update-action@main
+  #      with:
+  #        github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+  #        new_release_version: ${{ needs.build-and-publish-pypi.outputs.version }}
