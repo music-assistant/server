@@ -102,11 +102,12 @@ jobs:
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
 
   addon-version-update:
-    name: Server repo PR
+    name: Updates the Addon repository with the new version
     needs: [ build-and-publish-pypi, build-and-push-container-image ]
     runs-on: ubuntu-latest
     steps:
-      - uses: music-assistant/addon-update-action@main
+      - name: Push new version number to addon config
+        uses: music-assistant/addon-update-action@main
         with:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           new_release_version: ${{ needs.build-and-publish-pypi.outputs.version }}
