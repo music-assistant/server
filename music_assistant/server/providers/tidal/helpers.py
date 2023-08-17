@@ -261,12 +261,13 @@ async def create_playlist(
     return await asyncio.to_thread(inner)
 
 
-async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -> list[TidalTrack]:
+async def get_similar_tracks(session: TidalSession, prov_track_id) -> list[TidalTrack]:
     """Async wrapper around the tidal Track.get_similar_tracks function."""
 
     def inner() -> list[TidalTrack]:
         try:
-            return TidalTrack(session, prov_track_id).get_track_radio(limit)
+            # Re-add limit here after tidalapi supports it
+            return TidalTrack(session, prov_track_id).get_track_radio()
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err
