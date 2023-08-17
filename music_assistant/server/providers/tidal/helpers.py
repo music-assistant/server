@@ -261,7 +261,7 @@ async def create_playlist(
     return await asyncio.to_thread(inner)
 
 
-async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -> list[TidalTrack]:
+async def get_similar_tracks(session: TidalSession, prov_track_id) -> list[TidalTrack]:
     """Async wrapper around the tidal Track.get_similar_tracks function."""
 
     def inner() -> list[TidalTrack]:
