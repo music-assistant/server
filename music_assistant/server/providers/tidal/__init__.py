@@ -17,7 +17,11 @@ from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi.media import Lyrics as TidalLyrics
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import (
     AlbumType,
     ConfigEntryType,
@@ -78,6 +82,8 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
+CONF_ACTION_QUALITY = "quality_action"
+CONF_QUALITY = "quality"
 
 
 async def setup(
@@ -89,11 +95,12 @@ async def setup(
     return prov
 
 
-async def tidal_code_login(auth_helper: AuthenticationHelper) -> TidalSession:
+async def tidal_code_login(auth_helper: AuthenticationHelper, quality: str) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
 
     def inner() -> TidalSession:
-        config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
+        print(quality)
+        config = TidalConfig(quality=TidalQuality[quality], item_limit=10000, alac=False)
         session = TidalSession(config=config)
         login, future = session.login_oauth()
         auth_helper.send_url(f"https://{login.verification_uri_complete}")
@@ -119,7 +126,7 @@ async def get_config_entries(
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
-            tidal_session = await tidal_code_login(auth_helper)
+            tidal_session = await tidal_code_login(auth_helper, values.get(CONF_QUALITY))
             if not tidal_session.check_login():
                 raise LoginFailed("Authentication to Tidal failed")
             # set the retrieved token on the values object to pass along
@@ -128,14 +135,40 @@ async def get_config_entries(
             values[CONF_EXPIRY_TIME] = tidal_session.expiry_time.isoformat()
             values[CONF_USER_ID] = str(tidal_session.user.id)
 
+    # config flow auth action/step to pick the library to use
+    # because this call is very slow, we only show/calculate the dropdown if we do
+    # not yet have this info or we/user invalidated it.
+
     # return the collected config entries
     return (
+        ConfigEntry(
+            key=CONF_QUALITY,
+            type=ConfigEntryType.STRING,
+            label="Quality",
+            required=True,
+            description="The Tidal Quality you wish to use",
+            options=[
+                ConfigValueOption(
+                    title=TidalQuality.low_96k.value, value=TidalQuality.low_96k.name
+                ),
+                ConfigValueOption(
+                    title=TidalQuality.low_320k.value, value=TidalQuality.low_320k.name
+                ),
+                ConfigValueOption(
+                    title=TidalQuality.high_lossless.value, value=TidalQuality.high_lossless.name
+                ),
+                ConfigValueOption(title=TidalQuality.hi_res.value, value=TidalQuality.hi_res.name),
+            ],
+            default_value=TidalQuality.high_lossless.name,
+            value=values.get(CONF_QUALITY) if values else None,
+        ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Authentication token for Tidal",
             description="You need to link Music Assistant to your Tidal account.",
             action=CONF_ACTION_AUTH,
+            depends_on=CONF_QUALITY,
             action_label="Authenticate on Tidal.com",
             value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
@@ -440,6 +473,7 @@ class TidalProvider(MusicProvider):
             return self._tidal_session
         self._tidal_session = await self._load_tidal_session(
             token_type="Bearer",
+            quality=self.config.get_value(CONF_QUALITY),
             access_token=self.config.get_value(CONF_AUTH_TOKEN),
             refresh_token=self.config.get_value(CONF_REFRESH_TOKEN),
             expiry_time=datetime.fromisoformat(self.config.get_value(CONF_EXPIRY_TIME)),
@@ -462,12 +496,12 @@ class TidalProvider(MusicProvider):
         return self._tidal_session
 
     async def _load_tidal_session(
-        self, token_type, access_token, refresh_token=None, expiry_time=None
+        self, token_type, quality: TidalQuality, access_token, refresh_token=None, expiry_time=None
     ) -> TidalSession:
         """Load the tidalapi Session."""
 
         def inner() -> TidalSession:
-            config = TidalConfig(quality=TidalQuality.lossless, item_limit=10000, alac=False)
+            config = TidalConfig(quality=TidalQuality[quality], item_limit=10000, alac=False)
             session = TidalSession(config=config)
             session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
             return session
