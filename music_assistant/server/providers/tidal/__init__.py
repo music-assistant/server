@@ -310,14 +310,13 @@ class TidalProvider(MusicProvider):
             )
             yield track
 
-    async def get_similar_tracks(self, prov_track_id: str, limit=25) -> list[Track]:  # noqa: ARG002
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
         async with self._throttler:
             return [
                 await self._parse_track(track_obj=track)
-                # Re-add limit here after tidalapi supports it, and remove noqa above
-                for track in await get_similar_tracks(tidal_session, prov_track_id)
+                for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
             ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType):
