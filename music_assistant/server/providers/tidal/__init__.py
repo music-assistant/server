@@ -628,7 +628,7 @@ class TidalProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.FLAC,
-                        bit_depth=24 if track_obj.audio_quality.value == "HI_RES" else 16,
+                        bit_depth=24 if self._is_hi_res(track_obj=track_obj) else 16,
                     ),
                     isrc=track_obj.isrc,
                     url=f"http://www.tidal.com/tracks/{track_id}",
@@ -749,3 +749,7 @@ class TidalProvider(MusicProvider):
             media_info = await parse_tags(url)
             await self.mass.cache.set(cache_key, media_info.raw)
         return media_info
+
+    def _is_hi_res(self, track_obj: TidalTrack) -> bool:
+        """Check if track is hi-res."""
+        return track_obj.audio_quality.value in ["HI_RES", "HI_RES_LOSSLESS"]
