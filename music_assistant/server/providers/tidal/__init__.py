@@ -46,6 +46,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.server.helpers.auth import AuthenticationHelper
+from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -406,15 +407,17 @@ class TidalProvider(MusicProvider):
         tidal_session = await self._get_tidal_session()
         track = await get_track(tidal_session, item_id)
         url = await get_track_url(tidal_session, item_id)
+        media_info = await self._get_media_info(item_id=item_id, url=url)
         if not track:
             raise MediaNotFoundError(f"track {item_id} not found")
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=ContentType.FLAC,
-                sample_rate=44100,
-                bit_depth=16,
+                content_type=ContentType.try_parse(media_info.format),
+                sample_rate=media_info.sample_rate,
+                bit_depth=media_info.bits_per_sample,
+                channels=media_info.channels,
             ),
             duration=track.duration,
             direct=url,
@@ -625,8 +628,7 @@ class TidalProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.FLAC,
-                        sample_rate=44100,
-                        bit_depth=16,
+                        bit_depth=24 if track_obj.audio_quality.value == "HI_RES" else 16,
                     ),
                     isrc=track_obj.isrc,
                     url=f"http://www.tidal.com/tracks/{track_id}",
@@ -732,3 +734,18 @@ class TidalProvider(MusicProvider):
                     yield item
                 if len(chunk) < DEFAULT_LIMIT:
                     break
+
+    async def _get_media_info(
+        self, item_id: str, url: str, force_refresh: bool = False
+    ) -> AudioTags:
+        """Retrieve (cached) mediainfo for track."""
+        cache_key = f"{self.instance_id}.media_info.{item_id}"
+        # do we have some cached info for this url ?
+        cached_info = await self.mass.cache.get(cache_key)
+        if cached_info and not force_refresh:
+            media_info = AudioTags.parse(cached_info)
+        else:
+            # parse info with ffprobe (and store in cache)
+            media_info = await parse_tags(url)
+            await self.mass.cache.set(cache_key, media_info.raw)
+        return media_info
