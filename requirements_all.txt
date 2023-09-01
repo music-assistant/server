@@ -14,7 +14,7 @@ cryptography==41.0.3
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
 git+https://github.com/gieljnssns/python-radios.git@main
-git+https://github.com/music-assistant/deezer-python-async@v0.1.1
+git+https://github.com/music-assistant/deezer-python-async@v0.1.2
 ifaddr==0.2.0
 mashumaro==3.9
 memory-tempfile==2.2.3
