@@ -14,6 +14,7 @@ from music_assistant.common.models.media_items import (
     AlbumType,
     Artist,
     ImageType,
+    ItemMapping,
     LinkType,
     MediaItemImage,
     MediaItemLink,
@@ -132,6 +133,8 @@ class AudioDbMetadataProvider(MetadataProvider):
         elif album.artists:
             # lookup by name
             artist = album.artists[0]
+            if isinstance(artist, ItemMapping):
+                artist = await self.mass.music.albums.get(artist)
             result = await self._get_data("searchalbum.php", s=artist.name, a=album.name)
             if result and result.get("album"):
                 for item in result["album"]:
