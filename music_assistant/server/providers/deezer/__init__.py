@@ -159,7 +159,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     client: deezer.Client
     gw_client: GWClient
     creds: DeezerCredentials
-    user: deezer.resources.User
+    user: deezer.User
 
     async def handle_setup(self) -> None:
         """Set up the Deezer provider."""
@@ -485,7 +485,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             metadata.popularity = track.rank
         if hasattr(track, "release_date"):
             metadata.release_date = track.release_date
-        if hasattr(track, "album"):
+        if hasattr(track, "album") and hasattr(track.album, "cover_big"):
             metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
