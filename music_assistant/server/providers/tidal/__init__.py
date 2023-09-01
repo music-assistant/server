@@ -83,7 +83,6 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
-CONF_ACTION_QUALITY = "quality_action"
 CONF_QUALITY = "quality"
 
 
@@ -100,7 +99,6 @@ async def tidal_code_login(auth_helper: AuthenticationHelper, quality: str) -> T
     """Async wrapper around the tidalapi Session function."""
 
     def inner() -> TidalSession:
-        print(quality)
         config = TidalConfig(quality=TidalQuality[quality], item_limit=10000, alac=False)
         session = TidalSession(config=config)
         login, future = session.login_oauth()
