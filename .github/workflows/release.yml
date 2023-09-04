@@ -11,7 +11,7 @@ jobs:
     outputs:
       version: ${{ steps.vars.outputs.tag }}
     steps:
-      - uses: actions/checkout@v3.5.3
+      - uses: actions/checkout@v4
       - name: Get tag
         id: vars
         run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
@@ -54,7 +54,7 @@ jobs:
       - name: Sleep for 60 seconds (to prevent race condition with the pypi upload)
         run: sleep 60s
         shell: bash
-      - uses: actions/checkout@v3.5.3
+      - uses: actions/checkout@v4
       - name: Log in to the GitHub container registry
         uses: docker/login-action@v2.2.0
         with:
