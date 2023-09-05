@@ -750,4 +750,4 @@ class TidalProvider(MusicProvider):
 
     def _is_hi_res(self, track_obj: TidalTrack) -> bool:
         """Check if track is hi-res."""
-        return track_obj.audio_quality.value in ["HI_RES", "HI_RES_LOSSLESS"]
+        return track_obj.audio_quality.value == "HI_RES"
