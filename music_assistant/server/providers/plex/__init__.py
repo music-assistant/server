@@ -16,7 +16,7 @@ from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.media import AudioStream as PlexAudioStream
 from plexapi.media import Media as PlexMedia
 from plexapi.media import MediaPart as PlexMediaPart
-from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
+from plexapi.myplex import MyPlexPinLogin
 from plexapi.server import PlexServer
 
 from music_assistant.common.models.config_entries import (

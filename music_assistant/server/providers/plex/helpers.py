@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 import plexapi.exceptions
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
-from plexapi.myplex import MyPlexAccount, MyPlexResource
+from plexapi.myplex import MyPlexAccount
 from plexapi.server import PlexServer
 
 if TYPE_CHECKING:
