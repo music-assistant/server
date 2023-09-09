@@ -560,12 +560,11 @@ class PlexProvider(MusicProvider):
         plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
         for idx, plex_track in enumerate(await self._run_async(plex_album.tracks), 1):
-            track_number = plex_track.trackNumber if plex_track.trackNumber is not None else idx
             track = await self._parse_track(
                 plex_track,
                 {
                     "disc_number": plex_track.parentIndex,
-                    "track_number": track_number,
+                    "track_number": plex_track.trackNumber or idx,
                 },
             )
             tracks.append(track)
