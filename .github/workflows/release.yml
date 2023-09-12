@@ -85,7 +85,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server
 
       - name: Build and Push images
-        uses: docker/build-push-action@v4.1.1
+        uses: docker/build-push-action@v5.0.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64
