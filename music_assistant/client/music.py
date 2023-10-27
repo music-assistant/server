@@ -153,7 +153,7 @@ class Music:
         return [
             Track.from_dict(item)
             for item in await self.client.send_command(
-                "music/album/tracks",
+                "music/album/album_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
