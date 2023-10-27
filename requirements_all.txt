@@ -18,7 +18,7 @@ git+https://github.com/music-assistant/deezer-python-async@v0.1.2
 ifaddr==0.2.0
 mashumaro==3.9
 memory-tempfile==2.2.3
-music-assistant-frontend==2.0.13
+music-assistant-frontend==2.0.15
 orjson==3.9.10
 pillow==10.1.0
 plexapi==4.15.0
