@@ -111,7 +111,7 @@ jobs:
         with:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           release_tag: ${{ needs.build-and-publish-pypi.outputs.version }}
-    
+
   addon-version-update:
     name: Updates the Addon repository with the new version
     needs: [ build-and-publish-pypi, build-and-push-container-image, release-notes-update ]
