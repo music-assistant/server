@@ -101,9 +101,20 @@ jobs:
           build-args: |
             "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
 
+  release-notes-update:
+    name: Updates the release notes and changelog
+    needs: [ build-and-publish-pypi, build-and-push-container-image ]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Update changelog and release notes including frontend notes
+        uses: music-assistant/release-notes-merge-action@main
+        with:
+          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
+          release_tag: ${{ needs.build-and-publish-pypi.outputs.version }}
+
   addon-version-update:
     name: Updates the Addon repository with the new version
-    needs: [ build-and-publish-pypi, build-and-push-container-image ]
+    needs: [ build-and-publish-pypi, build-and-push-container-image, release-notes-update ]
     runs-on: ubuntu-latest
     steps:
       - name: Push new version number to addon config
