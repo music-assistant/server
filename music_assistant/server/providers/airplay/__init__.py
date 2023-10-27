@@ -74,8 +74,26 @@ PLAYER_CONFIG_ENTRIES = (
         "(lossless) ALAC at the cost of a bit CPU.",
         advanced=True,
     ),
+    ConfigEntry(
+        key="remove_timeout",
+        type=ConfigEntryType.INTEGER,
+        default_value=0,
+        label="Remove timeout",
+        description="Player discovery is managed using mDNS protocol, "
+        "which means that a player sends regular keep-alive messages and a bye when "
+        "disconnecting. Some faulty mDNS stack implementations (e.g. Riva) do not always"
+        "send keep-alive messages, so the Airplay bridge is disconnecting them regularly. \n\n"
+        "As a workaround, a timer can be set so that the bridge does not immediately remove "
+        "the player from LMS when missing a keep-alive, waiting for it to reconnect. \n\n\n"
+        "A value of -1 will disable this feature and never remove the player. \n\n"
+        "A value of 0 (the default) disabled the player when keep-alive is missed or "
+        "when a bye message is received. \n\n"
+        "Any other value means to disable the player after missing keep-alive for "
+        "this number of seconds.",
+        advanced=True,
+    ),
     ConfigEntry.from_dict(
-        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
+        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "pcm", "hidden": True}
     ),
 )
 
@@ -470,7 +488,6 @@ class AirplayProvider(PlayerProvider):
             for key, value in {
                 "player_volume": "-1",
                 "prevent_playback": "off",
-                "remove_timeout": "1800",
             }.items():
                 xml_elem = device_elem.find(key)
                 if xml_elem is None:
