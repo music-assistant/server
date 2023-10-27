@@ -60,6 +60,7 @@ class MusicController(CoreController):
 
     domain: str = "music"
     database: DatabaseConnection | None = None
+    config: CoreConfig
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
@@ -99,11 +100,12 @@ class MusicController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        self.config = config
         # setup library database
         await self._setup_database()
         sync_interval = config.get_value(CONF_SYNC_INTERVAL)
-        self.logger.info("Setting up the sync interval to %s minutes.", sync_interval)
-        self._sync_task = self.mass.create_task(self.start_sync(reschedule=sync_interval))
+        self.logger.info("Using a sync interval of %s minutes.", sync_interval)
+        self._schedule_sync()
 
     async def close(self) -> None:
         """Cleanup on exit."""
@@ -117,11 +119,10 @@ class MusicController(CoreController):
         return self.mass.get_providers(ProviderType.MUSIC)
 
     @api_command("music/sync")
-    async def start_sync(
+    def start_sync(
         self,
         media_types: list[MediaType] | None = None,
         providers: list[str] | None = None,
-        reschedule: int | None = None,
     ) -> None:
         """Start running the sync of (all or selected) musicproviders.
 
@@ -137,13 +138,6 @@ class MusicController(CoreController):
             if provider.instance_id not in providers:
                 continue
             self._start_provider_sync(provider.instance_id, media_types)
-
-        # reschedule task if needed
-        def create_sync_task():
-            self.mass.create_task(self.start_sync, media_types, providers, reschedule)
-
-        if reschedule is not None:
-            self.mass.loop.call_later(reschedule, create_sync_task)
 
     @api_command("music/synctasks")
     def get_running_sync_tasks(self) -> list[SyncTask]:
@@ -619,6 +613,14 @@ class MusicController(CoreController):
             prov_items = await ctrl.get_library_items_by_prov_id(provider_instance)
             for item in prov_items:
                 await ctrl.remove_provider_mappings(item.item_id, provider_instance)
+
+    def _schedule_sync(self) -> None:
+        """Schedule the periodic sync."""
+        self.start_sync()
+        sync_interval = self.config.get_value(CONF_SYNC_INTERVAL)
+        # we reschedule ourselves right after execution
+        # NOTE: sync_interval is stored in minutes, we need seconds
+        self.mass.loop.call_later(sync_interval * 60, self._schedule_sync)
 
     async def _setup_database(self):
         """Initialize database."""

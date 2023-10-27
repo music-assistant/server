@@ -216,7 +216,8 @@ class Config(DataClassDictMixin):
             changed_keys.add(key)
 
         # config entry values
-        for key, new_val in update.items():
+        values = update.get("values", update)
+        for key, new_val in values.items():
             if key in root_values:
                 continue
             cur_val = self.values[key].value if key in self.values else None

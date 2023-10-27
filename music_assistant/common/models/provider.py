@@ -33,7 +33,7 @@ class ProviderManifest(DataClassORJSONMixin):
     builtin: bool = False
     # hidden: hide entry in the UI
     hidden: bool = False
-    # load_by_default: load this provider by default (mostly used together with `builtin`)
+    # load_by_default: load this provider by default (may be used together with `builtin`)
     load_by_default: bool = False
     # depends_on: depends on another provider to function
     depends_on: str | None = None
