@@ -464,6 +464,8 @@ class PlayerController(CoreController):
         for child_player in self._get_child_players(group_player, True):
             cur_child_volume = child_player.volume_level
             new_child_volume = int(cur_child_volume + volume_dif)
+            new_child_volume = max(0, new_child_volume)
+            new_child_volume = min(100, new_child_volume)
             coros.append(self.cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
