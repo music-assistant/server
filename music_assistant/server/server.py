@@ -410,7 +410,7 @@ class MusicAssistant:
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         # if this is a music provider, start sync
         if provider.type == ProviderType.MUSIC:
-            await self.music.start_sync(providers=[provider.instance_id])
+            self.music.start_sync(providers=[provider.instance_id])
 
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""
