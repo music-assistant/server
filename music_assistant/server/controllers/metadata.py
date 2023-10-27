@@ -208,7 +208,7 @@ class MetaDataController(CoreController):
             # if playlist has no default image (e.g. a local playlist)
             if images and (not playlist.image or playlist.image.provider != "url"):
                 if playlist.image and self.mass.storage_path in playlist.image.path:
-                    # re-use previous created path
+                    # reuse previous created path
                     img_path = playlist.image.path
                 else:
                     img_path = os.path.join(self.mass.storage_path, f"{uuid4().hex}.png")

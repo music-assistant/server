@@ -20,7 +20,7 @@ LOGGER = logging.getLogger(ROOT_LOGGER_NAME).getChild("tags")
 
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.
-# the slash is also a common splitter but causes colissions with
+# the slash is also a common splitter but causes collisions with
 # artists actually containing a slash in the name, such as ACDC
 TAG_SPLITTER = ";"
 
