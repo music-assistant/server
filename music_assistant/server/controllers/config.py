@@ -264,6 +264,11 @@ class ConfigController:
         existing = self.get(conf_key)
         if not existing:
             raise KeyError(f"Provider {instance_id} does not exist")
+        prov_manifest = self.mass.get_provider_manifest(existing["domain"])
+        if prov_manifest.load_by_default:
+            raise RuntimeError("Default provider can not be removed, use disable instead.")
+        if prov_manifest.builtin:
+            raise RuntimeError("Builtin provider can not be removed.")
         self.remove(conf_key)
         await self.mass.unload_provider(instance_id)
         if existing["type"] == "music":
@@ -625,6 +630,9 @@ class ConfigController:
             await self._load_provider_config(config)
         else:
             # disable provider
+            prov_manifest = self.mass.get_provider_manifest(config.domain)
+            if prov_manifest.builtin:
+                raise RuntimeError("Builtin provider can not be disabled.")
             # also unload any other providers dependent of this provider
             for dep_prov in self.mass.providers:
                 if dep_prov.manifest.depends_on == config.domain:

@@ -198,6 +198,11 @@ class MusicAssistant:
         """Return all Provider manifests."""
         return list(self._provider_manifests.values())
 
+    @api_command("providers/manifests/get")
+    def get_provider_manifest(self, domain: str) -> ProviderManifest:
+        """Return Provider manifests of single provider(domain)."""
+        return self._provider_manifests[domain]
+
     @api_command("providers")
     def get_providers(
         self, provider_type: ProviderType | None = None
