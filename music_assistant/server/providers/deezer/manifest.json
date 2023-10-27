@@ -5,6 +5,6 @@
   "description": "Support for the Deezer streaming provider in Music Assistant.",
   "codeowners": ["@Un10ck3d",  "@micha91"],
   "documentation": "https://github.com/orgs/music-assistant/discussions/1245",
-  "requirements": ["git+https://github.com/music-assistant/deezer-python-async@v0.1.1", "pycryptodome==3.18.0"],
+  "requirements": ["git+https://github.com/music-assistant/deezer-python-async@v0.1.2", "pycryptodome==3.18.0"],
   "multi_instance": true
 }
