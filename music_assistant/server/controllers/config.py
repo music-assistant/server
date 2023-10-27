@@ -269,6 +269,12 @@ class ConfigController:
         if existing["type"] == "music":
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
+        if existing["type"] == "player":
+            # cleanup entries in player manager
+            for player in self.mass.players:
+                if player.provider != instance_id:
+                    continue
+                self.mass.players.remove(player.player_id, cleanup_config=True)
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""
@@ -624,6 +630,12 @@ class ConfigController:
                 if dep_prov.manifest.depends_on == config.domain:
                     await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
+            if config.type == ProviderType.PLAYER:
+                # cleanup entries in player manager
+                for player in self.mass.players:
+                    if player.provider != instance_id:
+                        continue
+                    self.mass.players.remove(player.player_id, cleanup_config=False)
         # load succeeded, save new config
         config.last_error = None
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"

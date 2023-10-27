@@ -210,14 +210,15 @@ class PlayerController(CoreController):
         self.register(player)
 
     @api_command("players/remove")
-    def remove(self, player_id: str) -> None:
+    def remove(self, player_id: str, cleanup_config: bool = True) -> None:
         """Remove a player from the registry."""
         player = self._players.pop(player_id, None)
         if player is None:
             return
         LOGGER.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id)
-        self.mass.config.remove(f"players/{player_id}")
+        if cleanup_config:
+            self.mass.config.remove(f"players/{player_id}")
         self._prev_states.pop(player_id, None)
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
