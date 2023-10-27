@@ -265,10 +265,16 @@ class ConfigController:
         if not existing:
             raise KeyError(f"Provider {instance_id} does not exist")
         prov_manifest = self.mass.get_provider_manifest(existing["domain"])
-        if prov_manifest.load_by_default:
-            raise RuntimeError("Default provider can not be removed, use disable instead.")
+        if prov_manifest.load_by_default and instance_id == prov_manifest.domain:
+            # Guard for a provider that is loaded by default
+            LOGGER.warning(
+                "Provider %s can not be removed, disabling instead...", prov_manifest.name
+            )
+            existing["enabled"] = False
+            await self._update_provider_config(instance_id, existing)
+            return
         if prov_manifest.builtin:
-            raise RuntimeError("Builtin provider can not be removed.")
+            raise RuntimeError(f"Builtin provider {prov_manifest.name} can not be removed.")
         self.remove(conf_key)
         await self.mass.unload_provider(instance_id)
         if existing["type"] == "music":
@@ -640,7 +646,9 @@ class ConfigController:
             await self.mass.unload_provider(config.instance_id)
             if config.type == ProviderType.PLAYER:
                 # cleanup entries in player manager
-                for player in self.mass.players:
+                for player in self.mass.players.all(
+                    return_unavailable=True, return_hidden=True, return_disabled=True
+                ):
                     if player.provider != instance_id:
                         continue
                     self.mass.players.remove(player.player_id, cleanup_config=False)
