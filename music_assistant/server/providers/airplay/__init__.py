@@ -75,7 +75,7 @@ PLAYER_CONFIG_ENTRIES = (
         advanced=True,
     ),
     ConfigEntry.from_dict(
-        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
+        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "pcm", "hidden": True}
     ),
 )
 
