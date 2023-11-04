@@ -353,8 +353,9 @@ class TidalProvider(MusicProvider):
 
     async def library_add(self, prov_item_id: str, media_type: MediaType):
         """Add item to library."""
+        tidal_session = await self._get_tidal_session()
         return await library_items_add_remove(
-            self,
+            tidal_session,
             self._tidal_user_id,
             prov_item_id,
             media_type,
@@ -363,8 +364,9 @@ class TidalProvider(MusicProvider):
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType):
         """Remove item from library."""
+        tidal_session = await self._get_tidal_session()
         return await library_items_add_remove(
-            self,
+            tidal_session,
             self._tidal_user_id,
             prov_item_id,
             media_type,
