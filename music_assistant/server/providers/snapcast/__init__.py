@@ -10,7 +10,12 @@ from ffmpeg import FFmpegError, Progress
 from ffmpeg.asyncio import FFmpeg
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import PlayerFeature, PlayerState, PlayerType
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+)
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -21,9 +26,8 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-
-SNAPCAST_SERVER_HOST = "127.0.0.1"
-SNAPCAST_SERVER_CONTROL_PORT = 1705
+CONF_SNAPCAST_SERVER_HOST = "snapcast_server_host"
+CONF_SNAPCAST_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 
 
 async def setup(
@@ -49,28 +53,47 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            key=CONF_SNAPCAST_SERVER_HOST,
+            type=ConfigEntryType.STRING,
+            default_value="127.0.0.1",
+            label="Snapcast server ip",
+            required=True,
+        ),
+        ConfigEntry(
+            key=CONF_SNAPCAST_SERVER_CONTROL_PORT,
+            type=ConfigEntryType.INTEGER,
+            default_value="1705",
+            label="Snapcast control port",
+            required=True,
+        ),
+    )
 
 
 class SnapCastProvider(PlayerProvider):
     """Player provider for Snapcast based players."""
 
     _snapserver: [asyncio.Server | asyncio.BaseTransport]
+    snapcast_server_host: str
+    snapcast_server_control_port: int
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
+        self.snapcast_server_host = self.config.get_value(CONF_SNAPCAST_SERVER_HOST)
+        self.snapcast_server_control_port = self.config.get_value(CONF_SNAPCAST_SERVER_CONTROL_PORT)
         try:
             self._snapserver = await snapcast.control.create_server(
                 self.mass.loop,
-                SNAPCAST_SERVER_HOST,
-                port=SNAPCAST_SERVER_CONTROL_PORT,
+                self.snapcast_server_host,
+                port=self.snapcast_server_control_port,
                 reconnect=True,
             )
             self._snapserver.set_on_update_callback(self._handle_update)
             self._handle_update()
             self.logger.info(
                 f"Started Snapserver connection on:"
-                f"{SNAPCAST_SERVER_HOST}:{SNAPCAST_SERVER_CONTROL_PORT}"
+                f"{self.snapcast_server_host}:{self.snapcast_server_control_port}"
             )
         except OSError:
             raise SetupFailedError("Unable to start the Snapserver connection ?")
@@ -142,11 +165,19 @@ class SnapCastProvider(PlayerProvider):
         stream = self._get_snapstream(player_id)
         player = self.mass.players.get(player_id, raise_unavailable=False)
 
+        if stream.path != "":
+            group = self._get_snapgroup(player_id)
+            stream_id = await self._get_empty_stream(player_id)
+            await group.set_stream(stream_id)
+
+        stream = self._get_snapstream(player_id)
+
+        stream_host = stream._stream.get("uri").get("host")
         ffmpeg = (
             FFmpeg()
             .option("y")
             .input(url)
-            .output(f"{stream.path}", f="u16le", acodec="pcm_s16le", ac=2, ar=48000)
+            .output(f"tcp://{stream_host}", f="u16le", acodec="pcm_s16le", ac=2, ar=48000)
         )
         self.mass.create_task(ffmpeg.execute())
 
@@ -211,7 +242,7 @@ class SnapCastProvider(PlayerProvider):
         parent_player = self.mass.players.get(target_player)
         assert parent_player  # guard
         # always make sure that the parent player is part of the sync group
-        parent_player.group_childs.add(parent_player.player_id)
+        # parent_player.group_childs.add(parent_player.player_id)
         parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
 
@@ -251,21 +282,24 @@ class SnapCastProvider(PlayerProvider):
             ret = snap_clients[0]  # Return sync group master id
         return ret
 
-    async def _get_empty_stream(self, player_id):
+    async def _get_empty_stream(self, player_id) -> str:
         snapserver = self._snapserver
         empty_stream = None
         for stream in snapserver.streams:
+            if stream.path != "":
+                continue
             stream_in_group = False
             for group in snapserver.groups:
+                print(stream.path)
                 if stream.identifier == group.stream:
                     stream_in_group = True
             if not stream_in_group:
                 empty_stream = stream.identifier
-
-        if empty_stream is None:
+        port = 4953
+        while empty_stream is None:
             group = self._get_snapgroup(player_id)
             empty_stream = await snapserver.stream_add_stream(
-                f"pipe:///tmp/{group.identifier}?name={group.identifier}"
+                f"tcp://{self.snapcast_server_host}:{(port:=port+1)}?name={group.identifier}"
             )
             empty_stream = empty_stream.get("id")
         return empty_stream
