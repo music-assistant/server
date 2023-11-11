@@ -42,14 +42,14 @@ _R = TypeVar("_R")
 _P = ParamSpec("_P")
 
 
-def debounce(
+def log_player_command(
     func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]]
 ) -> Callable[Concatenate[_PlayerControllerT, _P], Coroutine[Any, Any, _R | None]]:
-    """Log and debounce commands to players."""
+    """Log and log_player_command commands to players."""
 
     @functools.wraps(func)
     async def wrapper(self: _PlayerControllerT, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
-        """Log and debounce commands to players."""
+        """Log and log_player_command commands to players."""
         player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         if (player := self._players.get(player_id)) is None or not player.available:
             # player not existent
@@ -59,23 +59,12 @@ def debounce(
                 player_id,
             )
             return
-        debounce_key = f"{player_id}.func.__name__"
-        # cancel any existing command to this player
-        existing_timer = self._cmd_debounce.pop(debounce_key, None)
-        if existing_timer and not existing_timer.cancelled():
-            existing_timer.cancel()
-
         self.logger.debug(
             "Handling command %s for player %s",
             func.__name__,
             player.display_name,
         )
-
-        def run():
-            self.mass.create_task(func(self, *args, **kwargs))
-
-        # debounce command with 250ms
-        self._cmd_debounce[debounce_key] = self.mass.loop.call_later(0.25, run)
+        await func(self, *args, **kwargs)
 
     return wrapper
 
@@ -95,7 +84,6 @@ class PlayerController(CoreController):
             "Music Assistant's core controller which manages all players from all providers."
         )
         self.manifest.icon = "speaker-multiple"
-        self._cmd_debounce: dict[str, asyncio.TimerHandle] = {}
         self._poll_task: asyncio.Task | None = None
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
@@ -311,7 +299,7 @@ class PlayerController(CoreController):
     # Player commands
 
     @api_command("players/cmd/stop")
-    @debounce
+    @log_player_command
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
 
@@ -322,7 +310,7 @@ class PlayerController(CoreController):
             await player_provider.cmd_stop(player_id)
 
     @api_command("players/cmd/play")
-    @debounce
+    @log_player_command
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
 
@@ -333,7 +321,7 @@ class PlayerController(CoreController):
         await player_provider.cmd_play(player_id)
 
     @api_command("players/cmd/pause")
-    @debounce
+    @log_player_command
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
 
@@ -365,7 +353,7 @@ class PlayerController(CoreController):
         self.mass.create_task(_watch_pause(player_id))
 
     @api_command("players/cmd/play_pause")
-    @debounce
+    @log_player_command
     async def cmd_play_pause(self, player_id: str) -> None:
         """Toggle play/pause on given player.
 
@@ -378,7 +366,7 @@ class PlayerController(CoreController):
             await self.cmd_play(player_id)
 
     @api_command("players/cmd/power")
-    @debounce
+    @log_player_command
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
 
@@ -448,7 +436,7 @@ class PlayerController(CoreController):
                 await self.mass.player_queues.resume(player_id)
 
     @api_command("players/cmd/volume_set")
-    @debounce
+    @log_player_command
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
@@ -473,7 +461,7 @@ class PlayerController(CoreController):
         await player_provider.cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
-    @debounce
+    @log_player_command
     async def cmd_volume_up(self, player_id: str) -> None:
         """Send VOLUME_UP command to given player.
 
@@ -483,7 +471,7 @@ class PlayerController(CoreController):
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down")
-    @debounce
+    @log_player_command
     async def cmd_volume_down(self, player_id: str) -> None:
         """Send VOLUME_DOWN command to given player.
 
@@ -493,7 +481,7 @@ class PlayerController(CoreController):
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
-    @debounce
+    @log_player_command
     async def cmd_group_volume(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given playergroup.
 
@@ -517,7 +505,7 @@ class PlayerController(CoreController):
         await asyncio.gather(*coros)
 
     @api_command("players/cmd/volume_mute")
-    @debounce
+    @log_player_command
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME_MUTE command to given player.
 
@@ -544,7 +532,7 @@ class PlayerController(CoreController):
         await player_provider.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/sync")
-    @debounce
+    @log_player_command
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
 
@@ -589,7 +577,7 @@ class PlayerController(CoreController):
         await player_provider.cmd_sync(player_id, target_player)
 
     @api_command("players/cmd/unsync")
-    @debounce
+    @log_player_command
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
 
