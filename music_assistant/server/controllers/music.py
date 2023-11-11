@@ -639,24 +639,40 @@ class MusicController(CoreController):
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
-            self.logger.info(
-                "Performing database migration from %s to %s",
-                prev_version,
-                DB_SCHEMA_VERSION,
-            )
+            # db version mismatch - we need to do a migration
             # make a backup of db file
             db_path_backup = db_path + ".backup"
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
-            if prev_version < 22 or prev_version > DB_SCHEMA_VERSION:
+            if prev_version == DB_SCHEMA_VERSION - 1:
+                # perform db migration from previous schema to this one
+                self.logger.info(
+                    "Performing database migration from %s to %s",
+                    prev_version,
+                    DB_SCHEMA_VERSION,
+                )
+
+            else:
                 # for now just keep it simple and just recreate the tables
-                # if the schema is too old or too new
-                # we allow migrations only for up to 2 schema versions behind
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ARTISTS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_ALBUMS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACKS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_PLAYLISTS}")
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_RADIOS}")
+                # if the schema is too old (or too new)
+                # we do migrations only for up to 1 schema version behind
+                self.logger.warning(
+                    "Database schema too old - Resetting library/database - "
+                    "a full rescan will be performed!"
+                )
+                for table in (
+                    DB_TABLE_TRACKS,
+                    DB_TABLE_ALBUMS,
+                    DB_TABLE_ARTISTS,
+                    DB_TABLE_TRACKS,
+                    DB_TABLE_PLAYLISTS,
+                    DB_TABLE_RADIOS,
+                    DB_TABLE_PROVIDER_MAPPINGS,
+                ):
+                    await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+                # recreate missing tables
+                await self.__create_database_tables()
+
                 # recreate missing tables
                 await self.__create_database_tables()
 
@@ -775,6 +791,7 @@ class MusicController(CoreController):
                     artists json NOT NULL,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
+                    external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                 );"""
@@ -788,6 +805,7 @@ class MusicController(CoreController):
                     favorite BOOLEAN DEFAULT 0,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
+                    external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                     );"""
@@ -805,6 +823,7 @@ class MusicController(CoreController):
                     artists json NOT NULL,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
+                    external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                 );"""
@@ -828,6 +847,7 @@ class MusicController(CoreController):
                     favorite BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
+                    external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                 );"""
@@ -840,6 +860,7 @@ class MusicController(CoreController):
                     favorite BOOLEAN DEFAULT 0,
                     metadata json,
                     provider_mappings json,
+                    external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
                 );"""

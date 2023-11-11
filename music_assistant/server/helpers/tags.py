@@ -171,7 +171,9 @@ class AudioTags:
     @property
     def musicbrainz_albumartistids(self) -> tuple[str, ...]:
         """Return musicbrainz_albumartistid tag if present."""
-        return split_items(self.tags.get("musicbrainzalbumartistid"), True)
+        if tag := self.tags.get("musicbrainzalbumartistid"):
+            return split_items(tag, True)
+        return split_items(self.tags.get("musicbrainzreleaseartistid"), True)
 
     @property
     def musicbrainz_releasegroupid(self) -> str | None:
@@ -179,11 +181,20 @@ class AudioTags:
         return self.tags.get("musicbrainzreleasegroupid")
 
     @property
-    def musicbrainz_trackid(self) -> str | None:
-        """Return musicbrainz_trackid tag if present."""
-        if tag := self.tags.get("musicbrainztrackid"):
+    def musicbrainz_releaseid(self) -> str | None:
+        """Return musicbrainz_releaseid tag if present."""
+        return self.tags.get("musicbrainzreleaseid", self.tags.get("musicbrainzalbumid"))
+
+    @property
+    def musicbrainz_recordingid(self) -> str | None:
+        """Return musicbrainz_recordingid tag if present."""
+        if tag := self.tags.get("UFID:http://musicbrainz.org"):
             return tag
-        return self.tags.get("musicbrainzreleasetrackid")
+        if tag := self.tags.get("musicbrainz.org"):
+            return tag
+        if tag := self.tags.get("musicbrainzrecordingid"):
+            return tag
+        return self.tags.get("musicbrainztrackid")
 
     @property
     def album_type(self) -> AlbumType:
@@ -220,7 +231,7 @@ class AudioTags:
         """Return isrc tag."""
         for tag in ("isrc", "tsrc"):
             if tag := self.tags.get("isrc"):
-                # sometyimes the field contains multiple values
+                # sometimes the field contains multiple values
                 # we only need one
                 return split_items(tag, True)[0]
         return None
@@ -230,9 +241,13 @@ class AudioTags:
         """Return barcode (upc/ean) tag(s)."""
         for tag in ("barcode", "upc", "ean"):
             if tag := self.tags.get("isrc"):
-                # sometyimes the field contains multiple values
+                # sometimes the field contains multiple values
                 # we only need one
-                return split_items(tag, True)[0]
+                for item in split_items(tag, True):
+                    if len(item) == 12:
+                        # convert UPC barcode to EAN-13
+                        return f"0{item}"
+                    return item
         return None
 
     @property

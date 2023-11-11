@@ -17,7 +17,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -429,11 +429,6 @@ class SpotifyProvider(MusicProvider):
     async def _parse_album(self, album_obj: dict):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
-        barcode = None
-        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            barcode = album_obj["external_ids"]["upc"]
-        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
-            barcode = album_obj["external_ids"]["ean"]
         album = Album(
             item_id=album_obj["id"],
             provider=self.domain,
@@ -446,10 +441,14 @@ class SpotifyProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                     url=album_obj["external_urls"]["spotify"],
-                    barcode=barcode,
                 )
             },
         )
+        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
+            album.external_ids.add(ExternalID.BARCODE, "0" + album_obj["external_ids"]["upc"])
+        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
+            album.external_ids.add(ExternalID.BARCODE, album_obj["external_ids"]["ean"])
+
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
 
@@ -507,13 +506,14 @@ class SpotifyProvider(MusicProvider):
                         content_type=ContentType.OGG,
                         bit_rate=320,
                     ),
-                    isrc=track_obj.get("external_ids", {}).get("isrc"),
                     url=track_obj["external_urls"]["spotify"],
                     available=not track_obj["is_local"] and track_obj["is_playable"],
                 )
             },
             **extra_init_kwargs,
         )
+        if isrc := track_obj.get("external_ids", {}).get("isrc"):
+            track.external_ids.add(ExternalID.ISRC, isrc)
 
         if artist:
             track.artists.append(artist)

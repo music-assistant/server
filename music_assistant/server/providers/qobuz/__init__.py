@@ -13,7 +13,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -476,7 +476,6 @@ class QobuzProvider(MusicProvider):
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     available=album_obj["streamable"] and album_obj["displayable"],
-                    barcode=album_obj["upc"],
                     audio_format=AudioFormat(
                         content_type=ContentType.FLAC,
                         sample_rate=album_obj["maximum_sampling_rate"] * 1000,
@@ -486,6 +485,7 @@ class QobuzProvider(MusicProvider):
                 )
             },
         )
+        album.external_ids.add(ExternalID.BARCODE, album_obj["upc"])
         album.artists.append(await self._parse_artist(artist_obj or album_obj["artist"]))
         if (
             album_obj.get("product_type", "") == "single"
@@ -551,11 +551,12 @@ class QobuzProvider(MusicProvider):
                         bit_depth=track_obj["maximum_bit_depth"],
                     ),
                     url=track_obj.get("url", f'https://open.qobuz.com/track/{track_obj["id"]}'),
-                    isrc=track_obj.get("isrc"),
                 )
             },
             **extra_init_kwargs,
         )
+        if isrc := track_obj.get("isrc"):
+            track.external_ids.add(ExternalID.ISRC, isrc)
         if track_obj.get("performer") and "Various " not in track_obj["performer"]:
             artist = await self._parse_artist(track_obj["performer"])
             if artist:
@@ -587,8 +588,6 @@ class QobuzProvider(MusicProvider):
             track.metadata.performers = {x.strip() for x in track_obj["performers"].split("-")}
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
-        if track_obj.get("audio_info"):
-            track.metadata.replaygain = track_obj["audio_info"]["replaygain_track_gain"]
         if track_obj.get("parental_warning"):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):

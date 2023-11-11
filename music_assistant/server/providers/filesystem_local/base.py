@@ -17,7 +17,7 @@ from music_assistant.common.models.config_entries import (
     ConfigEntryType,
     ConfigValueOption,
 )
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -634,7 +634,6 @@ class FileSystemProviderBase(MusicProvider):
                         bit_depth=tags.bits_per_sample,
                         bit_rate=tags.bit_rate,
                     ),
-                    isrc=tags.isrc,
                 )
             },
         }
@@ -653,6 +652,9 @@ class FileSystemProviderBase(MusicProvider):
             track = Track(
                 **base_details,
             )
+
+        if tags.isrc:
+            track.external_ids.add(ExternalID.ISRC, tags.isrc)
 
         # album
         if tags.album:
@@ -862,10 +864,11 @@ class FileSystemProviderBase(MusicProvider):
                     provider_domain=self.instance_id,
                     provider_instance=self.instance_id,
                     url=album_path,
-                    barcode=barcode,
                 )
             },
         )
+        if barcode:
+            album.external_ids.add(ExternalID.BARCODE, barcode)
 
         if not await self.exists(album_path):
             # return basic object if there is no dedicated album folder

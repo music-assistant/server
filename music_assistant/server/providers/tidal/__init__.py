@@ -25,6 +25,7 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import (
     AlbumType,
     ConfigEntryType,
+    ExternalID,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -630,13 +631,14 @@ class TidalProvider(MusicProvider):
                         content_type=ContentType.FLAC,
                         bit_depth=24 if self._is_hi_res(track_obj=track_obj) else 16,
                     ),
-                    isrc=track_obj.isrc,
                     url=f"http://www.tidal.com/tracks/{track_id}",
                     available=track_obj.available,
                 )
             },
             **extra_init_kwargs,
         )
+        if track_obj.isrc:
+            track.external_ids.add(ExternalID.ISRC, track_obj.isrc)
         # Here we use an ItemMapping as Tidal return minimal data when getting an Album from a Track
         track.album = self.get_item_mapping(
             media_type=MediaType.ALBUM,

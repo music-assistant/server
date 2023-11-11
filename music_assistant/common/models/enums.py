@@ -5,7 +5,7 @@ from enum import StrEnum
 
 
 class MediaType(StrEnum):
-    """StrEnum for MediaType."""
+    """Enum for MediaType."""
 
     ARTIST = "artist"
     ALBUM = "album"
@@ -28,8 +28,23 @@ class MediaType(StrEnum):
         )
 
 
+class ExternalID(StrEnum):
+    """Enum with External ID types."""
+
+    # musicbrainz:
+    # for tracks this is the RecordingID
+    # for albums this is the ReleaseID (NOT the releasegroup ID!)
+    # for artists this is the ArtistID
+    MUSICBRAINZ = "musicbrainz"
+    ISRC = "isrc"  # used to identify unique recordings
+    BARCODE = "barcode"  # EAN-13 barcode for identifying albums
+    ACOUSTID = "acoustid"  # unique fingerprint (id) for a recording
+    ASIN = "asin"  # amazon unique number to identify albums
+    DISCOGS = "discogs"  # id for media item on discogs
+
+
 class LinkType(StrEnum):
-    """StrEnum with link types."""
+    """Enum with link types."""
 
     WEBSITE = "website"
     FACEBOOK = "facebook"
@@ -45,7 +60,7 @@ class LinkType(StrEnum):
 
 
 class ImageType(StrEnum):
-    """StrEnum with image types."""
+    """Enum with image types."""
 
     THUMB = "thumb"
     LANDSCAPE = "landscape"
@@ -60,7 +75,7 @@ class ImageType(StrEnum):
 
 
 class AlbumType(StrEnum):
-    """StrEnum for Album type."""
+    """Enum for Album type."""
 
     ALBUM = "album"
     SINGLE = "single"
@@ -148,7 +163,7 @@ class ContentType(StrEnum):
 
 
 class QueueOption(StrEnum):
-    """StrEnum representation of the queue (play) options.
+    """Enum representation of the queue (play) options.
 
     - PLAY -> Insert new item(s) in queue at the current position and start playing.
     - REPLACE -> Replace entire queue contents with the new items and start playing from index 0.
@@ -173,7 +188,7 @@ class RepeatMode(StrEnum):
 
 
 class PlayerState(StrEnum):
-    """StrEnum for the (playback)state of a player."""
+    """Enum for the (playback)state of a player."""
 
     IDLE = "idle"
     PAUSED = "paused"

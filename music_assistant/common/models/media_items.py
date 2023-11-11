@@ -12,6 +12,7 @@ from music_assistant.common.helpers.util import create_sort_name, merge_lists
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
+    ExternalID,
     ImageType,
     LinkType,
     MediaType,
@@ -66,10 +67,6 @@ class ProviderMapping(DataClassDictMixin):
     audio_format: AudioFormat = field(default_factory=AudioFormat)
     # url = link to provider details page if exists
     url: str | None = None
-    # isrc (tracks only) - isrc identifier if known
-    isrc: str | None = None
-    # barcode (albums only) - barcode identifier if known
-    barcode: str | None = None
     # optional details to store provider specific details
     details: str | None = None
 
@@ -154,14 +151,13 @@ class MediaItemMetadata(DataClassDictMixin):
     mood: str | None = None
     style: str | None = None
     copyright: str | None = None
-    lyrics: str | None = None
-    ean: str | None = None
+    lyrics: str | None = None  # tracks only
     label: str | None = None
     links: set[MediaItemLink] | None = None
     chapters: list[MediaItemChapter] | None = None
     performers: set[str] | None = None
     preview: str | None = None
-    replaygain: float | None = None
+    mb_releasegroup_id: str | None = None  # musicbrainz releasegroup id (albums only)
     popularity: int | None = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: int | None = None
@@ -208,7 +204,7 @@ class MediaItem(DataClassDictMixin):
     provider_mappings: set[ProviderMapping]
 
     # optional fields below
-    # provider_mappings: set[ProviderMapping] = field(default_factory=set)
+    external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
     media_type: MediaType = MediaType.UNKNOWN
@@ -238,6 +234,19 @@ class MediaItem(DataClassDictMixin):
             return None
         return next((x for x in self.metadata.images if x.type == ImageType.THUMB), None)
 
+    @property
+    def mbid(self) -> str | None:
+        """Return MusicBrainz ID."""
+        return self.get_external_id(ExternalID.MUSICBRAINZ)
+
+    def get_external_id(self, external_id_type: ExternalID) -> str | None:
+        """Get (the first instance) of given External ID or None if not found."""
+        for ext_id in self.external_ids:
+            if ext_id[0] != external_id_type:
+                continue
+            return ext_id[1]
+        return None
+
     def __hash__(self) -> int:
         """Return custom hash."""
         return hash(self.uri)
@@ -259,13 +268,12 @@ class ItemMapping(DataClassDictMixin):
     sort_name: str | None = None
     uri: str | None = None
     available: bool = True
+    external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
 
     @classmethod
     def from_item(cls, item: MediaItem):
         """Create ItemMapping object from regular item."""
-        result = cls.from_dict(item.to_dict())
-        result.available = item.available
-        return result
+        return cls.from_dict(item.to_dict())
 
     def __post_init__(self):
         """Call after init."""

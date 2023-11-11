@@ -14,7 +14,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
@@ -85,25 +85,23 @@ class MusicbrainzProvider(MetadataProvider):
                 ):
                     return mbid
             # try matching on album barcode
-            for provider_mapping in ref_album.provider_mappings:
-                if not provider_mapping.barcode:
-                    continue
-                if mbid := await self._search_artist_by_album(
+            if (barcode := ref_album.get_external_id(ExternalID.BARCODE)) and (
+                mbid := await self._search_artist_by_album(
                     artistname=artist.name,
-                    album_barcode=provider_mapping.barcode,
-                ):
-                    return mbid
+                    album_barcode=barcode,
+                )
+            ):
+                return mbid
 
         # try again with matching on track isrc
         for ref_track in ref_tracks:
-            for provider_mapping in ref_track.provider_mappings:
-                if not provider_mapping.isrc:
-                    continue
-                if mbid := await self._search_artist_by_track(
+            if (isrc := ref_album.get_external_id(ExternalID.ISRC)) and (
+                mbid := await self._search_artist_by_track(
                     artistname=artist.name,
-                    track_isrc=provider_mapping.isrc,
-                ):
-                    return mbid
+                    track_isrc=isrc,
+                )
+            ):
+                return mbid
 
         # last restort: track matching by name
         for ref_track in ref_tracks:
