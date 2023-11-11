@@ -35,7 +35,7 @@ server = [
   "colorlog==6.7.0",
   "aiosqlite==0.19.0",
   "python-slugify==8.0.1",
-  "mashumaro==3.9",
+  "mashumaro==3.10",
   "memory-tempfile==2.2.3",
   "music-assistant-frontend==2.0.15",
   "pillow==10.1.0",
