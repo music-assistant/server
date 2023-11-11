@@ -57,7 +57,7 @@ test = [
   "pytest-asyncio==0.21.1",
   "pytest-aiohttp==1.0.5",
   "pytest-cov==4.1.0",
-  "pre-commit==3.3.3"
+  "pre-commit==3.5.0"
 ]
 
 [project.scripts]
