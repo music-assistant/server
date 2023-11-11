@@ -365,9 +365,10 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
     range=(-30, 0),
-    default_value=-14,
+    default_value=-17,
     label="Target level for volume normalization",
-    description="Adjust average (perceived) loudness to this target level, " "default is -14 LUFS",
+    description="Adjust average (perceived) loudness to this target level, "
+    "default is -17 LUFS \n\n WARNING: Setting levels higher than this may result in clipping",
     depends_on=CONF_VOLUME_NORMALIZATION,
     advanced=True,
 )
