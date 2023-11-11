@@ -113,6 +113,7 @@ class SnapCastProvider(PlayerProvider):
             self._handle_player_update(snap_client)
 
     def _handle_player_update(self, snap_client):
+        """Handle player update from snapserver."""
         player_id = snap_client.identifier
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
@@ -236,9 +237,6 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_volume_mute(self, player_id, muted) -> None:
         """Send MUTE command to given player."""
         await self._snapserver.client(player_id).set_muted(muted)
-
-    async def _remove_stream(self, stream_id) -> None:
-        await self._server.stream_remove_stream(stream_id)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Sync Snapcast player."""
