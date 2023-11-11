@@ -78,6 +78,7 @@ PLAYER_CONFIG_ENTRIES = (
         key="remove_timeout",
         type=ConfigEntryType.INTEGER,
         default_value=0,
+        range=(-1, 3600),
         label="Remove timeout",
         description="Player discovery is managed using mDNS protocol, "
         "which means that a player sends regular keep-alive messages and a bye when "
@@ -135,9 +136,11 @@ class AirplayProvider(PlayerProvider):
     _closing: bool = False
     _config_file: str | None = None
     _log_reader_task: asyncio.Task | None = None
+    _removed_players: set[str] | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
+        self._removed_players = set()
         self._config_file = os.path.join(self.mass.storage_path, "airplay_bridge.xml")
         # locate the raopbridge binary (will raise if that fails)
         self._bridge_bin = await self._get_bridge_binary()
@@ -182,7 +185,8 @@ class AirplayProvider(PlayerProvider):
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
-        self.restart_bridge(remove_player=player_id)
+        self._removed_players.add(player_id)
+        self.restart_bridge()
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -420,9 +424,7 @@ class AirplayProvider(PlayerProvider):
         if self._log_reader_task and not self._log_reader_task.done():
             self._log_reader_task.cancel()
 
-    async def _check_config_xml(
-        self, recreate: bool = False, remove_player: str | None = None
-    ) -> None:
+    async def _check_config_xml(self, recreate: bool = False) -> None:
         """Check the bridge config XML file."""
         # ruff: noqa: PLR0915
         if recreate or not os.path.isfile(self._config_file):
@@ -477,20 +479,17 @@ class AirplayProvider(PlayerProvider):
                 xml_elem.text = str(conf_val)
 
         # get/set all device configs
-        elem_to_delete = None
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text
-            if player_id == remove_player:
-                elem_to_delete = device_elem
+            if player_id in self._removed_players:
+                xml_root.remove(device_elem)
+                self._removed_players.remove(player_id)
+                continue
             # use raw config values because players are not
             # yet available at startup/init (race condition)
             raw_player_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
             if not raw_player_conf:
                 continue
-            # prefer name from UDN because default name is often wrong
-            udn = device_elem.find("udn").text
-            udn_name = udn.split("@")[1].split("._")[0]
-            device_elem.find("name").text = udn_name
             device_elem.find("enabled").text = "1" if raw_player_conf["enabled"] else "0"
 
             # set some values that are not (yet) configurable
@@ -502,9 +501,6 @@ class AirplayProvider(PlayerProvider):
                 if xml_elem is None:
                     xml_elem = ET.SubElement(device_elem, key)
                 xml_elem.text = value
-
-            if elem_to_delete:
-                xml_root.remove(elem_to_delete)
 
             # set values based on config entries
             for conf_entry in PLAYER_CONFIG_ENTRIES:
@@ -531,7 +527,7 @@ class AirplayProvider(PlayerProvider):
             async for line in self._bridge_proc.stdout:
                 bridge_logger.debug(line.decode().strip())
 
-    def restart_bridge(self, remove_player: str | None = None) -> None:
+    def restart_bridge(self) -> None:
         """Schedule restart of bridge process."""
         if self._timer_handle is not None:
             self._timer_handle.cancel()
@@ -540,7 +536,7 @@ class AirplayProvider(PlayerProvider):
         async def restart_bridge():
             self.logger.info("Restarting Airplay bridge (due to config changes)")
             await self._stop_bridge()
-            await self._check_config_xml(remove_player)
+            await self._check_config_xml()
 
         # schedule the action for later
         self._timer_handle = self.mass.loop.call_later(10, self.mass.create_task, restart_bridge)
