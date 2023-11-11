@@ -97,7 +97,7 @@ PLAYER_CONFIG_ENTRIES = (
     ),
 )
 
-NEED_BRIDGE_RESTART = {"values/read_ahead", "values/encryption", "values/alac_encode"}
+NEED_BRIDGE_RESTART = {"values/read_ahead", "values/encryption", "values/alac_encode", "enabled"}
 
 
 async def setup(
@@ -179,6 +179,10 @@ class AirplayProvider(PlayerProvider):
                 self.restart_bridge()
 
         asyncio.create_task(update_config())
+
+    def on_player_config_removed(self, player_id: str) -> None:
+        """Call (by config manager) when the configuration of a player is removed."""
+        self.restart_bridge(remove_player=player_id)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -416,7 +420,9 @@ class AirplayProvider(PlayerProvider):
         if self._log_reader_task and not self._log_reader_task.done():
             self._log_reader_task.cancel()
 
-    async def _check_config_xml(self, recreate: bool = False) -> None:
+    async def _check_config_xml(
+        self, recreate: bool = False, remove_player: str | None = None
+    ) -> None:
         """Check the bridge config XML file."""
         # ruff: noqa: PLR0915
         if recreate or not os.path.isfile(self._config_file):
@@ -471,8 +477,11 @@ class AirplayProvider(PlayerProvider):
                 xml_elem.text = str(conf_val)
 
         # get/set all device configs
+        elem_to_delete = None
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text
+            if player_id == remove_player:
+                elem_to_delete = device_elem
             # use raw config values because players are not
             # yet available at startup/init (race condition)
             raw_player_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
@@ -493,6 +502,9 @@ class AirplayProvider(PlayerProvider):
                 if xml_elem is None:
                     xml_elem = ET.SubElement(device_elem, key)
                 xml_elem.text = value
+
+            if elem_to_delete:
+                xml_root.remove(elem_to_delete)
 
             # set values based on config entries
             for conf_entry in PLAYER_CONFIG_ENTRIES:
@@ -519,7 +531,7 @@ class AirplayProvider(PlayerProvider):
             async for line in self._bridge_proc.stdout:
                 bridge_logger.debug(line.decode().strip())
 
-    def restart_bridge(self) -> None:
+    def restart_bridge(self, remove_player: str | None = None) -> None:
         """Schedule restart of bridge process."""
         if self._timer_handle is not None:
             self._timer_handle.cancel()
@@ -528,7 +540,7 @@ class AirplayProvider(PlayerProvider):
         async def restart_bridge():
             self.logger.info("Restarting Airplay bridge (due to config changes)")
             await self._stop_bridge()
-            await self._check_config_xml()
+            await self._check_config_xml(remove_player)
 
         # schedule the action for later
         self._timer_handle = self.mass.loop.call_later(10, self.mass.create_task, restart_bridge)
