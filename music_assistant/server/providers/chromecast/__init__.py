@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -127,6 +128,8 @@ class ChromecastProvider(PlayerProvider):
             ),
             self.mass.zeroconf,
         )
+        # silence pychromecast logging
+        logging.getLogger("pychromecast").setLevel(self.logger.level)
         # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
