@@ -78,6 +78,7 @@ PLAYER_CONFIG_ENTRIES = (
         key="remove_timeout",
         type=ConfigEntryType.INTEGER,
         default_value=0,
+        range=(-1, 3600),
         label="Remove timeout",
         description="Player discovery is managed using mDNS protocol, "
         "which means that a player sends regular keep-alive messages and a bye when "
@@ -93,11 +94,11 @@ PLAYER_CONFIG_ENTRIES = (
         advanced=True,
     ),
     ConfigEntry.from_dict(
-        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "pcm", "hidden": True}
+        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
     ),
 )
 
-NEED_BRIDGE_RESTART = {"values/read_ahead", "values/encryption", "values/alac_encode"}
+NEED_BRIDGE_RESTART = {"values/read_ahead", "values/encryption", "values/alac_encode", "enabled"}
 
 
 async def setup(
@@ -135,9 +136,11 @@ class AirplayProvider(PlayerProvider):
     _closing: bool = False
     _config_file: str | None = None
     _log_reader_task: asyncio.Task | None = None
+    _removed_players: set[str] | None = None
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
+        self._removed_players = set()
         self._config_file = os.path.join(self.mass.storage_path, "airplay_bridge.xml")
         # locate the raopbridge binary (will raise if that fails)
         self._bridge_bin = await self._get_bridge_binary()
@@ -179,6 +182,11 @@ class AirplayProvider(PlayerProvider):
                 self.restart_bridge()
 
         asyncio.create_task(update_config())
+
+    def on_player_config_removed(self, player_id: str) -> None:
+        """Call (by config manager) when the configuration of a player is removed."""
+        self._removed_players.add(player_id)
+        self.restart_bridge()
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -473,15 +481,15 @@ class AirplayProvider(PlayerProvider):
         # get/set all device configs
         for device_elem in xml_root.findall("device"):
             player_id = device_elem.find("mac").text
+            if player_id in self._removed_players:
+                xml_root.remove(device_elem)
+                self._removed_players.remove(player_id)
+                continue
             # use raw config values because players are not
             # yet available at startup/init (race condition)
             raw_player_conf = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}")
             if not raw_player_conf:
                 continue
-            # prefer name from UDN because default name is often wrong
-            udn = device_elem.find("udn").text
-            udn_name = udn.split("@")[1].split("._")[0]
-            device_elem.find("name").text = udn_name
             device_elem.find("enabled").text = "1" if raw_player_conf["enabled"] else "0"
 
             # set some values that are not (yet) configurable
