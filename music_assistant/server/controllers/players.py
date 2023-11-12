@@ -45,7 +45,7 @@ _P = ParamSpec("_P")
 def log_player_command(
     func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]]
 ) -> Callable[Concatenate[_PlayerControllerT, _P], Coroutine[Any, Any, _R | None]]:
-    """Log and log_player_command commands to players."""
+    """Check and log commands to players."""
 
     @functools.wraps(func)
     async def wrapper(self: _PlayerControllerT, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
