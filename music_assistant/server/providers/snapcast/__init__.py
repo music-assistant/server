@@ -104,8 +104,10 @@ class SnapCastProvider(PlayerProvider):
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
         for snap_client in self._snapserver.clients:
-            self._handle_player_update(snap_client)
+            self._handle_player_init(snap_client)
             snap_client.set_callback(self._handle_player_update)
+        for snap_client in self._snapserver.clients:
+            self._handle_player_update(snap_client)
         for snap_group in self._snapserver.groups:
             snap_group.set_callback(self._handle_group_update)
 
@@ -114,8 +116,8 @@ class SnapCastProvider(PlayerProvider):
         for snap_client in self._snapserver.clients:
             self._handle_player_update(snap_client)
 
-    def _handle_player_update(self, snap_client):
-        """Process Snapcast update/add to Player controller."""
+    def _handle_player_init(self, snap_client):
+        """Process Snapcast add to Player controller."""
         player_id = snap_client.identifier
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
@@ -139,6 +141,11 @@ class SnapCastProvider(PlayerProvider):
                 ),
             )
         self.mass.players.register_or_update(player)
+
+    def _handle_player_update(self, snap_client):
+        """Process Snapcast update to Player controller."""
+        player_id = snap_client.identifier
+        player = self.mass.players.get(player_id)
         player.name = snap_client.friendly_name
         player.volume_level = snap_client.volume
         player.volume_muted = snap_client.muted
@@ -158,9 +165,11 @@ class SnapCastProvider(PlayerProvider):
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        self.mass.create_task(
-            self._snapserver.client_volume(player_id, {"percent": volume_level, "muted": False})
-        )
+        mass_player = self.mass.players.get(player_id)
+        if mass_player.volume_level != volume_level:
+            await self._snapserver.client_volume(
+                player_id, {"percent": volume_level, "muted": mass_player.volume_muted}
+            )
 
     async def cmd_play_url(
         self,
