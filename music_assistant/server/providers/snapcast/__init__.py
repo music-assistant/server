@@ -273,10 +273,7 @@ class SnapCastProvider(PlayerProvider):
     def _group_childs(self, player_id) -> set[str]:
         """Return player_ids of the players synced to this player."""
         snap_group = self._get_snapgroup(player_id)
-        snap_clients = [
-            snap_client for snap_client in snap_group.clients if snap_client != player_id
-        ]
-        return set(snap_clients)
+        return {snap_client for snap_client in snap_group.clients if snap_client != player_id}
 
     async def _get_empty_stream(self) -> str:
         """Find or create empty stream on snapcast server.
