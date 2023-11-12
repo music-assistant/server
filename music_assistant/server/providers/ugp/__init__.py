@@ -259,7 +259,7 @@ class UniversalGroupProvider(PlayerProvider):
         # due to many child players being powered on (or resynced) at the same time
         # debounce the command a bit by only letting through the last one.
         self.debounce_id = debounce_id = shortuuid.uuid()
-        await asyncio.sleep(200)
+        await asyncio.sleep(100)
         if self.debounce_id != debounce_id:
             return
         # power ON
@@ -418,7 +418,7 @@ class UniversalGroupProvider(PlayerProvider):
         """
         Call when a power command was executed on one of the child players.
 
-        This is used to handle special actions such as muting as power or (re)syncing.
+        This is used to handle special actions such as mute-as-power or (re)syncing.
         """
         group_player = self.mass.players.get(player_id)
 
@@ -435,26 +435,16 @@ class UniversalGroupProvider(PlayerProvider):
             self.logger.debug(
                 "Group %s has no more powered members, turning off group player", player_id
             )
-            self.mass.create_task(self.cmd_power, player_id, False)
+            self.mass.create_task(self.cmd_power(player_id, False))
             return False
 
+        group_playing = group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
         # if a child player turned ON while the group player is already playing
         # we need to resync/resume
-        if (
-            group_player.powered
-            and new_power
-            and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
-            and child_player.state != PlayerState.PLAYING
-        ):
-            if group_player.state == PlayerState.PLAYING and (
-                sync_leader := next(
-                    (
-                        x
-                        for x in child_player.can_sync_with
-                        if x in self.prev_sync_leaders[player_id]
-                    ),
-                    None,
-                )
+        if new_power and group_playing:
+            if sync_leader := next(
+                (x for x in child_player.can_sync_with if x in self.prev_sync_leaders[player_id]),
+                None,
             ):
                 # prevent resume when player platform supports sync
                 # and one of its players is already playing
@@ -462,17 +452,17 @@ class UniversalGroupProvider(PlayerProvider):
                     "Groupplayer %s forced resync due to groupmember change", player_id
                 )
                 self.mass.create_task(
-                    self.mass.players.cmd_sync, child_player.player_id, sync_leader
+                    self.mass.players.cmd_sync(child_player.player_id, sync_leader)
                 )
             else:
                 # send active source because the group may be within another group
                 self.logger.debug(
                     "Groupplayer %s forced resume due to groupmember change", player_id
                 )
-                self.mass.create_task(self.mass.player_queues.resume, group_player.active_source)
+                self.mass.create_task(self.mass.player_queues.resume(group_player.active_source))
         elif (
             not new_power
-            and group_player.extra_data["optimistic_state"] == PlayerState.PLAYING
+            and group_playing
             and child_player.player_id in self.prev_sync_leaders[player_id]
             and not child_player.mute_as_power
         ):
