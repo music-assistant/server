@@ -102,6 +102,7 @@ class SnapCastProvider(PlayerProvider):
             raise SetupFailedError("Unable to start the Snapserver connection ?")
 
     def _handle_update(self) -> None:
+        """Process Snapcast init Player/Group and set callback ."""
         for snap_client in self._snapserver.clients:
             self._handle_player_update(snap_client)
             snap_client.set_callback(self._handle_player_update)
@@ -109,11 +110,12 @@ class SnapCastProvider(PlayerProvider):
             snap_group.set_callback(self._handle_group_update)
 
     def _handle_group_update(self, snap_group) -> None:  # noqa: ARG002
+        """Process Snapcast group callback."""
         for snap_client in self._snapserver.clients:
             self._handle_player_update(snap_client)
 
     def _handle_player_update(self, snap_client):
-        """Handle player update from snapserver."""
+        """Process Snapcast update/add to Player controller."""
         player_id = snap_client.identifier
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
@@ -265,8 +267,8 @@ class SnapCastProvider(PlayerProvider):
     def _synced_to(self, player_id) -> str | None:
         """Return player_id of the player this player is synced to."""
         snap_group = self._get_snapgroup(player_id)
-        if player_id != snap_group.clients[0]:  # Player is a Sync group master
-            return snap_group.clients[0]  # Return sync group master id
+        if player_id != snap_group.clients[0]:
+            return snap_group.clients[0]
 
     def _group_childs(self, player_id) -> set[str]:
         """Return player_ids of the players synced to this player."""
@@ -279,15 +281,17 @@ class SnapCastProvider(PlayerProvider):
     async def _get_empty_stream(self) -> str:
         """Find or create empty stream on snapcast server.
 
-        This method ensures that there is a snapstream for each snapclient.
+        This method ensures that there is a snapstream for each snapclient,
+        even if the snapserver only have one stream configured. This is needed
+        because the default config of snapserver is one stream on a named pipe.
         """
         used_streams = {group.stream for group in self._snapserver.groups}
         for stream in self._snapserver.streams:
             if stream.path == "" and stream.identifier not in used_streams:
                 return stream.identifier
         port = 4953
+        name = str(uuid.uuid4())
         while True:
-            name = str(uuid.uuid4())
             port += 1
             new_stream = await self._snapserver.stream_add_stream(
                 f"tcp://{self.snapcast_server_host}:{port}?name={name}"
