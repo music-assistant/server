@@ -220,7 +220,7 @@ class SoundcloudAsyncAPI:
 
     # ---------------- MISCELLANEOUS ----------------
 
-    async def get_recommended(self, track_id: str, limit: int = 10):
+    async def get_recommended(self, track_id: str, limit: int = 10):  # noqa: ARG002
         """:param track_id: track id to get recommended tracks from this"""
         return await self.get(
             f"{BASE_URL}/tracks/{track_id}/related?client_id={self.client_id}",
