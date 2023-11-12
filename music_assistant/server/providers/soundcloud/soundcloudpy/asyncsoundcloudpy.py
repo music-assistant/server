@@ -6,6 +6,7 @@ Original package https://github.com/naim-prog/soundcloud-py
 """
 from __future__ import annotations
 
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 BASE_URL = "https://api-v2.soundcloud.com"
@@ -118,13 +119,42 @@ class SoundcloudAsyncAPI:
             headers=self.headers,
         )
 
-    async def get_tracks_liked(self, limit=50):
-        """:param limit: number of tracks to get"""
-        return await self.get(
+    async def get_tracks_liked(self, limit: int = 0) -> AsyncGenerator[int, None]:
+        """Obtain the authenticated user's liked tracks.
+
+        :param limit: number of tracks to get. if 0, will fetch all tracks.
+        :returns: list of track ids liked by the current user
+        """
+        query_limit = limit
+        if query_limit == 0:
+            # NOTE(2023-11-11): At the time of writing, soundcloud does not look like it caps
+            # the limit. However, we still implement pagination for future proofing.
+            query_limit = 100
+
+        url = (
             f"{BASE_URL}/me/track_likes/ids?client_id={self.client_id}&"
-            f"limit={limit}&app_version={self.app_version}",
-            headers=self.headers,
+            f"limit={query_limit}&app_version={self.app_version}"
         )
+        num_items = 0
+        while True:
+            response = await self.get(url, headers=self.headers)
+
+            # Sanity check.
+            if "collection" not in response:
+                raise RuntimeError("Unexpected Soundcloud API response")
+
+            for item in response["collection"]:
+                num_items += 1
+                if limit > 0 and num_items >= limit:
+                    return
+
+                yield item
+
+            # Handle case when results requested exceeds number of actual results.
+            if len(response["collection"]) < query_limit:
+                return
+
+            url = response["next_href"]
 
     async def get_track_by_genre_recent(self, genre, limit=10):
         """Get track by genre recent.

@@ -192,12 +192,7 @@ class SoundcloudMusicProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Soundcloud."""
         time_start = time.time()
-        tracks = await self._soundcloud.get_tracks_liked()
-        self.logger.debug(
-            "Processing Soundcloud library tracks took %s seconds",
-            round(time.time() - time_start, 2),
-        )
-        for item in tracks["collection"]:
+        async for item in self._soundcloud.get_tracks_liked():
             track = await self._soundcloud.get_track_details(item)
             try:
                 yield await self._parse_track(track[0])
@@ -206,6 +201,11 @@ class SoundcloudMusicProvider(MusicProvider):
             except (KeyError, TypeError, InvalidDataError) as error:
                 self.logger.debug("Parse track failed: %s", track, exc_info=error)
                 continue
+
+        self.logger.debug(
+            "Processing Soundcloud library tracks took %s seconds",
+            round(time.time() - time_start, 2),
+        )
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
