@@ -131,30 +131,15 @@ class SoundcloudAsyncAPI:
             # the limit. However, we still implement pagination for future proofing.
             query_limit = 100
 
-        url = (
-            f"{BASE_URL}/me/track_likes/ids?client_id={self.client_id}&"
-            f"limit={query_limit}&app_version={self.app_version}"
-        )
         num_items = 0
-        while True:
-            response = await self.get(url, headers=self.headers)
-
-            # Sanity check.
-            if "collection" not in response:
-                raise RuntimeError("Unexpected Soundcloud API response")
-
-            for item in response["collection"]:
-                num_items += 1
-                if limit > 0 and num_items >= limit:
-                    return
-
-                yield item
-
-            # Handle case when results requested exceeds number of actual results.
-            if len(response["collection"]) < query_limit:
+        async for track in self._paginated_query(
+            "/me/track_likes/ids", params={"limit": str(query_limit)}
+        ):
+            num_items += 1
+            if limit > 0 and num_items >= limit:
                 return
 
-            url = response["next_href"]
+            yield track
 
     async def get_track_by_genre_recent(self, genre, limit=10):
         """Get track by genre recent.
@@ -209,11 +194,10 @@ class SoundcloudAsyncAPI:
     # ---------------- PLAYLISTS ----------------
 
     async def get_account_playlists(self):
-        """Get account playlists."""
-        return await self.get(
-            f"{BASE_URL}/me/library/all?client_id{self.client_id}",
-            headers=self.headers,
-        )
+        """Get account playlists, albums and stations."""
+        # NOTE: This returns all track lists in reverse chronological order (most recent first).
+        async for playlist in self._paginated_query("/me/library/all"):
+            yield playlist
 
     async def get_playlist_details(self, playlist_id):
         """:param playlist_id: playlist id"""
@@ -335,3 +319,44 @@ class SoundcloudAsyncAPI:
             f"&limit={limit}&offset=0&linked_partitioning=1&app_version={self.app_version}",
             headers=self.headers,
         )
+
+    async def _paginated_query(
+        self,
+        path: str,
+        params: dict[str, str] | None = None,
+    ) -> AsyncGenerator[list[dict[str, any]], None]:
+        """Paginate response queries.
+
+        Soundcloud paginates its queries using the same pattern. As such, we leverage the
+        same pattern to implement a pagination pattern to iterate over their APIs.
+
+        :param path: endpoint to query
+        :param params: key-value pairs to use as query parameters when constructing the initial URL
+        """
+        if params is None:
+            params = {}
+
+        url = f"{BASE_URL}{path}?client_id={self.client_id}&app_version={self.app_version}"
+        for k, v in params.values():
+            url += f"&{k}={v}"
+
+        while True:
+            response = await self.get(url, headers=self.headers)
+
+            # Sanity check.
+            if "collection" not in response:
+                raise RuntimeError("Unexpected Soundcloud API response")
+
+            for item in response["collection"]:
+                yield item
+
+            # Handle case when results requested exceeds number of actual results.
+            if int(params.get("limit", 0)) and len(response["collection"]) < int(params["limit"]):
+                return
+
+            try:
+                url = response["next_href"]
+                if not url:
+                    return
+            except KeyError:
+                return
