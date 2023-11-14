@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 from ffmpeg import FFmpegError, Progress
 from ffmpeg.asyncio import FFmpeg
 from snapcast.control import create_server
+from snapcast.control.client import Snapclient as SnapClient
 from snapcast.control.group import Snapgroup as SnapGroup
 from snapcast.control.stream import Snapstream as SnapStream
 
@@ -111,12 +112,12 @@ class SnapCastProvider(PlayerProvider):
         for snap_group in self._snapserver.groups:
             snap_group.set_callback(self._handle_group_update)
 
-    def _handle_group_update(self, snap_group) -> None:  # noqa: ARG002
+    def _handle_group_update(self, snap_group: SnapGroup) -> None:  # noqa: ARG002
         """Process Snapcast group callback."""
         for snap_client in self._snapserver.clients:
             self._handle_player_update(snap_client)
 
-    def _handle_player_init(self, snap_client):
+    def _handle_player_init(self, snap_client: SnapClient) -> None:
         """Process Snapcast add to Player controller."""
         player_id = snap_client.identifier
         player = self.mass.players.get(player_id, raise_unavailable=False)
@@ -142,7 +143,7 @@ class SnapCastProvider(PlayerProvider):
             )
         self.mass.players.register_or_update(player)
 
-    def _handle_player_update(self, snap_client):
+    def _handle_player_update(self, snap_client: SnapClient) -> None:
         """Process Snapcast update to Player controller."""
         player_id = snap_client.identifier
         player = self.mass.players.get(player_id)
@@ -245,7 +246,7 @@ class SnapCastProvider(PlayerProvider):
         """Send PAUSE command to given player."""
         await self.cmd_stop(player_id)
 
-    async def cmd_volume_mute(self, player_id, muted) -> None:
+    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send MUTE command to given player."""
         await self._snapserver.client(player_id).set_muted(muted)
 
@@ -263,23 +264,23 @@ class SnapCastProvider(PlayerProvider):
         await group.set_stream(stream_id)
         self._handle_update()
 
-    def _get_snapgroup(self, player_id) -> SnapGroup:
+    def _get_snapgroup(self, player_id: str) -> SnapGroup:
         """Get snapcast group for given player_id."""
         client = self._snapserver.client(player_id)
         return client.group
 
-    def _get_snapstream(self, player_id) -> SnapStream:
+    def _get_snapstream(self, player_id: str) -> SnapStream:
         """Get snapcast stream for given player_id."""
         group = self._get_snapgroup(player_id)
         return self._snapserver.stream(group.stream)
 
-    def _synced_to(self, player_id) -> str | None:
+    def _synced_to(self, player_id: str) -> str | None:
         """Return player_id of the player this player is synced to."""
         snap_group = self._get_snapgroup(player_id)
         if player_id != snap_group.clients[0]:
             return snap_group.clients[0]
 
-    def _group_childs(self, player_id) -> set[str]:
+    def _group_childs(self, player_id: str) -> set[str]:
         """Return player_ids of the players synced to this player."""
         snap_group = self._get_snapgroup(player_id)
         return {snap_client for snap_client in snap_group.clients if snap_client != player_id}
