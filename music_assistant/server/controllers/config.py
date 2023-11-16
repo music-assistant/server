@@ -264,11 +264,28 @@ class ConfigController:
         existing = self.get(conf_key)
         if not existing:
             raise KeyError(f"Provider {instance_id} does not exist")
+        prov_manifest = self.mass.get_provider_manifest(existing["domain"])
+        if prov_manifest.load_by_default and instance_id == prov_manifest.domain:
+            # Guard for a provider that is loaded by default
+            LOGGER.warning(
+                "Provider %s can not be removed, disabling instead...", prov_manifest.name
+            )
+            existing["enabled"] = False
+            await self._update_provider_config(instance_id, existing)
+            return
+        if prov_manifest.builtin:
+            raise RuntimeError(f"Builtin provider {prov_manifest.name} can not be removed.")
         self.remove(conf_key)
         await self.mass.unload_provider(instance_id)
         if existing["type"] == "music":
             # cleanup entries in library
             await self.mass.music.cleanup_provider(instance_id)
+        if existing["type"] == "player":
+            # cleanup entries in player manager
+            for player in self.mass.players:
+                if player.provider != instance_id:
+                    continue
+                self.mass.players.remove(player.player_id, cleanup_config=True)
 
     async def remove_provider_config_value(self, instance_id: str, key: str) -> None:
         """Remove/reset single Provider config value."""
@@ -619,11 +636,22 @@ class ConfigController:
             await self._load_provider_config(config)
         else:
             # disable provider
+            prov_manifest = self.mass.get_provider_manifest(config.domain)
+            if prov_manifest.builtin:
+                raise RuntimeError("Builtin provider can not be disabled.")
             # also unload any other providers dependent of this provider
             for dep_prov in self.mass.providers:
                 if dep_prov.manifest.depends_on == config.domain:
                     await self.mass.unload_provider(dep_prov.instance_id)
             await self.mass.unload_provider(config.instance_id)
+            if config.type == ProviderType.PLAYER:
+                # cleanup entries in player manager
+                for player in self.mass.players.all(
+                    return_unavailable=True, return_hidden=True, return_disabled=True
+                ):
+                    if player.provider != instance_id:
+                        continue
+                    self.mass.players.remove(player.player_id, cleanup_config=False)
         # load succeeded, save new config
         config.last_error = None
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"

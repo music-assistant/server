@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -104,6 +105,7 @@ class CastPlayer:
     mz_controller: MultizoneController | None = None
     next_url: str | None = None
     active_group: str | None = None
+    current_queue_item_id: str | None = None
 
 
 class ChromecastProvider(PlayerProvider):
@@ -127,6 +129,8 @@ class ChromecastProvider(PlayerProvider):
             ),
             self.mass.zeroconf,
         )
+        # silence pychromecast logging
+        logging.getLogger("pychromecast").setLevel(self.logger.level)
         # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
@@ -422,6 +426,7 @@ class ChromecastProvider(PlayerProvider):
         """Handle updated MediaStatus."""
         castplayer.logger.debug("Received media status update: %s", status.player_state)
         # player state
+        prev_state = castplayer.player.state
         if status.player_is_playing:
             castplayer.player.state = PlayerState.PLAYING
         elif status.player_is_paused:
@@ -440,15 +445,26 @@ class ChromecastProvider(PlayerProvider):
         castplayer.player.current_url = status.content_id
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
-        # enqueue next item if needed
-        if (
+        # enqueue next item if player is almost at the end of the track
+        if (  # noqa: SIM114
             castplayer.player.state == PlayerState.PLAYING
             and castplayer.player.active_source == castplayer.player.player_id
-            and castplayer.next_url in (None, castplayer.player.current_url)
+            and (queue := self.mass.player_queues.get(castplayer.player_id))
+            and (current_item := queue.current_item)
+            and current_item.duration
+            and (current_item.duration - castplayer.player.elapsed_time) <= 10
+        ):
+            asyncio.run_coroutine_threadsafe(self._enqueue_next_track(castplayer), self.mass.loop)
+        # failsafe enqueue next item if player stopped at the end of the track
+        elif (
+            castplayer.player.state == PlayerState.IDLE
+            and prev_state == PlayerState.PLAYING
+            and castplayer.player.active_source == castplayer.player.player_id
+            and castplayer.player.current_url == castplayer.next_url
         ):
             asyncio.run_coroutine_threadsafe(self._enqueue_next_track(castplayer), self.mass.loop)
         # handle end of MA queue - set current item to None
-        if (
+        elif (
             castplayer.player.state == PlayerState.IDLE
             and castplayer.player.current_url
             and (queue := self.mass.player_queues.get(castplayer.player_id))
@@ -492,7 +508,7 @@ class ChromecastProvider(PlayerProvider):
         """Enqueue the next track of the MA queue on the CC queue."""
         try:
             next_url, next_item, _ = await self.mass.player_queues.preload_next_url(
-                castplayer.player_id
+                castplayer.player_id, castplayer.current_queue_item_id
             )
         except QueueEmpty:
             return
@@ -500,6 +516,7 @@ class ChromecastProvider(PlayerProvider):
         if castplayer.next_url == next_url:
             return  # already set ?!
         castplayer.next_url = next_url
+        castplayer.current_queue_item_id = next_item.queue_item_id
 
         # in flow/direct url mode, we just send the url and the metadata is of no use
         if not next_item:

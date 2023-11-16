@@ -198,6 +198,11 @@ class MusicAssistant:
         """Return all Provider manifests."""
         return list(self._provider_manifests.values())
 
+    @api_command("providers/manifests/get")
+    def get_provider_manifest(self, domain: str) -> ProviderManifest:
+        """Return Provider manifests of single provider(domain)."""
+        return self._provider_manifests[domain]
+
     @api_command("providers")
     def get_providers(
         self, provider_type: ProviderType | None = None
@@ -410,7 +415,7 @@ class MusicAssistant:
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         # if this is a music provider, start sync
         if provider.type == ProviderType.MUSIC:
-            await self.music.start_sync(providers=[provider.instance_id])
+            self.music.start_sync(providers=[provider.instance_id])
 
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""

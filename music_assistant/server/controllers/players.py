@@ -2,9 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import logging
-from collections.abc import Iterator
-from typing import TYPE_CHECKING, cast
+from collections.abc import Awaitable, Callable, Coroutine, Iterator
+from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 from music_assistant.common.helpers.util import get_changed_values
 from music_assistant.common.models.enums import (
@@ -35,6 +36,37 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
+
+_PlayerControllerT = TypeVar("_PlayerControllerT", bound="PlayerController")
+_R = TypeVar("_R")
+_P = ParamSpec("_P")
+
+
+def log_player_command(
+    func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]]
+) -> Callable[Concatenate[_PlayerControllerT, _P], Coroutine[Any, Any, _R | None]]:
+    """Check and log commands to players."""
+
+    @functools.wraps(func)
+    async def wrapper(self: _PlayerControllerT, *args: _P.args, **kwargs: _P.kwargs) -> _R | None:
+        """Log and log_player_command commands to players."""
+        player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
+        if (player := self._players.get(player_id)) is None or not player.available:
+            # player not existent
+            self.logger.debug(
+                "Ignoring command %s for unavailable player %s",
+                func.__name__,
+                player_id,
+            )
+            return
+        self.logger.debug(
+            "Handling command %s for player %s",
+            func.__name__,
+            player.display_name,
+        )
+        await func(self, *args, **kwargs)
+
+    return wrapper
 
 
 class PlayerController(CoreController):
@@ -166,14 +198,15 @@ class PlayerController(CoreController):
         self.register(player)
 
     @api_command("players/remove")
-    def remove(self, player_id: str) -> None:
+    def remove(self, player_id: str, cleanup_config: bool = True) -> None:
         """Remove a player from the registry."""
         player = self._players.pop(player_id, None)
         if player is None:
             return
         LOGGER.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id)
-        self.mass.config.remove(f"players/{player_id}")
+        if cleanup_config:
+            self.mass.config.remove(f"players/{player_id}")
         self._prev_states.pop(player_id, None)
         self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
@@ -266,34 +299,34 @@ class PlayerController(CoreController):
     # Player commands
 
     @api_command("players/cmd/stop")
+    @log_player_command
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
-        self.logger.debug("Processing STOP command for player %s", player_id)
         player_id = self._check_redirect(player_id)
         if player_provider := self.get_player_provider(player_id):
             await player_provider.cmd_stop(player_id)
 
     @api_command("players/cmd/play")
+    @log_player_command
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
-        self.logger.debug("Processing PLAY command for player %s", player_id)
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_play(player_id)
 
     @api_command("players/cmd/pause")
+    @log_player_command
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
-        self.logger.debug("Processing PAUSE command for player %s", player_id)
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_pause(player_id)
@@ -320,6 +353,7 @@ class PlayerController(CoreController):
         self.mass.create_task(_watch_pause(player_id))
 
     @api_command("players/cmd/play_pause")
+    @log_player_command
     async def cmd_play_pause(self, player_id: str) -> None:
         """Toggle play/pause on given player.
 
@@ -332,15 +366,13 @@ class PlayerController(CoreController):
             await self.cmd_play(player_id)
 
     @api_command("players/cmd/power")
+    @log_player_command
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.
 
         - player_id: player_id of the player to handle the command.
         - powered: bool if player should be powered on or off.
         """
-        self.logger.debug(
-            "Processing POWER %s command for player %s", "ON" if powered else "OFF", player_id
-        )
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
 
@@ -404,13 +436,13 @@ class PlayerController(CoreController):
                 await self.mass.player_queues.resume(player_id)
 
     @api_command("players/cmd/volume_set")
+    @log_player_command
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
 
         - player_id: player_id of the player to handle the command.
         - volume_level: volume level (0..100) to set on the player.
         """
-        self.logger.debug("Processing VOLUME_SET command for player %s", player_id)
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
         if player.type == PlayerType.GROUP:
@@ -429,6 +461,7 @@ class PlayerController(CoreController):
         await player_provider.cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
+    @log_player_command
     async def cmd_volume_up(self, player_id: str) -> None:
         """Send VOLUME_UP command to given player.
 
@@ -438,6 +471,7 @@ class PlayerController(CoreController):
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/volume_down")
+    @log_player_command
     async def cmd_volume_down(self, player_id: str) -> None:
         """Send VOLUME_DOWN command to given player.
 
@@ -447,6 +481,7 @@ class PlayerController(CoreController):
         await self.cmd_volume_set(player_id, new_volume)
 
     @api_command("players/cmd/group_volume")
+    @log_player_command
     async def cmd_group_volume(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given playergroup.
 
@@ -460,22 +495,23 @@ class PlayerController(CoreController):
         cur_volume = group_player.group_volume
         new_volume = volume_level
         volume_dif = new_volume - cur_volume
-        volume_dif_percent = 1 + new_volume / 100 if cur_volume == 0 else volume_dif / cur_volume
         coros = []
         for child_player in self._get_child_players(group_player, True):
             cur_child_volume = child_player.volume_level
-            new_child_volume = int(cur_child_volume + (cur_child_volume * volume_dif_percent))
+            new_child_volume = int(cur_child_volume + volume_dif)
+            new_child_volume = max(0, new_child_volume)
+            new_child_volume = min(100, new_child_volume)
             coros.append(self.cmd_volume_set(child_player.player_id, new_child_volume))
         await asyncio.gather(*coros)
 
     @api_command("players/cmd/volume_mute")
+    @log_player_command
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME_MUTE command to given player.
 
         - player_id: player_id of the player to handle the command.
         - muted: bool if player should be muted.
         """
-        self.logger.debug("Processing VOLUME_MUTE command for player %s", player_id)
         player = self.get(player_id, True)
         assert player
         if PlayerFeature.VOLUME_MUTE not in player.supported_features:
@@ -496,6 +532,7 @@ class PlayerController(CoreController):
         await player_provider.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/sync")
+    @log_player_command
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
 
@@ -507,7 +544,6 @@ class PlayerController(CoreController):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
-        self.logger.debug("Processing SYNC command for player %s", player_id)
         child_player = self.get(player_id, True)
         parent_player = self.get(target_player, True)
         assert child_player
@@ -541,6 +577,7 @@ class PlayerController(CoreController):
         await player_provider.cmd_sync(player_id, target_player)
 
     @api_command("players/cmd/unsync")
+    @log_player_command
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
 
@@ -550,7 +587,6 @@ class PlayerController(CoreController):
 
             - player_id: player_id of the player to handle the command.
         """
-        self.logger.debug("Processing UNSYNC command for player %s", player_id)
         player = self.get(player_id, True)
         if PlayerFeature.SYNC not in player.supported_features:
             raise UnsupportedFeaturedException(f"Player {player.name} does not support syncing")

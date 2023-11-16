@@ -216,7 +216,8 @@ class Config(DataClassDictMixin):
             changed_keys.add(key)
 
         # config entry values
-        for key, new_val in update.items():
+        values = update.get("values", update)
+        for key, new_val in values.items():
             if key in root_values:
                 continue
             cur_val = self.values[key].value if key in self.values else None
@@ -364,9 +365,10 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
     range=(-30, 0),
-    default_value=-14,
+    default_value=-17,
     label="Target level for volume normalization",
-    description="Adjust average (perceived) loudness to this target level, " "default is -14 LUFS",
+    description="Adjust average (perceived) loudness to this target level, "
+    "default is -17 LUFS \n\n WARNING: Setting levels higher than this may result in clipping",
     depends_on=CONF_VOLUME_NORMALIZATION,
     advanced=True,
 )

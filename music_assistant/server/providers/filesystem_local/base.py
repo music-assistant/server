@@ -703,7 +703,7 @@ class FileSystemProviderBase(MusicProvider):
 
         # track artist(s)
         for index, track_artist_str in enumerate(tags.artists):
-            # re-use album artist details if possible
+            # reuse album artist details if possible
             if track.album and (
                 album_artist := next(
                     (x for x in track.album.artists if x.name == track_artist_str), None
