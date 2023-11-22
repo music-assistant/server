@@ -171,6 +171,7 @@ class SnapCastProvider(PlayerProvider):
             await self._snapserver.client_volume(
                 player_id, {"percent": volume_level, "muted": mass_player.volume_muted}
             )
+            self.cmd_volume_mute(player_id, False)
 
     async def cmd_play_url(
         self,
@@ -188,7 +189,6 @@ class SnapCastProvider(PlayerProvider):
             - url: the url that the player should start playing.
             - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
-        await self.cmd_stop(player_id)
         player = self.mass.players.get(player_id)
         stream = self._get_snapstream(player_id)
         if stream.path != "":
@@ -198,10 +198,17 @@ class SnapCastProvider(PlayerProvider):
         ffmpeg = (
             FFmpeg()
             .option("y")
-            .input(url)
-            .output(f"tcp://{stream_host}", f="u16le", acodec="pcm_s16le", ac=2, ar=48000)
+            .option("re")
+            .input(url=url)
+            .output(
+                f"tcp://{stream_host}",
+                f="u16le",
+                acodec="pcm_s16le",
+                ac=2,
+                ar=48000,
+            )
         )
-        self.mass.create_task(ffmpeg.execute())
+        ffmpeg_task = self.mass.create_task(ffmpeg.execute())
 
         @ffmpeg.on("start")
         async def on_start(arguments: list[str]):
@@ -209,15 +216,18 @@ class SnapCastProvider(PlayerProvider):
             if hasattr(stream, "ffmpeg"):
                 await self.cmd_stop(player_id)
             stream.ffmpeg = ffmpeg
-            player.state = PlayerState.PLAYING
-            player.current_url = url
-            player.elapsed_time = 0
-            player.elapsed_time_last_updated = time.time()
+            stream.ffmpeg_task = ffmpeg_task
+            player.state = PlayerState.IDLE
+
             self.mass.players.register_or_update(player)
 
         @ffmpeg.on("progress")
         def on_progress(progress: Progress):
             player.state = PlayerState.PLAYING
+            if player.current_url != url:
+                player.current_url = url
+                player.elapsed_time = 0
+                player.elapsed_time_last_updated = time.time()
             self.mass.players.register_or_update(player)
 
         @ffmpeg.on("completed")
@@ -238,6 +248,7 @@ class SnapCastProvider(PlayerProvider):
             if hasattr(stream, "ffmpeg"):
                 try:
                     stream.ffmpeg.terminate()
+                    stream.ffmpeg_task.cancel()
                     self.logger.debug("ffmpeg player stopped")
                 except FFmpegError:
                     self.logger.debug("Fail to stop ffmpeg player")
@@ -277,7 +288,7 @@ class SnapCastProvider(PlayerProvider):
     def _synced_to(self, player_id: str) -> str | None:
         """Return player_id of the player this player is synced to."""
         snap_group = self._get_snapgroup(player_id)
-        if player_id != snap_group.clients[0]:
+        if player_id != snap_group.clients[0] and snap_group.clients[0].connected:
             return snap_group.clients[0]
 
     def _group_childs(self, player_id: str) -> set[str]:
