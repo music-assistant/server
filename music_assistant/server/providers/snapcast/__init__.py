@@ -208,7 +208,7 @@ class SnapCastProvider(PlayerProvider):
                 ar=48000,
             )
         )
-        ffmpeg_task = self.mass.create_task(ffmpeg.execute())
+        self.mass.create_task(ffmpeg.execute())
 
         @ffmpeg.on("start")
         async def on_start(arguments: list[str]):
@@ -216,7 +216,6 @@ class SnapCastProvider(PlayerProvider):
             if hasattr(stream, "ffmpeg"):
                 await self.cmd_stop(player_id)
             stream.ffmpeg = ffmpeg
-            stream.ffmpeg_task = ffmpeg_task
             player.state = PlayerState.IDLE
 
             self.mass.players.register_or_update(player)
@@ -248,7 +247,6 @@ class SnapCastProvider(PlayerProvider):
             if hasattr(stream, "ffmpeg"):
                 try:
                     stream.ffmpeg.terminate()
-                    stream.ffmpeg_task.cancel()
                     self.logger.debug("ffmpeg player stopped")
                 except FFmpegError:
                     self.logger.debug("Fail to stop ffmpeg player")
