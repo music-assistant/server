@@ -901,20 +901,20 @@ class LmsCli:
             next_index = (queue.current_index or 0) - int(arg.split("-")[1])
             self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
             return
+        if subcommand == "shuffle" and arg == "?":
+            return queue.shuffle_enabled
         if subcommand == "shuffle":
-            self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
+            self.mass.player_queues.set_shuffle(queue.queue_id, bool(arg))
             return
+        if subcommand == "repeat" and arg == "?":
+            return str(REPEATMODE_MAP[queue.repeat_mode])
         if subcommand == "repeat":
-            if queue.repeat_mode == RepeatMode.ALL:
-                new_repeat_mode = RepeatMode.OFF
-            elif queue.repeat_mode == RepeatMode.OFF:
-                new_repeat_mode = RepeatMode.ONE
-            else:
-                new_repeat_mode = RepeatMode.ALL
+            repeat_map = {val: key for key, val in REPEATMODE_MAP.items()}
+            new_repeat_mode = repeat_map.get(int(arg))
             self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
             return
         if subcommand == "crossfade":
-            self.mass.player_queues.set_crossfade(queue.queue_id, not queue.crossfade_enabled)
+            self.mass.player_queues.set_crossfade(queue.queue_id, bool(arg))
             return
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
@@ -1034,16 +1034,16 @@ class LmsCli:
             return
         # queue related button commands
         queue = self.mass.player_queues.get_active_queue(player_id)
-        if subcommand == "jump_fwd":
+        if subcommand == "fwd":
             self.mass.create_task(self.mass.player_queues.next, queue.queue_id)
             return
-        if subcommand == "jump_rew":
+        if subcommand == "rew":
             self.mass.create_task(self.mass.player_queues.previous, queue.queue_id)
             return
-        if subcommand == "fwd":
+        if subcommand == "jump_fwd":
             self.mass.create_task(self.mass.player_queues.skip, queue.queue_id, 10)
             return
-        if subcommand == "rew":
+        if subcommand == "jump_rew":
             self.mass.create_task(self.mass.player_queues.skip, queue.queue_id, -10)
             return
         if subcommand == "shuffle":
