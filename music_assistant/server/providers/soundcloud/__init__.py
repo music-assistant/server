@@ -174,20 +174,32 @@ class SoundcloudMusicProvider(MusicProvider):
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from Soundcloud."""
         time_start = time.time()
-        playlists = await self._soundcloud.get_account_playlists()
+        async for item in self._soundcloud.get_account_playlists():
+            try:
+                raw_playlist = item["playlist"]
+            except KeyError:
+                self.logger.debug(
+                    "Unexpected Soundcloud API response when parsing playlists: %s",
+                    item,
+                )
+                continue
+
+            try:
+                playlist = await self._soundcloud.get_playlist_details(
+                    playlist_id=raw_playlist["id"],
+                )
+
+                yield await self._parse_playlist(playlist)
+            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
+                self.logger.debug(
+                    "Failed to obtain Soundcloud playlist details: %s", raw_playlist, exc_info=error
+                )
+                continue
+
         self.logger.debug(
             "Processing Soundcloud library playlists took %s seconds",
             round(time.time() - time_start, 2),
         )
-        for item in playlists["collection"]:
-            try:
-                playlist_obj = await self._soundcloud.get_playlist_details(
-                    playlist_id=item["playlist"]["id"]
-                )
-                yield await self._parse_playlist(playlist_obj)
-            except (KeyError, TypeError, InvalidDataError, IndexError) as error:
-                self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
-                continue
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Soundcloud."""
