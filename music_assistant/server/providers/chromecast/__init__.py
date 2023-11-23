@@ -34,7 +34,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError, QueueEmpty
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE
+from music_assistant.constants import CONF_LOG_LEVEL, CONF_PLAYERS, MASS_LOGO_ONLINE
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -130,7 +130,11 @@ class ChromecastProvider(PlayerProvider):
             self.mass.zeroconf,
         )
         # silence pychromecast logging
-        logging.getLogger("pychromecast").setLevel(self.logger.level)
+        log_level = self.config.get_value(CONF_LOG_LEVEL)
+        if log_level == "DEBUG":
+            logging.getLogger("pychromecast").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("pychromecast").setLevel(logging.INFO)
         # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 
