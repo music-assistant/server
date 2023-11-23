@@ -139,6 +139,8 @@ PlaylistItem = TypedDict(
         "remote_title": str,
         "artwork_url": str,
         "bitrate": str,
+        "samplerate": str,
+        "samplesize": str,
         "duration": str | int | None,
         "coverid": str,
         "params": dict,
@@ -150,6 +152,9 @@ def playlist_item_from_mass(
     mass: MusicAssistant, queue_item: QueueItem, index: int = 0, is_cur_index: bool = False
 ) -> PlaylistItem:
     """Parse PlaylistItem for the Json RPC interface from MA QueueItem."""
+    samplerate = "44100"
+    samplesize = "16"
+    bitrate = "1411"
     if (
         is_cur_index
         and queue_item.streamdetails
@@ -174,6 +179,10 @@ def playlist_item_from_mass(
         title = queue_item.name
         artist = ""
         album = queue_item.media_type.value
+    if queue_item.streamdetails:
+        samplerate = str(queue_item.streamdetails.audio_format.sample_rate)
+        samplesize = str(queue_item.streamdetails.audio_format.bit_depth)
+        bitrate = str(queue_item.streamdetails.audio_format.bit_rate)
     return {
         "playlist index": index,
         "id": "-187651250107376",
@@ -186,7 +195,9 @@ def playlist_item_from_mass(
         else "",
         "coverid": "-187651250107376",
         "duration": queue_item.duration,
-        "bitrate": "",
+        "bitrate": bitrate,
+        "samplerate": samplerate,
+        "samplesize": samplesize,
     }
 
 
