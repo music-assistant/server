@@ -853,7 +853,7 @@ class LmsCli:
             jump = int(number.split("+")[1])
             self.mass.create_task(self.mass.player_queues.skip, player_queue.queue_id, jump)
         else:
-            self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, number)
+            self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, int(number))
 
     def _handle_power(self, player_id: str, value: str | int, *args, **kwargs) -> int | None:
         """Handle player `time` command."""
