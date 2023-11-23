@@ -638,7 +638,7 @@ class TidalProvider(MusicProvider):
             **extra_init_kwargs,
         )
         if track_obj.isrc:
-            track.external_ids.add(ExternalID.ISRC, track_obj.isrc)
+            track.external_ids.add((ExternalID.ISRC, track_obj.isrc))
         # Here we use an ItemMapping as Tidal return minimal data when getting an Album from a Track
         track.album = self.get_item_mapping(
             media_type=MediaType.ALBUM,

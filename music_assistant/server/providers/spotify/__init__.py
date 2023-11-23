@@ -445,9 +445,9 @@ class SpotifyProvider(MusicProvider):
             },
         )
         if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            album.external_ids.add(ExternalID.BARCODE, "0" + album_obj["external_ids"]["upc"])
+            album.external_ids.add((ExternalID.BARCODE, "0" + album_obj["external_ids"]["upc"]))
         if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
-            album.external_ids.add(ExternalID.BARCODE, album_obj["external_ids"]["ean"])
+            album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
 
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
@@ -513,7 +513,7 @@ class SpotifyProvider(MusicProvider):
             **extra_init_kwargs,
         )
         if isrc := track_obj.get("external_ids", {}).get("isrc"):
-            track.external_ids.add(ExternalID.ISRC, isrc)
+            track.external_ids.add((ExternalID.ISRC, isrc))
 
         if artist:
             track.artists.append(artist)

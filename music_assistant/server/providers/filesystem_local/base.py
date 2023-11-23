@@ -654,7 +654,7 @@ class FileSystemProviderBase(MusicProvider):
             )
 
         if tags.isrc:
-            track.external_ids.add(ExternalID.ISRC, tags.isrc)
+            track.external_ids.add((ExternalID.ISRC, tags.isrc))
 
         # album
         if tags.album:
@@ -868,7 +868,7 @@ class FileSystemProviderBase(MusicProvider):
             },
         )
         if barcode:
-            album.external_ids.add(ExternalID.BARCODE, barcode)
+            album.external_ids.add((ExternalID.BARCODE, barcode))
 
         if not await self.exists(album_path):
             # return basic object if there is no dedicated album folder

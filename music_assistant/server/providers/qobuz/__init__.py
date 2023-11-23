@@ -485,7 +485,7 @@ class QobuzProvider(MusicProvider):
                 )
             },
         )
-        album.external_ids.add(ExternalID.BARCODE, album_obj["upc"])
+        album.external_ids.add((ExternalID.BARCODE, album_obj["upc"]))
         album.artists.append(await self._parse_artist(artist_obj or album_obj["artist"]))
         if (
             album_obj.get("product_type", "") == "single"
@@ -556,7 +556,7 @@ class QobuzProvider(MusicProvider):
             **extra_init_kwargs,
         )
         if isrc := track_obj.get("isrc"):
-            track.external_ids.add(ExternalID.ISRC, isrc)
+            track.external_ids.add((ExternalID.ISRC, isrc))
         if track_obj.get("performer") and "Various " not in track_obj["performer"]:
             artist = await self._parse_artist(track_obj["performer"])
             if artist:

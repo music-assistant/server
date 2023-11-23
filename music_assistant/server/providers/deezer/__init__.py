@@ -639,7 +639,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             **extra_init_kwargs,
         )
         if isrc := getattr(track, "isrc", None):
-            item.external_ids.add(ExternalID.ISRC, isrc)
+            item.external_ids.add((ExternalID.ISRC, isrc))
         return item
 
     def get_short_title(self, track: deezer.Track):
