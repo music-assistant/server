@@ -591,6 +591,8 @@ class LmsCli:
         """Handle players command."""
         players: list[PlayerItem] = []
         for index, mass_player in enumerate(self.mass.players.all()):
+            if not isinstance(start_index, int):
+                start_index = 0
             if isinstance(start_index, int) and index < start_index:
                 continue
             if len(players) > limit:
