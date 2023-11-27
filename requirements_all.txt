@@ -22,7 +22,7 @@ music-assistant-frontend==2.0.15
 orjson==3.9.10
 pillow==10.1.0
 plexapi==4.15.5
-PyChromecast==13.0.7
+PyChromecast==13.0.8
 pycryptodome==3.18.0
 python-ffmpeg==2.0.4
 python-slugify==8.0.1
