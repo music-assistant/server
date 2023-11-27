@@ -239,6 +239,14 @@ class MediaItem(DataClassDictMixin):
         """Return MusicBrainz ID."""
         return self.get_external_id(ExternalID.MUSICBRAINZ)
 
+    @mbid.setter
+    def mbid(self, value: str) -> None:
+        """Set MusicBrainz External ID."""
+        if existing := next((x for x in self.external_ids if x[0] == ExternalID.MUSICBRAINZ), None):
+            # Musicbrainz ID is unique so remove existing entry
+            self.external_ids.remove(existing)
+        self.external_ids.add((ExternalID.MUSICBRAINZ, value))
+
     def get_external_id(self, external_id_type: ExternalID) -> str | None:
         """Get (the first instance) of given External ID or None if not found."""
         for ext_id in self.external_ids:
@@ -298,7 +306,6 @@ class Artist(MediaItem):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.ARTIST
-    mbid: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -310,7 +317,6 @@ class Album(MediaItem):
     year: int | None = None
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     album_type: AlbumType = AlbumType.UNKNOWN
-    mbid: str | None = None  # release group id
 
 
 @dataclass(kw_only=True)
@@ -320,7 +326,6 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
-    mbid: str | None = None  # Recording ID
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     album: Album | ItemMapping | None = None  # optional
 

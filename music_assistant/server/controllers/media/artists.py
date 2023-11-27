@@ -90,6 +90,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
+        cur_item.external_ids.update(update.external_ids)
 
         # enforce various artists name + id
         mbid = cur_item.mbid
@@ -104,7 +105,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             {
                 "name": update.name if overwrite else cur_item.name,
                 "sort_name": update.sort_name if overwrite else cur_item.sort_name,
-                "mbid": mbid,
+                "external_ids": update.external_ids if overwrite else cur_item.external_ids,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
                 "timestamp_modified": int(utc_timestamp()),
@@ -374,7 +375,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "name": item.name,
                 "sort_name": item.sort_name,
                 "favorite": item.favorite,
-                "mbid": item.mbid,
+                "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
                 "provider_mappings": serialize_to_json(item.provider_mappings),
                 "timestamp_added": int(utc_timestamp()),

@@ -139,6 +139,7 @@ class AlbumsController(MediaControllerBase[Album]):
         else:
             album_type = cur_item.album_type
         sort_artist = album_artists[0].sort_name
+        cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -152,7 +153,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 "artists": serialize_to_json(album_artists),
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
-                "mbid": update.mbid or cur_item.mbid,
+                "external_ids": update.external_ids if overwrite else cur_item.external_ids,
                 "timestamp_modified": int(utc_timestamp()),
             },
         )
@@ -250,11 +251,11 @@ class AlbumsController(MediaControllerBase[Album]):
                 "favorite": item.favorite,
                 "album_type": item.album_type,
                 "year": item.year,
-                "mbid": item.mbid,
                 "metadata": serialize_to_json(item.metadata),
                 "provider_mappings": serialize_to_json(item.provider_mappings),
                 "artists": serialize_to_json(album_artists),
                 "sort_artist": sort_artist,
+                "external_ids": serialize_to_json(item.external_ids),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
             },

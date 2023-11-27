@@ -17,6 +17,7 @@ from music_assistant.common.models.config_entries import ConfigEntry, ConfigValu
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     EventType,
+    ExternalID,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -644,16 +645,57 @@ class MusicController(CoreController):
             db_path_backup = db_path + ".backup"
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
+            # handle db migration from previous schema to this one
             if prev_version == DB_SCHEMA_VERSION - 1:
-                # perform db migration from previous schema to this one
                 self.logger.info(
                     "Performing database migration from %s to %s",
                     prev_version,
                     DB_SCHEMA_VERSION,
                 )
-
+                self.logger.warning("DATABASE MIGRATION IN PROGRESS - THIS CAN TAKE A WHILE")
+                # migrate external id(s)
+                for table in (
+                    DB_TABLE_ARTISTS,
+                    DB_TABLE_ALBUMS,
+                    DB_TABLE_TRACKS,
+                ):
+                    # create new external_ids column
+                    await self.database.execute(
+                        f"ALTER TABLE {table} "
+                        "ADD COLUMN external_ids "
+                        "json NOT NULL DEFAULT '[]'"
+                    )
+                    # migrate existing ids into the new external_ids column
+                    async for item in self.database.iter_items(table):
+                        external_ids: set[tuple[str, str]] = set()
+                        if mbid := item["mbid"]:
+                            external_ids.add((ExternalID.MUSICBRAINZ, mbid))
+                        for prov_mapping in json_loads(item["provider_mappings"]):
+                            if isrc := prov_mapping.get("isrc"):
+                                external_ids.add((ExternalID.ISRC, isrc))
+                            if barcode := prov_mapping.get("barcode"):
+                                external_ids.add((ExternalID.BARCODE, barcode))
+                        if external_ids:
+                            await self.database.update(
+                                table,
+                                {
+                                    "item_id": item["item_id"],
+                                },
+                                {
+                                    "external_ids": json_dumps(external_ids),
+                                },
+                            )
+                    # drop mbid column
+                    await self.database.execute(f"DROP INDEX IF EXISTS {table}_mbid_idx")
+                    await self.database.execute(f"ALTER TABLE {table} DROP COLUMN mbid")
+                # db migration succeeded
+                self.logger.info(
+                    "Database migration to version %s completed",
+                    DB_SCHEMA_VERSION,
+                )
+            # handle all other schema versions
             else:
-                # for now just keep it simple and just recreate the tables
+                # we keep it simple and just recreate the tables
                 # if the schema is too old (or too new)
                 # we do migrations only for up to 1 schema version behind
                 self.logger.warning(
@@ -672,76 +714,6 @@ class MusicController(CoreController):
                     await self.database.execute(f"DROP TABLE IF EXISTS {table}")
                 # recreate missing tables
                 await self.__create_database_tables()
-
-                # recreate missing tables
-                await self.__create_database_tables()
-
-            if prev_version in (22, 23):
-                # reset albums, artists, tracks, impossible to migrate in a clean way
-                for table in (
-                    DB_TABLE_ARTISTS,
-                    DB_TABLE_ALBUMS,
-                    DB_TABLE_TRACKS,
-                ):
-                    self.logger.warning(
-                        "Resetting %s library/database - a full rescan will be performed!", table
-                    )
-                    await self.database.execute(f"DROP TABLE IF EXISTS {table}")
-                # recreate missing tables
-                await self.__create_database_tables()
-
-                # migrate in_library --> favorite
-                for table in (
-                    DB_TABLE_PLAYLISTS,
-                    DB_TABLE_RADIOS,
-                ):
-                    # rename in_library --> favorite
-                    await self.database.execute(
-                        f"ALTER TABLE {table} RENAME COLUMN in_library TO favorite;"
-                    )
-                    # clean out all non favorites from library db
-                    item_ids_to_delete = set()
-                    async for item in self.database.iter_items(table):
-                        if not (item["favorite"] or '"url' in item["provider_mappings"]):
-                            item_ids_to_delete.add(item["item_id"])
-                            continue
-                        # migrate provider_mapping column (audio_format)
-                        prov_mappings = json_loads(item["provider_mappings"])
-                        needs_update = False
-                        for mapping in prov_mappings:
-                            if "content_type" in mapping:
-                                needs_update = True
-                                mapping["audio_format"] = {
-                                    "content_type": mapping.pop("content_type"),
-                                    "sample_rate": mapping.pop("sample_rate"),
-                                    "bit_depth": mapping.pop("bit_depth"),
-                                    "channels": mapping.pop("channels", 2),
-                                    "bit_rate": mapping.pop("bit_rate", 320),
-                                }
-                        if needs_update:
-                            await self.database.update(
-                                table,
-                                {
-                                    "item_id": item["item_id"],
-                                },
-                                {
-                                    "provider_mappings": json_dumps(prov_mappings),
-                                },
-                            )
-                    for item_id in item_ids_to_delete:
-                        await self.database.delete(table, {"item_id": item_id})
-
-            if prev_version > 22 and prev_version < 25:
-                # extend playlog table with media_type column
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PLAYLOG} "
-                    "ADD COLUMN media_type TEXT NOT NULL DEFAULT 'track'"
-                )
-
-            self.logger.info(
-                "Database migration to version %s completed",
-                DB_SCHEMA_VERSION,
-            )
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -787,7 +759,6 @@ class MusicController(CoreController):
                     year INTEGER,
                     version TEXT,
                     favorite BOOLEAN DEFAULT 0,
-                    mbid TEXT,
                     artists json NOT NULL,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
@@ -801,7 +772,6 @@ class MusicController(CoreController):
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
-                    mbid TEXT,
                     favorite BOOLEAN DEFAULT 0,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
@@ -819,7 +789,6 @@ class MusicController(CoreController):
                     version TEXT,
                     duration INTEGER,
                     favorite BOOLEAN DEFAULT 0,
-                    mbid TEXT,
                     artists json NOT NULL,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
@@ -908,6 +877,3 @@ class MusicController(CoreController):
         await self.database.execute(
             "CREATE INDEX IF NOT EXISTS radios_sort_name_idx on radios(sort_name);"
         )
-        await self.database.execute("CREATE INDEX IF NOT EXISTS artists_mbid_idx on artists(mbid);")
-        await self.database.execute("CREATE INDEX IF NOT EXISTS albums_mbid_idx on albums(mbid);")
-        await self.database.execute("CREATE INDEX IF NOT EXISTS tracks_mbid_idx on tracks(mbid);")

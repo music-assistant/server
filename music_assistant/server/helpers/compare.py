@@ -93,7 +93,7 @@ def compare_track(
     compare_item: Track | AlbumTrack,
     strict: bool = True,
     track_albums: list[Album | ItemMapping] | None = None,
-):
+) -> bool:
     """Compare two track items and return True if they match."""
     if base_item is None or compare_item is None:
         return False
@@ -182,7 +182,7 @@ def compare_albums(
     base_items: list[Album | ItemMapping],
     compare_items: list[Album | ItemMapping],
     any_match: bool = True,
-):
+) -> bool:
     """Compare two lists of albums and return True if a match was found."""
     matches = 0
     for base_item in base_items:

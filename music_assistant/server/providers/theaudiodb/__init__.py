@@ -129,7 +129,11 @@ class AudioDbMetadataProvider(MetadataProvider):
             result = await self._get_data("album-mb.php", i=album.mbid)
             if result and result.get("album"):
                 adb_album = result["album"][0]
-        elif album.artists:
+        if not adb_album and album.metadata.mb_releasegroup_id:
+            result = await self._get_data("album-mb.php", i=album.metadata.mb_releasegroup_id)
+            if result and result.get("album"):
+                adb_album = result["album"][0]
+        if not adb_album and album.artists:
             # lookup by name
             artist = album.artists[0]
             result = await self._get_data("searchalbum.php", s=artist.name, a=album.name)
@@ -189,8 +193,10 @@ class AudioDbMetadataProvider(MetadataProvider):
                 if not track.mbid:
                     track.mbid = adb_track["strMusicBrainzID"]
                 assert isinstance(track.album, Album)
-                if track.album and not track.album.mbid:
-                    track.album.mbid = adb_track["strMusicBrainzAlbumID"]
+                if track.album and not track.album.metadata.mb_releasegroup_id:
+                    # audiodb is cheating here as the id they store as
+                    # album id is in fact the releasegroup id!
+                    track.album.metadata.mb_releasegroup_id = adb_track["strMusicBrainzAlbumID"]
                 if not track_artist.mbid:
                     track_artist.mbid = adb_track["strMusicBrainzArtistID"]
 

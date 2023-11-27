@@ -41,6 +41,7 @@ class ExternalID(StrEnum):
     ACOUSTID = "acoustid"  # unique fingerprint (id) for a recording
     ASIN = "asin"  # amazon unique number to identify albums
     DISCOGS = "discogs"  # id for media item on discogs
+    TADB = "tadb"  # the audio db id
 
 
 class LinkType(StrEnum):

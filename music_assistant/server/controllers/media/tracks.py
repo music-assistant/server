@@ -167,6 +167,7 @@ class TracksController(MediaControllerBase[Track]):
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
         track_artists = await self._get_artist_mappings(cur_item, update, overwrite=overwrite)
+        cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -179,6 +180,7 @@ class TracksController(MediaControllerBase[Track]):
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
                 "timestamp_modified": int(utc_timestamp()),
+                "external_ids": update.external_ids if overwrite else cur_item.external_ids,
             },
         )
         # update/set provider_mappings table
@@ -383,7 +385,7 @@ class TracksController(MediaControllerBase[Track]):
                 "version": item.version,
                 "duration": item.duration,
                 "favorite": item.favorite,
-                "mbid": item.mbid,
+                "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
                 "provider_mappings": serialize_to_json(item.provider_mappings),
                 "artists": serialize_to_json(track_artists),
