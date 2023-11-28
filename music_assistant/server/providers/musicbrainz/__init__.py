@@ -197,7 +197,9 @@ class MusicbrainzProvider(MetadataProvider):
     async def get_data(self, endpoint: str, **kwargs: dict[str, Any]) -> Any:
         """Get data from api."""
         url = f"http://musicbrainz.org/ws/2/{endpoint}"
-        headers = {"User-Agent": "Music Assistant/1.0.0 https://github.com/music-assistant"}
+        headers = {
+            "User-Agent": f"Music Assistant/{self.mass.version} ( https://github.com/music-assistant )"  # noqa: E501
+        }
         kwargs["fmt"] = "json"  # type: ignore[assignment]
         async with self.throttler, self.mass.http_session.get(
             url, headers=headers, params=kwargs, ssl=False
