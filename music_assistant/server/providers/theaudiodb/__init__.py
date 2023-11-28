@@ -26,8 +26,6 @@ from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -140,9 +138,9 @@ class AudioDbMetadataProvider(MetadataProvider):
             if result and result.get("album"):
                 for item in result["album"]:
                     assert isinstance(artist, Artist)
-                    if artist.mbid:
-                        if artist.mbid != item["strMusicBrainzArtistID"]:
-                            continue
+                    # ruff: noqa: SIM114
+                    if artist.mbid and artist.mbid != item["strMusicBrainzArtistID"]:
+                        continue
                     elif not compare_strings(artist.name, item["strArtistStripped"]):
                         continue
                     if compare_strings(album.name, item["strAlbumStripped"]):
@@ -151,8 +149,8 @@ class AudioDbMetadataProvider(MetadataProvider):
         if adb_album:
             if not album.year:
                 album.year = int(adb_album.get("intYearReleased", "0"))
-            if not album.mbid:
-                album.mbid = adb_album["strMusicBrainzID"]
+            if not album.metadata.mb_releasegroup_id:
+                album.metadata.mb_releasegroup_id = adb_album["strMusicBrainzID"]
             assert isinstance(album.artists[0], Artist)
             if album.artists and not album.artists[0].mbid:
                 album.artists[0].mbid = adb_album["strMusicBrainzArtistID"]
@@ -181,9 +179,8 @@ class AudioDbMetadataProvider(MetadataProvider):
             result = await self._get_data("searchtrack.php?", s=track_artist.name, t=search_name)
             if result and result.get("track"):
                 for item in result["track"]:
-                    if track_artist.mbid:
-                        if track_artist.mbid != item["strMusicBrainzArtistID"]:
-                            continue
+                    if track_artist.mbid and track_artist.mbid != item["strMusicBrainzArtistID"]:
+                        continue
                     elif not compare_strings(track_artist.name, item["strArtist"]):
                         continue
                     if compare_strings(track.name, item["strTrack"]):
@@ -202,33 +199,6 @@ class AudioDbMetadataProvider(MetadataProvider):
 
                 return self.__parse_track(adb_track)
         return None
-
-    async def get_musicbrainz_artist_id(
-        self,
-        artist: Artist,
-        ref_albums: Iterable[Album],
-        ref_tracks: Iterable[Track],  # noqa: ARG002
-    ) -> str | None:
-        """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
-        mbid = None
-        if data := await self._get_data("searchalbum.php", s=artist.name):
-            # NOTE: object is 'null' when no records found instead of empty array
-            albums = data.get("album") or []
-            for item in albums:
-                if not compare_strings(item["strArtistStripped"], artist.name):
-                    continue
-                for ref_album in ref_albums:
-                    if not compare_strings(item["strAlbumStripped"], ref_album.name):
-                        continue
-                    # found match - update album metadata too while we're here
-                    if ref_album.provider == "library" and not ref_album.mbid:
-                        ref_album.metadata = self.__parse_album(item)
-                        await self.mass.music.albums.update_item_in_library(
-                            ref_album.item_id, ref_album
-                        )
-                    mbid = item["strMusicBrainzArtistID"]
-
-        return mbid
 
     def __parse_artist(self, artist_obj: dict[str, Any]) -> MediaItemMetadata:
         """Parse audiodb artist object to MediaItemMetadata."""
