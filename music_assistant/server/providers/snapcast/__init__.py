@@ -6,7 +6,7 @@ import time
 import uuid
 from typing import TYPE_CHECKING
 
-from ffmpeg import FFmpegError, Progress
+from ffmpeg import FFmpegError
 from ffmpeg.asyncio import FFmpeg
 from snapcast.control import create_server
 from snapcast.control.client import Snapclient as SnapClient
@@ -202,41 +202,25 @@ class SnapCastProvider(PlayerProvider):
             .input(url=url)
             .output(
                 f"tcp://{stream_host}",
-                f="u16le",
+                f="s16le",
                 acodec="pcm_s16le",
                 ac=2,
                 ar=48000,
             )
         )
-        self.mass.create_task(ffmpeg.execute())
+        await self.cmd_stop(player_id)
+
+        ffmpeg_task = self.mass.create_task(ffmpeg.execute())
 
         @ffmpeg.on("start")
         async def on_start(arguments: list[str]):
             self.logger.debug("Ffmpeg stream is running")
-            if hasattr(stream, "ffmpeg"):
-                await self.cmd_stop(player_id)
             stream.ffmpeg = ffmpeg
-            player.state = PlayerState.IDLE
-
-            self.mass.players.register_or_update(player)
-
-        @ffmpeg.on("progress")
-        def on_progress(progress: Progress):
+            stream.ffmpeg_task = ffmpeg_task
+            player.current_url = url
+            player.elapsed_time = 0
+            player.elapsed_time_last_updated = time.time()
             player.state = PlayerState.PLAYING
-            if player.current_url != url:
-                player.current_url = url
-                player.elapsed_time = 0
-                player.elapsed_time_last_updated = time.time()
-            self.mass.players.register_or_update(player)
-
-        @ffmpeg.on("completed")
-        async def on_completed():
-            player.state = PlayerState.IDLE
-            self.mass.players.register_or_update(player)
-
-        @ffmpeg.on("terminated")
-        async def on_terminated():
-            player.state = PlayerState.IDLE
             self.mass.players.register_or_update(player)
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -244,12 +228,15 @@ class SnapCastProvider(PlayerProvider):
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if player.state != PlayerState.IDLE:
             stream = self._get_snapstream(player_id)
-            if hasattr(stream, "ffmpeg"):
+            if hasattr(stream, "ffmpeg_task") and stream.ffmpeg_task.done() is False:
                 try:
                     stream.ffmpeg.terminate()
+                    stream.ffmpeg_task.cancel()
                     self.logger.debug("ffmpeg player stopped")
                 except FFmpegError:
                     self.logger.debug("Fail to stop ffmpeg player")
+                player.state = PlayerState.IDLE
+                self.mass.players.register_or_update(player)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -286,7 +273,7 @@ class SnapCastProvider(PlayerProvider):
     def _synced_to(self, player_id: str) -> str | None:
         """Return player_id of the player this player is synced to."""
         snap_group = self._get_snapgroup(player_id)
-        if player_id != snap_group.clients[0] and snap_group.clients[0].connected:
+        if player_id != snap_group.clients[0]:
             return snap_group.clients[0]
 
     def _group_childs(self, player_id: str) -> set[str]:
