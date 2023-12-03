@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
-SUPPORTED_FEATURES = (ProviderFeature.GET_ARTIST_MBID,)
+SUPPORTED_FEATURES = tuple()
 
 
 async def setup(
@@ -185,7 +185,7 @@ class MusicbrainzProvider(MetadataProvider):
         return None
 
     async def _search_artist_by_album_mbid(self, artistname: str, album_mbid: str) -> str | None:
-        """Retrieve musicbrainz artist id by providing the artist name or album id."""
+        """Retrieve musicbrainz artist id by providing the artist name and album releasgroupid."""
         result = await self.get_data(f"release-group/{album_mbid}?inc=artist-credits")
         if result and "artist-credit" in result:
             for item in result["artist-credit"]:

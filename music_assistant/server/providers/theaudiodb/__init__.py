@@ -35,7 +35,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.ARTIST_METADATA,
     ProviderFeature.ALBUM_METADATA,
     ProviderFeature.TRACK_METADATA,
-    ProviderFeature.GET_ARTIST_MBID,
 )
 
 IMG_MAPPING = {
@@ -115,6 +114,9 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""
+        if not artist.mbid:
+            # for 100% accuracy we require the musicbrainz id for all lookups
+            return None
         if data := await self._get_data("artist-mb.php", i=artist.mbid):  # noqa: SIM102
             if data.get("artists"):
                 return self.__parse_artist(data["artists"][0])
@@ -122,36 +124,15 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on theaudiodb."""
-        adb_album = None
-        if album.mbid:
-            result = await self._get_data("album-mb.php", i=album.mbid)
-            if result and result.get("album"):
-                adb_album = result["album"][0]
-        if not adb_album and album.metadata.mb_releasegroup_id:
-            result = await self._get_data("album-mb.php", i=album.metadata.mb_releasegroup_id)
-            if result and result.get("album"):
-                adb_album = result["album"][0]
-        if not adb_album and album.artists:
-            # lookup by name
-            artist = album.artists[0]
-            result = await self._get_data("searchalbum.php", s=artist.name, a=album.name)
-            if result and result.get("album"):
-                for item in result["album"]:
-                    assert isinstance(artist, Artist)
-                    # ruff: noqa: SIM114
-                    if artist.mbid and artist.mbid != item["strMusicBrainzArtistID"]:
-                        continue
-                    elif not compare_strings(artist.name, item["strArtistStripped"]):
-                        continue
-                    if compare_strings(album.name, item["strAlbumStripped"]):
-                        adb_album = item
-                        break
-        if adb_album:
+        if not album.mbid:
+            # for 100% accuracy we require the musicbrainz id for all lookups
+            return None
+        result = await self._get_data("album-mb.php", i=album.mbid)
+        if result and result.get("album"):
+            adb_album = result["album"][0]
+            # fill in some missing album info if needed
             if not album.year:
                 album.year = int(adb_album.get("intYearReleased", "0"))
-            if not album.metadata.mb_releasegroup_id:
-                album.metadata.mb_releasegroup_id = adb_album["strMusicBrainzID"]
-            assert isinstance(album.artists[0], Artist)
             if album.artists and not album.artists[0].mbid:
                 album.artists[0].mbid = adb_album["strMusicBrainzArtistID"]
             if album.album_type == AlbumType.UNKNOWN:
@@ -168,36 +149,25 @@ class AudioDbMetadataProvider(MetadataProvider):
             result = await self._get_data("track-mb.php", i=track.mbid)
             if result and result.get("track"):
                 return self.__parse_track(result["track"][0])
-
-        # lookup by name
+            # if there was no match on mbid, there will certainly be no match by name
+            return None
+        # fallback if no musicbrainzid: lookup by name
         for track_artist in track.artists:
             assert isinstance(track_artist, Artist)
             # make sure to include the version in the track name
-            search_name = track.name
-            if track.version:
-                search_name += f" {track.version}"
-            result = await self._get_data("searchtrack.php?", s=track_artist.name, t=search_name)
+            track_name = f"{track.name} {track.version}" if track.version else track.name
+            result = await self._get_data("searchtrack.php?", s=track_artist.name, t=track_name)
             if result and result.get("track"):
                 for item in result["track"]:
+                    # some safety checks
                     if track_artist.mbid and track_artist.mbid != item["strMusicBrainzArtistID"]:
                         continue
-                    elif not compare_strings(track_artist.name, item["strArtist"]):
+                    if track.album.mbid and track.album.mbid != item["strMusicBrainzAlbumID"]:
                         continue
-                    if compare_strings(track.name, item["strTrack"]):
-                        adb_track = item
-                        break
-            if adb_track:
-                if not track.mbid:
-                    track.mbid = adb_track["strMusicBrainzID"]
-                assert isinstance(track.album, Album)
-                if track.album and not track.album.metadata.mb_releasegroup_id:
-                    # audiodb is cheating here as the id they store as
-                    # album id is in fact the releasegroup id!
-                    track.album.metadata.mb_releasegroup_id = adb_track["strMusicBrainzAlbumID"]
-                if not track_artist.mbid:
-                    track_artist.mbid = adb_track["strMusicBrainzArtistID"]
-
-                return self.__parse_track(adb_track)
+                    if not compare_strings(track_artist.name, item["strArtist"]):
+                        continue
+                    if compare_strings(track_name, item["strTrack"]):
+                        return self.__parse_track(adb_track)
         return None
 
     def __parse_artist(self, artist_obj: dict[str, Any]) -> MediaItemMetadata:

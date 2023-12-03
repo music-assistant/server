@@ -42,7 +42,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.constants import VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.constants import VARIOUS_ARTISTS_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
@@ -62,7 +62,7 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     description="Music Assistant prefers information stored in ID3 tags and only uses"
     " online sources for additional metadata. This means that the ID3 tags need to be "
     "accurate, preferably tagged with MusicBrainz Picard.",
-    advanced=True,
+    advanced=False,
     required=False,
     options=(
         ConfigValueOption("Skip track and log warning", "skip"),
@@ -653,8 +653,12 @@ class FileSystemProviderBase(MusicProvider):
                 **base_details,
             )
 
-        if tags.isrc:
-            track.external_ids.add((ExternalID.ISRC, tags.isrc))
+        if isrc_tags := tags.isrc:
+            for isrsc in isrc_tags:
+                track.external_ids.add((ExternalID.ISRC, isrsc))
+
+        if acoustid := tags.get("acoustidid"):
+            track.external_ids.add((ExternalID.ACOUSTID, acoustid))
 
         # album
         if tags.album:
@@ -675,6 +679,9 @@ class FileSystemProviderBase(MusicProvider):
                     if not artist.mbid:
                         with contextlib.suppress(IndexError):
                             artist.mbid = tags.musicbrainz_albumartistids[index]
+                    # album artist sort name
+                    with contextlib.suppress(IndexError):
+                        artist.sort_name = tags.album_artist_sort_names[index]
                     album_artists.append(artist)
             else:
                 # album artist tag is missing, determine fallback
@@ -717,6 +724,9 @@ class FileSystemProviderBase(MusicProvider):
             if not artist.mbid:
                 with contextlib.suppress(IndexError):
                     artist.mbid = tags.musicbrainz_artistids[index]
+            # artist sort name
+            with contextlib.suppress(IndexError):
+                artist.sort_name = tags.artist_sort_names[index]
             track.artists.append(artist)
 
         # handle embedded cover image
@@ -738,11 +748,11 @@ class FileSystemProviderBase(MusicProvider):
         track.disc_number = tags.disc
         track.track_number = tags.track
         track.metadata.copyright = tags.get("copyright")
-        track.metadata.lyrics = tags.get("lyrics")
+        track.metadata.lyrics = tags.lyrics
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             track.metadata.explicit = explicit_tag == "1"
-        track.mbid = tags.musicbrainz_trackid
+        track.mbid = tags.musicbrainz_recordingid
         track.metadata.chapters = tags.chapters
         if track.album:
             if not track.album.mbid:
@@ -765,14 +775,14 @@ class FileSystemProviderBase(MusicProvider):
         self,
         name: str | None = None,
         artist_path: str | None = None,
+        sort_name: str | None = None,
     ) -> Artist | None:
         """Lookup metadata in Artist folder."""
         assert name or artist_path
         if not artist_path:
             # check if we have an existing item
-            sort_name = create_sort_name(name)
-            async for item in self.mass.music.artists.iter_library_items(search=sort_name):
-                if not compare_strings(sort_name, item.sort_name):
+            async for item in self.mass.music.artists.iter_library_items(search=name):
+                if not compare_strings(name, item.name):
                     continue
                 for prov_mapping in item.provider_mappings:
                     if prov_mapping.provider_instance == self.instance_id:
@@ -797,6 +807,7 @@ class FileSystemProviderBase(MusicProvider):
             item_id=artist_path,
             provider=self.instance_id,
             name=name,
+            sort_name=sort_name or create_sort_name(name),
             provider_mappings={
                 ProviderMapping(
                     item_id=artist_path,
@@ -805,7 +816,6 @@ class FileSystemProviderBase(MusicProvider):
                     url=artist_path,
                 )
             },
-            mbid=VARIOUS_ARTISTS_ID_MBID if compare_strings(name, VARIOUS_ARTISTS_NAME) else None,
         )
 
         if not await self.exists(artist_path):
@@ -843,6 +853,7 @@ class FileSystemProviderBase(MusicProvider):
         disc_path: str | None,
         artists: list[Artist],
         barcode: str | None = None,
+        sort_name: str | None = None,
     ) -> Album | None:
         """Lookup metadata in Album folder."""
         assert (name or album_path) and artists
@@ -857,6 +868,7 @@ class FileSystemProviderBase(MusicProvider):
             item_id=album_path,
             provider=self.instance_id,
             name=name,
+            sort_name=sort_name or create_sort_name(name),
             artists=artists,
             provider_mappings={
                 ProviderMapping(

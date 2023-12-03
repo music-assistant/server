@@ -197,6 +197,30 @@ class AudioTags:
         return self.tags.get("musicbrainztrackid")
 
     @property
+    def title_sort(self) -> str | None:
+        """Return sort title tag (if exists)."""
+        if tag := self.tags.get("titlesort"):
+            return tag
+        return None
+
+    @property
+    def album_sort(self) -> str | None:
+        """Return album sort title tag (if exists)."""
+        if tag := self.tags.get("albumsort"):
+            return tag
+        return None
+
+    @property
+    def artist_sort_names(self) -> tuple[str, ...]:
+        """Return artist sort name tag(s) if present."""
+        return split_items(self.tags.get("artistsort"), False)
+
+    @property
+    def album_artist_sort_names(self) -> tuple[str, ...]:
+        """Return artist sort name tag(s) if present."""
+        return split_items(self.tags.get("albumartistsort"), False)
+
+    @property
     def album_type(self) -> AlbumType:
         """Return albumtype tag if present."""
         # handle audiobook/podcast
@@ -204,6 +228,8 @@ class AudioTags:
             return AlbumType.AUDIOBOOK
         if "podcast" in self.tags.get("genre", "").lower() and len(self.chapters) > 1:
             return AlbumType.PODCAST
+        if self.tags.get("compilation", "") == "1":
+            return AlbumType.COMPILATION
         tag = (
             self.tags.get("musicbrainzalbumtype")
             or self.tags.get("albumtype")
@@ -227,20 +253,19 @@ class AudioTags:
         return AlbumType.UNKNOWN
 
     @property
-    def isrc(self) -> str | None:
-        """Return isrc tag."""
-        for tag in ("isrc", "tsrc"):
-            if tag := self.tags.get("isrc"):
+    def isrc(self) -> tuple[str]:
+        """Return isrc tag(s)."""
+        for tag_name in ("isrc", "tsrc"):
+            if tag := self.tags.get(tag_name):
                 # sometimes the field contains multiple values
-                # we only need one
-                return split_items(tag, True)[0]
-        return None
+                return split_items(tag, True)
+        return tuple()
 
     @property
     def barcode(self) -> str | None:
         """Return barcode (upc/ean) tag(s)."""
-        for tag in ("barcode", "upc", "ean"):
-            if tag := self.tags.get("isrc"):
+        for tag_name in ("barcode", "upc", "ean"):
+            if tag := self.tags.get(tag_name):
                 # sometimes the field contains multiple values
                 # we only need one
                 for item in split_items(tag, True):
@@ -266,6 +291,14 @@ class AudioTags:
                 )
         return chapters
 
+    @property
+    def lyrics(self) -> str | None:
+        """Return lyrics tag (if exists)."""
+        for key, value in self.tags.items():
+            if key.startswith("lyrics"):
+                return value
+        return None
+
     @classmethod
     def parse(cls, raw: dict) -> AudioTags:
         """Parse instance from raw ffmpeg info output."""
@@ -277,8 +310,10 @@ class AudioTags:
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
             for key, value in stream.get("tags", {}).items():
-                key = key.lower().replace(" ", "").replace("_", "")  # noqa: PLW2901
-                tags[key] = value
+                alt_key = (
+                    key.lower().replace(" ", "").replace("_", "").replace("-", "")
+                )  # noqa: PLW2901
+                tags[alt_key] = value
 
         return AudioTags(
             raw=raw,

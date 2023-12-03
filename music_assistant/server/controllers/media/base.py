@@ -9,7 +9,7 @@ from time import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
-from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -29,7 +29,7 @@ if TYPE_CHECKING:
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
-JSON_KEYS = ("artists", "metadata", "provider_mappings")
+JSON_KEYS = ("artists", "metadata", "provider_mappings", "external_ids")
 
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
@@ -319,6 +319,30 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 provider_item_ids=(mapping.item_id,),
             ):
                 return item
+        return None
+
+    async def get_library_item_by_external_id(
+        self, external_id: str, external_id_type: ExternalID | None = None
+    ) -> ItemCls | None:
+        """Get the library item for the given external id."""
+        query = self.base_query + f" WHERE {self.db_table}.external_ids LIKE :external_id_str"
+        if external_id_type:
+            external_id_str = f'%("{external_id_type}", "{external_id}")%'
+        else:
+            external_id_str = f'%"{external_id}"%'
+        for item in await self._get_library_items_by_query(
+            query=query, query_params={"external_id_str": external_id_str}
+        ):
+            return item
+        return None
+
+    async def get_library_item_by_external_ids(
+        self, external_ids: set[tuple[ExternalID, str]]
+    ) -> ItemCls | None:
+        """Get the library item for (one of) the given external ids."""
+        for external_id_type, external_id in external_ids:
+            if match := await self.get_library_item_by_external_id(external_id, external_id_type):
+                return match
         return None
 
     async def get_library_items_by_prov_id(

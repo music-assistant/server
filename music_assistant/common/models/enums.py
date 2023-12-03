@@ -33,7 +33,7 @@ class ExternalID(StrEnum):
 
     # musicbrainz:
     # for tracks this is the RecordingID
-    # for albums this is the ReleaseID (NOT the releasegroup ID!)
+    # for albums this is the ReleaseGroupID (NOT the release ID!)
     # for artists this is the ArtistID
     MUSICBRAINZ = "musicbrainz"
     ISRC = "isrc"  # used to identify unique recordings
@@ -305,7 +305,6 @@ class ProviderFeature(StrEnum):
     ARTIST_METADATA = "artist_metadata"
     ALBUM_METADATA = "album_metadata"
     TRACK_METADATA = "track_metadata"
-    GET_ARTIST_MBID = "get_artist_mbid"
 
     #
     # PLUGIN FEATURES

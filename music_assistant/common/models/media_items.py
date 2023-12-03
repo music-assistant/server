@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from time import time
-from typing import Any
+from typing import Any, Self
 
 from mashumaro import DataClassDictMixin
 
@@ -157,7 +157,6 @@ class MediaItemMetadata(DataClassDictMixin):
     chapters: list[MediaItemChapter] | None = None
     performers: set[str] | None = None
     preview: str | None = None
-    mb_releasegroup_id: str | None = None  # musicbrainz releasegroup id (albums only)
     popularity: int | None = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: int | None = None
@@ -200,7 +199,6 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: str  # provider instance id or provider domain
     name: str
-    metadata: MediaItemMetadata
     provider_mappings: set[ProviderMapping]
 
     # optional fields below
@@ -242,6 +240,10 @@ class MediaItem(DataClassDictMixin):
     @mbid.setter
     def mbid(self, value: str) -> None:
         """Set MusicBrainz External ID."""
+        if not value:
+            return
+        if len(value.split("-")) != 5:
+            raise RuntimeError("Invalid MusicBrainz identifier")
         if existing := next((x for x in self.external_ids if x[0] == ExternalID.MUSICBRAINZ), None):
             # Musicbrainz ID is unique so remove existing entry
             self.external_ids.remove(existing)
@@ -259,9 +261,25 @@ class MediaItem(DataClassDictMixin):
         """Return custom hash."""
         return hash(self.uri)
 
-    def __eq__(self, other: ItemMapping) -> bool:
+    def __eq__(self, other: MediaItem | ItemMapping) -> bool:
         """Check equality of two items."""
         return self.uri == other.uri
+
+    @classmethod
+    def from_item_mapping(cls: type, item: ItemMapping) -> Self:
+        """Instantiate MediaItem from ItemMapping."""
+        # NOTE: This will not work for albums and tracks!
+        return cls.from_dict(
+            {
+                **item.to_dict(),
+                "provider_mappings": {
+                    "item_id": item.item_id,
+                    "provider_domain": item.provider,
+                    "provider_instance": item.provider,
+                    "available": item.available,
+                },
+            }
+        )
 
 
 @dataclass(kw_only=True)

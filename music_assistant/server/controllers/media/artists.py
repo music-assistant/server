@@ -63,13 +63,33 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Add artist to library and return the database item."""
         if isinstance(item, ItemMapping):
             metadata_lookup = False
+            item = Artist.from_item_mapping(item)
         # grab musicbrainz id and additional metadata
         if metadata_lookup:
             await self.mass.metadata.get_artist_metadata(item)
-        # actually add (or update) the item in the library db
-        # use the lock to prevent a race condition of the same item being added twice
-        async with self._db_add_lock:
-            library_item = await self._add_library_item(item)
+        # check for existing item first
+        library_item = None
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            # existing item match by provider id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
+        else:
+            # search by name
+            async for db_item in self.iter_library_items(search=item.name):
+                if compare_artist(db_item, item):
+                    # existing item found: update it
+                    # NOTE: if we matched an artist by name this could theoretically lead to
+                    # collisions but the chance is so small it is not worth the additional
+                    # overhead of grabbing the musicbrainz id upfront
+                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    break
+        if not library_item:
+            # actually add (or update) the item in the library db
+            # use the lock to prevent a race condition of the same item being added twice
+            async with self._db_add_lock:
+                library_item = await self._add_library_item(item)
         # also fetch same artist on all providers
         if metadata_lookup:
             await self.match_artist(library_item)
@@ -91,7 +111,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
         cur_item.external_ids.update(update.external_ids)
-
         # enforce various artists name + id
         mbid = cur_item.mbid
         if (not mbid or overwrite) and getattr(update, "mbid", None):
@@ -105,7 +124,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             {
                 "name": update.name if overwrite else cur_item.name,
                 "sort_name": update.sort_name if overwrite else cur_item.sort_name,
-                "external_ids": update.external_ids if overwrite else cur_item.external_ids,
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
                 "timestamp_modified": int(utc_timestamp()),
@@ -326,49 +347,16 @@ class ArtistsController(MediaControllerBase[Artist]):
         paged_list = await self.mass.music.albums.library_items(extra_query=query)
         return paged_list.items
 
-    async def _add_library_item(self, item: Artist | ItemMapping) -> Artist:
+    async def _add_library_item(self, item: Artist) -> Artist:
         """Add a new item record to the database."""
         # enforce various artists name + id
-        if not isinstance(item, ItemMapping):
-            if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
-                item.mbid = VARIOUS_ARTISTS_ID_MBID
-            if item.mbid == VARIOUS_ARTISTS_ID_MBID:
-                item.name = VARIOUS_ARTISTS_NAME
-        # safety guard: check for existing item first
-        if isinstance(item, ItemMapping) and (
-            cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider)
-        ):
-            # existing item found: update it
-            return await self.update_item_in_library(cur_item.item_id, item)
-        if not isinstance(item, ItemMapping) and (
-            cur_item := await self.get_library_item_by_prov_mappings(item.provider_mappings)
-        ):
-            return await self.update_item_in_library(cur_item.item_id, item)
-        if mbid := getattr(item, "mbid", None):
-            match = {"mbid": mbid}
-            if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                # existing item found: update it
-                cur_item = Artist.from_dict(self._parse_db_row(db_row))
-                return await self.update_item_in_library(cur_item.item_id, item)
-        # fallback to exact name match
-        # NOTE: we match an artist by name which could theoretically lead to collisions
-        # but the chance is so small it is not worth the additional overhead of grabbing
-        # the musicbrainz id upfront
-        match = {"sort_name": item.sort_name}
-        for db_row in await self.mass.music.database.get_rows(self.db_table, match):
-            row_artist = Artist.from_dict(self._parse_db_row(db_row))
-            if row_artist.sort_name == item.sort_name:
-                cur_item = row_artist
-                # existing item found: update it
-                return await self.update_item_in_library(cur_item.item_id, item)
-
+        if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
+            item.mbid = VARIOUS_ARTISTS_ID_MBID
+        if item.mbid == VARIOUS_ARTISTS_ID_MBID:
+            item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
-        # edge case: item is an ItemMapping,
-        # try to construct (a half baken) Artist object from it
-        if isinstance(item, ItemMapping):
-            item = Artist.from_dict(item.to_dict())
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {

@@ -7,7 +7,6 @@ import os
 import urllib.parse
 from base64 import b64encode
 from contextlib import suppress
-from random import shuffle
 from time import time
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -27,9 +26,15 @@ from music_assistant.common.models.media_items import (
     Radio,
     Track,
 )
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import (
+    ROOT_LOGGER_NAME,
+    VARIOUS_ARTISTS_ID_MBID,
+    VARIOUS_ARTISTS_NAME,
+)
+from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
 from music_assistant.server.models.core_controller import CoreController
+from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
@@ -116,6 +121,7 @@ class MetaDataController(CoreController):
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
         if not artist.mbid:
+            # The musicbrainz ID is mandatory for all metadata lookups
             artist.mbid = await self.get_artist_mbid(artist)
         if not artist.mbid:
             return
@@ -230,10 +236,14 @@ class MetaDataController(CoreController):
 
     async def get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
+        if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
+            return VARIOUS_ARTISTS_ID_MBID
         ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
         if len(ref_albums) < 10:
             # fetch reference albums from provider(s) attached to the artist
             for provider_mapping in artist.provider_mappings:
+                if provider_mapping.provider_instance == artist.provider:
+                    continue
                 ref_albums += await self.mass.music.artists.albums(
                     provider_mapping.item_id, provider_mapping.provider_instance
                 )
@@ -241,32 +251,23 @@ class MetaDataController(CoreController):
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in artist.provider_mappings:
+                if provider_mapping.provider_instance == artist.provider:
+                    continue
                 ref_tracks += await self.mass.music.artists.tracks(
                     provider_mapping.item_id, provider_mapping.provider_instance
                 )
-
-        # randomize providers to average the load
-        providers = self.providers
-        shuffle(providers)
-
-        # try all providers one by one until we have a match
-        for provider in providers:
-            if ProviderFeature.GET_ARTIST_MBID not in provider.supported_features:
-                continue
-            if mbid := await provider.get_musicbrainz_artist_id(
-                artist, ref_albums=ref_albums, ref_tracks=ref_tracks
-            ):
-                LOGGER.debug(
-                    "Fetched MusicBrainz ID for Artist %s on provider %s",
-                    artist.name,
-                    provider.name,
-                )
-                return mbid
+        # start lookup of musicbrainz id
+        musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
+        assert musicbrainz
+        if mbid := await musicbrainz.get_musicbrainz_artist_id(
+            artist, ref_albums=ref_albums, ref_tracks=ref_tracks
+        ):
+            return mbid
 
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
-        LOGGER.info(
+        LOGGER.debug(
             "Unable to get musicbrainz ID for artist %s\n"
             " - using lookup-album(s): %s\n"
             " - using lookup-track(s): %s\n",
