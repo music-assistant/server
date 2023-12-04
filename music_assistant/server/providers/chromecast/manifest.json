@@ -4,7 +4,7 @@
   "name": "Chromecast",
   "description": "Support for Chromecast based players.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["PyChromecast==13.0.7"],
+  "requirements": ["PyChromecast==13.0.8"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1138",
   "multi_instance": false,
   "builtin": false,
