@@ -429,9 +429,13 @@ class MusicAssistant:
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
-            await provider.unload()
-            self._providers.pop(instance_id, None)
-            self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+            try:
+                await provider.unload()
+            except Exception as err:
+                LOGGER.warning("Error while unload provider %s: %s", provider.name, str(err))
+            finally:
+                self._providers.pop(instance_id, None)
+                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command within a class(instance)."""
