@@ -44,15 +44,15 @@ server = [
   "orjson==3.9.10",
   "shortuuid==1.0.11",
   "zeroconf==0.119.0",
-  "cryptography==41.0.5",
+  "cryptography==41.0.6",
   "ifaddr==0.2.0",
   "uvloop==0.19.0"
 ]
 test = [
   "black==23.7.0",
   "codespell==2.2.6",
-  "mypy==1.6.1",
-  "ruff==0.1.5",
+  "mypy==1.7.1",
+  "ruff==0.1.6",
   "pytest==7.4.3",
   "pytest-asyncio==0.21.1",
   "pytest-aiohttp==1.0.5",

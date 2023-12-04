@@ -7,10 +7,10 @@ aiohttp==3.9.0
 aiorun==2023.7.2
 aioslimproto==2.3.3
 aiosqlite==0.19.0
-async-upnp-client==0.34.1
+async-upnp-client==0.36.2
 asyncio-throttle==1.0.2
 colorlog==6.7.0
-cryptography==41.0.5
+cryptography==41.0.6
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
 git+https://github.com/gieljnssns/python-radios.git@main
@@ -21,7 +21,7 @@ memory-tempfile==2.2.3
 music-assistant-frontend==2.0.15
 orjson==3.9.10
 pillow==10.1.0
-plexapi==4.15.5
+plexapi==4.15.6
 PyChromecast==13.0.8
 pycryptodome==3.18.0
 python-ffmpeg==2.0.4
