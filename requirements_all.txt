@@ -16,7 +16,7 @@ git+https://github.com/MarvinSchenkel/pytube.git
 git+https://github.com/gieljnssns/python-radios.git@main
 git+https://github.com/music-assistant/deezer-python-async@v0.1.2
 ifaddr==0.2.0
-mashumaro==3.10
+mashumaro==3.11
 memory-tempfile==2.2.3
 music-assistant-frontend==2.0.15
 orjson==3.9.10
