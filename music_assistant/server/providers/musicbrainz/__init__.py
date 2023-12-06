@@ -128,9 +128,10 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     primary_type_id: str
     title: str
     primary_type: str
-    secondary_types: list[str]
-    secondary_type_ids: list[str]
+
     # optional fields
+    secondary_types: list[str] | None = None
+    secondary_type_ids: list[str] | None = None
     artist_credit: list[MusicBrainzArtistCredit] | None = None
 
 
