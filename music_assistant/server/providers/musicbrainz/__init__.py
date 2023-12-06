@@ -223,6 +223,8 @@ class MusicbrainzProvider(MetadataProvider):
                 return mb_artist.id
         # last restort: track matching by name
         for ref_track in ref_tracks:
+            if not ref_track.album:
+                continue
             if result := await self.search(
                 artistname=artist.name,
                 albumname=ref_track.album.name,
