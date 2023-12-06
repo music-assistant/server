@@ -366,7 +366,7 @@ class MusicbrainzProvider(MetadataProvider):
                 for artist_credit in result.artist_credit:
                     if compare_strings(artist_credit.artist.name, artistname, strict):
                         return artist_credit.artist
-                    for alias in artist_credit.artist.aliases:
+                    for alias in artist_credit.artist.aliases or []:
                         if compare_strings(alias.name, artistname, strict):
                             return artist_credit.artist
         return None
@@ -392,7 +392,7 @@ class MusicbrainzProvider(MetadataProvider):
                 for artist_credit in result.artist_credit:
                     if compare_strings(artist_credit.artist.name, artistname, strict):
                         return artist_credit.artist
-                    for alias in artist_credit.artist.aliases:
+                    for alias in artist_credit.artist.aliases or []:
                         if compare_strings(alias.name, artistname, strict):
                             return artist_credit.artist
         return None
