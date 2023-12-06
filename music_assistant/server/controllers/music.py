@@ -646,7 +646,7 @@ class MusicController(CoreController):
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
             # handle db migration from previous schema to this one
-            if prev_version == DB_SCHEMA_VERSION - 1:
+            if prev_version == 25:
                 self.logger.info(
                     "Performing database migration from %s to %s",
                     prev_version,
@@ -658,6 +658,8 @@ class MusicController(CoreController):
                     DB_TABLE_ARTISTS,
                     DB_TABLE_ALBUMS,
                     DB_TABLE_TRACKS,
+                    DB_TABLE_PLAYLISTS,
+                    DB_TABLE_RADIOS,
                 ):
                     # create new external_ids column
                     await self.database.execute(
@@ -693,6 +695,23 @@ class MusicController(CoreController):
                     "Database migration to version %s completed",
                     DB_SCHEMA_VERSION,
                 )
+            elif prev_version == 26:
+                self.logger.info(
+                    "Performing database migration from %s to %s",
+                    prev_version,
+                    DB_SCHEMA_VERSION,
+                )
+                # migrate playlists and radios tables which we forgot to migrate in schema 26
+                for table in (
+                    DB_TABLE_PLAYLISTS,
+                    DB_TABLE_RADIOS,
+                ):
+                    # create new external_ids column
+                    await self.database.execute(
+                        f"ALTER TABLE {table} "
+                        "ADD COLUMN external_ids "
+                        "json NOT NULL DEFAULT '[]'"
+                    )
             # handle all other schema versions
             else:
                 # we keep it simple and just recreate the tables
