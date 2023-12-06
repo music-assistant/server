@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from contextlib import suppress
 from dataclasses import dataclass, field
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
@@ -351,19 +352,22 @@ class MusicbrainzProvider(MetadataProvider):
 
         MusicBrainzArtist object that is returned does not contain the optional data.
         """
-        barcode = ref_album.get_external_id(ExternalID.BARCODE)
-        if not (ref_album.mbid or barcode):
+        barcodes = [x[1] for x in ref_album.external_ids if x[0] == ExternalID.BARCODE]
+        if not (ref_album.mbid or barcodes):
             return None
-        result = await self.get_releasegroup_details(ref_album.mbid, barcode)
-        if not (result and result.artist_credit):
-            return None
-        for strict in (True, False):
-            for artist_credit in result.artist_credit:
-                if compare_strings(artist_credit.artist.name, artistname, strict):
-                    return artist_credit.artist
-                for alias in artist_credit.artist.aliases:
-                    if compare_strings(alias.name, artistname, strict):
+        for barcode in barcodes:
+            result = None
+            with suppress(InvalidDataError):
+                result = await self.get_releasegroup_details(ref_album.mbid, barcode)
+            if not (result and result.artist_credit):
+                return None
+            for strict in (True, False):
+                for artist_credit in result.artist_credit:
+                    if compare_strings(artist_credit.artist.name, artistname, strict):
                         return artist_credit.artist
+                    for alias in artist_credit.artist.aliases:
+                        if compare_strings(alias.name, artistname, strict):
+                            return artist_credit.artist
         return None
 
     async def get_artist_details_by_track(
@@ -374,19 +378,22 @@ class MusicbrainzProvider(MetadataProvider):
 
         MusicBrainzArtist object that is returned does not contain the optional data.
         """
-        isrc = ref_track.get_external_id(ExternalID.ISRC)
-        if not (ref_track.mbid or isrc):
+        isrcs = [x[1] for x in ref_track.external_ids if x[0] == ExternalID.ISRC]
+        if not (ref_track.mbid or isrcs):
             return None
-        result = await self.get_recording_details(ref_track.mbid, isrc)
-        if not (result and result.artist_credit):
-            return None
-        for strict in (True, False):
-            for artist_credit in result.artist_credit:
-                if compare_strings(artist_credit.artist.name, artistname, strict):
-                    return artist_credit.artist
-                for alias in artist_credit.artist.aliases:
-                    if compare_strings(alias.name, artistname, strict):
+        for isrc in isrcs:
+            result = None
+            with suppress(InvalidDataError):
+                result = await self.get_recording_details(ref_track.mbid, isrc)
+            if not (result and result.artist_credit):
+                return None
+            for strict in (True, False):
+                for artist_credit in result.artist_credit:
+                    if compare_strings(artist_credit.artist.name, artistname, strict):
                         return artist_credit.artist
+                    for alias in artist_credit.artist.aliases:
+                        if compare_strings(alias.name, artistname, strict):
+                            return artist_credit.artist
         return None
 
     @use_cache(86400 * 30)
