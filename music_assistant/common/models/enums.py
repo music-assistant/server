@@ -1,45 +1,11 @@
 """All enums used by the Music Assistant models."""
 from __future__ import annotations
 
-from enum import Enum
-from typing import Any, TypeVar
-
-# pylint:disable=ungrouped-imports
-try:
-    from enum import StrEnum
-except (AttributeError, ImportError):
-    # Python 3.10 compatibility for strenum
-    _StrEnumSelfT = TypeVar("_StrEnumSelfT", bound="StrEnum")
-
-    class StrEnum(str, Enum):
-        """Partial backport of Python 3.11's StrEnum for our basic use cases."""
-
-        def __new__(
-            cls: type[_StrEnumSelfT], value: str, *args: Any, **kwargs: Any
-        ) -> _StrEnumSelfT:
-            """Create a new StrEnum instance."""
-            if not isinstance(value, str):
-                raise TypeError(f"{value!r} is not a string")
-            return super().__new__(cls, value, *args, **kwargs)
-
-        def __str__(self) -> str:
-            """Return self."""
-            return str(self)
-
-        @staticmethod
-        def _generate_next_value_(
-            name: str, start: int, count: int, last_values: list[Any]  # noqa
-        ) -> Any:
-            """Make `auto()` explicitly unsupported.
-
-            We may revisit this when it's very clear that Python 3.11's
-            `StrEnum.auto()` behavior will no longer change.
-            """
-            raise TypeError("auto() is not supported by this implementation")
+from enum import StrEnum
 
 
 class MediaType(StrEnum):
-    """StrEnum for MediaType."""
+    """Enum for MediaType."""
 
     ARTIST = "artist"
     ALBUM = "album"
@@ -62,8 +28,24 @@ class MediaType(StrEnum):
         )
 
 
+class ExternalID(StrEnum):
+    """Enum with External ID types."""
+
+    # musicbrainz:
+    # for tracks this is the RecordingID
+    # for albums this is the ReleaseGroupID (NOT the release ID!)
+    # for artists this is the ArtistID
+    MUSICBRAINZ = "musicbrainz"
+    ISRC = "isrc"  # used to identify unique recordings
+    BARCODE = "barcode"  # EAN-13 barcode for identifying albums
+    ACOUSTID = "acoustid"  # unique fingerprint (id) for a recording
+    ASIN = "asin"  # amazon unique number to identify albums
+    DISCOGS = "discogs"  # id for media item on discogs
+    TADB = "tadb"  # the audio db id
+
+
 class LinkType(StrEnum):
-    """StrEnum with link types."""
+    """Enum with link types."""
 
     WEBSITE = "website"
     FACEBOOK = "facebook"
@@ -79,7 +61,7 @@ class LinkType(StrEnum):
 
 
 class ImageType(StrEnum):
-    """StrEnum with image types."""
+    """Enum with image types."""
 
     THUMB = "thumb"
     LANDSCAPE = "landscape"
@@ -94,7 +76,7 @@ class ImageType(StrEnum):
 
 
 class AlbumType(StrEnum):
-    """StrEnum for Album type."""
+    """Enum for Album type."""
 
     ALBUM = "album"
     SINGLE = "single"
@@ -182,7 +164,7 @@ class ContentType(StrEnum):
 
 
 class QueueOption(StrEnum):
-    """StrEnum representation of the queue (play) options.
+    """Enum representation of the queue (play) options.
 
     - PLAY -> Insert new item(s) in queue at the current position and start playing.
     - REPLACE -> Replace entire queue contents with the new items and start playing from index 0.
@@ -207,7 +189,7 @@ class RepeatMode(StrEnum):
 
 
 class PlayerState(StrEnum):
-    """StrEnum for the (playback)state of a player."""
+    """Enum for the (playback)state of a player."""
 
     IDLE = "idle"
     PAUSED = "paused"
@@ -323,7 +305,6 @@ class ProviderFeature(StrEnum):
     ARTIST_METADATA = "artist_metadata"
     ALBUM_METADATA = "album_metadata"
     TRACK_METADATA = "track_metadata"
-    GET_ARTIST_MBID = "get_artist_mbid"
 
     #
     # PLUGIN FEATURES
