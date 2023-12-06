@@ -193,6 +193,7 @@ class SnapCastProvider(PlayerProvider):
         stream = self._get_snapstream(player_id)
         if stream.path != "":
             await self._get_snapgroup(player_id).set_stream(await self._get_empty_stream())
+        stream = self._get_snapstream(player_id)
 
         stream_host = stream._stream.get("uri").get("host")
         stream_host = stream_host.replace("0.0.0.0", self.snapcast_server_host)
