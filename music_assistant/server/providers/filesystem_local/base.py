@@ -49,6 +49,7 @@ from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
 from music_assistant.server.models.music_provider import MusicProvider
+from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 from .helpers import get_parentdir
 
@@ -666,12 +667,12 @@ class FileSystemProviderBase(MusicProvider):
             # disc_dir is the folder level where the tracks are located
             # this may be a separate disc folder (Disc 1, Disc 2 etc) underneath the album folder
             # or this is an album folder with the disc attached
-            disc_dir = get_parentdir(file_item.path, f"disc {tags.disc or ''}")
+            disc_dir = get_parentdir(file_item.path, f"disc {tags.disc or 1}")
             album_dir = get_parentdir(disc_dir or file_item.path, tags.album)
 
             # album artist(s)
+            album_artists = []
             if tags.album_artists:
-                album_artists = []
                 for index, album_artist_str in enumerate(tags.album_artists):
                     # work out if we have an artist folder
                     artist_dir = get_parentdir(album_dir, album_artist_str, 1)
@@ -686,13 +687,33 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 # album artist tag is missing, determine fallback
                 fallback_action = self.config.get_value(CONF_MISSING_ALBUM_ARTIST_ACTION)
-                if fallback_action == "various_artists":
+                musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
+                assert musicbrainz
+                # lookup track details on musicbrainz first
+                if mb_search_details := await musicbrainz.search(
+                    tags.artists[0], tags.album, tags.title, tags.version
+                ):
+                    # get full releasegroup details and get the releasegroup artist(s)
+                    mb_details = await musicbrainz.get_releasegroup_details(mb_search_details[1].id)
+                    for mb_artist in mb_details.artist_credit:
+                        artist = await self._parse_artist(
+                            mb_artist.artist.name, mb_artist.artist.sort_name
+                        )
+                        artist.mbid = mb_artist.artist.id
+                        album_artists.append(artist)
+                    if not tags.musicbrainz_recordingid:
+                        tags.tags["musicbrainzrecordingid"] = mb_search_details[2].id
+                    if not tags.musicbrainz_releasegroupid:
+                        tags.tags["musicbrainzreleasegroupid"] = mb_search_details[1].id
+                # fallback to various artists (if defined by user)
+                elif fallback_action == "various_artists":
                     self.logger.warning(
                         "%s is missing ID3 tag [albumartist], using %s as fallback",
                         file_item.path,
                         VARIOUS_ARTISTS_NAME,
                     )
                     album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS_NAME)]
+                # fallback to track artists (if defined by user)
                 elif fallback_action == "track_artist":
                     self.logger.warning(
                         "%s is missing ID3 tag [albumartist], using track artist(s) as fallback",
@@ -702,6 +723,7 @@ class FileSystemProviderBase(MusicProvider):
                         await self._parse_artist(name=track_artist_str)
                         for track_artist_str in tags.artists
                     ]
+                # fallback to just log error and add track without album
                 else:
                     # default action is to skip the track
                     raise InvalidDataError("missing ID3 tag [albumartist]")
@@ -856,10 +878,12 @@ class FileSystemProviderBase(MusicProvider):
         sort_name: str | None = None,
     ) -> Album | None:
         """Lookup metadata in Album folder."""
-        assert (name or album_path) and artists
-        if not album_path:
-            # create fake path
+        assert name or album_path
+        # create fake path if needed
+        if not album_path and artists:
             album_path = artists[0].name + os.sep + name
+        elif not album_path:
+            album_path = name
 
         if not name:
             name = album_path.split(os.sep)[-1]

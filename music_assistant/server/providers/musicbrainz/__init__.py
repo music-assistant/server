@@ -6,15 +6,18 @@ from __future__ import annotations
 
 import re
 from collections.abc import Iterable
+from dataclasses import dataclass, field
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
 
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
+from mashumaro import DataClassDictMixin
 
-from music_assistant.common.helpers.util import create_sort_name
+from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ExternalID, ProviderFeature
+from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
@@ -58,6 +61,135 @@ async def get_config_entries(
     return tuple()  # we do not have any config entries (yet)
 
 
+def replace_hyphens(data: dict[str, Any]) -> dict[str, Any]:
+    """Change all hyphens to underscores."""
+    new_values = {}
+    for key, value in data.items():
+        new_key = key.replace("-", "_")
+        if isinstance(value, dict):
+            new_values[new_key] = replace_hyphens(value)
+        elif isinstance(value, list):
+            new_values[new_key] = [replace_hyphens(x) if isinstance(x, dict) else x for x in value]
+        else:
+            new_values[new_key] = value
+    return new_values
+
+
+@dataclass
+class MusicBrainzTag(DataClassDictMixin):
+    """Model for a (basic) Tag object as received from the MusicBrainz API."""
+
+    count: int
+    name: str
+
+
+@dataclass
+class MusicBrainzAlias(DataClassDictMixin):
+    """Model for a (basic) Alias object from MusicBrainz."""
+
+    name: str
+    sort_name: str
+
+    # optional fields
+    locale: str | None = None
+    type: str | None = None
+    primary: bool | None = None
+    begin_date: str | None = None
+    end_date: str | None = None
+
+
+@dataclass
+class MusicBrainzArtist(DataClassDictMixin):
+    """Model for a (basic) Artist object from MusicBrainz."""
+
+    id: str
+    name: str
+    sort_name: str
+
+    # optional fields
+    aliases: list[MusicBrainzAlias] | None = None
+    tags: list[MusicBrainzTag] | None = None
+
+
+@dataclass
+class MusicBrainzArtistCredit(DataClassDictMixin):
+    """Model for a (basic) ArtistCredit object from MusicBrainz."""
+
+    name: str
+    artist: MusicBrainzArtist
+
+
+@dataclass
+class MusicBrainzReleaseGroup(DataClassDictMixin):
+    """Model for a (basic) ReleaseGroup object from MusicBrainz."""
+
+    id: str
+    primary_type_id: str
+    title: str
+    primary_type: str
+    secondary_types: list[str]
+    secondary_type_ids: list[str]
+    # optional fields
+    artist_credit: list[MusicBrainzArtistCredit] | None = None
+
+
+@dataclass
+class MusicBrainzTrack(DataClassDictMixin):
+    """Model for a (basic) Track object from MusicBrainz."""
+
+    id: str
+    number: str
+    title: str
+    length: int
+
+
+@dataclass
+class MusicBrainzMedia(DataClassDictMixin):
+    """Model for a (basic) Media object from MusicBrainz."""
+
+    position: int
+    format: str
+    track: list[MusicBrainzTrack]
+    track_count: int
+    track_offset: int
+
+
+@dataclass
+class MusicBrainzRelease(DataClassDictMixin):
+    """Model for a (basic) Release object from MusicBrainz."""
+
+    id: str
+    status_id: str
+    count: int
+    title: str
+    status: str
+    artist_credit: list[MusicBrainzArtistCredit]
+    release_group: MusicBrainzReleaseGroup
+    track_count: int
+
+    # optional fields
+    media: list[MusicBrainzMedia] = field(default_factory=list)
+    date: str | None = None
+    country: str | None = None
+    disambiguation: str | None = None  # version
+    # TODO (if needed): release-events
+
+
+@dataclass
+class MusicBrainzRecording(DataClassDictMixin):
+    """Model for a (basic) Recording object as received from the MusicBrainz API."""
+
+    id: str
+    title: str
+    length: int | None
+    first_release_date: str | None
+    artist_credit: list[MusicBrainzArtistCredit]
+    # optional fields
+    isrcs: list[str] | None = None
+    tags: list[MusicBrainzTag] | None = None
+    disambiguation: str | None = None  # version (e.g. live, karaoke etc.)
+
+
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
 
@@ -77,120 +209,184 @@ class MusicbrainzProvider(MetadataProvider):
         self, artist: Artist, ref_albums: Iterable[Album], ref_tracks: Iterable[Track]
     ) -> str | None:
         """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
-        for ref_album in ref_albums:
-            # try matching on album musicbrainz id
-            if ref_album.mbid:  # noqa: SIM102
-                if mbid := await self._search_artist_by_album_mbid(
-                    artistname=artist.name, album_mbid=ref_album.mbid
-                ):
-                    return mbid
-            # try matching on album barcode
-            if (barcode := ref_album.get_external_id(ExternalID.BARCODE)) and (
-                mbid := await self._search_artist_by_album(
-                    artistname=artist.name,
-                    album_barcode=barcode,
-                )
-            ):
-                return mbid
-
-        # try again with matching on track isrc
+        if artist.mbid:
+            return artist.mbid
+        # try with (strict) ref track(s), using recording id or isrc
         for ref_track in ref_tracks:
-            if (isrc := ref_album.get_external_id(ExternalID.ISRC)) and (
-                mbid := await self._search_artist_by_track(
-                    artistname=artist.name,
-                    track_isrc=isrc,
-                )
-            ):
-                return mbid
-
+            if mb_artist := await self.get_artist_details_by_track(artist.name, ref_track):
+                return mb_artist.id
+        # try with (strict) ref album(s), using releasegroup id or barcode
+        for ref_album in ref_albums:
+            if mb_artist := await self.get_artist_details_by_album(artist.name, ref_album):
+                return mb_artist.id
         # last restort: track matching by name
         for ref_track in ref_tracks:
-            if mbid := await self._search_artist_by_track(
+            if result := await self.search(
                 artistname=artist.name,
+                albumname=ref_track.album.name,
                 trackname=ref_track.name,
+                trackversion=ref_track.version,
             ):
-                return mbid
-
+                return result[0].id
         return None
 
-    async def _search_artist_by_album(
-        self,
-        artistname: str,
-        albumname: str | None = None,
-        album_barcode: str | None = None,
-    ) -> str | None:
-        """Retrieve musicbrainz artist id by providing the artist name and albumname or barcode."""
-        if not (albumname or album_barcode):
-            return None  # may not happen, but guard just in case
-        for searchartist in (
-            artistname,
-            re.sub(LUCENE_SPECIAL, r"\\\1", artistname),
-            create_sort_name(artistname),
-        ):
-            if album_barcode:
-                # search by album barcode (EAN or UPC)
-                query = f"barcode:{album_barcode}"
-            elif albumname:
-                # search by name
-                searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
-                query = f'artist:"{searchartist}" AND release:"{searchalbum}"'
-            result = await self.get_data("release", query=query)
-            if result and "releases" in result:
-                for strict in (True, False):
-                    for item in result["releases"]:
-                        if not (
-                            album_barcode
-                            or (albumname and compare_strings(item["title"], albumname, strict))
-                        ):
-                            continue
-                        for artist in item["artist-credit"]:
-                            if compare_strings(artist["artist"]["name"], artistname, strict):
-                                return artist["artist"]["id"]  # type: ignore[no-any-return]
-                            for alias in artist.get("aliases", []):
-                                if compare_strings(alias["name"], artistname, strict):
-                                    return artist["id"]  # type: ignore[no-any-return]
-        return None
+    async def search(
+        self, artistname: str, albumname: str, trackname: str, trackversion: str | None = None
+    ) -> tuple[MusicBrainzArtist, MusicBrainzReleaseGroup, MusicBrainzRecording] | None:
+        """
+        Search MusicBrainz details by providing the artist, album and track name.
 
-    async def _search_artist_by_track(
-        self,
-        artistname: str,
-        trackname: str | None = None,
-        track_isrc: str | None = None,
-    ) -> str | None:
-        """Retrieve artist id by providing the artist name and trackname or track isrc."""
-        if not (trackname or track_isrc):
-            return None  # may not happen, but guard just in case
+        NOTE: The MusicBrainz objects returned are simplified objects without the optional data.
+        """
+        trackname, trackversion = parse_title_and_version(trackname, trackversion)
         searchartist = re.sub(LUCENE_SPECIAL, r"\\\1", artistname)
-        if track_isrc:
-            result = await self.get_data(f"isrc/{track_isrc}", inc="artist-credits")
-        elif trackname:
-            searchtrack = re.sub(LUCENE_SPECIAL, r"\\\1", trackname)
-            result = await self.get_data(
-                "recording", query=f'"{searchtrack}" AND artist:"{searchartist}"'
-            )
-        if result and "recordings" in result:
-            for strict in (True, False):
+        searchalbum = re.sub(LUCENE_SPECIAL, r"\\\1", albumname)
+        searchtracks: list[str] = []
+        if trackversion:
+            searchtracks.append(f"{trackname} ({trackversion})")
+        searchtracks.append(trackname)
+        # the version is sometimes appended to the title and sometimes stored
+        # in disambiguation, so we try both
+        for strict in (True, False):
+            for searchtrack in searchtracks:
+                searchstr = re.sub(LUCENE_SPECIAL, r"\\\1", searchtrack)
+                result = await self.get_data(
+                    "recording",
+                    query=f'"{searchstr}" AND artist:"{searchartist}" AND release:"{searchalbum}"',
+                )
+                if not result or "recordings" not in result:
+                    continue
                 for item in result["recordings"]:
-                    if not (
-                        track_isrc
-                        or (trackname and compare_strings(item["title"], trackname, strict))
+                    # compare track title
+                    if not compare_strings(item["title"], searchtrack, strict):
+                        continue
+                    # compare track version if needed
+                    if (
+                        trackversion
+                        and trackversion not in searchtrack
+                        and not compare_strings(item.get("disambiguation"), trackversion, strict)
                     ):
                         continue
+                    # match (primary) track artist
+                    artist_match: MusicBrainzArtist | None = None
                     for artist in item["artist-credit"]:
                         if compare_strings(artist["artist"]["name"], artistname, strict):
-                            return artist["artist"]["id"]  # type: ignore[no-any-return]
-                        for alias in artist["artist"].get("aliases", []):
-                            if compare_strings(alias["name"], artistname, strict):
-                                return artist["artist"]["id"]  # type: ignore[no-any-return]
+                            artist_match = MusicBrainzArtist.from_dict(
+                                replace_hyphens(artist["artist"])
+                            )
+                        else:
+                            for alias in artist["artist"].get("aliases", []):
+                                if compare_strings(alias["name"], artistname, strict):
+                                    artist_match = MusicBrainzArtist.from_dict(
+                                        replace_hyphens(artist["artist"])
+                                    )
+                    if not artist_match:
+                        continue
+                    # match album/release
+                    album_match: MusicBrainzReleaseGroup | None = None
+                    for release in item["releases"]:
+                        if compare_strings(release["title"], albumname, strict) or compare_strings(
+                            release["release-group"]["title"], albumname, strict
+                        ):
+                            album_match = MusicBrainzReleaseGroup.from_dict(
+                                replace_hyphens(release["release-group"])
+                            )
+                            break
+                    else:
+                        continue
+                    # if we reach this point, we got a match on recording,
+                    # artist and release(group)
+                    recording = MusicBrainzRecording.from_dict(replace_hyphens(item))
+                    return (artist_match, album_match, recording)
+
         return None
 
-    async def _search_artist_by_album_mbid(self, artistname: str, album_mbid: str) -> str | None:
-        """Retrieve musicbrainz artist id by providing the artist name and album releasgroupid."""
-        result = await self.get_data(f"release-group/{album_mbid}?inc=artist-credits")
-        if result and "artist-credit" in result:
-            for item in result["artist-credit"]:
-                if (artist := item.get("artist")) and compare_strings(artistname, artist["name"]):
-                    return artist["id"]  # type: ignore[no-any-return]
+    async def get_artist_details(self, artist_id: str) -> MusicBrainzArtist:
+        """Get (full) Artist details by providing a MusicBrainz artist id."""
+        endpoint = (
+            f"artist/{artist_id}?inc=aliases+annotation+tags+ratings+genres+url-rels+work-rels"
+        )
+        if result := await self.get_data(endpoint):
+            # TODO: Parse all the optional data like relations and such
+            return MusicBrainzArtist.from_dict(replace_hyphens(result))
+        raise InvalidDataError("Invalid MusicBrainz Artist ID provided")
+
+    async def get_recording_details(
+        self, recording_id: str | None = None, isrsc: str | None = None
+    ) -> MusicBrainzRecording:
+        """Get Recording details by providing a MusicBrainz recording id OR isrc."""
+        assert recording_id or isrsc, "Provider either Recording ID or ISRC"
+        if not recording_id:
+            # lookup recording id first by isrc
+            if (result := await self.get_data(f"isrc/{isrsc}")) and result.get("recordings"):
+                recording_id = result["recordings"][0]["id"]
+            else:
+                raise InvalidDataError("Invalid ISRC provided")
+        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases&fmt=json"):
+            return MusicBrainzRecording.from_dict(replace_hyphens(result))
+        raise InvalidDataError("Invalid ISRC provided")
+
+    async def get_releasegroup_details(
+        self, releasegroup_id: str | None = None, barcode: str | None = None
+    ) -> MusicBrainzReleaseGroup:
+        """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id OR barcode."""
+        assert releasegroup_id or barcode, "Provider either ReleaseGroup ID or barcode"
+        if not releasegroup_id:
+            # lookup releasegroup id first by barcode
+            endpoint = f"release?query=barcode:{barcode}"
+            if (result := await self.get_data(endpoint)) and result.get("releases"):
+                releasegroup_id = result["releases"][0]["release-group"]["id"]
+            else:
+                raise InvalidDataError("Invalid barcode provided")
+        endpoint = f"release-group/{releasegroup_id}?inc=artists+aliases"
+        if result := await self.get_data(endpoint):
+            return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
+        raise InvalidDataError("Invalid MusicBrainz ReleaseGroup ID or barcode provided")
+
+    async def get_artist_details_by_album(
+        self, artistname: str, ref_album: Album
+    ) -> MusicBrainzArtist | None:
+        """
+        Get musicbrainz artist details by providing the artist name and a reference album.
+
+        MusicBrainzArtist object that is returned does not contain the optional data.
+        """
+        barcode = ref_album.get_external_id(ExternalID.BARCODE)
+        if not (ref_album.mbid or barcode):
+            return None
+        result = await self.get_releasegroup_details(ref_album.mbid, barcode)
+        if not (result and result.artist_credit):
+            return None
+        for strict in (True, False):
+            for artist_credit in result.artist_credit:
+                if compare_strings(artist_credit.artist.name, artistname, strict):
+                    return artist_credit.artist
+                for alias in artist_credit.artist.aliases:
+                    if compare_strings(alias.name, artistname, strict):
+                        return artist_credit.artist
+        return None
+
+    async def get_artist_details_by_track(
+        self, artistname: str, ref_track: Track
+    ) -> MusicBrainzArtist | None:
+        """
+        Get musicbrainz artist details by providing the artist name and a reference track.
+
+        MusicBrainzArtist object that is returned does not contain the optional data.
+        """
+        isrc = ref_track.get_external_id(ExternalID.ISRC)
+        if not (ref_track.mbid or isrc):
+            return None
+        result = await self.get_recording_details(ref_track.mbid, isrc)
+        if not (result and result.artist_credit):
+            return None
+        for strict in (True, False):
+            for artist_credit in result.artist_credit:
+                if compare_strings(artist_credit.artist.name, artistname, strict):
+                    return artist_credit.artist
+                for alias in artist_credit.artist.aliases:
+                    if compare_strings(alias.name, artistname, strict):
+                        return artist_credit.artist
         return None
 
     @use_cache(86400 * 30)

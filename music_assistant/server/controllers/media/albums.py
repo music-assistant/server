@@ -239,7 +239,7 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _add_library_item(self, item: Album) -> Album:
         """Add a new record to the database."""
         album_artists = await self._get_artist_mappings(item)
-        sort_artist = album_artists[0].sort_name
+        sort_artist = album_artists[0].sort_name if album_artists else ""
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
