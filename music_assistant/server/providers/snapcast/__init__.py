@@ -297,7 +297,7 @@ class SnapCastProvider(PlayerProvider):
         while True:
             port += 1
             new_stream = await self._snapserver.stream_add_stream(
-                f"tcp://{self.snapcast_server_host}:{port}?name={name}"
+                f"tcp://127.0.0.1:{port}?name={name}"
             )
             if new_stream["id"] not in used_streams:
                 return new_stream["id"]
