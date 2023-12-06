@@ -17,8 +17,9 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import Playlist, PlaylistTrack, Track
+from music_assistant.common.models.media_items import ItemMapping, Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
+from music_assistant.server.helpers.compare import compare_strings
 
 from .base import MediaControllerBase
 
@@ -55,17 +56,35 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def add_item_to_library(self, item: Playlist, metadata_lookup: bool = True) -> Playlist:
         """Add playlist to library and return the new database item."""
+        if isinstance(item, ItemMapping):
+            metadata_lookup = False
+            item = Playlist.from_item_mapping(item)
         if not isinstance(item, Playlist):
             raise InvalidDataError(
                 "Not a valid Playlist object (ItemMapping can not be added to db)"
             )
         if not item.provider_mappings:
             raise InvalidDataError("Playlist is missing provider mapping(s)")
-
-        # actually add (or update) the item in the library db
-        # use the lock to prevent a race condition of the same item being added twice
-        async with self._db_add_lock:
-            library_item = await self._add_library_item(item)
+        # check for existing item first
+        library_item = None
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            # existing item match by provider id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
+        else:
+            # search by name
+            async for db_item in self.iter_library_items(search=item.name):
+                if compare_strings(db_item.name, item.name):
+                    # existing item found: update it
+                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    break
+        if not library_item:
+            # actually add a new item in the library db
+            # use the lock to prevent a race condition of the same item being added twice
+            async with self._db_add_lock:
+                library_item = await self._add_library_item(item)
         # preload playlist tracks listing (do not load them in the db)
         async for _ in self.tracks(item.item_id, item.provider):
             pass
@@ -88,6 +107,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
+        cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -99,6 +119,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "is_editable": update.is_editable,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
                 "timestamp_modified": int(utc_timestamp()),
             },
         )
@@ -251,17 +274,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_library_item(self, item: Playlist) -> Playlist:
         """Add a new record to the database."""
-        # safety guard: check for existing item first
-        if cur_item := await self.get_library_item_by_prov_mappings(item.provider_mappings):
-            # existing item found: update it
-            return await self.update_item_in_library(cur_item.item_id, item)
-        # try name matching
-        match = {"name": item.name, "owner": item.owner}
-        if db_row := await self.mass.music.database.get_row(self.db_table, match):
-            cur_item = Playlist.from_dict(self._parse_db_row(db_row))
-            # existing item found: update it
-            return await self.update_item_in_library(cur_item.item_id, item)
-        # insert new item
         item.timestamp_added = int(utc_timestamp())
         item.timestamp_modified = int(utc_timestamp())
         new_item = await self.mass.music.database.insert(
@@ -274,6 +286,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "provider_mappings": serialize_to_json(item.provider_mappings),
+                "external_ids": serialize_to_json(item.external_ids),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
             },

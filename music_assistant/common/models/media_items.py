@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
 from time import time
-from typing import Any
+from typing import Any, Self
 
 from mashumaro import DataClassDictMixin
 
@@ -12,6 +12,7 @@ from music_assistant.common.helpers.util import create_sort_name, merge_lists
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
+    ExternalID,
     ImageType,
     LinkType,
     MediaType,
@@ -66,10 +67,6 @@ class ProviderMapping(DataClassDictMixin):
     audio_format: AudioFormat = field(default_factory=AudioFormat)
     # url = link to provider details page if exists
     url: str | None = None
-    # isrc (tracks only) - isrc identifier if known
-    isrc: str | None = None
-    # barcode (albums only) - barcode identifier if known
-    barcode: str | None = None
     # optional details to store provider specific details
     details: str | None = None
 
@@ -154,14 +151,12 @@ class MediaItemMetadata(DataClassDictMixin):
     mood: str | None = None
     style: str | None = None
     copyright: str | None = None
-    lyrics: str | None = None
-    ean: str | None = None
+    lyrics: str | None = None  # tracks only
     label: str | None = None
     links: set[MediaItemLink] | None = None
     chapters: list[MediaItemChapter] | None = None
     performers: set[str] | None = None
     preview: str | None = None
-    replaygain: float | None = None
     popularity: int | None = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: int | None = None
@@ -204,11 +199,10 @@ class MediaItem(DataClassDictMixin):
     item_id: str
     provider: str  # provider instance id or provider domain
     name: str
-    metadata: MediaItemMetadata
     provider_mappings: set[ProviderMapping]
 
     # optional fields below
-    # provider_mappings: set[ProviderMapping] = field(default_factory=set)
+    external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
     media_type: MediaType = MediaType.UNKNOWN
@@ -238,13 +232,54 @@ class MediaItem(DataClassDictMixin):
             return None
         return next((x for x in self.metadata.images if x.type == ImageType.THUMB), None)
 
+    @property
+    def mbid(self) -> str | None:
+        """Return MusicBrainz ID."""
+        return self.get_external_id(ExternalID.MUSICBRAINZ)
+
+    @mbid.setter
+    def mbid(self, value: str) -> None:
+        """Set MusicBrainz External ID."""
+        if not value:
+            return
+        if len(value.split("-")) != 5:
+            raise RuntimeError("Invalid MusicBrainz identifier")
+        if existing := next((x for x in self.external_ids if x[0] == ExternalID.MUSICBRAINZ), None):
+            # Musicbrainz ID is unique so remove existing entry
+            self.external_ids.remove(existing)
+        self.external_ids.add((ExternalID.MUSICBRAINZ, value))
+
+    def get_external_id(self, external_id_type: ExternalID) -> str | None:
+        """Get (the first instance) of given External ID or None if not found."""
+        for ext_id in self.external_ids:
+            if ext_id[0] != external_id_type:
+                continue
+            return ext_id[1]
+        return None
+
     def __hash__(self) -> int:
         """Return custom hash."""
         return hash(self.uri)
 
-    def __eq__(self, other: ItemMapping) -> bool:
+    def __eq__(self, other: MediaItem | ItemMapping) -> bool:
         """Check equality of two items."""
         return self.uri == other.uri
+
+    @classmethod
+    def from_item_mapping(cls: type, item: ItemMapping) -> Self:
+        """Instantiate MediaItem from ItemMapping."""
+        # NOTE: This will not work for albums and tracks!
+        return cls.from_dict(
+            {
+                **item.to_dict(),
+                "provider_mappings": {
+                    "item_id": item.item_id,
+                    "provider_domain": item.provider,
+                    "provider_instance": item.provider,
+                    "available": item.available,
+                },
+            }
+        )
 
 
 @dataclass(kw_only=True)
@@ -259,13 +294,12 @@ class ItemMapping(DataClassDictMixin):
     sort_name: str | None = None
     uri: str | None = None
     available: bool = True
+    external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
 
     @classmethod
     def from_item(cls, item: MediaItem):
         """Create ItemMapping object from regular item."""
-        result = cls.from_dict(item.to_dict())
-        result.available = item.available
-        return result
+        return cls.from_dict(item.to_dict())
 
     def __post_init__(self):
         """Call after init."""
@@ -290,7 +324,6 @@ class Artist(MediaItem):
     """Model for an artist."""
 
     media_type: MediaType = MediaType.ARTIST
-    mbid: str | None = None
 
 
 @dataclass(kw_only=True)
@@ -302,7 +335,6 @@ class Album(MediaItem):
     year: int | None = None
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     album_type: AlbumType = AlbumType.UNKNOWN
-    mbid: str | None = None  # release group id
 
 
 @dataclass(kw_only=True)
@@ -312,7 +344,6 @@ class Track(MediaItem):
     media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
-    mbid: str | None = None  # Recording ID
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     album: Album | ItemMapping | None = None  # optional
 

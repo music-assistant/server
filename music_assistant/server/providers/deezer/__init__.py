@@ -21,6 +21,7 @@ from music_assistant.common.models.enums import (
     AlbumType,
     ConfigEntryType,
     ContentType,
+    ExternalID,
     ImageType,
     MediaType,
     ProviderFeature,
@@ -590,7 +591,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         extra_init_kwargs: dict[str, Any] | None = None,
     ) -> Track | PlaylistTrack | AlbumTrack:
         """Parse the deezer-python track to a MASS track."""
-        isrc = track.isrc if hasattr(track, "isrc") else None
         if hasattr(track, "artist"):
             artist = ItemMapping(
                 media_type=MediaType.ARTIST,
@@ -618,7 +618,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             track_class = AlbumTrack
         else:
             track_class = Track
-        return track_class(
+        item = track_class(
             item_id=str(track.id),
             provider=self.domain,
             name=track.title,
@@ -633,12 +633,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     provider_instance=self.instance_id,
                     available=self.track_available(track=track, user_country=user_country),
                     url=track.link,
-                    isrc=isrc,
                 )
             },
             metadata=self.parse_metadata_track(track=track),
             **extra_init_kwargs,
         )
+        if isrc := getattr(track, "isrc", None):
+            item.external_ids.add((ExternalID.ISRC, isrc))
+        return item
 
     def get_short_title(self, track: deezer.Track):
         """Short names only returned, if available."""

@@ -102,10 +102,26 @@ class AlbumsController(MediaControllerBase[Album]):
         # grab additional metadata
         if metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
-        # actually add (or update) the item in the library db
-        # use the lock to prevent a race condition of the same item being added twice
-        async with self._db_add_lock:
-            library_item = await self._add_library_item(item)
+        # check for existing item first
+        library_item = None
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            # existing item match by provider id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
+        else:
+            # search by name
+            async for db_item in self.iter_library_items(search=item.name):
+                if compare_album(db_item, item):
+                    # existing item found: update it
+                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    break
+        if not library_item:
+            # actually add a new item in the library db
+            # use the lock to prevent a race condition of the same item being added twice
+            async with self._db_add_lock:
+                library_item = await self._add_library_item(item)
         # also fetch the same album on all providers
         if metadata_lookup:
             await self._match(library_item)
@@ -139,6 +155,7 @@ class AlbumsController(MediaControllerBase[Album]):
         else:
             album_type = cur_item.album_type
         sort_artist = album_artists[0].sort_name
+        cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -152,7 +169,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 "artists": serialize_to_json(album_artists),
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
-                "mbid": update.mbid or cur_item.mbid,
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
                 "timestamp_modified": int(utc_timestamp()),
             },
         )
@@ -219,28 +238,8 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _add_library_item(self, item: Album) -> Album:
         """Add a new record to the database."""
-        # safety guard: check for existing item first
-        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-            # existing item found: update it
-            return await self.update_item_in_library(cur_item.item_id, item)
-        if item.mbid:
-            match = {"mbid": item.mbid}
-            if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                cur_item = Album.from_dict(self._parse_db_row(db_row))
-                # existing item found: update it
-                return await self.update_item_in_library(cur_item.item_id, item)
-        # fallback to search and match
-        match = {"sort_name": item.sort_name}
-        for db_row in await self.mass.music.database.get_rows(self.db_table, match):
-            row_album = Album.from_dict(self._parse_db_row(db_row))
-            if compare_album(row_album, item):
-                cur_item = row_album
-                # existing item found: update it
-                return await self.update_item_in_library(cur_item.item_id, item)
-
-        # insert new item
-        album_artists = await self._get_artist_mappings(item, cur_item)
-        sort_artist = album_artists[0].sort_name
+        album_artists = await self._get_artist_mappings(item)
+        sort_artist = album_artists[0].sort_name if album_artists else ""
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -250,11 +249,11 @@ class AlbumsController(MediaControllerBase[Album]):
                 "favorite": item.favorite,
                 "album_type": item.album_type,
                 "year": item.year,
-                "mbid": item.mbid,
                 "metadata": serialize_to_json(item.metadata),
                 "provider_mappings": serialize_to_json(item.provider_mappings),
                 "artists": serialize_to_json(album_artists),
                 "sort_artist": sort_artist,
+                "external_ids": serialize_to_json(item.external_ids),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
             },

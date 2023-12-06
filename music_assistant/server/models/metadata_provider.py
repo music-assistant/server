@@ -1,7 +1,6 @@
 """Model/base for a Metadata Provider implementation."""
 from __future__ import annotations
 
-from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import ProviderFeature
@@ -17,7 +16,6 @@ DEFAULT_SUPPORTED_FEATURES = (
     ProviderFeature.ARTIST_METADATA,
     ProviderFeature.ALBUM_METADATA,
     ProviderFeature.TRACK_METADATA,
-    ProviderFeature.GET_ARTIST_MBID,
 )
 
 
@@ -45,11 +43,4 @@ class MetadataProvider(Provider):
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for a track on this Metadata provider."""
         if ProviderFeature.TRACK_METADATA in self.supported_features:
-            raise NotImplementedError
-
-    async def get_musicbrainz_artist_id(
-        self, artist: Artist, ref_albums: Iterable[Album], ref_tracks: Iterable[Track]
-    ) -> str | None:
-        """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
-        if ProviderFeature.GET_ARTIST_MBID in self.supported_features:
             raise NotImplementedError
