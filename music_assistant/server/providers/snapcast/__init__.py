@@ -195,6 +195,7 @@ class SnapCastProvider(PlayerProvider):
             await self._get_snapgroup(player_id).set_stream(await self._get_empty_stream())
 
         stream_host = stream._stream.get("uri").get("host")
+        stream_host = stream_host.replace("0.0.0.0", self.snapcast_server_host)
         ffmpeg = (
             FFmpeg()
             .option("y")
@@ -208,6 +209,7 @@ class SnapCastProvider(PlayerProvider):
                 ar=48000,
             )
         )
+
         await self.cmd_stop(player_id)
 
         ffmpeg_task = self.mass.create_task(ffmpeg.execute())
@@ -297,7 +299,7 @@ class SnapCastProvider(PlayerProvider):
         while True:
             port += 1
             new_stream = await self._snapserver.stream_add_stream(
-                f"tcp://127.0.0.1:{port}?name={name}"
+                f"tcp://0.0.0.0:{port}?name={name}"
             )
-            if new_stream["id"] not in used_streams:
+            if "id" in new_stream and new_stream["id"] not in used_streams:
                 return new_stream["id"]
