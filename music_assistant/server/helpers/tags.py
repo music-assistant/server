@@ -194,6 +194,8 @@ class AudioTags:
             return tag
         if tag := self.tags.get("musicbrainzrecordingid"):
             return tag
+        if tag := self.tags.get("musicbrainzreleasetrackid"):
+            return tag
         return self.tags.get("musicbrainztrackid")
 
     @property
