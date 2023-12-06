@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sqlite3
 import statistics
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -707,11 +708,12 @@ class MusicController(CoreController):
                     DB_TABLE_RADIOS,
                 ):
                     # create new external_ids column
-                    await self.database.execute(
-                        f"ALTER TABLE {table} "
-                        "ADD COLUMN external_ids "
-                        "json NOT NULL DEFAULT '[]'"
-                    )
+                    with suppress(sqlite3.OperationalError):
+                        await self.database.execute(
+                            f"ALTER TABLE {table} "
+                            "ADD COLUMN external_ids "
+                            "json NOT NULL DEFAULT '[]'"
+                        )
             # handle all other schema versions
             else:
                 # we keep it simple and just recreate the tables

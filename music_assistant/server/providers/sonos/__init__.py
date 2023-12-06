@@ -471,7 +471,7 @@ class SonosPlayerProvider(PlayerProvider):
                 supported_features=PLAYER_FEATURES,
                 device_info=DeviceInfo(
                     model=speaker_info["model_name"],
-                    address=speaker_info["mac_address"],
+                    address=soco_device.ip_address,
                     manufacturer=self.name,
                 ),
                 max_sample_rate=48000,
