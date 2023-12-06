@@ -324,7 +324,7 @@ class MusicbrainzProvider(MetadataProvider):
                 recording_id = result["recordings"][0]["id"]
             else:
                 raise InvalidDataError("Invalid ISRC provided")
-        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases&fmt=json"):
+        if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
             return MusicBrainzRecording.from_dict(replace_hyphens(result))
         raise InvalidDataError("Invalid ISRC provided")
 
