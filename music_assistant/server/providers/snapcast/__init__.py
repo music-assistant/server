@@ -192,8 +192,9 @@ class SnapCastProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
         stream = self._get_snapstream(player_id)
         if stream.path != "":
-            await self._get_snapgroup(player_id).set_stream(await self._get_empty_stream())
-        stream = self._get_snapstream(player_id)
+            new_stream_id = await self._get_empty_stream()
+            await self._get_snapgroup(player_id).set_stream(new_stream_id)
+            stream = self._snapserver.stream(new_stream_id)
 
         stream_host = stream._stream.get("uri").get("host")
         stream_host = stream_host.replace("0.0.0.0", self.snapcast_server_host)
@@ -298,9 +299,9 @@ class SnapCastProvider(PlayerProvider):
         port = 4953
         name = str(uuid.uuid4())
         while True:
-            port += 1
             new_stream = await self._snapserver.stream_add_stream(
                 f"tcp://0.0.0.0:{port}?name={name}"
             )
+            port += 1
             if "id" in new_stream and new_stream["id"] not in used_streams:
                 return new_stream["id"]
