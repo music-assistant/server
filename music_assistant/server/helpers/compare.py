@@ -243,10 +243,19 @@ def compare_external_ids(
             # handle upc stored as EAN-13 barcode
             if external_id_base[0] == ExternalID.BARCODE and len(external_id_base[1]) == 12:
                 external_id_base[1] = f"0{external_id_base}"
-            if external_id_compare[0] == ExternalID.BARCODE and len(external_id_compare[1]) == 12:
+            if external_id_compare[1] == ExternalID.BARCODE and len(external_id_compare[1]) == 12:
                 external_id_compare[1] = f"0{external_id_compare}"
-            # external id is exact match. either it is a match or it isn't
-            return external_id_compare[1] == external_id_base[1]
+            if (
+                external_id_base[0] in (ExternalID.ISRC, ExternalID.BARCODE)
+                and external_id_compare[1] == external_id_base[1]
+            ):
+                # barcode and isrc can be multiple per media item
+                # so we only return early on match as there might be
+                # another entry for this ExternalID type.
+                return True
+            else:
+                # other ExternalID types: external id must be exact match.
+                return external_id_compare[1] == external_id_base[1]
     # return None to define we did not find the same external id type in both sets
     return None
 
