@@ -379,6 +379,10 @@ class SonosPlayerProvider(PlayerProvider):
         """
         sonos_player = self.sonosplayers[player_id]
         await asyncio.to_thread(sonos_player.soco.join, self.sonosplayers[target_player].soco)
+        await asyncio.to_thread(
+            sonos_player.update_info,
+            update_group_info=True,
+        )
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -389,6 +393,10 @@ class SonosPlayerProvider(PlayerProvider):
         """
         sonos_player = self.sonosplayers[player_id]
         await asyncio.to_thread(sonos_player.soco.unjoin)
+        await asyncio.to_thread(
+            sonos_player.update_info,
+            update_group_info=True,
+        )
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
