@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 CONF_SNAPCAST_SERVER_HOST = "snapcast_server_host"
 CONF_SNAPCAST_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 
-STREAM_STATUS = {
+SNAP_STREAM_STATUS_MAP = {
     "idle": PlayerState.IDLE,
     "playing": PlayerState.PLAYING,
     "unknown": PlayerState.IDLE,
@@ -316,4 +316,4 @@ class SnapCastProvider(PlayerProvider):
     def player_state(self, player_id: str) -> PlayerState:
         """Return the state of the player."""
         snap_group = self._get_snapgroup(player_id)
-        return STREAM_STATUS.get(snap_group.stream_status)
+        return SNAP_STREAM_STATUS_MAP.get(snap_group.stream_status)
