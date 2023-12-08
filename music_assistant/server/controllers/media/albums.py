@@ -394,7 +394,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
-                    if not compare_album(search_result_item, db_album):
+                    if not compare_album(db_album, search_result_item):
                         continue
                     # we must fetch the full album version, search results are simplified objects
                     prov_album = await self.get_provider_item(
@@ -402,7 +402,7 @@ class AlbumsController(MediaControllerBase[Album]):
                         search_result_item.provider,
                         fallback=search_result_item,
                     )
-                    if compare_album(prov_album, db_album):
+                    if compare_album(db_album, prov_album):
                         # 100% match, we update the db with the additional provider mapping(s)
                         match_found = True
                         for provider_mapping in search_result_item.provider_mappings:

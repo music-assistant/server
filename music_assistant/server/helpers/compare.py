@@ -74,7 +74,7 @@ def compare_album(
     if (
         hasattr(base_item, "metadata")
         and hasattr(compare_item, "metadata")
-        and not compare_explicit(base_item.metadata, compare_item.metadata)
+        and compare_explicit(base_item.metadata, compare_item.metadata) is False
     ):
         return False
     # compare album artist
@@ -105,6 +105,7 @@ def compare_track(
     external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
     if external_id_match is not None:
         return external_id_match
+
     ## fallback to comparing on attributes
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
@@ -120,9 +121,9 @@ def compare_track(
         base_item.metadata.explicit = base_item.album.metadata.explicit
     if compare_item.metadata.explicit is None and isinstance(compare_item.album, Album):
         compare_item.metadata.explicit = compare_item.album.metadata.explicit
-    if strict and not compare_explicit(base_item.metadata, compare_item.metadata):
+    if strict and compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
-    if not strict and not track_albums:
+    if not strict and not (base_item.album or track_albums):
         # in non-strict mode, the album does not have to match
         return abs(base_item.duration - compare_item.duration) <= 3
     # exact albumtrack match = 100% match
@@ -138,14 +139,14 @@ def compare_track(
         base_item.album is not None
         and compare_item.album is not None
         and compare_album(base_item.album, compare_item.album)
-        and abs(base_item.duration - compare_item.duration) <= 5
+        and abs(base_item.duration - compare_item.duration) <= 3
     ):
         return True
     # fallback: additional compare albums provided for base track
     if (
         compare_item.album is not None
         and track_albums
-        and abs(base_item.duration - compare_item.duration) <= 5
+        and abs(base_item.duration - compare_item.duration) <= 3
     ):
         for track_album in track_albums:
             if compare_album(track_album, compare_item.album):
@@ -154,7 +155,7 @@ def compare_track(
     if (
         base_item.album is None
         and compare_item.album is None
-        and abs(base_item.duration - compare_item.duration) <= 3
+        and abs(base_item.duration - compare_item.duration) <= 1
     ):
         return True
 
@@ -243,10 +244,17 @@ def compare_external_ids(
             # handle upc stored as EAN-13 barcode
             if external_id_base[0] == ExternalID.BARCODE and len(external_id_base[1]) == 12:
                 external_id_base[1] = f"0{external_id_base}"
-            if external_id_compare[0] == ExternalID.BARCODE and len(external_id_compare[1]) == 12:
+            if external_id_compare[1] == ExternalID.BARCODE and len(external_id_compare[1]) == 12:
                 external_id_compare[1] = f"0{external_id_compare}"
-            # external id is exact match. either it is a match or it isn't
-            return external_id_compare[0] == external_id_base[0]
+            if external_id_base[0] in (ExternalID.ISRC, ExternalID.BARCODE):
+                if external_id_compare[1] == external_id_base[1]:
+                    # barcode and isrc can be multiple per media item
+                    # so we only return early on match as there might be
+                    # another entry for this ExternalID type.
+                    return True
+                continue
+            # other ExternalID types: external id must be exact match.
+            return external_id_compare[1] == external_id_base[1]
     # return None to define we did not find the same external id type in both sets
     return None
 

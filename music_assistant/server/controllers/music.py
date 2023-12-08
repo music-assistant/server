@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import sqlite3
 import statistics
 from collections.abc import AsyncGenerator
 from contextlib import suppress
@@ -668,6 +667,8 @@ class MusicController(CoreController):
                         "ADD COLUMN external_ids "
                         "json NOT NULL DEFAULT '[]'"
                     )
+                    if table in (DB_TABLE_PLAYLISTS, DB_TABLE_RADIOS):
+                        continue
                     # migrate existing ids into the new external_ids column
                     async for item in self.database.iter_items(table):
                         external_ids: set[tuple[str, str]] = set()
@@ -696,24 +697,6 @@ class MusicController(CoreController):
                     "Database migration to version %s completed",
                     DB_SCHEMA_VERSION,
                 )
-            elif prev_version == 26:
-                self.logger.info(
-                    "Performing database migration from %s to %s",
-                    prev_version,
-                    DB_SCHEMA_VERSION,
-                )
-                # migrate playlists and radios tables which we forgot to migrate in schema 26
-                for table in (
-                    DB_TABLE_PLAYLISTS,
-                    DB_TABLE_RADIOS,
-                ):
-                    # create new external_ids column
-                    with suppress(sqlite3.OperationalError):
-                        await self.database.execute(
-                            f"ALTER TABLE {table} "
-                            "ADD COLUMN external_ids "
-                            "json NOT NULL DEFAULT '[]'"
-                        )
             # handle all other schema versions
             else:
                 # we keep it simple and just recreate the tables
