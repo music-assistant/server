@@ -668,6 +668,8 @@ class MusicController(CoreController):
                         "ADD COLUMN external_ids "
                         "json NOT NULL DEFAULT '[]'"
                     )
+                    if table in (DB_TABLE_PLAYLISTS, DB_TABLE_RADIOS):
+                        continue
                     # migrate existing ids into the new external_ids column
                     async for item in self.database.iter_items(table):
                         external_ids: set[tuple[str, str]] = set()
