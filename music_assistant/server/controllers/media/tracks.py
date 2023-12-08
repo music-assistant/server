@@ -327,7 +327,7 @@ class TracksController(MediaControllerBase[Track]):
                     if not search_result_item.available:
                         continue
                     # do a basic compare first
-                    if not compare_track(search_result_item, db_track, strict=False):
+                    if not compare_track(db_track, search_result_item, strict=False):
                         continue
                     # we must fetch the full version, search results are simplified objects
                     prov_track = await self.get_provider_item(
@@ -335,7 +335,7 @@ class TracksController(MediaControllerBase[Track]):
                         search_result_item.provider,
                         fallback=search_result_item,
                     )
-                    if compare_track(prov_track, db_track, strict=True, track_albums=track_albums):
+                    if compare_track(db_track, prov_track, strict=True, track_albums=track_albums):
                         # 100% match, we update the db with the additional provider mapping(s)
                         match_found = True
                         for provider_mapping in search_result_item.provider_mappings:

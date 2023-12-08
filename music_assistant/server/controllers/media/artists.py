@@ -491,7 +491,9 @@ class ArtistsController(MediaControllerBase[Artist]):
                     if search_result_item.sort_name != ref_album.sort_name:
                         continue
                     # artist must match 100%
-                    if not compare_artist(search_result_item.artists[0], db_artist):
+                    if not compare_artist(
+                        db_artist, search_result_item.artists[0], allow_name_match=True
+                    ):
                         continue
                     # 100% match
                     # get full artist details so we have all metadata
