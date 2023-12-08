@@ -232,6 +232,7 @@ class SnapCastProvider(PlayerProvider):
             player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
             player.state = PlayerState.PLAYING
+            self._set_childs_state(player_id, PlayerState.PLAYING)
             self.mass.players.register_or_update(player)
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -247,6 +248,7 @@ class SnapCastProvider(PlayerProvider):
                 except FFmpegError:
                     self.logger.debug("Fail to stop ffmpeg player")
                 player.state = PlayerState.IDLE
+                self._set_childs_state(player_id, PlayerState.IDLE)
                 self.mass.players.register_or_update(player)
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -317,3 +319,10 @@ class SnapCastProvider(PlayerProvider):
         """Return the state of the player."""
         snap_group = self._get_snapgroup(player_id)
         return SNAP_STREAM_STATUS_MAP.get(snap_group.stream_status)
+
+    def _set_childs_state(self, player_id: str, state: PlayerState) -> None:
+        """Set the state of the child`s of the player."""
+        for child in self._group_childs(player_id):
+            player = self.mass.players.get(child)
+            player.state = state
+            self.mass.players.register_or_update(player)
