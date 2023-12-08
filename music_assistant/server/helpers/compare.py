@@ -138,14 +138,14 @@ def compare_track(
         base_item.album is not None
         and compare_item.album is not None
         and compare_album(base_item.album, compare_item.album)
-        and abs(base_item.duration - compare_item.duration) <= 5
+        and abs(base_item.duration - compare_item.duration) <= 3
     ):
         return True
     # fallback: additional compare albums provided for base track
     if (
         compare_item.album is not None
         and track_albums
-        and abs(base_item.duration - compare_item.duration) <= 5
+        and abs(base_item.duration - compare_item.duration) <= 3
     ):
         for track_album in track_albums:
             if compare_album(track_album, compare_item.album):
@@ -154,7 +154,7 @@ def compare_track(
     if (
         base_item.album is None
         and compare_item.album is None
-        and abs(base_item.duration - compare_item.duration) <= 3
+        and base_item.duration == compare_item.duration
     ):
         return True
 
@@ -246,7 +246,7 @@ def compare_external_ids(
             if external_id_compare[0] == ExternalID.BARCODE and len(external_id_compare[1]) == 12:
                 external_id_compare[1] = f"0{external_id_compare}"
             # external id is exact match. either it is a match or it isn't
-            return external_id_compare[0] == external_id_base[0]
+            return external_id_compare[1] == external_id_base[1]
     # return None to define we did not find the same external id type in both sets
     return None
 
