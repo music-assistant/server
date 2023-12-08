@@ -431,7 +431,10 @@ class SonosPlayerProvider(PlayerProvider):
             for device in discovered_devices:
                 if device.uid not in added_devices:
                     continue
-                await self._device_discovered(device)
+                try:
+                    await self._device_discovered(device)
+                except Exception as err:
+                    self.logger.exception(str(err), exc_info=err)
 
         finally:
             self._discovery_running = False
