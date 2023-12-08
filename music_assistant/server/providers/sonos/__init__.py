@@ -176,7 +176,11 @@ class SonosPlayer:
             self.player.elapsed_time_last_updated = self.track_info_updated
 
         # zone topology (syncing/grouping) details
-        if self.group_info and self.group_info.coordinator.uid == self.player_id:
+        if (
+            self.group_info
+            and self.group_info.coordinator
+            and self.group_info.coordinator.uid == self.player_id
+        ):
             # this player is the sync leader
             self.player.synced_to = None
             group_members = {x.uid for x in self.group_info.members if x.is_visible}
