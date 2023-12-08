@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 CONF_SNAPCAST_SERVER_HOST = "snapcast_server_host"
 CONF_SNAPCAST_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 
+STREAM_STATUS = {
+    "idle": PlayerState.IDLE,
+    "playing": PlayerState.PLAYING,
+    "unknown": PlayerState.IDLE,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -156,6 +162,7 @@ class SnapCastProvider(PlayerProvider):
         )
         player.synced_to = self._synced_to(player_id)
         player.group_childs = self._group_childs(player_id)
+        player.state = self.player_state(player_id)
         self.mass.players.register_or_update(player)
 
     async def unload(self) -> None:
@@ -305,3 +312,8 @@ class SnapCastProvider(PlayerProvider):
             if "id" in new_stream and new_stream["id"] not in used_streams:
                 return new_stream["id"]
             port += 1
+
+    def player_state(self, player_id: str) -> PlayerState:
+        """Return the state of the player."""
+        snap_group = self._get_snapgroup(player_id)
+        return STREAM_STATUS.get(snap_group.stream_status)
