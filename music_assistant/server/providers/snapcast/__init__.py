@@ -325,4 +325,4 @@ class SnapCastProvider(PlayerProvider):
         for child in self._group_childs(player_id):
             player = self.mass.players.get(child)
             player.state = state
-            self.mass.players.register_or_update(player)
+            self.mass.players.update(player)
