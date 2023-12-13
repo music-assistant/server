@@ -33,6 +33,12 @@ if TYPE_CHECKING:
 CONF_SNAPCAST_SERVER_HOST = "snapcast_server_host"
 CONF_SNAPCAST_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 
+SNAP_STREAM_STATUS_MAP = {
+    "idle": PlayerState.IDLE,
+    "playing": PlayerState.PLAYING,
+    "unknown": PlayerState.IDLE,
+}
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -156,6 +162,7 @@ class SnapCastProvider(PlayerProvider):
         )
         player.synced_to = self._synced_to(player_id)
         player.group_childs = self._group_childs(player_id)
+        player.state = self._player_state(player_id)
         self.mass.players.register_or_update(player)
 
     async def unload(self) -> None:
@@ -225,6 +232,7 @@ class SnapCastProvider(PlayerProvider):
             player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
             player.state = PlayerState.PLAYING
+            self._set_childs_state(player_id, PlayerState.PLAYING)
             self.mass.players.register_or_update(player)
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -240,6 +248,7 @@ class SnapCastProvider(PlayerProvider):
                 except FFmpegError:
                     self.logger.debug("Fail to stop ffmpeg player")
                 player.state = PlayerState.IDLE
+                self._set_childs_state(player_id, PlayerState.IDLE)
                 self.mass.players.register_or_update(player)
 
     async def cmd_pause(self, player_id: str) -> None:
@@ -305,3 +314,15 @@ class SnapCastProvider(PlayerProvider):
             if "id" in new_stream and new_stream["id"] not in used_streams:
                 return new_stream["id"]
             port += 1
+
+    def _player_state(self, player_id: str) -> PlayerState:
+        """Return the state of the player."""
+        snap_group = self._get_snapgroup(player_id)
+        return SNAP_STREAM_STATUS_MAP.get(snap_group.stream_status)
+
+    def _set_childs_state(self, player_id: str, state: PlayerState) -> None:
+        """Set the state of the child`s of the player."""
+        for child_player_id in self._group_childs(player_id):
+            player = self.mass.players.get(child_player_id)
+            player.state = state
+            self.mass.players.update(player)
