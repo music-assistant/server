@@ -162,7 +162,7 @@ class SnapCastProvider(PlayerProvider):
         )
         player.synced_to = self._synced_to(player_id)
         player.group_childs = self._group_childs(player_id)
-        player.state = self._player_state(player_id)
+        player.state = self._get_player_state(player_id)
         self.mass.players.register_or_update(player)
 
     async def unload(self) -> None:
@@ -315,7 +315,7 @@ class SnapCastProvider(PlayerProvider):
                 return new_stream["id"]
             port += 1
 
-    def _player_state(self, player_id: str) -> PlayerState:
+    def _get_player_state(self, player_id: str) -> PlayerState:
         """Return the state of the player."""
         snap_group = self._get_snapgroup(player_id)
         return SNAP_STREAM_STATUS_MAP.get(snap_group.stream_status)
