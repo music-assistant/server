@@ -323,6 +323,6 @@ class SnapCastProvider(PlayerProvider):
     def _set_childs_state(self, player_id: str, state: PlayerState) -> None:
         """Set the state of the child`s of the player."""
         for child_player_id in self._group_childs(player_id):
-            player = self.mass.players.get(child)
+            player = self.mass.players.get(child_player_id)
             player.state = state
             self.mass.players.update(player)
