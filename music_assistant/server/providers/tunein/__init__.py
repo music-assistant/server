@@ -49,7 +49,7 @@ async def setup(
     prov = TuneInProvider(mass, manifest, config)
     if "@" in config.get_value(CONF_USERNAME):
         prov.logger.warning(
-            "Emailadress detected instead of username, "
+            "Email address detected instead of username, "
             "it is advised to use the tunein username instead of email."
         )
     await prov.handle_setup()
