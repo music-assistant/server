@@ -24,7 +24,7 @@ pillow==10.1.0
 plexapi==4.15.6
 PyChromecast==13.0.8
 pycryptodome==3.19.0
-python-ffmpeg==2.0.4
+python-ffmpeg==2.0.9
 python-slugify==8.0.1
 shortuuid==1.0.11
 snapcast-mod==2.4.3
