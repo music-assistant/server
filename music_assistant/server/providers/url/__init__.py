@@ -161,13 +161,6 @@ class URLProvider(MusicProvider):
             url = playlist[0]
             item_id = item_id_or_url
             self._full_url[item_id] = url
-        elif "?" in item_id_or_url or "&" in item_id_or_url:
-            # store the 'real' full url to be picked up later
-            # this makes sure that we're not storing any temporary data like auth keys etc
-            # a request for an url mediaitem always passes here first before streamdetails
-            url = item_id_or_url
-            item_id = item_id_or_url.split("?")[0].split("&")[0]
-            self._full_url[item_id] = url
         else:
             url = self._full_url.get(item_id_or_url, item_id_or_url)
             item_id = item_id_or_url
