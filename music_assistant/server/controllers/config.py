@@ -556,6 +556,26 @@ class ConfigController:
         """
         return self.get(f"{CONF_CORE}/{core_module}/{key}", default)
 
+    def get_raw_provider_config_value(
+        self, provider_instance: str, key: str, default: ConfigValueType = None
+    ) -> ConfigValueType:
+        """
+        Return (raw) single config(entry) value for a provider.
+
+        Note that this only returns the stored value without any validation or default.
+        """
+        return self.get(f"{CONF_PROVIDERS}/{provider_instance}/{key}", default)
+
+    def set_raw_provider_config_value(
+        self, provider_instance: str, key: str, value: ConfigValueType
+    ) -> None:
+        """
+        Set (raw) single config(entry) value for a provider.
+
+        Note that this only returns the stored value without any validation or default.
+        """
+        return self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""
         self._value_cache = {}

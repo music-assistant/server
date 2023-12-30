@@ -218,8 +218,7 @@ class PlayerFeature(StrEnum):
     sync: The player supports syncing with other players (of the same platform).
     accurate_time: The player provides millisecond accurate timing information.
     seek: The player supports seeking to a specific.
-    set_members: The PlayerGroup supports adding/removing members.
-    queue: The player supports (en)queuing of media items.
+    queue: The player supports (en)queuing of media items natively.
     """
 
     POWER = "power"
@@ -297,7 +296,7 @@ class ProviderFeature(StrEnum):
     #
     # PLAYERPROVIDER FEATURES
     #
-    # we currently have none ;-)
+    PLAYER_GROUP_MANAGE = "player_group_manage"
 
     #
     # METADATAPROVIDER FEATURES

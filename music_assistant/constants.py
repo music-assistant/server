@@ -51,6 +51,7 @@ CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_GROUP_PLAYERS: Final[str] = "group_players"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

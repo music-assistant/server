@@ -4,14 +4,19 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING
 
+import shortuuid
+
+from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.constants import CONF_GROUP_PLAYERS
 
 from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ConfigEntry, PlayerConfig
     from music_assistant.server.controllers.streams import MultiClientStreamJob
+
 
 # ruff: noqa: ARG001, ARG002
 
@@ -136,6 +141,32 @@ class PlayerProvider(Provider):
             - player_id: player_id of the player to handle the command.
         """
         # will only be called for players with SYNC feature set.
+
+    async def create_group(self, name: str, members: list[str]) -> Player:
+        """Create new PlayerGroup on this provider.
+
+        Create a new PlayerGroup with given name and members.
+
+            - name: Name for the new group to create.
+            - members: A list of player_id's that should be part of this group.
+        """
+        # will only be called for players with PLAYER_GROUP_MANAGE feature set.
+        # default implementation: create "fake" player and store in config.
+        # should work for all players that support the sync feature.
+        # may be overridden with provider specific implementation
+        # if the provider supports this natively.
+        own_player_ids = (x.player_id for x in self.players)
+        for member_player_id in members:
+            if member_player_id not in own_player_ids:
+                # this should be filtered in the frontend, but just in case
+                raise InvalidDataError(
+                    f"Player {member_player_id} can not be a groupmember for {self.name}"
+                )
+        new_group_id = shortuuid.random(8)
+        group_players = self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_GROUP_PLAYERS, {}
+        )
+        group_players[new_group_id] = members
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
