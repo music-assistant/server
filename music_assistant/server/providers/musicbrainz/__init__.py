@@ -149,9 +149,9 @@ class MusicBrainzTrack(DataClassDictMixin):
 class MusicBrainzMedia(DataClassDictMixin):
     """Model for a (basic) Media object from MusicBrainz."""
 
-    position: int = 0
     format: str
     track: list[MusicBrainzTrack]
+    position: int = 0
     track_count: int = 0
     track_offset: int = 0
 
