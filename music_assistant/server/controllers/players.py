@@ -572,9 +572,9 @@ class PlayerController(CoreController):
         if child_player.state == PlayerState.PLAYING:
             await self.cmd_stop(player_id)
         # all checks passed, forward command to the player provider
-        child_player.hidden_by.add(target_player)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
+        child_player.hidden_by.add(target_player)
 
     @api_command("players/cmd/unsync")
     @log_player_command
@@ -593,7 +593,8 @@ class PlayerController(CoreController):
         if not player.synced_to:
             LOGGER.info(
                 "Ignoring command to unsync player %s "
-                "because it is currently not part of a (sync)group."
+                "because it is currently not synced to another player.",
+                player.display_name,
             )
             return
 
