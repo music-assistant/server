@@ -412,6 +412,9 @@ class ConfigController:
         if not existing:
             raise KeyError(f"Player {player_id} does not exist")
         self.remove(conf_key)
+        if (player := self.mass.players.get(player_id)) and player.available:
+            player.enabled = False
+            self.mass.players.update(player_id, force_update=True)
         if provider := self.mass.get_provider(existing["provider"]):
             assert isinstance(provider, PlayerProvider)
             provider.on_player_config_removed(player_id)
