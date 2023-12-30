@@ -230,12 +230,19 @@ class TuneInProvider(MusicProvider):
             # check if the radio stream is not a playlist
             url = stream["url"]
             direct = None
-            if stream.get("playlist_type"):  # noqa: SIM102
-                if playlist := await fetch_playlist(self.mass, url):
+            direct = None
+            if ".m3u" in url or ".pls" in url or stream.get("playlist_type"):
+                # url is playlist, try to figure out how to handle it
+                # if it is an mpeg-dash stream, let ffmpeg handle that
+                try:
+                    playlist = await fetch_playlist(self.mass, url)
                     if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
-                        # this is most likely an mpeg-dash stream, let ffmpeg handle that
                         direct = playlist[0]
-                    url = playlist[0]
+                    elif playlist:
+                        url_resolved = playlist[0]
+                except (InvalidDataError, IndexError):
+                    # empty playlist ?!
+                    direct = url_resolved
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
