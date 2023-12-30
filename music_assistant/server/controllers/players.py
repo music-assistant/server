@@ -575,6 +575,8 @@ class PlayerController(CoreController):
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
         child_player.hidden_by.add(target_player)
+        # optimistically update the player to update the UI as fast as possible
+        player_provider.poll_player(player_id)
 
     @api_command("players/cmd/unsync")
     @log_player_command
@@ -603,6 +605,8 @@ class PlayerController(CoreController):
             player.hidden_by.remove(player.synced_to)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
+        # optimistically update the player to update the UI as fast as possible
+        player_provider.poll_player(player_id)
 
     def _check_redirect(self, player_id: str) -> str:
         """Check if playback related command should be redirected."""
