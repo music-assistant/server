@@ -142,18 +142,18 @@ class MusicBrainzTrack(DataClassDictMixin):
     id: str
     number: str
     title: str
-    length: int
+    length: int | None = None
 
 
 @dataclass
 class MusicBrainzMedia(DataClassDictMixin):
     """Model for a (basic) Media object from MusicBrainz."""
 
-    position: int
     format: str
     track: list[MusicBrainzTrack]
-    track_count: int
-    track_offset: int
+    position: int = 0
+    track_count: int = 0
+    track_offset: int = 0
 
 
 @dataclass
@@ -167,7 +167,7 @@ class MusicBrainzRelease(DataClassDictMixin):
     status: str
     artist_credit: list[MusicBrainzArtistCredit]
     release_group: MusicBrainzReleaseGroup
-    track_count: int
+    track_count: int = 0
 
     # optional fields
     media: list[MusicBrainzMedia] = field(default_factory=list)
@@ -183,10 +183,10 @@ class MusicBrainzRecording(DataClassDictMixin):
 
     id: str
     title: str
-    length: int | None
-    first_release_date: str | None
-    artist_credit: list[MusicBrainzArtistCredit]
+    artist_credit: list[MusicBrainzArtistCredit] = field(default_factory=list)
     # optional fields
+    length: int | None = None
+    first_release_date: str | None = None
     isrcs: list[str] | None = None
     tags: list[MusicBrainzTag] | None = None
     disambiguation: str | None = None  # version (e.g. live, karaoke etc.)

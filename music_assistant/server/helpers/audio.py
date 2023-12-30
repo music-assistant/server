@@ -174,6 +174,8 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     input_file = streamdetails.direct or "-"
     proc_args = [
         "ffmpeg",
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,crypto,pipe,fd",
         "-t",
         "300",  # limit to 5 minutes to prevent OOM
         "-i",
@@ -761,7 +763,7 @@ async def _get_ffmpeg_args(
         "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
         "-protocol_whitelist",
-        "file,http,https,tcp,tls,crypto,pipe,fd",  # support nested protocols (e.g. within playlist)
+        "file,http,https,tcp,tls,crypto,pipe,data,fd",
     ]
     # collect input args
     input_args = [
