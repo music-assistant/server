@@ -7,6 +7,7 @@ import os
 import re
 import struct
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from io import BytesIO
 from time import time
 from typing import TYPE_CHECKING
@@ -14,7 +15,12 @@ from typing import TYPE_CHECKING
 import aiofiles
 from aiohttp import ClientTimeout
 
-from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
+from music_assistant.common.models.errors import (
+    AudioError,
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant.common.models.media_items import (
     AudioFormat,
     ContentType,
@@ -26,6 +32,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
+from music_assistant.server.helpers.playlists import fetch_playlist
 
 from .process import AsyncProcess, check_output
 from .util import create_tempfile
@@ -505,11 +512,49 @@ async def get_media_stream(  # noqa: PLR0915
                 mass.create_task(analyze_audio(mass, streamdetails))
 
 
+async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool]:
+    """
+    Resolve a streaming radio URL.
+
+    Unwraps any playlists if needed.
+    Determines if the stream supports ICY metadata.
+
+    Returns unfolded URL and a bool if the URL supports ICY metadata.
+    """
+    cache_key = f"resolved_radio_url_{url}"
+    if cache := await mass.cache.get(cache_key):
+        return cache
+    # handle playlisted radio urls
+    is_mpeg_dash = False
+    supports_icy = False
+    if ".m3u" in url or ".pls" in url:
+        # url is playlist, try to figure out how to handle it
+        with suppress(InvalidDataError, IndexError):
+            playlist = await fetch_playlist(mass, url)
+            if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
+                # if it is an mpeg-dash stream, let ffmpeg handle that
+                is_mpeg_dash = True
+            url = playlist[0]
+    if not is_mpeg_dash:
+        # determine ICY metadata support by looking at the http headers
+        headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
+        timeout = ClientTimeout(total=0, connect=10, sock_read=5)
+        async with mass.http_session.head(
+            url, headers=headers, allow_redirects=True, timeout=timeout
+        ) as resp:
+            headers = resp.headers
+            supports_icy = int(headers.get("icy-metaint", "0")) > 0
+
+    result = (url, supports_icy)
+    await mass.cache.set(cache_key, result)
+    return result
+
+
 async def get_radio_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
-    headers = {"Icy-MetaData": "1"}
+    headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
     timeout = ClientTimeout(total=0, connect=30, sock_read=60)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         headers = resp.headers

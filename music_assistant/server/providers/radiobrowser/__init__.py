@@ -9,7 +9,6 @@ from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
-from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -24,8 +23,7 @@ from music_assistant.common.models.media_items import (
     SearchResults,
     StreamDetails,
 )
-from music_assistant.server.helpers.audio import get_radio_stream
-from music_assistant.server.helpers.playlists import fetch_playlist
+from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
@@ -279,21 +277,8 @@ class RadioBrowserProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         stream = await self.radios.station(uuid=item_id)
-        url_resolved = stream.url_resolved
         await self.radios.station_click(uuid=item_id)
-        direct = None
-        if ".m3u" in url_resolved or ".pls" in url_resolved:
-            # url is playlist, try to figure out how to handle it
-            # if it is an mpeg-dash stream, let ffmpeg handle that
-            try:
-                playlist = await fetch_playlist(self.mass, url_resolved)
-                if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
-                    direct = playlist[0]
-                elif playlist:
-                    url_resolved = playlist[0]
-            except (InvalidDataError, IndexError):
-                # empty playlist ?!
-                direct = url_resolved
+        url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream.url_resolved)
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
@@ -302,7 +287,7 @@ class RadioBrowserProvider(MusicProvider):
             ),
             media_type=MediaType.RADIO,
             data=url_resolved,
-            direct=direct,
+            direct=url_resolved if not supports_icy else None,
             expires=time() + 24 * 3600,
         )
 
