@@ -568,8 +568,8 @@ class PlayerController(CoreController):
                 return
             # player already synced, unsync first
             await self.cmd_unsync(child_player.player_id)
-        # stop child player if it is currently playing
-        if child_player.state == PlayerState.PLAYING:
+        elif child_player.state == PlayerState.PLAYING:
+            # stop child player if it is currently playing
             await self.cmd_stop(player_id)
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
