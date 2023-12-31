@@ -47,9 +47,8 @@ if TYPE_CHECKING:
 CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
 # sync constants
-MIN_DEVIATION_ADJUST = 10  # 10 milliseconds
+MIN_DEVIATION_ADJUST = 6  # 6 milliseconds
 MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
-ENABLE_EXPERIMENTAL_SYNC_JOIN = False  # WIP
 
 # TODO: Implement display support
 
@@ -191,6 +190,7 @@ class SlimprotoProvider(PlayerProvider):
         self._virtual_providers = {}
         self._do_not_resync_before = {}
         self.port = self.config.get_value(CONF_PORT)
+        self._resync_handle: asyncio.TimerHandle | None = None
         # start slimproto socket server
         try:
             self._socket_servers = [
@@ -503,21 +503,19 @@ class SlimprotoProvider(PlayerProvider):
         child_player.synced_to = parent_player.player_id
         # check if we should (re)start or join a stream session
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
-        if (
-            ENABLE_EXPERIMENTAL_SYNC_JOIN
-            and (stream_job := self.mass.streams.multi_client_jobs.get(active_queue.queue_id))
-            and (stream_job.pending or stream_job.running)
-        ):
-            # this is a brave attempt to get players to to just join an existing stream
-            # session without having to resume playback
-            # it does not work reliable so far so consider this a WIP
-            # for someone to pickup with a lot of patience and too much time
-            url = await stream_job.resolve_stream_url(player_id)
-            client = self._socket_clients[player_id]
-            await self._handle_play_url(client, url, None, auto_play=True)
-        elif parent_player.state == PlayerState.PLAYING:
+        if parent_player.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
-            await self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
+            def resync():
+                self._resync_handle = None
+                self.mass.create_task(
+                    self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
+                )
+
+            # this could potentially be called by multiple players at the exact same time
+            # so we debounce the resync a bit here with a timer
+            if self._resync_handle:
+                self._resync_handle.cancel()
+            self._resync_handle = self.mass.loop.call_later(0.5, resync)
         else:
             # make sure that the player manager gets an update
             self.mass.players.update(child_player.player_id)
