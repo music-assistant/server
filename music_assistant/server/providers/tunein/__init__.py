@@ -22,8 +22,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
 )
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream
-from music_assistant.server.helpers.playlists import fetch_playlist
+from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -228,21 +227,7 @@ class TuneInProvider(MusicProvider):
             if stream["media_type"] != media_type:
                 continue
             # check if the radio stream is not a playlist
-            url = stream["url"]
-            direct = None
-            direct = None
-            if ".m3u" in url or ".pls" in url or stream.get("playlist_type"):
-                # url is playlist, try to figure out how to handle it
-                # if it is an mpeg-dash stream, let ffmpeg handle that
-                try:
-                    playlist = await fetch_playlist(self.mass, url)
-                    if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
-                        direct = playlist[0]
-                    elif playlist:
-                        url_resolved = playlist[0]
-                except (InvalidDataError, IndexError):
-                    # empty playlist ?!
-                    direct = url_resolved
+            url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream["url"])
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -250,9 +235,9 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                 ),
                 media_type=MediaType.RADIO,
-                data=url,
+                data=url_resolved,
                 expires=time() + 24 * 3600,
-                direct=direct,
+                direct=url_resolved if not supports_icy else None,
             )
         raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
 
