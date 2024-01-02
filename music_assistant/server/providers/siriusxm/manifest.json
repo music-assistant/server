@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "siriusxm",
+  "name": "SiriusXM",
+  "description": "Provider for Sirius XM radio. You will require a paid SiriusXM streaming plan to use this provider (see https://www.siriusxm.com/plans). This provider is available in the US and Canada. As with the apps, you will be restricted to a single stream at a time.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["sxm==0.2.8"],
+  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/TODO",
+  "multi_instance": false
+}
