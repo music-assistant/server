@@ -34,4 +34,4 @@ unidecode==1.3.7
 uvloop==0.19.0
 xmltodict==0.13.0
 ytmusicapi==1.3.2
-zeroconf==0.128.0
+zeroconf==0.131.0
