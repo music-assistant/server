@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Generator, Union, Dict, Final
+from typing import TYPE_CHECKING, Generator, Final, Any
 
 from sxm import SXMClientAsync
 from sxm.models import QualitySize, RegionChoice, XMCategory, XMChannel, XMLiveChannel
@@ -61,7 +61,6 @@ async def setup(
     return prov
 
 
-# noinspection PyUnusedLocal
 async def get_config_entries(
     mass: MusicAssistant,
     instance_id: str | None = None,
@@ -132,7 +131,7 @@ class SiriusXMProvider(MusicProvider):
 
         await self._refresh_channels()
 
-    def _channel_updated(self, live_channel_raw: Dict):
+    def _channel_updated(self, live_channel_raw: dict[str, Any]) -> None:
         live_channel = XMLiveChannel.from_dict(live_channel_raw)
         latest_cut = live_channel.get_latest_cut()
         latest_episode = live_channel.get_latest_episode()
@@ -229,7 +228,7 @@ class SiriusXMProvider(MusicProvider):
         for channel_guid, channel in self._channels_by_id.items():
             yield self._parse_radio(channel)
 
-    async def get_radio(self, channel_id: str) -> Union[Radio, None]:
+    async def get_radio(self, channel_id: str) -> Radio | None:
         channel = self._channels_by_id[channel_id] if channel_id in self._channels_by_id else None
         if channel is None:
             return None
@@ -262,11 +261,12 @@ class SiriusXMProvider(MusicProvider):
         #     media_info = await parse_tags(self._to_generator(first_segment))
         #     await self.mass.cache.set(cache_key, media_info.raw)
 
-        # MPEG AAC Audio (mp4a)
-        # Type: Audio
-        # Channels: 2
-        # Sample Rate: 44100
-        # Bits per sample: 32
+        # From VLC playing .m3u8 file via http proxy: https://github.com/AngellusMortis/sxm-client/blob/dd25b56d7a8a7c33399b25e72a7c2e136fb30e6a/sxm/cli.py#L88
+        # - MPEG AAC Audio (mp4a)
+        # - Type: Audio
+        # - Channels: 2
+        # - Sample Rate: 44100
+        # - Bits per sample: 32
 
         return StreamDetails(
             provider=self.instance_id,
@@ -277,15 +277,9 @@ class SiriusXMProvider(MusicProvider):
                 bit_depth=32,
                 content_type=ContentType.M4A,
             ),
-            # stream_title=channel.name,
-            # duration=?,
-            # data={"url": url, "format": url_details["format"]}
-            # expires=time() + 24 * 3600,
-            # size=?,
             media_type=MediaType.RADIO,
-            # data=live_channel.primary_hls.url,
             direct=None,
-            # can_seek=False,
+            can_seek=False,
         )
 
     async def get_playlist_items_generator(self, stream_details: StreamDetails):
