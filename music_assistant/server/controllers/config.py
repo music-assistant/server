@@ -25,7 +25,7 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.common.models.enums import EventType, PlayerState, ProviderType
 from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant.constants import (
     CONF_CORE,
@@ -389,8 +389,8 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
+        player = self.mass.players.get(config.player_id)
         with suppress(PlayerUnavailableError, AttributeError, KeyError):
-            player = self.mass.players.get(config.player_id)
             if config.enabled:
                 player_prov = self.mass.players.get_player_provider(player_id)
                 await player_prov.poll_player(player_id)
@@ -401,6 +401,9 @@ class ConfigController:
         with suppress(PlayerUnavailableError):
             if provider := self.mass.get_provider(config.provider):
                 provider.on_player_config_changed(config, changed_keys)
+        # if the player was playing, restart playback
+        if player and player.state == PlayerState.PLAYING:
+            self.mass.create_task(self.mass.player_queues.resume(player.active_source))
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
@@ -412,6 +415,9 @@ class ConfigController:
         if not existing:
             raise KeyError(f"Player {player_id} does not exist")
         self.remove(conf_key)
+        if (player := self.mass.players.get(player_id)) and player.available:
+            player.enabled = False
+            self.mass.players.update(player_id, force_update=True)
         if provider := self.mass.get_provider(existing["provider"]):
             assert isinstance(provider, PlayerProvider)
             provider.on_player_config_removed(player_id)

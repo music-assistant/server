@@ -17,7 +17,12 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.server.helpers.audio import get_file_stream, get_http_stream, get_radio_stream
+from music_assistant.server.helpers.audio import (
+    get_file_stream,
+    get_http_stream,
+    get_radio_stream,
+    resolve_radio_stream,
+)
 from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
@@ -161,13 +166,6 @@ class URLProvider(MusicProvider):
             url = playlist[0]
             item_id = item_id_or_url
             self._full_url[item_id] = url
-        elif "?" in item_id_or_url or "&" in item_id_or_url:
-            # store the 'real' full url to be picked up later
-            # this makes sure that we're not storing any temporary data like auth keys etc
-            # a request for an url mediaitem always passes here first before streamdetails
-            url = item_id_or_url
-            item_id = item_id_or_url.split("?")[0].split("&")[0]
-            self._full_url[item_id] = url
         else:
             url = self._full_url.get(item_id_or_url, item_id_or_url)
             item_id = item_id_or_url
@@ -188,8 +186,8 @@ class URLProvider(MusicProvider):
         """Get streamdetails for a track/radio."""
         item_id, url, media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration
-        # we let ffmpeg handle with mpeg dash streams
-        mpeg_dash_stream = ".m3u" in url or ".pls" in url
+        if is_radio:
+            url, supports_icy = await resolve_radio_stream(self.mass, url)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -199,7 +197,7 @@ class URLProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
             ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            direct=None if is_radio and not mpeg_dash_stream else url,
+            direct=None if is_radio and supports_icy else url,
             data=url,
         )
 

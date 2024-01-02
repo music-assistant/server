@@ -22,8 +22,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
 )
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream
-from music_assistant.server.helpers.playlists import fetch_playlist
+from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -49,7 +48,7 @@ async def setup(
     prov = TuneInProvider(mass, manifest, config)
     if "@" in config.get_value(CONF_USERNAME):
         prov.logger.warning(
-            "Emailadress detected instead of username, "
+            "Email address detected instead of username, "
             "it is advised to use the tunein username instead of email."
         )
     await prov.handle_setup()
@@ -228,14 +227,7 @@ class TuneInProvider(MusicProvider):
             if stream["media_type"] != media_type:
                 continue
             # check if the radio stream is not a playlist
-            url = stream["url"]
-            direct = None
-            if stream.get("playlist_type"):  # noqa: SIM102
-                if playlist := await fetch_playlist(self.mass, url):
-                    if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
-                        # this is most likely an mpeg-dash stream, let ffmpeg handle that
-                        direct = playlist[0]
-                    url = playlist[0]
+            url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream["url"])
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -243,9 +235,9 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                 ),
                 media_type=MediaType.RADIO,
-                data=url,
+                data=url_resolved,
                 expires=time() + 24 * 3600,
-                direct=direct,
+                direct=url_resolved if not supports_icy else None,
             )
         raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
 

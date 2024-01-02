@@ -23,7 +23,7 @@ from music_assistant.common.models.media_items import (
     SearchResults,
     StreamDetails,
 )
-from music_assistant.server.helpers.audio import get_radio_stream
+from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
@@ -277,8 +277,8 @@ class RadioBrowserProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         stream = await self.radios.station(uuid=item_id)
-        url_resolved = stream.url_resolved
         await self.radios.station_click(uuid=item_id)
+        url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream.url_resolved)
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
@@ -287,6 +287,7 @@ class RadioBrowserProvider(MusicProvider):
             ),
             media_type=MediaType.RADIO,
             data=url_resolved,
+            direct=url_resolved if not supports_icy else None,
             expires=time() + 24 * 3600,
         )
 

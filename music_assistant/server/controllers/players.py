@@ -568,13 +568,15 @@ class PlayerController(CoreController):
                 return
             # player already synced, unsync first
             await self.cmd_unsync(child_player.player_id)
-        # stop child player if it is currently playing
-        if child_player.state == PlayerState.PLAYING:
+        elif child_player.state == PlayerState.PLAYING:
+            # stop child player if it is currently playing
             await self.cmd_stop(player_id)
         # all checks passed, forward command to the player provider
-        child_player.hidden_by.add(target_player)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
+        child_player.hidden_by.add(target_player)
+        # optimistically update the player to update the UI as fast as possible
+        self.mass.create_task(player_provider.poll_player(player_id))
 
     @api_command("players/cmd/unsync")
     @log_player_command
@@ -593,7 +595,8 @@ class PlayerController(CoreController):
         if not player.synced_to:
             LOGGER.info(
                 "Ignoring command to unsync player %s "
-                "because it is currently not part of a (sync)group."
+                "because it is currently not synced to another player.",
+                player.display_name,
             )
             return
 
@@ -602,6 +605,8 @@ class PlayerController(CoreController):
             player.hidden_by.remove(player.synced_to)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
+        # optimistically update the player to update the UI as fast as possible
+        self.mass.create_task(player_provider.poll_player(player_id))
 
     def _check_redirect(self, player_id: str) -> str:
         """Check if playback related command should be redirected."""
