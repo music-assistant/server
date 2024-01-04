@@ -6,5 +6,5 @@
   "codeowners": ["@music-assistant"],
   "requirements": ["sxm==0.2.8"],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/TODO",
-  "multi_instance": false
+  "multi_instance": true
 }
