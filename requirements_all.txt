@@ -38,3 +38,4 @@ uvloop==0.19.0
 xmltodict==0.13.0
 ytmusicapi==1.5.1
 zeroconf==0.131.0
+jellyfin_apiclient_python==1.9.2
