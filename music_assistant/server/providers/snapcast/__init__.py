@@ -129,6 +129,7 @@ class SnapCastProvider(PlayerProvider):
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
             snap_client = self._snapserver.client(player_id)
+            self.mass.create_task(self._set_snapclient_empty_stream(player_id))
             player = Player(
                 player_id=player_id,
                 provider=self.domain,
@@ -158,11 +159,12 @@ class SnapCastProvider(PlayerProvider):
         player.volume_muted = snap_client.muted
         player.available = snap_client.connected
         player.can_sync_with = tuple(
-            x.identifier for x in self._snapserver.clients if x.identifier != player_id
+            x.identifier
+            for x in self._snapserver.clients
+            if x.identifier != player_id and x.connected
         )
         player.synced_to = self._synced_to(player_id)
         player.group_childs = self._group_childs(player_id)
-        player.state = self._player_state(player_id)
         self.mass.players.register_or_update(player)
 
     async def unload(self) -> None:
@@ -197,11 +199,7 @@ class SnapCastProvider(PlayerProvider):
             - queue_item: the QueueItem that is related to the URL (None when playing direct url).
         """
         player = self.mass.players.get(player_id)
-        stream = self._get_snapstream(player_id)
-        if stream.path != "":
-            new_stream_id = await self._get_empty_stream()
-            await self._get_snapgroup(player_id).set_stream(new_stream_id)
-            stream = self._snapserver.stream(new_stream_id)
+        stream = await self._set_snapclient_empty_stream(player_id)
 
         stream_host = stream._stream.get("uri").get("host")
         stream_host = stream_host.replace("0.0.0.0", self.snapcast_server_host)
@@ -309,13 +307,13 @@ class SnapCastProvider(PlayerProvider):
         name = str(uuid.uuid4())
         while True:
             new_stream = await self._snapserver.stream_add_stream(
-                f"tcp://0.0.0.0:{port}?name={name}"
+                f"tcp://0.0.0.0:{port}?name={f'MA_{name}'}&sampleformat=48000:16:2",
             )
             if "id" in new_stream and new_stream["id"] not in used_streams:
                 return new_stream["id"]
             port += 1
 
-    def _player_state(self, player_id: str) -> PlayerState:
+    def _get_player_state(self, player_id: str) -> PlayerState:
         """Return the state of the player."""
         snap_group = self._get_snapgroup(player_id)
         return SNAP_STREAM_STATUS_MAP.get(snap_group.stream_status)
@@ -326,3 +324,10 @@ class SnapCastProvider(PlayerProvider):
             player = self.mass.players.get(child_player_id)
             player.state = state
             self.mass.players.update(player)
+
+    async def _set_snapclient_empty_stream(self, player_id: str) -> SnapStream:
+        """Set the snapclient stream to empty and return new stream."""
+        new_stream_id = await self._get_empty_stream()
+        await self._get_snapgroup(player_id).set_stream(new_stream_id)
+        stream = self._snapserver.stream(new_stream_id)
+        return stream
