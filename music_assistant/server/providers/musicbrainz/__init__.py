@@ -311,6 +311,8 @@ class MusicbrainzProvider(MetadataProvider):
             f"artist/{artist_id}?inc=aliases+annotation+tags+ratings+genres+url-rels+work-rels"
         )
         if result := await self.get_data(endpoint):
+            if "id" not in result:
+                result["id"] = artist_id
             # TODO: Parse all the optional data like relations and such
             return MusicBrainzArtist.from_dict(replace_hyphens(result))
         raise InvalidDataError("Invalid MusicBrainz Artist ID provided")
@@ -327,6 +329,8 @@ class MusicbrainzProvider(MetadataProvider):
             else:
                 raise InvalidDataError("Invalid ISRC provided")
         if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
+            if "id" not in result:
+                result["id"] = recording_id
             return MusicBrainzRecording.from_dict(replace_hyphens(result))
         raise InvalidDataError("Invalid ISRC provided")
 
@@ -344,6 +348,8 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError("Invalid barcode provided")
         endpoint = f"release-group/{releasegroup_id}?inc=artists+aliases"
         if result := await self.get_data(endpoint):
+            if "id" not in result:
+                result["id"] = releasegroup_id
             return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
         raise InvalidDataError("Invalid MusicBrainz ReleaseGroup ID or barcode provided")
 
