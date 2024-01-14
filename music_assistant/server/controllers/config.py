@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiofiles
+import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -696,8 +697,9 @@ class ConfigController:
             instance_id = provider_domain
             name = manifest.name
         else:
-            instance_id = f"{provider_domain}{len(existing)+1}"
-            name = f"{manifest.name} {len(existing)+1}"
+            random_id = shortuuid.random(6)
+            instance_id = f"{provider_domain}_{random_id}"
+            name = f"{manifest.name} {random_id}"
         # all checks passed, create config object
         config_entries = await self.get_provider_config_entries(
             provider_domain=provider_domain, instance_id=instance_id, values=values
