@@ -103,10 +103,13 @@ async def get_config_entries(
         action=CONF_ACTION_GDM,
         action_label="Use Plex GDM to discover local servers",
     )
-    if action == CONF_ACTION_GDM:
-        local_server_ip, local_server_port = await discover_local_servers()
-        values[CONF_LOCAL_SERVER_IP] = local_server_ip
-        values[CONF_LOCAL_SERVER_PORT] = local_server_port
+    if action == CONF_ACTION_GDM and (server_details := await discover_local_servers()):
+        if server_details[0] is None and server_details[1] is None:
+            values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
+            values[CONF_LOCAL_SERVER_PORT] = "Discovery failed, please add Port manually"
+        else:
+            values[CONF_LOCAL_SERVER_IP] = server_details[0]
+            values[CONF_LOCAL_SERVER_PORT] = server_details[1]
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
