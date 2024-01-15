@@ -832,7 +832,7 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         if cur_index is None:
             cur_index = queue.current_index
-        next_index = self.get_next_index(queue_id, queue.current_index)
+        next_index = self.get_next_index(queue_id, cur_index)
         return self.get_item(queue_id, next_index)
 
     def signal_update(self, queue_id: str, items_changed: bool = False) -> None:
