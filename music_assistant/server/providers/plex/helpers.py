@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+from plexapi.gdm import GDM
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.server import PlexServer
@@ -42,4 +43,21 @@ async def get_libraries(
     result = await asyncio.to_thread(_get_libraries)
     # use short expiration for in-memory cache
     await mass.cache.set(cache_key, result, checksum=auth_token, expiration=3600)
+    return result
+
+
+async def discover_local_servers():
+    """Discover all local plex servers on the network."""
+
+    def _discover_local_servers():
+        gdm = GDM()
+        gdm.scan()
+        if len(gdm.entries) > 0:
+            entry = gdm.entries[0]
+            data = entry.get("data")
+            local_server_ip = entry.get("from")[0]
+            local_server_port = data.get("Port")
+            return local_server_ip, local_server_port
+
+    result = await asyncio.to_thread(_discover_local_servers)
     return result

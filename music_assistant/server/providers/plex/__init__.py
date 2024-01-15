@@ -56,7 +56,7 @@ from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
-from music_assistant.server.providers.plex.helpers import get_libraries
+from music_assistant.server.providers.plex.helpers import discover_local_servers, get_libraries
 
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_LIBRARY = "library"
@@ -64,6 +64,8 @@ CONF_AUTH_TOKEN = "token"
 CONF_LIBRARY_ID = "library_id"
 CONF_LOCAL_SERVER_IP = "local_server_ip"
 CONF_LOCAL_SERVER_PORT = "local_server_port"
+CONF_USE_GDM = "use_gdm"
+CONF_ACTION_GDM = "gdm"
 FAKE_ARTIST_PREFIX = "_fake://"
 
 
@@ -92,6 +94,19 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    conf_gdm = ConfigEntry(
+        key=CONF_USE_GDM,
+        type=ConfigEntryType.BOOLEAN,
+        label="GDM",
+        default_value=False,
+        description='Enable "GDM" to discover local Plex servers automatically.',
+        action=CONF_ACTION_GDM,
+        action_label="Use Plex GDM to discover local servers",
+    )
+    if action == CONF_ACTION_GDM:
+        local_server_ip, local_server_port = await discover_local_servers()
+        values[CONF_LOCAL_SERVER_IP] = local_server_ip
+        values[CONF_LOCAL_SERVER_PORT] = local_server_port
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
@@ -136,6 +151,7 @@ async def get_config_entries(
         conf_libraries.value = libraries[0]
     # return the collected config entries
     return (
+        conf_gdm,
         ConfigEntry(
             key=CONF_LOCAL_SERVER_IP,
             type=ConfigEntryType.STRING,
