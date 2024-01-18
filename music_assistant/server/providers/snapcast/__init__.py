@@ -1,17 +1,16 @@
 """Snapcast Player provider for Music Assistant."""
 from __future__ import annotations
 
-import asyncio
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from ffmpeg import FFmpegError
 from ffmpeg.asyncio import FFmpeg
 from snapcast.control import create_server
-from snapcast.control.client import Snapclient as SnapClient
-from snapcast.control.group import Snapgroup as SnapGroup
-from snapcast.control.stream import Snapstream as SnapStream
+from snapcast.control.client import Snapclient
+from snapcast.control.group import Snapgroup
+from snapcast.control.stream import Snapstream
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
@@ -26,10 +25,13 @@ from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from snapcast.control.server import Snapserver
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+
 CONF_SNAPCAST_SERVER_HOST = "snapcast_server_host"
 CONF_SNAPCAST_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 
@@ -84,7 +86,7 @@ async def get_config_entries(
 class SnapCastProvider(PlayerProvider):
     """Player provider for Snapcast based players."""
 
-    _snapserver: [asyncio.Server | asyncio.BaseTransport]
+    _snapserver: Snapserver
     snapcast_server_host: str
     snapcast_server_control_port: int
 
@@ -118,17 +120,17 @@ class SnapCastProvider(PlayerProvider):
         for snap_group in self._snapserver.groups:
             snap_group.set_callback(self._handle_group_update)
 
-    def _handle_group_update(self, snap_group: SnapGroup) -> None:  # noqa: ARG002
+    def _handle_group_update(self, snap_group: Snapgroup) -> None:  # noqa: ARG002
         """Process Snapcast group callback."""
         for snap_client in self._snapserver.clients:
             self._handle_player_update(snap_client)
 
-    def _handle_player_init(self, snap_client: SnapClient) -> None:
+    def _handle_player_init(self, snap_client: Snapclient) -> None:
         """Process Snapcast add to Player controller."""
         player_id = snap_client.identifier
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
-            snap_client = self._snapserver.client(player_id)
+            snap_client = cast(Snapclient, self._snapserver.client(player_id))
             self.mass.create_task(self._set_snapclient_empty_stream(player_id))
             player = Player(
                 player_id=player_id,
@@ -150,7 +152,7 @@ class SnapCastProvider(PlayerProvider):
             )
         self.mass.players.register_or_update(player)
 
-    def _handle_player_update(self, snap_client: SnapClient) -> None:
+    def _handle_player_update(self, snap_client: Snapclient) -> None:
         """Process Snapcast update to Player controller."""
         player_id = snap_client.identifier
         player = self.mass.players.get(player_id)
@@ -271,12 +273,12 @@ class SnapCastProvider(PlayerProvider):
         await group.set_stream(stream_id)
         self._handle_update()
 
-    def _get_snapgroup(self, player_id: str) -> SnapGroup:
+    def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
         client = self._snapserver.client(player_id)
         return client.group
 
-    def _get_snapstream(self, player_id: str) -> SnapStream:
+    def _get_snapstream(self, player_id: str) -> Snapstream:
         """Get snapcast stream for given player_id."""
         group = self._get_snapgroup(player_id)
         return self._snapserver.stream(group.stream)
@@ -295,7 +297,7 @@ class SnapCastProvider(PlayerProvider):
     async def _get_empty_stream(self) -> str:
         """Find or create empty stream on snapcast server.
 
-        This method ensures that there is a snapstream for each snapclient,
+        This method ensures that there is a Snapstream for each Snapclient,
         even if the snapserver only have one stream configured. This is needed
         because the default config of snapserver is one stream on a named pipe.
         """
@@ -325,8 +327,8 @@ class SnapCastProvider(PlayerProvider):
             player.state = state
             self.mass.players.update(player)
 
-    async def _set_snapclient_empty_stream(self, player_id: str) -> SnapStream:
-        """Set the snapclient stream to empty and return new stream."""
+    async def _set_snapclient_empty_stream(self, player_id: str) -> Snapstream:
+        """Set the Snapclient stream to empty and return new stream."""
         new_stream_id = await self._get_empty_stream()
         await self._get_snapgroup(player_id).set_stream(new_stream_id)
         stream = self._snapserver.stream(new_stream_id)

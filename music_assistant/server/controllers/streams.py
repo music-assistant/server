@@ -37,7 +37,6 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
-    CONF_OUTPUT_CODEC,
     CONF_PUBLISH_IP,
 )
 from music_assistant.server.helpers.audio import (
@@ -132,16 +131,8 @@ class MultiClientStreamJob:
             with suppress(asyncio.QueueFull):
                 sub_queue.put_nowait(b"")
 
-    async def resolve_stream_url(
-        self,
-        child_player_id: str,
-    ) -> str:
+    async def resolve_stream_url(self, child_player_id: str, output_codec: ContentType) -> str:
         """Resolve the childplayer specific stream URL to this streamjob."""
-        output_codec = ContentType(
-            await self.stream_controller.mass.config.get_player_config_value(
-                child_player_id, CONF_OUTPUT_CODEC
-            )
-        )
         fmt = output_codec.value
         # handle raw pcm
         if output_codec.is_pcm():
@@ -149,8 +140,8 @@ class MultiClientStreamJob:
             player_max_bit_depth = 24 if player.supports_24bit else 16
             output_sample_rate = min(self.pcm_format.sample_rate, player.max_sample_rate)
             output_bit_depth = min(self.pcm_format.bit_depth, player_max_bit_depth)
-            output_channels = await self.stream_controller.mass.config.get_player_config_value(
-                child_player_id, CONF_OUTPUT_CHANNELS
+            output_channels = self.stream_controller.mass.config.get_raw_player_config_value(
+                child_player_id, CONF_OUTPUT_CHANNELS, "stereo"
             )
             channels = 1 if output_channels != "stereo" else 2
             fmt += (
@@ -373,23 +364,17 @@ class StreamsController(CoreController):
 
     async def resolve_stream_url(
         self,
-        queue_id: str,
         queue_item: QueueItem,
+        output_codec: ContentType,
         seek_position: int = 0,
         fade_in: bool = False,
         flow_mode: bool = False,
     ) -> str:
-        """Resolve the (regular, single player) stream URL for the given QueueItem.
-
-        This is called just-in-time by the Queue controller to get the URL to the audio.
-        """
-        output_codec = ContentType(
-            await self.mass.config.get_player_config_value(queue_id, CONF_OUTPUT_CODEC)
-        )
+        """Resolve the stream URL for the given QueueItem."""
         fmt = output_codec.value
         # handle raw pcm
         if output_codec.is_pcm():
-            player = self.mass.players.get(queue_id)
+            player = self.mass.players.get(queue_item.queue_id)
             player_max_bit_depth = 24 if player.supports_24bit else 16
             if flow_mode:
                 output_sample_rate = min(FLOW_MAX_SAMPLE_RATE, player.max_sample_rate)
@@ -400,8 +385,8 @@ class StreamsController(CoreController):
                     streamdetails.audio_format.sample_rate, player.max_sample_rate
                 )
                 output_bit_depth = min(streamdetails.audio_format.bit_depth, player_max_bit_depth)
-            output_channels = await self.mass.config.get_player_config_value(
-                queue_id, CONF_OUTPUT_CHANNELS
+            output_channels = self.mass.config.get_raw_player_config_value(
+                queue_item.queue_id, CONF_OUTPUT_CHANNELS, "stereo"
             )
             channels = 1 if output_channels != "stereo" else 2
             fmt += (
@@ -410,7 +395,7 @@ class StreamsController(CoreController):
             )
         query_params = {}
         base_path = "flow" if flow_mode else "single"
-        url = f"{self._server.base_url}/{queue_id}/{base_path}/{queue_item.queue_item_id}.{fmt}"
+        url = f"{self._server.base_url}/{queue_item.queue_id}/{base_path}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
         if seek_position:
             query_params["seek_position"] = str(seek_position)
         if fade_in:
@@ -505,6 +490,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Start serving audio stream for QueueItem %s to %s", queue_item.uri, queue.display_name
         )
+        queue.current_index = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
@@ -766,6 +752,7 @@ class StreamsController(CoreController):
         queue_track = None
         last_fadeout_part = b""
         total_bytes_written = 0
+        queue.flow_mode = True
         self.logger.info("Start Queue Flow stream for Queue %s", queue.display_name)
 
         while True:
@@ -777,15 +764,11 @@ class StreamsController(CoreController):
                 seek_position = 0
                 fade_in = False
                 try:
-                    (
-                        _,
-                        queue_track,
-                        use_crossfade,
-                    ) = await self.mass.player_queues.preload_next_url(queue.queue_id)
+                    queue_track = await self.mass.player_queues.preload_next_item(queue.queue_id)
                 except QueueEmpty:
                     break
 
-            # get streamdetails
+            # get streamdetails (already prefetched by preload_next_item)
             try:
                 streamdetails = await get_stream_details(self.mass, queue_track)
             except MediaNotFoundError as err:
@@ -905,7 +888,6 @@ class StreamsController(CoreController):
         output_format: AudioFormat,
     ) -> list[str]:
         """Get player specific arguments for the given (pcm) input and output details."""
-        player_conf = await self.mass.config.get_player_config(player.player_id)
         # generic args
         generic_args = [
             "ffmpeg",
@@ -954,16 +936,28 @@ class StreamsController(CoreController):
 
         # the below is a very basic 3-band equalizer,
         # this could be a lot more sophisticated at some point
-        if eq_bass := player_conf.get_value(CONF_EQ_BASS):
+        if (
+            eq_bass := self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_EQ_BASS, 0
+            )
+        ) != 0:
             filter_params.append(f"equalizer=frequency=100:width=200:width_type=h:gain={eq_bass}")
-        if eq_mid := player_conf.get_value(CONF_EQ_MID):
+        if (
+            eq_mid := self.mass.config.get_raw_player_config_value(player.player_id, CONF_EQ_MID, 0)
+        ) != 0:
             filter_params.append(f"equalizer=frequency=900:width=1800:width_type=h:gain={eq_mid}")
-        if eq_treble := player_conf.get_value(CONF_EQ_TREBLE):
+        if (
+            eq_treble := self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_EQ_TREBLE, 0
+            )
+        ) != 0:
             filter_params.append(
                 f"equalizer=frequency=9000:width=18000:width_type=h:gain={eq_treble}"
             )
         # handle output mixing only left or right
-        conf_channels = player_conf.get_value(CONF_OUTPUT_CHANNELS)
+        conf_channels = self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
+        )
         if conf_channels == "left":
             filter_params.append("pan=mono|c0=FL")
         elif conf_channels == "right":
@@ -1008,8 +1002,8 @@ class StreamsController(CoreController):
             output_sample_rate = min(default_sample_rate, queue_player.max_sample_rate)
             player_max_bit_depth = 24 if queue_player.supports_24bit else 16
             output_bit_depth = min(default_bit_depth, player_max_bit_depth)
-            output_channels_str = await self.mass.config.get_player_config_value(
-                queue_player.player_id, CONF_OUTPUT_CHANNELS
+            output_channels_str = self.mass.config.get_raw_player_config_value(
+                queue_player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
             )
             output_channels = 1 if output_channels_str != "stereo" else 2
         return AudioFormat(

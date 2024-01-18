@@ -9,8 +9,6 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
-import shortuuid
-
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
@@ -18,7 +16,6 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HIDE_GROUP_MEMBERS,
     CONF_ENTRY_OUTPUT_CHANNELS,
-    CONF_ENTRY_OUTPUT_CODEC,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -38,7 +35,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -60,9 +56,6 @@ CONF_ENTRY_EQ_BASS_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_BASS.to_dict(
 CONF_ENTRY_EQ_MID_HIDDEN = ConfigEntry.from_dict({**CONF_ENTRY_EQ_MID.to_dict(), "hidden": True})
 CONF_ENTRY_EQ_TREBLE_HIDDEN = ConfigEntry.from_dict(
     {**CONF_ENTRY_EQ_TREBLE.to_dict(), "hidden": True}
-)
-CONF_ENTRY_OUTPUT_CODEC_HIDDEN = ConfigEntry.from_dict(
-    {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "hidden": True}
 )
 CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
     key=CONF_GROUPED_POWER_ON,
@@ -203,14 +196,6 @@ class UniversalGroupProvider(PlayerProvider):
                 "child players will be treated as (un)mute commands to prevent the small "
                 "interruption of music when the stream is restarted.",
             ),
-            CONF_ENTRY_OUTPUT_CHANNELS_FORCED_STEREO,
-            CONF_ENTRY_FORCED_FLOW_MODE,
-            # group player outputs to individual members so
-            # these settings make no sense, hide them
-            CONF_ENTRY_EQ_BASS_HIDDEN,
-            CONF_ENTRY_EQ_MID_HIDDEN,
-            CONF_ENTRY_EQ_TREBLE_HIDDEN,
-            CONF_ENTRY_OUTPUT_CODEC_HIDDEN,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -236,36 +221,26 @@ class UniversalGroupProvider(PlayerProvider):
             ):
                 tg.create_task(self.mass.players.cmd_play(member.player_id))
 
-    async def cmd_play_url(
+    async def play_media(
         self,
         player_id: str,
-        url: str,
-        queue_item: QueueItem | None,
+        queue_item: QueueItem,
+        seek_position: int,
+        fade_in: bool,
     ) -> None:
-        """Send PLAY URL command to given player.
+        """Handle PLAY MEDIA on given player.
 
-        This is called when the Queue wants the player to start playing a specific url.
-        If an item from the Queue is being played, the QueueItem will be provided with
-        all metadata present.
+        This is called by the Queue controller to start playing a queue item on the given player.
+        The provider's own implementation should work out how to handle this request.
 
             - player_id: player_id of the player to handle the command.
-            - url: the url that the player should start playing.
-            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+            - queue_item: The QueueItem that needs to be played on the player.
+            - seek_position: Optional seek to this position.
+            - fade_in: Optionally fade in the item at playback start.
         """
-        # send stop first
-        await self.cmd_stop(player_id)
-        # debounce
-        # this can potentially be called multiple times at the (near) exact time
-        # due to many child players being powered on (or resynced) at the same time
-        # debounce the command a bit by only letting through the last one.
-        self.debounce_id = debounce_id = shortuuid.uuid()
-        await asyncio.sleep(100)
-        if self.debounce_id != debounce_id:
-            return
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
-
         active_members = self._get_active_members(
             player_id, only_powered=True, skip_sync_childs=True
         )
@@ -279,43 +254,41 @@ class UniversalGroupProvider(PlayerProvider):
 
         group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
 
-        # forward command to all (powered) group child's
+        # forward the command to all (sync master) group child's
         async with asyncio.TaskGroup() as tg:
             for member in active_members:
                 player_prov = self.mass.players.get_player_provider(member.player_id)
                 tg.create_task(
-                    player_prov.cmd_play_url(member.player_id, url=url, queue_item=queue_item)
+                    player_prov.play_media(
+                        member.player_id,
+                        queue_item=queue_item,
+                        seek_position=seek_position,
+                        fade_in=fade_in,
+                    )
                 )
 
-    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle StreamJob play command on given player."""
-        #  send stop first
-        await self.cmd_stop(player_id)
-        # power ON
-        await self.cmd_power(player_id, True)
-        group_player = self.mass.players.get(player_id)
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+        """
+        Handle enqueuing of the next queue item on the player.
 
-        active_members = self._get_active_members(
-            player_id, only_powered=True, skip_sync_childs=True
-        )
-        if len(active_members) == 0:
-            self.logger.warning(
-                "Play media requested for player %s but no member players are powered, "
-                "the request will be ignored",
-                group_player.display_name,
-            )
-            return
+        If the player supports PlayerFeature.ENQUE_NEXT:
+          This will be called about 10 seconds before the end of the track.
+        If the player does NOT report support for PlayerFeature.ENQUE_NEXT:
+          This will be called when the end of the track is reached.
 
-        group_player.extra_data["optimistic_state"] = PlayerState.PLAYING
+        A PlayerProvider implementation is in itself responsible for handling this
+        so that the queue items keep playing until its empty or the player stopped.
 
-        # forward command to all (powered) group child's
+        This will NOT be called if the end of the queue is reached (and repeat disabled).
+        This will NOT be called if the player is using flow mode to playback the queue.
+        """
+        # forward the command to all (sync master) group child's
         async with asyncio.TaskGroup() as tg:
-            for member in active_members:
+            for member in self._get_active_members(
+                player_id, only_powered=False, skip_sync_childs=True
+            ):
                 player_prov = self.mass.players.get_player_provider(member.player_id)
-                # we forward the stream_job to child to allow for nested groups etc
-                tg.create_task(
-                    player_prov.cmd_handle_stream_job(member.player_id, stream_job=stream_job)
-                )
+                tg.create_task(player_prov.enqueue_next_queue_item(member.player_id, queue_item))
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""

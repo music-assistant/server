@@ -18,7 +18,6 @@ from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dum
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
     DEFAULT_CORE_CONFIG_ENTRIES,
-    DEFAULT_PLAYER_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ConfigEntry,
     ConfigValueType,
@@ -327,36 +326,30 @@ class ConfigController:
         """Return configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
-                prov_entries = await prov.get_player_config_entries(player_id)
+                conf_entries = await prov.get_player_config_entries(player_id)
                 if player := self.mass.players.get(player_id, False):
                     raw_conf["default_name"] = player.display_name
             else:
-                prov_entries = tuple()
+                conf_entries = tuple()
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
-            prov_entries_keys = {x.key for x in prov_entries}
-            # combine provider defined entries with default player config entries
-            entries = prov_entries + tuple(
-                x for x in DEFAULT_PLAYER_CONFIG_ENTRIES if x.key not in prov_entries_keys
-            )
-            return PlayerConfig.parse(entries, raw_conf)
+            return PlayerConfig.parse(conf_entries, raw_conf)
         raise KeyError(f"No config found for player id {player_id}")
 
     @api_command("config/players/get_value")
-    async def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
+    async def get_player_config_value(
+        self,
+        player_id: str,
+        key: str,
+    ) -> ConfigValueType:
         """Return single configentry value for a player."""
-        cache_key = f"player_conf_value_{player_id}.{key}"
-        if (cached_value := self._value_cache.get(cache_key)) and cached_value is not None:
-            return cached_value
         conf = await self.get_player_config(player_id)
         val = (
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
         )
-        # store value in cache because this method can potentially be called very often
-        self._value_cache[cache_key] = val
         return val
 
     def get_raw_player_config_value(
