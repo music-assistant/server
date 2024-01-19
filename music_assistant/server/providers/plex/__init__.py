@@ -1,6 +1,7 @@
 """Plex musicprovider support for MusicAssistant."""
 from __future__ import annotations
 
+import asyncio
 import logging
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -16,7 +17,7 @@ from plexapi.library import MusicSection as PlexMusicSection
 from plexapi.media import AudioStream as PlexAudioStream
 from plexapi.media import Media as PlexMedia
 from plexapi.media import MediaPart as PlexMediaPart
-from plexapi.myplex import MyPlexPinLogin
+from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.server import PlexServer
 
 from music_assistant.common.models.config_entries import (
@@ -55,13 +56,16 @@ from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
-from music_assistant.server.providers.plex.helpers import get_libraries
+from music_assistant.server.providers.plex.helpers import discover_local_servers, get_libraries
 
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_LIBRARY = "library"
 CONF_AUTH_TOKEN = "token"
 CONF_LIBRARY_ID = "library_id"
-
+CONF_LOCAL_SERVER_IP = "local_server_ip"
+CONF_LOCAL_SERVER_PORT = "local_server_port"
+CONF_USE_GDM = "use_gdm"
+CONF_ACTION_GDM = "gdm"
 FAKE_ARTIST_PREFIX = "_fake://"
 
 
@@ -90,6 +94,22 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
+    conf_gdm = ConfigEntry(
+        key=CONF_USE_GDM,
+        type=ConfigEntryType.BOOLEAN,
+        label="GDM",
+        default_value=False,
+        description='Enable "GDM" to discover local Plex servers automatically.',
+        action=CONF_ACTION_GDM,
+        action_label="Use Plex GDM to discover local servers",
+    )
+    if action == CONF_ACTION_GDM and (server_details := await discover_local_servers()):
+        if server_details[0] is None and server_details[1] is None:
+            values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
+            values[CONF_LOCAL_SERVER_PORT] = "Discovery failed, please add Port manually"
+        else:
+            values[CONF_LOCAL_SERVER_IP] = server_details[0]
+            values[CONF_LOCAL_SERVER_PORT] = server_details[1]
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
@@ -116,23 +136,41 @@ async def get_config_entries(
     )
     if action in (CONF_ACTION_LIBRARY, CONF_ACTION_AUTH):
         token = mass.config.decrypt_string(values.get(CONF_AUTH_TOKEN))
-        if not (libraries := await get_libraries(mass, token)):
+        server_http_ip = values.get(CONF_LOCAL_SERVER_IP)
+        server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
+        if not (libraries := await get_libraries(mass, token, server_http_ip, server_http_port)):
             raise LoginFailed("Unable to retrieve Servers and/or Music Libraries")
         conf_libraries.options = tuple(
             # use the same value for both the value and the title
             # until we find out what plex uses as stable identifiers
             ConfigValueOption(
-                title=key,
-                value=f"{value} / {key}",
+                title=x,
+                value=x,
             )
-            for key, value in libraries.items()
+            for x in libraries
         )
         # select first library as (default) value
-
-        conf_libraries.default_value = conf_libraries.options[0]
-        conf_libraries.value = conf_libraries.options[0]
+        conf_libraries.default_value = libraries[0]
+        conf_libraries.value = libraries[0]
     # return the collected config entries
     return (
+        conf_gdm,
+        ConfigEntry(
+            key=CONF_LOCAL_SERVER_IP,
+            type=ConfigEntryType.STRING,
+            label="Local server IP",
+            description="The local server IP (e.g. 192.168.1.77)",
+            required=True,
+            value=values.get(CONF_LOCAL_SERVER_IP) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_LOCAL_SERVER_PORT,
+            type=ConfigEntryType.STRING,
+            label="Local server port",
+            description="The local server port (e.g. 32400)",
+            required=True,
+            value=values.get(CONF_LOCAL_SERVER_PORT) if values else None,
+        ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
@@ -151,17 +189,19 @@ class PlexProvider(MusicProvider):
 
     _plex_server: PlexServer = None
     _plex_library: PlexMusicSection = None
+    _myplex_account: MyPlexAccount = None
 
     async def handle_setup(self) -> None:
         """Set up the music provider by connecting to the server."""
         # silence urllib logger
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
-        base_url, server_name, library_name = self.config.get_value(CONF_LIBRARY_ID).split(" / ")
+        server_name, library_name = self.config.get_value(CONF_LIBRARY_ID).split(" / ", 1)
 
         def connect() -> PlexServer:
             try:
                 plex_server = PlexServer(
-                    baseurl=base_url, token=self.config.get_value(CONF_AUTH_TOKEN)
+                    f"http://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}",
+                    token=self.config.get_value(CONF_AUTH_TOKEN),
                 )
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
@@ -171,6 +211,9 @@ class PlexProvider(MusicProvider):
                 raise LoginFailed() from err
             return plex_server
 
+        self._myplex_account = await self.get_myplex_account_and_refresh_token(
+            self.config.get_value(CONF_AUTH_TOKEN)
+        )
         self._plex_server = await self._run_async(connect)
         self._plex_library = await self._run_async(self._plex_server.library.section, library_name)
 
@@ -207,6 +250,7 @@ class PlexProvider(MusicProvider):
         return self._plex_server.url(path, True)
 
     async def _run_async(self, call: Callable, *args, **kwargs):
+        await self.get_myplex_account_and_refresh_token(self.config.get_value(CONF_AUTH_TOKEN))
         return await self.mass.create_task(call, *args, **kwargs)
 
     async def _get_data(self, key, cls=None):
@@ -676,3 +720,16 @@ class PlexProvider(MusicProvider):
         async with self.mass.http_session.get(url, timeout=timeout) as resp:
             async for chunk in resp.content.iter_any():
                 yield chunk
+
+    async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
+        """Get a MyPlexAccount object and refresh the token if needed."""
+
+        def _refresh_plex_token():
+            if self._myplex_account is None:
+                myplex_account = MyPlexAccount(token=auth_token)
+                self._myplex_account = myplex_account
+            self._myplex_account.ping()
+            return self._myplex_account
+
+        result = await asyncio.to_thread(_refresh_plex_token)
+        return result
