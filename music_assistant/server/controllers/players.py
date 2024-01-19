@@ -328,6 +328,11 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player_id = self._check_redirect(player_id)
+        player = self.get(player_id, True)
+        if PlayerFeature.PAUSE not in player.supported_features:
+            # if player does not support pause, we need to send stop
+            await self.cmd_stop(player_id)
+            return
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_pause(player_id)
 

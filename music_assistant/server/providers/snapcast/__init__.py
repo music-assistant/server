@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
@@ -115,8 +116,8 @@ class SnapCastProvider(PlayerProvider):
                 f"Started Snapserver connection on:"
                 f"{self.snapcast_server_host}:{self.snapcast_server_control_port}"
             )
-        except OSError:
-            raise SetupFailedError("Unable to start the Snapserver connection ?")
+        except OSError as err:
+            raise SetupFailedError("Unable to start the Snapserver connection ?") from err
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -139,7 +140,6 @@ class SnapCastProvider(PlayerProvider):
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
             snap_client = cast(Snapclient, self._snapserver.client(player_id))
-            # self.mass.create_task(self._set_snapclient_empty_stream(player_id))
             player = Player(
                 player_id=player_id,
                 provider=self.domain,
@@ -197,12 +197,9 @@ class SnapCastProvider(PlayerProvider):
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        mass_player = self.mass.players.get(player_id)
-        if mass_player.volume_level != volume_level:
-            await self._snapserver.client_volume(
-                player_id, {"percent": volume_level, "muted": mass_player.volume_muted}
-            )
-            self.cmd_volume_mute(player_id, False)
+        await self._snapserver.client_volume(
+            player_id, {"percent": volume_level, "muted": volume_level != 0}
+        )
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -213,10 +210,8 @@ class SnapCastProvider(PlayerProvider):
         player.state = PlayerState.IDLE
         self._set_childs_state(player_id, PlayerState.IDLE)
         self.mass.players.register_or_update(player)
-
-    async def cmd_pause(self, player_id: str) -> None:
-        """Send PAUSE command to given player."""
-        await self.cmd_stop(player_id)
+        # assign default/empty stream to the player
+        await self._get_snapgroup(player_id).set_stream("default")
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send MUTE command to given player."""
@@ -231,6 +226,8 @@ class SnapCastProvider(PlayerProvider):
         """Unsync Snapcast player."""
         group = self._get_snapgroup(player_id)
         await group.remove_client(player_id)
+        # assign default/empty stream to the player
+        await self._get_snapgroup(player_id).set_stream("default")
         self._handle_update()
 
     async def play_media(
@@ -255,16 +252,15 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError("A synced player cannot receive play commands directly")
         # stop any existing streams first
         await self.cmd_stop(player_id)
-
         queue = self.mass.player_queues.get(queue_item.queue_id)
-        stream, port = await self._create_stream(player_id)
+        stream, port = await self._create_stream()
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
         async def queue_streamer():
             host = self.snapcast_server_host
             _, writer = await asyncio.open_connection(host, port)
-            self.logger.info("Opened connection to %s:%s", host, port)
+            self.logger.debug("Opened connection to %s:%s", host, port)
             player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
             player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
@@ -288,14 +284,16 @@ class SnapCastProvider(PlayerProvider):
                 ):
                     writer.write(pcm_chunk)
                     await writer.drain()
+
             finally:
                 await self._snapserver.stream_remove_stream(stream.identifier)
                 if writer.can_write_eof():
                     writer.close()
                 if not writer.is_closing():
                     writer.close()
-                self.logger.info("Closed connection to %s:%s", host, port)
+                self.logger.debug("Closed connection to %s:%s", host, port)
 
+        # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(queue_streamer())
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
@@ -321,34 +319,23 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         return {snap_client for snap_client in snap_group.clients if snap_client != player_id}
 
-    async def _create_stream(self, player_id: str) -> tuple[Snapstream, int]:
+    async def _create_stream(self) -> tuple[Snapstream, int]:
         """Create new stream on snapcast server."""
-        player = self.mass.players.get(player_id)
-        used_ports: set[int] = set()
-        for stream in self._snapserver.streams:
-            stream: Snapstream
-            if not stream.identifier.startswith("MASS-"):
-                continue
-            port = int(stream.identifier.split("-")[-1])
-            used_ports.add(port)
-
-        # select free port
-        for port in range(4953, 4953 + 200):
-            if port in used_ports:
-                continue
-            name = f"MASS-{player.display_name}-{port}"
+        attempts = 50
+        while attempts:
+            attempts -= 1
+            # pick a random port
+            port = random.randint(4953, 4953 + 200)
+            name = f"MusicAssistant--{port}"
             result = await self._snapserver.stream_add_stream(
                 # TODO: can we handle 24 bits bit depth ?
                 f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
             )
             if "id" not in result:
+                # if the port is already taken, the result will be an error
                 self.logger.warning(result)
                 continue
             stream = self._snapserver.stream(result["id"])
-            await self._snapserver.stream_setproperty(stream.identifier, "name", "koekoek")
-            await self._snapserver.stream_setproperty(
-                stream.identifier, "metadata", {"title": "song"}
-            )
             return (stream, port)
         raise RuntimeError("Unable to create stream - No free port found?")
 

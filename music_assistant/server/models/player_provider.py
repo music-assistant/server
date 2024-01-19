@@ -54,12 +54,12 @@ class PlayerProvider(Provider):
         - player_id: player_id of the player to handle the command.
         """
 
-    @abstractmethod
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
+        # will only be called for players with Pause feature set.
 
     async def play_media(
         self,

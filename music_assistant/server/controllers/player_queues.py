@@ -409,6 +409,11 @@ class PlayerQueuesController(CoreController):
         if self._queues[queue_id].announcement_in_progress:
             LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
             return
+        player = self.mass.players.get(queue_id, True)
+        if PlayerFeature.PAUSE not in player.supported_features:
+            # if player does not support pause, we need to send stop
+            await self.stop(queue_id)
+            return
         # simply forward the command to underlying player
         await self.mass.players.cmd_pause(queue_id)
 
@@ -866,9 +871,7 @@ class PlayerQueuesController(CoreController):
             # player does not support enqueue next feature.
             # we wait for the player to stop after it reaches the end of the track
             prev_seconds_remaining = prev_state.get("seconds_remaining", seconds_remaining)
-            end_of_track_reached = (
-                prev_seconds_remaining <= 2 and queue.state == PlayerState.IDLE
-            ) or seconds_remaining < 0.1
+            end_of_track_reached = prev_seconds_remaining <= 6 and queue.state == PlayerState.IDLE
             new_state["seconds_remaining"] = seconds_remaining
 
         if not end_of_track_reached:

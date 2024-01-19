@@ -65,8 +65,8 @@ PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         label="Player supports enqueue next/gapless",
         default_value=False,
-        description="If the player supports enqueuing the next item for fluid/gapless playback. \n"
-        "Unfortunately this feature is missing or broken on many DLNA players. \n"
+        description="If the player supports enqueuing the next item for fluid/gapless playback. "
+        "\n\nUnfortunately this feature is missing or broken on many DLNA players. \n"
         "Enable it with care. If music stops after one song, disable this setting.",
     ),
     ConfigEntry(
@@ -74,8 +74,8 @@ PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         label="Enable crossfade",
         default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n"
-        "Note that DLNA does not natively support crossfading so you need to enable"
+        description="Enable a crossfade transition between (queue) tracks. \n\n"
+        "Note that DLNA does not natively support crossfading so you need to enable "
         "the 'flow mode' workaround to use crossfading with DLNA players.",
         advanced=False,
         depends_on=CONF_FLOW_MODE,
@@ -246,9 +246,6 @@ class DLNAPlayer:
         if device.has_volume_mute:
             supported_features.add(PlayerFeature.VOLUME_MUTE)
 
-        if device.can_seek_rel_time or device.can_seek_abs_time:
-            supported_features.add(PlayerFeature.SEEK)
-
         return supported_features
 
 
@@ -350,7 +347,9 @@ class DLNAPlayerProvider(PlayerProvider):
         # always clear queue (by sending stop) first
         if dlna_player.device.can_stop:
             await self.cmd_stop(player_id)
-        didl_metadata = create_didl_metadata(self.mass, url, queue_item)
+        didl_metadata = create_didl_metadata(
+            self.mass, url, queue_item if not use_flow_mode else None
+        )
         title = queue_item.name if queue_item else "Music Assistant"
         await dlna_player.device.async_set_transport_uri(url, title, didl_metadata)
         # Play it
