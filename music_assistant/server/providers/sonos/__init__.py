@@ -212,7 +212,7 @@ class SonosPlayer:
             group_members = {x.uid for x in self.group_info.members if x.is_visible}
             if not group_members:
                 # not sure about this ?!
-                self.player.type = PlayerType.STEREO_PAIR
+                self.player.type = PlayerType.PLAYER
             elif group_members == {self.player_id}:
                 self.player.group_childs = set()
             else:

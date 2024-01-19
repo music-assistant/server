@@ -445,7 +445,7 @@ class ChromecastProvider(PlayerProvider):
             )
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
-            castplayer.player.type = PlayerType.STEREO_PAIR
+            castplayer.player.type = PlayerType.PLAYER
             castplayer.player.group_childs = set()
         # handle cast groups
         if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
