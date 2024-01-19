@@ -140,15 +140,6 @@ class PlayerQueuesController(CoreController):
         queue.repeat_mode = repeat_mode
         self.signal_update(queue_id)
 
-    @api_command("players/queue/crossfade")
-    def set_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
-        """Configure crossfade setting on the the queue."""
-        queue = self._queues[queue_id]
-        if queue.crossfade_enabled == crossfade_enabled:
-            return  # no change
-        queue.crossfade_enabled = crossfade_enabled
-        self.signal_update(queue_id)
-
     @api_command("players/queue/play_media")
     async def play_media(
         self,

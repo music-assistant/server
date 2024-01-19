@@ -54,14 +54,14 @@ CONF_NETWORK_SCAN = "network_scan"
 config.EVENT_LISTENER_PORT = 1700
 
 HIRES_MODELS = (
-    "Roam",
-    "Arc",
-    "Beam",
-    "Five",
-    "Move",
-    "One SL",
-    "Port",
-    "Amp",
+    "Sonos Roam",
+    "Sonos Arc",
+    "Sonos Beam",
+    "Sonos Five",
+    "Sonos Move",
+    "Sonos One SL",
+    "Sonos Port",
+    "Sonos Amp",
     "SYMFONISK Bookshelf",
     "SYMFONISK Table Lamp",
 )
@@ -337,17 +337,17 @@ class SonosPlayerProvider(PlayerProvider):
             self.mass.create_task(self._run_discovery())
         if not (sonos_player := self.sonosplayers.get(config.player_id)):
             return
-        if "sonos_bass" in changed_keys:
+        if "values/sonos_bass" in changed_keys:
             self.mass.create_task(
                 sonos_player.soco.renderingControl.SetBass,
                 [("InstanceID", 0), ("DesiredBass", config.get_value("sonos_bass"))],
             )
-        if "sonos_treble" in changed_keys:
+        if "values/sonos_treble" in changed_keys:
             self.mass.create_task(
                 sonos_player.soco.renderingControl.SetTreble,
                 [("InstanceID", 0), ("DesiredTreble", config.get_value("sonos_treble"))],
             )
-        if "sonos_loudness" in changed_keys:
+        if "values/sonos_loudness" in changed_keys:
             loudness_value = "1" if config.get_value("sonos_loudness") else "0"
             self.mass.create_task(
                 sonos_player.soco.renderingControl.SetLoudness,
@@ -609,7 +609,7 @@ class SonosPlayerProvider(PlayerProvider):
                     address=soco_device.ip_address,
                     manufacturer=self.name,
                 ),
-                max_sample_rate=41000,
+                max_sample_rate=441000,
                 supports_24bit=False,
             ),
             speaker_info=speaker_info,

@@ -58,6 +58,7 @@ BASE_PLAYER_FEATURES = (
 )
 
 CONF_ENQUEUE_NEXT = "enqueue_next"
+CONF_ENFORCE_MP3 = "enforce_mp3"
 
 PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
@@ -82,6 +83,17 @@ PLAYER_CONFIG_ENTRIES = (
     ),
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    ConfigEntry(
+        key=CONF_ENFORCE_MP3,
+        type=ConfigEntryType.BOOLEAN,
+        label="Enforce (lossy) mp3 stream",
+        default_value=False,
+        description="By default, Music Assistant sends lossless, high quality audio "
+        "to all players. Some players can not deal with that and require the stream to be packed "
+        "into a lossy mp3 codec. \n\n "
+        "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
+        advanced=True,
+    ),
 )
 
 CONF_NETWORK_SCAN = "network_scan"
@@ -334,11 +346,10 @@ class DLNAPlayerProvider(PlayerProvider):
         use_flow_mode = await self.mass.config.get_player_config_value(
             player_id, CONF_FLOW_MODE
         ) or await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
+        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
-            # TODO: determine codec support from dlna profile
-            # for now, assume every dlna player supports FLAC.
-            output_codec=ContentType.FLAC,
+            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
             seek_position=seek_position,
             fade_in=fade_in,
             flow_mode=use_flow_mode,
