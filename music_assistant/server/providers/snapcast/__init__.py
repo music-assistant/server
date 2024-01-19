@@ -218,9 +218,6 @@ class SnapCastProvider(PlayerProvider):
         """Unsync Snapcast player."""
         group = self._get_snapgroup(player_id)
         await group.remove_client(player_id)
-        group = self._get_snapgroup(player_id)
-        stream_id = await self._get_empty_stream()
-        await group.set_stream(stream_id)
         self._handle_update()
 
     async def play_media(
