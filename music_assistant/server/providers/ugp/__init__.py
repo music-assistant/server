@@ -25,6 +25,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
 )
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
@@ -130,6 +131,11 @@ class UniversalGroupProvider(PlayerProvider):
 
     prev_sync_leaders: dict[str, tuple[str]] | None = None
     debounce_id: str | None = None
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.PLAYER_GROUP_CREATE,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""

@@ -25,6 +25,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
@@ -261,6 +262,11 @@ class SonosPlayerProvider(PlayerProvider):
     sonosplayers: dict[str, SonosPlayer] | None = None
     _discovery_running: bool = False
     _discovery_reschedule_timer: asyncio.TimerHandle | None = None
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.PLAYER_GROUP_CREATE,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""

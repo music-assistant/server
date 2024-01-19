@@ -32,6 +32,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
 )
 from music_assistant.common.models.errors import QueueEmpty, SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
@@ -189,6 +190,11 @@ class SlimprotoProvider(PlayerProvider):
     _do_not_resync_before: dict[str, float]
     _cli: LmsCli
     port: int = DEFAULT_SLIMPROTO_PORT
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.PLAYER_GROUP_CREATE,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -590,7 +596,6 @@ class SlimprotoProvider(PlayerProvider):
                     manufacturer=client.device_type,
                 ),
                 supported_features=(
-                    PlayerFeature.ACCURATE_TIME,
                     PlayerFeature.POWER,
                     PlayerFeature.SYNC,
                     PlayerFeature.VOLUME_SET,

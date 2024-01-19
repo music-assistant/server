@@ -24,6 +24,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
 )
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
@@ -97,6 +98,11 @@ class SnapCastProvider(PlayerProvider):
     snapcast_server_host: str
     snapcast_server_control_port: int
     _stream_tasks: dict[str, asyncio.Task]
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.PLAYER_GROUP_CREATE,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""

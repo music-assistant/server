@@ -628,7 +628,7 @@ class PlayerController(CoreController):
     async def create_group(self, provider: str, name: str, members: list[str]) -> Player:
         """Create new Player/Sync Group on given PlayerProvider with name and members.
 
-        - provider_instance_or_domain: provider domain or instance id to create the new group on.
+        - provider: provider domain or instance id to create the new group on.
         - name: Name for the new group to create.
         - members: A list of player_id's that should be part of this group.
 

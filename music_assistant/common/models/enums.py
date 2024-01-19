@@ -226,10 +226,8 @@ class PlayerFeature(StrEnum):
     VOLUME_MUTE = "volume_mute"
     PAUSE = "pause"
     SYNC = "sync"
-    ACCURATE_TIME = "accurate_time"
     SEEK = "seek"
     ENQUEUE_NEXT = "enqueue_next"
-    CROSSFADE = "crossfade"
 
 
 class EventType(StrEnum):
