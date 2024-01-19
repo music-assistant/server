@@ -27,7 +27,6 @@ from music_assistant.common.models.player import Player
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_HIDE_GROUP_CHILDS,
-    CONF_MUTE_AS_POWER,
     CONF_PLAYERS,
     ROOT_LOGGER_NAME,
 )
@@ -243,22 +242,19 @@ class PlayerController(CoreController):
             or player.name
             or player.player_id
         )
-        # handle special mute_as_power feature
-        if player.mute_as_power:
-            player.powered = player.powered and not player.volume_muted
-        elif player.state == PlayerState.PLAYING and not player.powered:
+        if player.state == PlayerState.PLAYING and not player.powered:
             # mark player as powered if its playing
             # could happen for players that do not officially support power commands
             player.powered = True
 
-        # handle syncgroup - get attributes from first player that his this group as source
+        # handle syncgroup - get attributes from first player that has this group as source
         if player.type == PlayerType.SYNC_GROUP:
             if sync_master := self._get_syncgroup_master(player):
-                player.current_url = sync_master.current_url
+                player.current_item_id = sync_master.current_item_id
                 player.elapsed_time = sync_master.elapsed_time
                 player.elapsed_time_last_updated = sync_master.elapsed_time_last_updated
             else:
-                player.current_url = None
+                player.current_item_id = None
                 player.elapsed_time = 0
                 player.elapsed_time_last_updated = 0
 
@@ -403,13 +399,7 @@ class PlayerController(CoreController):
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
 
-        mute_as_power = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_MUTE_AS_POWER, False
-        )
-        cur_power = (
-            (player.powered and not player.volume_muted) if mute_as_power else player.powered
-        )
-        if cur_power == powered:
+        if player.powered == powered:
             return  # nothing to do
 
         # stop player at power off
@@ -417,11 +407,11 @@ class PlayerController(CoreController):
             not powered
             and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
             and not player.synced_to
-            and not mute_as_power
+            and not player.powered
         ):
             await self.cmd_stop(player_id)
         # unsync player at power off
-        if not powered and not mute_as_power:
+        if not powered:
             if player.synced_to is not None:
                 await self.cmd_unsync(player_id)
             for child in self._get_child_players(player):
@@ -429,15 +419,10 @@ class PlayerController(CoreController):
                     continue
                 await self.cmd_unsync(child.player_id)
 
-        if mute_as_power:
-            # handle mute as power feature
-            await self.cmd_volume_mute(player_id, not powered)
-
         # restore mute if needed on poweroff
         if (
             not powered
             and player.volume_muted
-            and not mute_as_power
             and PlayerFeature.VOLUME_MUTE not in player.supported_features
         ):
             await self.cmd_volume_mute(player_id, False)
@@ -446,7 +431,7 @@ class PlayerController(CoreController):
             # player does not support power, use fake state instead
             player.powered = powered
             self.update(player_id)
-        elif powered or not mute_as_power:
+        elif powered:
             # regular power command
             player_provider = self.get_player_provider(player_id)
             await player_provider.cmd_power(player_id, powered)
