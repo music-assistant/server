@@ -11,7 +11,12 @@ from snapcast.control.client import Snapclient
 from snapcast.control.group import Snapgroup
 from snapcast.control.stream import Snapstream
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
@@ -182,6 +187,14 @@ class SnapCastProvider(PlayerProvider):
             await self.cmd_stop(client.identifier)
         self._snapserver.stop()
 
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
+        """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        base_entries = await super().get_player_config_entries(player_id)
+        return base_entries + (
+            CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_CROSSFADE_DURATION,
+        )
+
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         mass_player = self.mass.players.get(player_id)
@@ -311,14 +324,11 @@ class SnapCastProvider(PlayerProvider):
     async def _create_stream(self, player_id: str) -> tuple[Snapstream, int]:
         """Create new stream on snapcast server."""
         player = self.mass.players.get(player_id)
-        name = f"Music Assistant {player.display_name}"
         used_ports: set[int] = set()
         for stream in self._snapserver.streams:
             stream: Snapstream
             if ":" not in stream.path or "mass_" not in stream.identifier:
                 continue
-            if stream.name == name:
-                raise RuntimeError("stream already exists!")
             host = stream.path.split("?")[0]
             port = int(host.split(":")[-1])
             used_ports.add(port)
@@ -327,7 +337,7 @@ class SnapCastProvider(PlayerProvider):
         for port in range(4953, 4953 + 200):
             if port in used_ports:
                 continue
-
+            name = f"MASS-{player.display_name}-{port}"
             result = await self._snapserver.stream_add_stream(
                 # TODO: can we handle 24 bits bit depth ?
                 f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
@@ -336,6 +346,10 @@ class SnapCastProvider(PlayerProvider):
                 self.logger.warning(result)
                 continue
             stream = self._snapserver.stream(result["id"])
+            await self._snapserver.stream_setproperty(stream.identifier, "name", "koekoek")
+            await self._snapserver.stream_setproperty(
+                stream.identifier, "metadata", {"title": "song"}
+            )
             return (stream, port)
         raise RuntimeError("Unable to create stream - No free port found?")
 
@@ -349,4 +363,4 @@ class SnapCastProvider(PlayerProvider):
         for child_player_id in self._group_childs(player_id):
             player = self.mass.players.get(child_player_id)
             player.state = state
-            self.mass.players.update(player)
+            self.mass.players.update(child_player_id)
