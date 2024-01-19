@@ -327,10 +327,9 @@ class SnapCastProvider(PlayerProvider):
         used_ports: set[int] = set()
         for stream in self._snapserver.streams:
             stream: Snapstream
-            if ":" not in stream.path or "mass_" not in stream.identifier:
+            if not stream.identifier.startswith("MASS-"):
                 continue
-            host = stream.path.split("?")[0]
-            port = int(host.split(":")[-1])
+            port = int(stream.identifier.split("-")[-1])
             used_ports.add(port)
 
         # select free port
