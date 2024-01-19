@@ -484,18 +484,24 @@ class ChromecastProvider(PlayerProvider):
         else:
             castplayer.player.elapsed_time = status.current_time
 
+        # active source
+        if status.content_id and castplayer.player_id in status.content_id:
+            castplayer.player.active_source = castplayer.player_id
+        else:
+            castplayer.player.active_source = castplayer.cc.app_display_name
+
         # current media
-        castplayer.player.current_url = status.content_id
+        castplayer.player.current_item_id = status.content_id
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
-        # handle end of MA queue - set current item to None
+        # handle end of MA queue - reset current_item_id
         if (
             castplayer.player.state == PlayerState.IDLE
-            and castplayer.player.current_url
+            and castplayer.player.current_item_id
             and (queue := self.mass.player_queues.get(castplayer.player_id))
             and queue.next_item is None
         ):
-            castplayer.player.current_url = None
+            castplayer.player.current_item_id = None
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""

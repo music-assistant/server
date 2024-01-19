@@ -17,6 +17,7 @@ from aioslimproto.const import EventType as SlimEventType
 from aioslimproto.discovery import start_discovery
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
@@ -45,6 +46,10 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+
+
+# monkey patch the SlimClient
+SlimClient._process_stat_stmf = lambda x, y: None  # noqa: ARG005
 
 CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
@@ -325,6 +330,12 @@ class SlimprotoProvider(PlayerProvider):
             base_entries
             + preset_entries
             + (
+                CONF_ENTRY_CROSSFADE,
+                CONF_ENTRY_EQ_BASS,
+                CONF_ENTRY_EQ_MID,
+                CONF_ENTRY_EQ_TREBLE,
+                CONF_ENTRY_OUTPUT_CHANNELS,
+                CONF_ENTRY_CROSSFADE_DURATION,
                 ConfigEntry(
                     key=CONF_SYNC_ADJUST,
                     type=ConfigEntryType.INTEGER,
@@ -336,11 +347,6 @@ class SlimprotoProvider(PlayerProvider):
                     "you can shift the audio a bit.",
                     advanced=True,
                 ),
-                CONF_ENTRY_EQ_BASS,
-                CONF_ENTRY_EQ_MID,
-                CONF_ENTRY_EQ_TREBLE,
-                CONF_ENTRY_OUTPUT_CHANNELS,
-                CONF_ENTRY_CROSSFADE_DURATION,
             )
         )
 
@@ -388,7 +394,7 @@ class SlimprotoProvider(PlayerProvider):
         if player.synced_to:
             raise RuntimeError("A synced player cannot receive play commands directly")
         # stop any existing streams first
-        await self.cmd_stop()
+        await self.cmd_stop(player_id)
         if player.group_childs:
             # player has sync members, we need to start a multi client stream job
             stream_job = await self.mass.streams.create_multi_client_stream_job(
@@ -404,7 +410,9 @@ class SlimprotoProvider(PlayerProvider):
                     tg.create_task(
                         self._handle_play_url(
                             client,
-                            url=stream_job.resolve_stream_url(client.player_id),
+                            url=stream_job.resolve_stream_url(
+                                client.player_id, output_codec=ContentType.FLAC
+                            ),
                             queue_item=None,
                             send_flush=True,
                             auto_play=False,
@@ -430,6 +438,11 @@ class SlimprotoProvider(PlayerProvider):
                 auto_play=True,
             )
 
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+        """Handle enqueuing of the next queue item on the player."""
+        # we don't have to do anything,
+        # enqueuing the next item is handled in the buffer ready callback
+
     async def _handle_play_url(
         self,
         client: SlimClient,
@@ -452,7 +465,7 @@ class SlimprotoProvider(PlayerProvider):
             mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
             metadata={"item_id": queue_item.queue_item_id, "title": queue_item.name}
             if queue_item
-            else {"item_id": "flow", "title": "Music Assistant"},
+            else {"item_id": client.player_id, "title": "Music Assistant"},
             send_flush=send_flush,
             transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
             transition_duration=transition_duration,
@@ -592,7 +605,12 @@ class SlimprotoProvider(PlayerProvider):
 
         # update player state on player events
         player.available = True
-        player.current_url = client.current_url
+        player.current_item_id = (
+            client.current_metadata.get("item_id")
+            if client.current_metadata
+            else client.current_url
+        )
+        player.active_source = player.player_id
         player.name = client.name
         player.powered = client.powered
         player.state = STATE_MAP[client.state]

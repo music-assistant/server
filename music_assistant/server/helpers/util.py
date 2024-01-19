@@ -9,6 +9,7 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Iterator
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
@@ -102,3 +103,9 @@ def create_tempfile():
     if platform.system() == "Linux":
         return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
     return tempfile.NamedTemporaryFile(buffering=0)
+
+
+def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:
+    """Chunk bytes data into smaller chunks."""
+    for i in range(0, len(data), chunk_size):
+        yield data[i : i + chunk_size]

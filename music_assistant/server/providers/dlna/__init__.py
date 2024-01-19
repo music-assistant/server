@@ -174,7 +174,6 @@ class DLNAPlayer:
     bootid: int | None = None
     last_seen: float = field(default_factory=time.time)
     last_command: float = field(default_factory=time.time)
-    need_elapsed_time_workaround: bool = False
 
     def update_attributes(self):
         """Update attributes of the MA Player from DLNA state."""
@@ -187,7 +186,16 @@ class DLNAPlayer:
             self.player.volume_muted = self.device.is_volume_muted or False
             self.player.state = self.get_state(self.device)
             self.player.supported_features = self.get_supported_features(self.device)
-            self.player.current_url = self.device.current_track_uri or ""
+            self.player.current_item_id = self.device.current_track_uri or ""
+            if self.player.player_id in self.player.current_item_id:
+                self.player.active_source = self.player.player_id
+            elif "spotify" in self.player.current_item_id:
+                self.player.active_source = "spotify"
+            elif self.player.current_item_id.startswith("http"):
+                self.player.active_source = "http"
+            else:
+                # TODO: handle other possible sources here
+                self.player.active_source = None
             if self.device.media_position:
                 # only update elapsed_time if the device actually reports it
                 self.player.elapsed_time = float(self.device.media_position)
@@ -195,15 +203,6 @@ class DLNAPlayer:
                     self.player.elapsed_time_last_updated = (
                         self.device.media_position_updated_at.timestamp()
                     )
-            # some dlna players get stuck at the end of the track and won't
-            # automatically play the next track, try to workaround that
-            if (
-                self.device.media_duration
-                and self.player.corrected_elapsed_time
-                and self.player.state == PlayerState.PLAYING
-                and (self.device.media_duration - self.player.corrected_elapsed_time) <= 10
-            ):
-                self.end_of_track_reached = time.time()
         else:
             # device is unavailable
             self.player.available = False
@@ -558,7 +557,6 @@ class DLNAPlayerProvider(PlayerProvider):
             else:
                 # new player detected, setup our DLNAPlayer wrapper
                 conf_key = f"{CONF_PLAYERS}/{udn}/enabled"
-                self.mass.config.get_raw_player_config_value()
                 enabled = self.mass.config.get(conf_key, True)
                 # ignore disabled players
                 if not enabled:
@@ -670,10 +668,10 @@ class DLNAPlayerProvider(PlayerProvider):
 
     async def _update_player(self, dlna_player: DLNAPlayer) -> None:
         """Update DLNA Player."""
-        prev_url = dlna_player.player.current_url
+        prev_url = dlna_player.player.current_item_id
         prev_state = dlna_player.player.state
         dlna_player.update_attributes()
-        current_url = dlna_player.player.current_url
+        current_url = dlna_player.player.current_item_id
         current_state = dlna_player.player.state
 
         if (prev_url != current_url) or (prev_state != current_state):

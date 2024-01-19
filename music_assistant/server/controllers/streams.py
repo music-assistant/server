@@ -32,6 +32,7 @@ from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
+    CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
     CONF_EQ_MID,
@@ -43,7 +44,7 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_media_stream,
-    get_stream_details,
+    set_stream_details,
 )
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.helpers.util import get_ips
@@ -131,7 +132,7 @@ class MultiClientStreamJob:
             with suppress(asyncio.QueueFull):
                 sub_queue.put_nowait(b"")
 
-    async def resolve_stream_url(self, child_player_id: str, output_codec: ContentType) -> str:
+    def resolve_stream_url(self, child_player_id: str, output_codec: ContentType) -> str:
         """Resolve the childplayer specific stream URL to this streamjob."""
         fmt = output_codec.value
         # handle raw pcm
@@ -380,11 +381,13 @@ class StreamsController(CoreController):
                 output_sample_rate = min(FLOW_MAX_SAMPLE_RATE, player.max_sample_rate)
                 output_bit_depth = min(FLOW_MAX_BIT_DEPTH, player_max_bit_depth)
             else:
-                streamdetails = await get_stream_details(self.mass, queue_item)
+                await set_stream_details(self.mass, queue_item)
                 output_sample_rate = min(
-                    streamdetails.audio_format.sample_rate, player.max_sample_rate
+                    queue_item.streamdetails.audio_format.sample_rate, player.max_sample_rate
                 )
-                output_bit_depth = min(streamdetails.audio_format.bit_depth, player_max_bit_depth)
+                output_bit_depth = min(
+                    queue_item.streamdetails.audio_format.bit_depth, player_max_bit_depth
+                )
             output_channels = self.mass.config.get_raw_player_config_value(
                 queue_item.queue_id, CONF_OUTPUT_CHANNELS, "stereo"
             )
@@ -455,7 +458,7 @@ class StreamsController(CoreController):
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
         try:
-            streamdetails = await get_stream_details(self.mass, queue_item=queue_item)
+            await set_stream_details(self.mass, queue_item=queue_item)
         except MediaNotFoundError:
             raise web.HTTPNotFound(
                 reason=f"Unable to retrieve streamdetails for item: {queue_item}"
@@ -466,8 +469,8 @@ class StreamsController(CoreController):
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
             queue_player=queue_player,
-            default_sample_rate=streamdetails.audio_format.sample_rate,
-            default_bit_depth=streamdetails.audio_format.bit_depth,
+            default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
+            default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
 
         # prepare request, add some DLNA/UPNP compatible headers
@@ -490,13 +493,14 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Start serving audio stream for QueueItem %s to %s", queue_item.uri, queue.display_name
         )
-        queue.current_index = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(streamdetails.audio_format.bit_depth),
-            sample_rate=streamdetails.audio_format.sample_rate,
-            bit_depth=streamdetails.audio_format.bit_depth,
+            content_type=ContentType.from_bit_depth(
+                queue_item.streamdetails.audio_format.bit_depth
+            ),
+            sample_rate=queue_item.streamdetails.audio_format.sample_rate,
+            bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
         ffmpeg_args = await self._get_player_ffmpeg_args(
             queue_player,
@@ -510,7 +514,7 @@ class StreamsController(CoreController):
                 try:
                     async for chunk in get_media_stream(
                         self.mass,
-                        streamdetails=streamdetails,
+                        streamdetails=queue_item.streamdetails,
                         pcm_format=pcm_format,
                         seek_position=seek_position,
                         fade_in=fade_in,
@@ -753,13 +757,21 @@ class StreamsController(CoreController):
         last_fadeout_part = b""
         total_bytes_written = 0
         queue.flow_mode = True
-        self.logger.info("Start Queue Flow stream for Queue %s", queue.display_name)
+        use_crossfade = self.mass.config.get_raw_player_config_value(
+            queue.queue_id, CONF_CROSSFADE, False
+        )
+        pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
+        self.logger.info(
+            "Start Queue Flow stream for Queue %s - crossfade: %s",
+            queue.display_name,
+            use_crossfade,
+        )
 
         while True:
             # get (next) queue item to stream
             if queue_track is None:
                 queue_track = start_queue_item
-                use_crossfade = queue.crossfade_enabled
+                await set_stream_details(self.mass, queue_track)
             else:
                 seek_position = 0
                 fade_in = False
@@ -768,24 +780,11 @@ class StreamsController(CoreController):
                 except QueueEmpty:
                     break
 
-            # get streamdetails (already prefetched by preload_next_item)
-            try:
-                streamdetails = await get_stream_details(self.mass, queue_track)
-            except MediaNotFoundError as err:
-                # streamdetails retrieval failed, skip to next track instead of bailing out...
-                self.logger.warning(
-                    "Skip track %s due to missing streamdetails",
-                    queue_track.name,
-                    exc_info=err,
-                )
-                continue
-
             self.logger.debug(
-                "Start Streaming queue track: %s (%s) for queue %s - crossfade: %s",
-                streamdetails.uri,
+                "Start Streaming queue track: %s (%s) for queue %s",
+                queue_track.streamdetails.uri,
                 queue_track.name,
                 queue.display_name,
-                use_crossfade,
             )
 
             # set some basic vars
@@ -796,21 +795,27 @@ class StreamsController(CoreController):
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             queue_track.streamdetails.seconds_skipped = seek_position
             buffer_size = crossfade_size if use_crossfade else int(pcm_sample_size * 2)
-
-            buffer = b""
             bytes_written = 0
+            buffer = b""
             chunk_num = 0
             # handle incoming audio chunks
             async for chunk in get_media_stream(
                 self.mass,
-                streamdetails,
+                queue_track.streamdetails,
                 pcm_format=pcm_format,
                 seek_position=seek_position,
                 fade_in=fade_in,
-                # only allow strip silence from begin if track is being crossfaded
-                strip_silence_begin=last_fadeout_part != b"",
+                # strip silence from begin/end if track is being crossfaded
+                strip_silence_begin=use_crossfade,
+                strip_silence_end=use_crossfade,
             ):
                 chunk_num += 1
+
+                # throttle buffer, do not allow more than 30 seconds in buffer
+                seconds_buffered = total_bytes_written / pcm_sample_size
+                player = self.mass.players.get(queue.queue_id)
+                while (seconds_buffered - player.corrected_elapsed_time) > 30:
+                    await asyncio.sleep(1)
 
                 ####  HANDLE FIRST PART OF TRACK
 
@@ -852,12 +857,6 @@ class StreamsController(CoreController):
 
             #### HANDLE END OF TRACK
 
-            if bytes_written == 0:
-                # stream error: got empty first chunk ?!
-                self.logger.warning("Stream error on %s", streamdetails.uri)
-                queue_track.streamdetails.seconds_streamed = 0
-                continue
-
             if buffer and use_crossfade:
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
@@ -869,14 +868,18 @@ class StreamsController(CoreController):
                 yield buffer
                 bytes_written += len(buffer)
 
-            # end of the track reached - store accurate duration
+            # update duration details based on the actual pcm data we sent
+            # this also accounts for crossfade and silence stripping
             queue_track.streamdetails.seconds_streamed = bytes_written / pcm_sample_size
-            total_bytes_written += bytes_written
+            queue_track.streamdetails.duration = (
+                seek_position + queue_track.streamdetails.seconds_streamed
+            )
             self.logger.debug(
-                "Finished Streaming queue track: %s (%s) on queue %s",
+                "Finished Streaming queue track: %s (%s) on queue %s - seconds streamed: %s",
                 queue_track.streamdetails.uri,
                 queue_track.name,
                 queue.display_name,
+                queue_track.streamdetails.seconds_streamed,
             )
 
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)

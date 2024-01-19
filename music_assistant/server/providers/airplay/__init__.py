@@ -218,6 +218,12 @@ class AirplayProvider(PlayerProvider):
             fade_in=fade_in,
         )
 
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+        """Handle enqueuing of the next queue item on the player."""
+        # simply forward to underlying slimproto player
+        slimproto_prov = self.mass.get_provider("slimproto")
+        await slimproto_prov.enqueue_next_queue_item(player_id, queue_item)
+
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         # simply forward to underlying slimproto player

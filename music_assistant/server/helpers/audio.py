@@ -243,8 +243,8 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
             )
 
 
-async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> StreamDetails:
-    """Get streamdetails for the given QueueItem.
+async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> None:
+    """Set streamdetails for the given QueueItem.
 
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
@@ -301,10 +301,8 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
         and streamdetails.data.startswith("http")
     ):
         streamdetails.direct = streamdetails.data
-    # set streamdetails as attribute on the media_item
-    # this way the app knows what content is playing
+    # set streamdetails as attribute on the queue_item
     queue_item.streamdetails = streamdetails
-    return streamdetails
 
 
 async def get_gain_correct(
@@ -494,6 +492,7 @@ async def get_media_stream(  # noqa: PLR0915
 
             # update duration details based on the actual pcm data we sent
             streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
+            streamdetails.duration = seek_position + streamdetails.seconds_streamed
 
         except (asyncio.CancelledError, GeneratorExit) as err:
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)

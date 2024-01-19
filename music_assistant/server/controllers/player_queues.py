@@ -28,7 +28,7 @@ from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import FALLBACK_DURATION, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
-from music_assistant.server.helpers.audio import get_stream_details
+from music_assistant.server.helpers.audio import set_stream_details
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -529,6 +529,7 @@ class PlayerQueuesController(CoreController):
             raise FileNotFoundError(f"Unknown index/id: {index}")
         queue.current_index = index
         queue.index_in_buffer = index
+        queue.flow_mode_start_index = index
         queue.flow_mode = False  # reset
         player_prov = self.mass.players.get_player_provider(queue_id)
         await player_prov.play_media(
@@ -596,11 +597,11 @@ class PlayerQueuesController(CoreController):
         # update current item from player report
         if queue.flow_mode:
             # flow mode active, calculate current item
-            queue.current_index, queue.elapsed_time = self.__get_queue_stream_index(
-                queue, player, queue.flow_mode_start_index
-            )
+            queue.current_index, queue.elapsed_time = self.__get_queue_stream_index(queue, player)
         else:
             # queue is active and player has one of our tracks loaded, update state
+            if item_id := self._parse_player_current_item_id(queue_id, player.current_item_id):
+                queue.current_index = self.index_by_id(queue_id, item_id)
             queue.elapsed_time = int(player.corrected_elapsed_time)
 
         # only update these attributes if the queue is active
@@ -694,9 +695,7 @@ class PlayerQueuesController(CoreController):
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
                 # that are not playable which will stop playback.
-                next_item.streamdetails = await get_stream_details(
-                    mass=self.mass, queue_item=next_item
-                )
+                await set_stream_details(mass=self.mass, queue_item=next_item)
                 # Lazy load the full MediaItem for the QueueItem, making sure to get the
                 # maximum quality of thumbs
                 next_item.media_item = await self.mass.music.get_item_by_uri(next_item.uri)
@@ -708,6 +707,7 @@ class PlayerQueuesController(CoreController):
         if next_item is None:
             raise QueueEmpty("No more (playable) tracks left in the queue.")
         queue.index_in_buffer = next_index
+        queue.next_track_enqueued = True
         return next_item
 
     # Main queue manipulation methods
@@ -902,9 +902,7 @@ class PlayerQueuesController(CoreController):
                 break
         return tracks
 
-    def __get_queue_stream_index(
-        self, queue: PlayerQueue, player: Player, start_index: int
-    ) -> tuple[int, int]:
+    def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
         # player is playing a constant stream so we need to do this the hard way
         queue_index = 0
@@ -912,9 +910,9 @@ class PlayerQueuesController(CoreController):
         total_time = 0
         track_time = 0
         queue_items = self._queue_items[queue.queue_id]
-        if queue_items and len(queue_items) > start_index:
+        if queue_items and len(queue_items) > queue.flow_mode_start_index:
             # start_index: holds the position from which the flow stream started
-            queue_index = start_index
+            queue_index = queue.flow_mode_start_index
             queue_track = None
             while len(queue_items) > queue_index:
                 # keep enumerating the queue tracks to find current track
@@ -923,10 +921,12 @@ class PlayerQueuesController(CoreController):
                 if not queue_track.streamdetails:
                     track_time = elapsed_time_queue - total_time
                     break
-                if queue_track.streamdetails.seconds_streamed is not None:
-                    track_duration = queue_track.streamdetails.seconds_streamed
-                else:
-                    track_duration = queue_track.duration or FALLBACK_DURATION
+                track_duration = (
+                    queue_track.streamdetails.seconds_streamed
+                    or queue_track.streamdetails.duration
+                    or queue_track.duration
+                    or FALLBACK_DURATION
+                )
                 if elapsed_time_queue > (track_duration + total_time):
                     # total elapsed time is more than (streamed) track duration
                     # move index one up
@@ -939,3 +939,14 @@ class PlayerQueuesController(CoreController):
                     track_time = elapsed_time_queue + track_sec_skipped - total_time
                     break
         return queue_index, track_time
+
+    def _parse_player_current_item_id(self, queue_id: str, current_item_id: str) -> str | None:
+        """Parse QueueItem ID from Player's current url."""
+        if not current_item_id:
+            return None
+        if queue_id in current_item_id:
+            # try to extract the item id from either a url or queue_id/item_id combi
+            current_item_id = current_item_id.rsplit("/")[-1].split(".")[0]
+        if self.get_item(queue_id, current_item_id):
+            return current_item_id
+        return None

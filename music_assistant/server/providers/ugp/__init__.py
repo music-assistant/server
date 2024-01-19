@@ -163,9 +163,8 @@ class UniversalGroupProvider(PlayerProvider):
                     PlayerFeature.PAUSE,
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.VOLUME_MUTE,
-                    PlayerFeature.SET_MEMBERS,
                 ),
-                max_sample_rate=96000,
+                max_sample_rate=48000,
                 supports_24bit=True,
                 active_source=conf_key,
                 group_childs=player_conf,
@@ -363,14 +362,14 @@ class UniversalGroupProvider(PlayerProvider):
         group_player = self.mass.players.get(player_id)
         if not group_player.powered:
             group_player.state = PlayerState.IDLE
+            group_player.active_source = None
             return
 
         all_members = self._get_active_members(
             player_id, only_powered=False, skip_sync_childs=False
         )
-        if all_members:
-            group_player.max_sample_rate = max(x.max_sample_rate for x in all_members)
         group_player.group_childs = list(x.player_id for x in all_members)
+        group_player.active_source = player_id
         # read the state from the first active group member
         for member in all_members:
             if member.synced_to:
@@ -381,7 +380,7 @@ class UniversalGroupProvider(PlayerProvider):
                 player_powered = member.powered
             if not player_powered:
                 continue
-            group_player.current_url = member.current_url
+            group_player.current_item_id = member.current_item_id
             group_player.elapsed_time = member.elapsed_time
             group_player.elapsed_time_last_updated = member.elapsed_time_last_updated
             group_player.state = member.state

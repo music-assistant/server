@@ -34,7 +34,6 @@ class Player(DataClassDictMixin):
 
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()
-    current_url: str | None = None
     state: PlayerState = PlayerState.IDLE
 
     volume_level: int = 100
@@ -52,6 +51,10 @@ class Player(DataClassDictMixin):
     # if the player is grouped and a group is active, this will be set to the group's player_id
     # otherwise it will be set to the own player_id
     active_source: str = ""
+
+    # current_item_id: return item_id/uri of the current active/loaded item on the player
+    # this may be a MA queue_item_id, url, uri or some provider specific string
+    current_item_id: str | None = None
 
     # can_sync_with: return tuple of player_ids that can be synced to/with this player
     # usually this is just a list of all player_ids within the playerprovider

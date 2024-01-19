@@ -187,7 +187,16 @@ class SonosPlayer:
             self.playback_started = now
 
         # media info (track info)
-        self.player.current_url = self.track_info["uri"]
+        self.player.current_item_id = self.track_info["uri"]
+        if self.player.player_id in self.player.current_item_id:
+            self.player.active_source = self.player.player_id
+        elif "spotify" in self.player.current_item_id:
+            self.player.active_source = "spotify"
+        elif self.player.current_item_id.startswith("http"):
+            self.player.active_source = "http"
+        else:
+            # TODO: handle other possible sources here
+            self.player.active_source = None
         if not self.need_elapsed_time_workaround:
             self.player.elapsed_time = self.elapsed_time
             self.player.elapsed_time_last_updated = self.track_info_updated
@@ -702,13 +711,13 @@ class SonosPlayerProvider(PlayerProvider):
 
     async def _update_player(self, sonos_player: SonosPlayer, signal_update: bool = True) -> None:
         """Update Sonos Player."""
-        prev_url = sonos_player.player.current_url
+        prev_url = sonos_player.player.current_item_id
         prev_state = sonos_player.player.state
         sonos_player.update_attributes()
         sonos_player.player.can_sync_with = tuple(
             x for x in self.sonosplayers if x != sonos_player.player_id
         )
-        current_url = sonos_player.player.current_url
+        current_url = sonos_player.player.current_item_id
         current_state = sonos_player.player.state
 
         if (prev_url != current_url) or (prev_state != current_state):
