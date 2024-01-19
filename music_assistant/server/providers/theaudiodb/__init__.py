@@ -144,7 +144,6 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for track on theaudiodb."""
-        adb_track = None
         if track.mbid:
             result = await self._get_data("track-mb.php", i=track.mbid)
             if result and result.get("track"):
@@ -153,7 +152,6 @@ class AudioDbMetadataProvider(MetadataProvider):
             return None
         # fallback if no musicbrainzid: lookup by name
         for track_artist in track.artists:
-            assert isinstance(track_artist, Artist)
             # make sure to include the version in the track name
             track_name = f"{track.name} {track.version}" if track.version else track.name
             result = await self._get_data("searchtrack.php?", s=track_artist.name, t=track_name)
@@ -162,12 +160,16 @@ class AudioDbMetadataProvider(MetadataProvider):
                     # some safety checks
                     if track_artist.mbid and track_artist.mbid != item["strMusicBrainzArtistID"]:
                         continue
-                    if track.album.mbid and track.album.mbid != item["strMusicBrainzAlbumID"]:
+                    if (
+                        track.album
+                        and track.album.mbid
+                        and track.album.mbid != item["strMusicBrainzAlbumID"]
+                    ):
                         continue
                     if not compare_strings(track_artist.name, item["strArtist"]):
                         continue
                     if compare_strings(track_name, item["strTrack"]):
-                        return self.__parse_track(adb_track)
+                        return self.__parse_track(item)
         return None
 
     def __parse_artist(self, artist_obj: dict[str, Any]) -> MediaItemMetadata:

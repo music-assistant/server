@@ -915,9 +915,6 @@ class LmsCli:
             new_repeat_mode = repeat_map.get(int(arg))
             self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
             return
-        if subcommand == "crossfade":
-            self.mass.player_queues.set_crossfade(queue.queue_id, bool(arg))
-            return
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
 

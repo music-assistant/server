@@ -7,6 +7,7 @@ import os
 import re
 import struct
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from io import BytesIO
 from time import time
 from typing import TYPE_CHECKING
@@ -14,7 +15,12 @@ from typing import TYPE_CHECKING
 import aiofiles
 from aiohttp import ClientTimeout
 
-from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
+from music_assistant.common.models.errors import (
+    AudioError,
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant.common.models.media_items import (
     AudioFormat,
     ContentType,
@@ -26,6 +32,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
+from music_assistant.server.helpers.playlists import fetch_playlist
 
 from .process import AsyncProcess, check_output
 from .util import create_tempfile
@@ -174,6 +181,8 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     input_file = streamdetails.direct or "-"
     proc_args = [
         "ffmpeg",
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,crypto,pipe,fd",
         "-t",
         "300",  # limit to 5 minutes to prevent OOM
         "-i",
@@ -234,8 +243,8 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
             )
 
 
-async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> StreamDetails:
-    """Get streamdetails for the given QueueItem.
+async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> None:
+    """Set streamdetails for the given QueueItem.
 
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
@@ -292,10 +301,8 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
         and streamdetails.data.startswith("http")
     ):
         streamdetails.direct = streamdetails.data
-    # set streamdetails as attribute on the media_item
-    # this way the app knows what content is playing
+    # set streamdetails as attribute on the queue_item
     queue_item.streamdetails = streamdetails
-    return streamdetails
 
 
 async def get_gain_correct(
@@ -485,6 +492,7 @@ async def get_media_stream(  # noqa: PLR0915
 
             # update duration details based on the actual pcm data we sent
             streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
+            streamdetails.duration = seek_position + streamdetails.seconds_streamed
 
         except (asyncio.CancelledError, GeneratorExit) as err:
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
@@ -503,11 +511,49 @@ async def get_media_stream(  # noqa: PLR0915
                 mass.create_task(analyze_audio(mass, streamdetails))
 
 
+async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool]:
+    """
+    Resolve a streaming radio URL.
+
+    Unwraps any playlists if needed.
+    Determines if the stream supports ICY metadata.
+
+    Returns unfolded URL and a bool if the URL supports ICY metadata.
+    """
+    cache_key = f"resolved_radio_url_{url}"
+    if cache := await mass.cache.get(cache_key):
+        return cache
+    # handle playlisted radio urls
+    is_mpeg_dash = False
+    supports_icy = False
+    if ".m3u" in url or ".pls" in url:
+        # url is playlist, try to figure out how to handle it
+        with suppress(InvalidDataError, IndexError):
+            playlist = await fetch_playlist(mass, url)
+            if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
+                # if it is an mpeg-dash stream, let ffmpeg handle that
+                is_mpeg_dash = True
+            url = playlist[0]
+    if not is_mpeg_dash:
+        # determine ICY metadata support by looking at the http headers
+        headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
+        timeout = ClientTimeout(total=0, connect=10, sock_read=5)
+        async with mass.http_session.head(
+            url, headers=headers, allow_redirects=True, timeout=timeout
+        ) as resp:
+            headers = resp.headers
+            supports_icy = int(headers.get("icy-metaint", "0")) > 0
+
+    result = (url, supports_icy)
+    await mass.cache.set(cache_key, result)
+    return result
+
+
 async def get_radio_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
-    headers = {"Icy-MetaData": "1"}
+    headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
     timeout = ClientTimeout(total=0, connect=30, sock_read=60)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         headers = resp.headers
@@ -761,7 +807,7 @@ async def _get_ffmpeg_args(
         "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
         "-protocol_whitelist",
-        "file,http,https,tcp,tls,crypto,pipe,fd",  # support nested protocols (e.g. within playlist)
+        "file,http,https,tcp,tls,crypto,pipe,data,fd",
     ]
     # collect input args
     input_args = [

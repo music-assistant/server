@@ -28,7 +28,7 @@ server = [
   "faust-cchardet>=2.1.18",
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
-  "aiohttp==3.9.0",
+  "aiohttp==3.9.1",
   "asyncio-throttle==1.0.2",
   "aiofiles==23.2.1",
   "aiorun==2023.7.2",
@@ -37,27 +37,27 @@ server = [
   "python-slugify==8.0.1",
   "mashumaro==3.11",
   "memory-tempfile==2.2.3",
-  "music-assistant-frontend==2.0.16",
-  "pillow==10.1.0",
-  "unidecode==1.3.7",
+  "music-assistant-frontend==2.0.17",
+  "pillow==10.2.0",
+  "unidecode==1.3.8",
   "xmltodict==0.13.0",
   "orjson==3.9.10",
   "shortuuid==1.0.11",
-  "zeroconf==0.128.0",
-  "cryptography==41.0.6",
+  "zeroconf==0.131.0",
+  "cryptography==41.0.7",
   "ifaddr==0.2.0",
   "uvloop==0.19.0"
 ]
 test = [
-  "black==23.7.0",
+  "black==23.12.1",
   "codespell==2.2.6",
-  "mypy==1.7.1",
-  "ruff==0.1.6",
-  "pytest==7.4.3",
-  "pytest-asyncio==0.23.2",
+  "mypy==1.8.0",
+  "ruff==0.1.13",
+  "pytest==7.4.4",
+  "pytest-asyncio==0.23.3",
   "pytest-aiohttp==1.0.5",
   "pytest-cov==4.1.0",
-  "pre-commit==3.5.0"
+  "pre-commit==3.6.0"
 ]
 
 [project.scripts]

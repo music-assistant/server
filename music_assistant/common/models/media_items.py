@@ -192,26 +192,18 @@ class MediaItemMetadata(DataClassDictMixin):
 
 
 @dataclass(kw_only=True)
-class MediaItem(DataClassDictMixin):
-    """Base representation of a media item."""
+class _MediaItemBase(DataClassDictMixin):
+    """Base representation of a Media Item or ItemMapping item object."""
 
-    media_type: MediaType
     item_id: str
     provider: str  # provider instance id or provider domain
     name: str
-    provider_mappings: set[ProviderMapping]
-
-    # optional fields below
-    external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
-    metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
-    favorite: bool = False
-    media_type: MediaType = MediaType.UNKNOWN
+    version: str = ""
     # sort_name and uri are auto generated, do not override unless really needed
     sort_name: str | None = None
     uri: str | None = None
-    # timestamps to determine when the item was added/modified to the db
-    timestamp_added: int = 0
-    timestamp_modified: int = 0
+    external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
+    media_type: MediaType = MediaType.UNKNOWN
 
     def __post_init__(self):
         """Call after init."""
@@ -219,18 +211,6 @@ class MediaItem(DataClassDictMixin):
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
             self.sort_name = create_sort_name(self.name)
-
-    @property
-    def available(self):
-        """Return (calculated) availability."""
-        return any(x.available for x in self.provider_mappings)
-
-    @property
-    def image(self) -> MediaItemImage | None:
-        """Return (first/random) image/thumb from metadata (if any)."""
-        if self.metadata is None or self.metadata.images is None:
-            return None
-        return next((x for x in self.metadata.images if x.type == ImageType.THUMB), None)
 
     @property
     def mbid(self) -> str | None:
@@ -265,6 +245,31 @@ class MediaItem(DataClassDictMixin):
         """Check equality of two items."""
         return self.uri == other.uri
 
+
+@dataclass(kw_only=True)
+class MediaItem(_MediaItemBase):
+    """Base representation of a media item."""
+
+    provider_mappings: set[ProviderMapping]
+    # optional fields below
+    metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
+    favorite: bool = False
+    # timestamps to determine when the item was added/modified to the db
+    timestamp_added: int = 0
+    timestamp_modified: int = 0
+
+    @property
+    def available(self):
+        """Return (calculated) availability."""
+        return any(x.available for x in self.provider_mappings)
+
+    @property
+    def image(self) -> MediaItemImage | None:
+        """Return (first/random) image/thumb from metadata (if any)."""
+        if self.metadata is None or self.metadata.images is None:
+            return None
+        return next((x for x in self.metadata.images if x.type == ImageType.THUMB), None)
+
     @classmethod
     def from_item_mapping(cls: type, item: ItemMapping) -> Self:
         """Instantiate MediaItem from ItemMapping."""
@@ -283,40 +288,15 @@ class MediaItem(DataClassDictMixin):
 
 
 @dataclass(kw_only=True)
-class ItemMapping(DataClassDictMixin):
+class ItemMapping(_MediaItemBase):
     """Representation of a minimized item object."""
 
-    media_type: MediaType
-    item_id: str
-    provider: str  # provider instance id or provider domain
-    name: str
-    version: str = ""
-    sort_name: str | None = None
-    uri: str | None = None
     available: bool = True
-    external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
 
     @classmethod
     def from_item(cls, item: MediaItem):
         """Create ItemMapping object from regular item."""
         return cls.from_dict(item.to_dict())
-
-    def __post_init__(self):
-        """Call after init."""
-        if not self.uri:
-            self.uri = create_uri(self.media_type, self.provider, self.item_id)
-        if not self.sort_name:
-            self.sort_name = create_sort_name(self.name)
-
-    def __hash__(self) -> int:
-        """Return custom hash."""
-        return hash(self.uri)
-
-    def __eq__(self, other: ItemMapping) -> bool:
-        """Check equality of two items."""
-        if other is None:
-            return False  # guard
-        return self.uri == other.uri
 
 
 @dataclass(kw_only=True)

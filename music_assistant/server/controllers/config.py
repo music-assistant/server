@@ -10,6 +10,7 @@ from typing import TYPE_CHECKING, Any
 from uuid import uuid4
 
 import aiofiles
+import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -17,7 +18,6 @@ from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dum
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
     DEFAULT_CORE_CONFIG_ENTRIES,
-    DEFAULT_PLAYER_CONFIG_ENTRIES,
     DEFAULT_PROVIDER_CONFIG_ENTRIES,
     ConfigEntry,
     ConfigValueType,
@@ -25,7 +25,7 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
     ProviderConfig,
 )
-from music_assistant.common.models.enums import EventType, ProviderType
+from music_assistant.common.models.enums import EventType, PlayerState, ProviderType
 from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant.constants import (
     CONF_CORE,
@@ -326,36 +326,30 @@ class ConfigController:
         """Return configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
-                prov_entries = await prov.get_player_config_entries(player_id)
+                conf_entries = await prov.get_player_config_entries(player_id)
                 if player := self.mass.players.get(player_id, False):
                     raw_conf["default_name"] = player.display_name
             else:
-                prov_entries = tuple()
+                conf_entries = tuple()
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
-            prov_entries_keys = {x.key for x in prov_entries}
-            # combine provider defined entries with default player config entries
-            entries = prov_entries + tuple(
-                x for x in DEFAULT_PLAYER_CONFIG_ENTRIES if x.key not in prov_entries_keys
-            )
-            return PlayerConfig.parse(entries, raw_conf)
+            return PlayerConfig.parse(conf_entries, raw_conf)
         raise KeyError(f"No config found for player id {player_id}")
 
     @api_command("config/players/get_value")
-    async def get_player_config_value(self, player_id: str, key: str) -> ConfigValueType:
+    async def get_player_config_value(
+        self,
+        player_id: str,
+        key: str,
+    ) -> ConfigValueType:
         """Return single configentry value for a player."""
-        cache_key = f"player_conf_value_{player_id}.{key}"
-        if (cached_value := self._value_cache.get(cache_key)) and cached_value is not None:
-            return cached_value
         conf = await self.get_player_config(player_id)
         val = (
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
         )
-        # store value in cache because this method can potentially be called very often
-        self._value_cache[cache_key] = val
         return val
 
     def get_raw_player_config_value(
@@ -389,8 +383,8 @@ class ConfigController:
             data=config,
         )
         # signal update to the player manager
+        player = self.mass.players.get(config.player_id)
         with suppress(PlayerUnavailableError, AttributeError, KeyError):
-            player = self.mass.players.get(config.player_id)
             if config.enabled:
                 player_prov = self.mass.players.get_player_provider(player_id)
                 await player_prov.poll_player(player_id)
@@ -401,6 +395,9 @@ class ConfigController:
         with suppress(PlayerUnavailableError):
             if provider := self.mass.get_provider(config.provider):
                 provider.on_player_config_changed(config, changed_keys)
+        # if the player was playing, restart playback
+        if player and player.state == PlayerState.PLAYING:
+            self.mass.create_task(self.mass.player_queues.resume(player.active_source))
         # return full player config (just in case)
         return await self.get_player_config(player_id)
 
@@ -412,6 +409,9 @@ class ConfigController:
         if not existing:
             raise KeyError(f"Player {player_id} does not exist")
         self.remove(conf_key)
+        if (player := self.mass.players.get(player_id)) and player.available:
+            player.enabled = False
+            self.mass.players.update(player_id, force_update=True)
         if provider := self.mass.get_provider(existing["provider"]):
             assert isinstance(provider, PlayerProvider)
             provider.on_player_config_removed(player_id)
@@ -710,8 +710,9 @@ class ConfigController:
             instance_id = provider_domain
             name = manifest.name
         else:
-            instance_id = f"{provider_domain}{len(existing)+1}"
-            name = f"{manifest.name} {len(existing)+1}"
+            random_id = shortuuid.random(6)
+            instance_id = f"{provider_domain}_{random_id}"
+            name = f"{manifest.name} {random_id}"
         # all checks passed, create config object
         config_entries = await self.get_provider_config_entries(
             provider_domain=provider_domain, instance_id=instance_id, values=values

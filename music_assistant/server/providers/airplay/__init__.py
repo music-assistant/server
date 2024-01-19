@@ -15,22 +15,17 @@ from typing import TYPE_CHECKING
 
 import aiofiles
 
-from music_assistant.common.models.config_entries import (
-    CONF_ENTRY_OUTPUT_CODEC,
-    ConfigEntry,
-    ConfigValueType,
-)
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.slimproto import SlimprotoProvider
 
@@ -92,9 +87,6 @@ PLAYER_CONFIG_ENTRIES = (
         "Any other value means to disable the player after missing keep-alive for "
         "this number of seconds.",
         advanced=True,
-    ),
-    ConfigEntry.from_dict(
-        {**CONF_ENTRY_OUTPUT_CODEC.to_dict(), "default_value": "flac", "hidden": True}
     ),
 )
 
@@ -168,7 +160,7 @@ class AirplayProvider(PlayerProvider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         slimproto_prov = self.mass.get_provider("slimproto")
         base_entries = await slimproto_prov.get_player_config_entries(player_id)
-        return tuple(base_entries + PLAYER_CONFIG_ENTRIES)
+        return base_entries + PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
@@ -200,35 +192,37 @@ class AirplayProvider(PlayerProvider):
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.cmd_play(player_id)
 
-    async def cmd_play_url(
+    async def play_media(
         self,
         player_id: str,
-        url: str,
-        queue_item: QueueItem | None,
+        queue_item: QueueItem,
+        seek_position: int,
+        fade_in: bool,
     ) -> None:
-        """Send PLAY URL command to given player.
+        """Handle PLAY MEDIA on given player.
 
-        This is called when the Queue wants the player to start playing a specific url.
-        If an item from the Queue is being played, the QueueItem will be provided with
-        all metadata present.
+        This is called by the Queue controller to start playing a queue item on the given player.
+        The provider's own implementation should work out how to handle this request.
 
             - player_id: player_id of the player to handle the command.
-            - url: the url that the player should start playing.
-            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
+            - queue_item: The QueueItem that needs to be played on the player.
+            - seek_position: Optional seek to this position.
+            - fade_in: Optionally fade in the item at playback start.
         """
         # simply forward to underlying slimproto player
         slimproto_prov = self.mass.get_provider("slimproto")
-        await slimproto_prov.cmd_play_url(
+        await slimproto_prov.play_media(
             player_id,
-            url=url,
             queue_item=queue_item,
+            seek_position=seek_position,
+            fade_in=fade_in,
         )
 
-    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle StreamJob play command on given player."""
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+        """Handle enqueuing of the next queue item on the player."""
         # simply forward to underlying slimproto player
         slimproto_prov = self.mass.get_provider("slimproto")
-        await slimproto_prov.cmd_handle_stream_job(player_id=player_id, stream_job=stream_job)
+        await slimproto_prov.enqueue_next_queue_item(player_id, queue_item)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""

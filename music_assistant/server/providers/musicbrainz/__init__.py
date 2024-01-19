@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 from mashumaro import DataClassDictMixin
+from mashumaro.exceptions import MissingField
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -142,18 +143,18 @@ class MusicBrainzTrack(DataClassDictMixin):
     id: str
     number: str
     title: str
-    length: int
+    length: int | None = None
 
 
 @dataclass
 class MusicBrainzMedia(DataClassDictMixin):
     """Model for a (basic) Media object from MusicBrainz."""
 
-    position: int
     format: str
     track: list[MusicBrainzTrack]
-    track_count: int
-    track_offset: int
+    position: int = 0
+    track_count: int = 0
+    track_offset: int = 0
 
 
 @dataclass
@@ -167,7 +168,7 @@ class MusicBrainzRelease(DataClassDictMixin):
     status: str
     artist_credit: list[MusicBrainzArtistCredit]
     release_group: MusicBrainzReleaseGroup
-    track_count: int
+    track_count: int = 0
 
     # optional fields
     media: list[MusicBrainzMedia] = field(default_factory=list)
@@ -183,10 +184,10 @@ class MusicBrainzRecording(DataClassDictMixin):
 
     id: str
     title: str
-    length: int | None
-    first_release_date: str | None
-    artist_credit: list[MusicBrainzArtistCredit]
+    artist_credit: list[MusicBrainzArtistCredit] = field(default_factory=list)
     # optional fields
+    length: int | None = None
+    first_release_date: str | None = None
     isrcs: list[str] | None = None
     tags: list[MusicBrainzTag] | None = None
     disambiguation: str | None = None  # version (e.g. live, karaoke etc.)
@@ -311,8 +312,13 @@ class MusicbrainzProvider(MetadataProvider):
             f"artist/{artist_id}?inc=aliases+annotation+tags+ratings+genres+url-rels+work-rels"
         )
         if result := await self.get_data(endpoint):
+            if "id" not in result:
+                result["id"] = artist_id
             # TODO: Parse all the optional data like relations and such
-            return MusicBrainzArtist.from_dict(replace_hyphens(result))
+            try:
+                return MusicBrainzArtist.from_dict(replace_hyphens(result))
+            except MissingField as err:
+                raise InvalidDataError from err
         raise InvalidDataError("Invalid MusicBrainz Artist ID provided")
 
     async def get_recording_details(
@@ -327,7 +333,12 @@ class MusicbrainzProvider(MetadataProvider):
             else:
                 raise InvalidDataError("Invalid ISRC provided")
         if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
-            return MusicBrainzRecording.from_dict(replace_hyphens(result))
+            if "id" not in result:
+                result["id"] = recording_id
+            try:
+                return MusicBrainzRecording.from_dict(replace_hyphens(result))
+            except MissingField as err:
+                raise InvalidDataError from err
         raise InvalidDataError("Invalid ISRC provided")
 
     async def get_releasegroup_details(
@@ -344,7 +355,12 @@ class MusicbrainzProvider(MetadataProvider):
                 raise InvalidDataError("Invalid barcode provided")
         endpoint = f"release-group/{releasegroup_id}?inc=artists+aliases"
         if result := await self.get_data(endpoint):
-            return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
+            if "id" not in result:
+                result["id"] = releasegroup_id
+            try:
+                return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
+            except MissingField as err:
+                raise InvalidDataError from err
         raise InvalidDataError("Invalid MusicBrainz ReleaseGroup ID or barcode provided")
 
     async def get_artist_details_by_album(

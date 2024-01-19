@@ -4,8 +4,8 @@
   "name": "SONOS",
   "description": "SONOS Playerprovider for Music Assistant.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["soco==0.29.1"],
-  "documentation": "",
+  "requirements": ["soco==0.30.1"],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1171",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true
