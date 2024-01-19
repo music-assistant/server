@@ -13,18 +13,21 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
     ProviderType,
 )
 from music_assistant.common.models.errors import (
     AlreadyRegisteredError,
     PlayerCommandFailed,
     PlayerUnavailableError,
+    ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.player import Player
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_HIDE_GROUP_CHILDS,
+    CONF_MUTE_AS_POWER,
     CONF_PLAYERS,
     ROOT_LOGGER_NAME,
 )
@@ -85,6 +88,7 @@ class PlayerController(CoreController):
         )
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task | None = None
+        self._group_players_initialized: set[str] = set()
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""
@@ -176,6 +180,13 @@ class PlayerController(CoreController):
         if not player.enabled:
             return
 
+        # initialize group players as soon as the first player from one provider arrives
+        if (
+            player_provider := self.get_player_provider(player_id)
+        ) and player_provider.instance_id not in self._group_players_initialized:
+            self.mass.loop.call_later(5, player_provider.register_group_players)
+            self._group_players_initialized.add(player_provider.instance_id)
+
         LOGGER.info(
             "Player registered: %s/%s",
             player_id,
@@ -224,7 +235,7 @@ class PlayerController(CoreController):
         player.active_source = self._get_active_source(player)
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
-        if player.type == PlayerType.GROUP:
+        if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
             player.volume_level = player.group_volume
         # prefer any overridden name from config
         player.display_name = (
@@ -239,6 +250,17 @@ class PlayerController(CoreController):
             # mark player as powered if its playing
             # could happen for players that do not officially support power commands
             player.powered = True
+
+        # handle syncgroup - get attributes from first player that his this group as source
+        if player.type == PlayerType.SYNC_GROUP:
+            if sync_master := self._get_syncgroup_master(player):
+                player.current_url = sync_master.current_url
+                player.elapsed_time = sync_master.elapsed_time
+                player.elapsed_time_last_updated = sync_master.elapsed_time_last_updated
+            else:
+                player.current_url = None
+                player.elapsed_time = 0
+                player.elapsed_time_last_updated = 0
 
         # basic throttle: do not send state changed events if player did not actually change
         prev_state = self._prev_states.get(player_id, {})
@@ -264,7 +286,7 @@ class PlayerController(CoreController):
 
         if skip_forward:
             return
-        if player.type == PlayerType.GROUP:
+        if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
             # update group player child's when parent updates
             hide_group_childs = self.mass.config.get_raw_player_config_value(
                 player.player_id, CONF_HIDE_GROUP_CHILDS, "active"
@@ -381,8 +403,11 @@ class PlayerController(CoreController):
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
 
+        mute_as_power = self.mass.config.get_raw_player_config_value(
+            player_id, CONF_MUTE_AS_POWER, False
+        )
         cur_power = (
-            (player.powered and not player.volume_muted) if player.mute_as_power else player.powered
+            (player.powered and not player.volume_muted) if mute_as_power else player.powered
         )
         if cur_power == powered:
             return  # nothing to do
@@ -392,18 +417,19 @@ class PlayerController(CoreController):
             not powered
             and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
             and not player.synced_to
-            and not player.mute_as_power
+            and not mute_as_power
         ):
             await self.cmd_stop(player_id)
         # unsync player at power off
-        if not powered and not player.mute_as_power:
+        if not powered and not mute_as_power:
             if player.synced_to is not None:
                 await self.cmd_unsync(player_id)
             for child in self._get_child_players(player):
                 if not child.synced_to:
                     continue
                 await self.cmd_unsync(child.player_id)
-        if player.mute_as_power:
+
+        if mute_as_power:
             # handle mute as power feature
             await self.cmd_volume_mute(player_id, not powered)
 
@@ -411,7 +437,7 @@ class PlayerController(CoreController):
         if (
             not powered
             and player.volume_muted
-            and not player.mute_as_power
+            and not mute_as_power
             and PlayerFeature.VOLUME_MUTE not in player.supported_features
         ):
             await self.cmd_volume_mute(player_id, False)
@@ -420,7 +446,7 @@ class PlayerController(CoreController):
             # player does not support power, use fake state instead
             player.powered = powered
             self.update(player_id)
-        elif powered or not player.mute_as_power:
+        elif powered or not mute_as_power:
             # regular power command
             player_provider = self.get_player_provider(player_id)
             await player_provider.cmd_power(player_id, powered)
@@ -450,7 +476,7 @@ class PlayerController(CoreController):
         """
         # TODO: Implement PlayerControl
         player = self.get(player_id, True)
-        if player.type == PlayerType.GROUP:
+        if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
             # redirect to group volume control
             await self.cmd_group_volume(player_id, volume_level)
             return
@@ -613,6 +639,30 @@ class PlayerController(CoreController):
         # optimistically update the player to update the UI as fast as possible
         self.mass.create_task(player_provider.poll_player(player_id))
 
+    @api_command("players/create_group")
+    async def create_group(self, provider: str, name: str, members: list[str]) -> Player:
+        """Create new Player/Sync Group on given PlayerProvider with name and members.
+
+        - provider_instance_or_domain: provider domain or instance id to create the new group on.
+        - name: Name for the new group to create.
+        - members: A list of player_id's that should be part of this group.
+
+        Returns the newly created player on success.
+        NOTE: Fails if the given provider does not support creating new groups
+        or members are given that can not be handled by the provider.
+        """
+        # perform basic checks
+        if (player_prov := self.mass.get_provider(provider)) is None:
+            raise ProviderUnavailableError(f"Provider {provider} is not available!")
+
+        if ProviderFeature.PLAYER_GROUP_CREATE not in player_prov.supported_features:
+            raise UnsupportedFeaturedException(
+                f"Provider {player_prov.name} does not support creating groups"
+            )
+        # forward request to provider
+        # the provider is itself responsible for checking if the members can be used for grouping
+        return await player_prov.create_group(name, members=members)
+
     def _check_redirect(self, player_id: str) -> str:
         """Check if playback related command should be redirected."""
         player = self.get(player_id, True)
@@ -630,7 +680,11 @@ class PlayerController(CoreController):
 
     def _get_player_groups(self, player_id: str) -> tuple[Player, ...]:
         """Return all (player_ids of) any groupplayers the given player belongs to."""
-        return tuple(x for x in self if x.type == PlayerType.GROUP and player_id in x.group_childs)
+        return tuple(
+            x
+            for x in self
+            if x.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP) and player_id in x.group_childs
+        )
 
     def _get_active_source(self, player: Player) -> str:
         """Return the active_source id for given player."""
@@ -729,3 +783,11 @@ class PlayerController(CoreController):
                     if count >= 360:
                         count = 0
             await asyncio.sleep(1)
+
+    def _get_syncgroup_master(self, player: Player) -> Player | None:
+        """Get the first/master player for a syncgroup."""
+        for child_player in self._get_child_players(player, only_powered=False, only_playing=False):
+            if child_player.active_source != player.player_id:
+                continue
+            return child_player
+        return None

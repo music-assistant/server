@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import shortuuid
@@ -11,8 +12,9 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
 )
+from music_assistant.common.models.enums import PlayerFeature, PlayerType
 from music_assistant.common.models.errors import InvalidDataError
-from music_assistant.common.models.player import Player
+from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.constants import CONF_GROUP_PLAYERS
 
 from .provider import Provider
@@ -160,12 +162,12 @@ class PlayerProvider(Provider):
     async def create_group(self, name: str, members: list[str]) -> Player:
         """Create new PlayerGroup on this provider.
 
-        Create a new PlayerGroup with given name and members.
+        Create a new SyncGroup (or PlayerGroup) with given name and members.
 
             - name: Name for the new group to create.
             - members: A list of player_id's that should be part of this group.
         """
-        # will only be called for players with PLAYER_GROUP_MANAGE feature set.
+        # will only be called for players with PLAYER_GROUP_CREATE feature set.
         # default implementation: create "fake" player and store in config.
         # should work for all players that support the sync feature.
         # may be overridden with provider specific implementation
@@ -173,7 +175,7 @@ class PlayerProvider(Provider):
         own_player_ids = (x.player_id for x in self.players)
         for member_player_id in members:
             if member_player_id not in own_player_ids:
-                # this should be filtered in the frontend, but just in case
+                # this should be guarded/filtered in the frontend, but just in case
                 raise InvalidDataError(
                     f"Player {member_player_id} can not be a groupmember for {self.name}"
                 )
@@ -182,6 +184,15 @@ class PlayerProvider(Provider):
             self.instance_id, CONF_GROUP_PLAYERS, {}
         )
         group_players[new_group_id] = members
+        self.mass.config.set_raw_provider_config_value(
+            self.instance_id, CONF_GROUP_PLAYERS, group_players
+        )
+        # create default config with the user chosen name
+        self.mass.config.create_default_player_config(
+            new_group_id, self.instance_id, name=name, enabled=True
+        )
+        player = self._register_group_player(new_group_id, members=members)
+        return player
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
@@ -205,6 +216,43 @@ class PlayerProvider(Provider):
 
         This is used to handle special actions such as muting as power or (re)syncing.
         """
+
+    def register_group_players(self) -> None:
+        """Register all (virtual/fake) group players in the Player controller."""
+        group_players: dict[str, list[str]] = self.mass.config.get_raw_provider_config_value(
+            self.instance_id, CONF_GROUP_PLAYERS, {}
+        )
+        for group_player_id, members in group_players.items():
+            self._register_group_player(group_player_id, members)
+
+    def _register_group_player(self, group_player_id: str, members: Iterable[str]) -> Player:
+        """Register a (virtual/fake) group player in the Player controller."""
+        # extract player features from first/random player
+        if first_player := next(
+            (self.mass.players.get(x) for x in members if x in self.players), None
+        ):
+            supported_features = tuple(
+                x
+                for x in first_player.supported_features
+                if x not in (PlayerFeature.POWER, PlayerFeature.SYNC, PlayerFeature.VOLUME_MUTE)
+            )
+        else:
+            # edge case: no child player is (yet_ available; use safe default feature set
+            supported_features = (PlayerFeature.PAUSE, PlayerFeature.VOLUME_SET)
+
+        player = Player(
+            player_id=group_player_id,
+            provider=self.instance_id,
+            type=PlayerType.SYNC_GROUP,
+            name=group_player_id,
+            available=True,
+            powered=False,
+            device_info=DeviceInfo(model="Group", manufacturer=self.name),
+            supported_features=supported_features,
+            group_childs=set(members),
+        )
+        self.mass.players.register_or_update(player)
+        return player
 
     # DO NOT OVERRIDE BELOW
 

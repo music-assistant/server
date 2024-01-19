@@ -101,9 +101,6 @@ class Player(DataClassDictMixin):
     # and pass along freely
     extra_data: dict[str, Any] = field(default_factory=dict)
 
-    # mute_as_power: special feature from the universal group
-    mute_as_power: bool = False
-
     @property
     def corrected_elapsed_time(self) -> float:
         """Return the corrected/realtime elapsed time."""

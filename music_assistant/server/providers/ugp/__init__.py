@@ -304,7 +304,6 @@ class UniversalGroupProvider(PlayerProvider):
         group_power_on = await self.mass.config.get_player_config_value(
             player_id, CONF_GROUPED_POWER_ON
         )
-        mute_childs = self.mass.config.get_raw_player_config_value(player_id, CONF_MUTE_CHILDS, [])
         group_player = self.mass.players.get(player_id)
 
         async def set_child_power(child_player: Player) -> None:
@@ -313,12 +312,6 @@ class UniversalGroupProvider(PlayerProvider):
             # it turns ON and we have the group_power_on config option enabled
             if not (not powered or group_power_on):
                 return
-            # make sure to disable the mute as power workaround,
-            # otherwise the player keeps on playing "invisible"
-            if not powered and child_player.player_id in mute_childs:
-                child_player.mute_as_power = False
-                if child_player.volume_muted:
-                    await self.mass.players.cmd_volume_mute(child_player.player_id, False)
             # send actual power command to child player
             await self.mass.players.cmd_power(child_player.player_id, powered)
 
@@ -331,11 +324,6 @@ class UniversalGroupProvider(PlayerProvider):
                 player_id, only_powered=False, skip_sync_childs=False
             ):
                 tg.create_task(set_child_power(member))
-
-        # (re)set mute_as_power feature for group members
-        for child_player_id in mute_childs:
-            if child_player := self.mass.players.get(child_player_id):
-                child_player.mute_as_power = powered
 
         group_player.powered = powered
         if not powered:
@@ -374,10 +362,7 @@ class UniversalGroupProvider(PlayerProvider):
         for member in all_members:
             if member.synced_to:
                 continue
-            if member.mute_as_power:
-                player_powered = member.powered and not member.volume_muted
-            else:
-                player_powered = member.powered
+            player_powered = member.powered
             if not player_powered:
                 continue
             group_player.current_item_id = member.current_item_id
@@ -436,7 +421,6 @@ class UniversalGroupProvider(PlayerProvider):
             not new_power
             and group_playing
             and child_player.player_id in self.prev_sync_leaders[player_id]
-            and not child_player.mute_as_power
         ):
             # a sync master player turned OFF while the group player
             # should still be playing - we need to resync/resume
@@ -463,10 +447,7 @@ class UniversalGroupProvider(PlayerProvider):
                 if not child_player.available:
                     continue
                 # work out power state
-                if child_player.mute_as_power:
-                    player_powered = child_player.powered and not child_player.volume_muted
-                else:
-                    player_powered = child_player.powered
+                player_powered = child_player.powered
                 if not (not only_powered or player_powered):
                     continue
                 if child_player.synced_to and skip_sync_childs:

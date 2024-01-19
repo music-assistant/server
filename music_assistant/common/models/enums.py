@@ -200,12 +200,14 @@ class PlayerType(StrEnum):
     """Enum with possible Player Types.
 
     player: A regular player.
-    group: A (dedicated) group player or playergroup.
+    group: A (dedicated) group player or (universal) playergroup.
+    sync_group: A group/preset of players that can be synced together.
     stereo_pair: Two speakers playing as one stereo pair.
     """
 
     PLAYER = "player"
     GROUP = "group"
+    SYNC_GROUP = "sync_group"
     STEREO_PAIR = "stereo_pair"
 
 
@@ -295,7 +297,7 @@ class ProviderFeature(StrEnum):
     #
     # PLAYERPROVIDER FEATURES
     #
-    PLAYER_GROUP_MANAGE = "player_group_manage"
+    PLAYER_GROUP_CREATE = "player_group_create"
 
     #
     # METADATAPROVIDER FEATURES
