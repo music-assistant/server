@@ -24,7 +24,6 @@ class PlayerQueue(DataClassDictMixin):
 
     shuffle_enabled: bool = False
     repeat_mode: RepeatMode = RepeatMode.OFF
-    crossfade_enabled: bool = True
     # current_index: index that is active (e.g. being played) by the player
     current_index: int | None = None
     # index_in_buffer: index that has been preloaded/buffered by the player
@@ -37,6 +36,9 @@ class PlayerQueue(DataClassDictMixin):
     radio_source: list[MediaItemType] = field(default_factory=list)
     announcement_in_progress: bool = False
     flow_mode: bool = False
+    # flow_mode_start_index: index of the first item of the flow stream
+    flow_mode_start_index: int = 0
+    next_track_enqueued: bool = False
 
     @property
     def corrected_elapsed_time(self) -> float:

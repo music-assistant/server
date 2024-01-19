@@ -229,8 +229,7 @@ class PlayerFeature(StrEnum):
     SYNC = "sync"
     ACCURATE_TIME = "accurate_time"
     SEEK = "seek"
-    SET_MEMBERS = "set_members"
-    QUEUE = "queue"
+    ENQUEUE_NEXT = "enqueue_next"
     CROSSFADE = "crossfade"
 
 

@@ -4,14 +4,18 @@ from __future__ import annotations
 from abc import abstractmethod
 from typing import TYPE_CHECKING
 
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_VOLUME_NORMALIZATION,
+    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+)
 from music_assistant.common.models.player import Player
-from music_assistant.common.models.queue_item import QueueItem
 
 from .provider import Provider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ConfigEntry, PlayerConfig
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
+    from music_assistant.common.models.queue_item import QueueItem
 
 # ruff: noqa: ARG001, ARG002
 
@@ -24,7 +28,11 @@ class PlayerProvider(Provider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        return tuple()
+        return (
+            CONF_ENTRY_VOLUME_NORMALIZATION,
+            CONF_ENTRY_AUTO_PLAY,
+            CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+        )
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
@@ -46,45 +54,52 @@ class PlayerProvider(Provider):
         - player_id: player_id of the player to handle the command.
         """
 
-    @abstractmethod
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
+        # will only be called for players with Pause feature set.
 
-    @abstractmethod
-    async def cmd_play_url(
+    async def play_media(
         self,
         player_id: str,
-        url: str,
-        queue_item: QueueItem | None,
+        queue_item: QueueItem,
+        seek_position: int,
+        fade_in: bool,
     ) -> None:
-        """Send PLAY URL command to given player.
+        """Handle PLAY MEDIA on given player.
 
-        This is called when the Queue wants the player to start playing a specific url.
-        If an item from the Queue is being played, the QueueItem will be provided with
-        all metadata present.
-
-            - player_id: player_id of the player to handle the command.
-            - url: the url that the player should start playing.
-            - queue_item: the QueueItem that is related to the URL (None when playing direct url).
-        """
-
-    async def cmd_handle_stream_job(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle StreamJob play command on given player.
-
-        This is called when the Queue wants the player to start playing media
-        to multiple subscribers at the same time using a MultiClientStreamJob.
-        The default implementation is that the URL to the stream is resolved for the player
-        and played like any regular play_url command, but implementation may override
-        this behavior for any more sophisticated handling (e.g. when syncing etc.)
+        This is called by the Queue controller to start playing a queue item on the given player.
+        The provider's own implementation should work out how to handle this request.
 
             - player_id: player_id of the player to handle the command.
-            - stream_job: the MultiClientStreamJob that the player should start playing.
+            - queue_item: The QueueItem that needs to be played on the player.
+            - seek_position: Optional seek to this position.
+            - fade_in: Optionally fade in the item at playback start.
         """
-        url = await stream_job.resolve_stream_url(player_id)
-        await self.cmd_play_url(player_id=player_id, url=url, queue_item=None)
+
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+        """
+        Handle enqueuing of the next queue item on the player.
+
+        If the player supports PlayerFeature.ENQUE_NEXT:
+          This will be called about 10 seconds before the end of the track.
+        If the player does NOT report support for PlayerFeature.ENQUE_NEXT:
+          This will be called when the end of the track is reached.
+
+        A PlayerProvider implementation is in itself responsible for handling this
+        so that the queue items keep playing until its empty or the player stopped.
+
+        This will NOT be called if the end of the queue is reached (and repeat disabled).
+        This will NOT be called if the player is using flow mode to playback the queue.
+        """
+        # default implementation (for a player without enqueue_next feature):
+        # simply start playback of the next track.
+        # player providers need to override this behavior if/when needed
+        await self.play_media(
+            player_id=player_id, queue_item=queue_item, seek_position=0, fade_in=False
+        )
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.

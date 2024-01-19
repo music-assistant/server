@@ -328,6 +328,11 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         """
         player_id = self._check_redirect(player_id)
+        player = self.get(player_id, True)
+        if PlayerFeature.PAUSE not in player.supported_features:
+            # if player does not support pause, we need to send stop
+            await self.cmd_stop(player_id)
+            return
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_pause(player_id)
 
@@ -636,24 +641,16 @@ class PlayerController(CoreController):
         if group_players := self._get_player_groups(player.player_id):
             # prefer the first playing (or paused) group parent
             for group_player in group_players:
-                # if the group player's playerid is within the curtrent url,
+                # if the group player's playerid is within the current_item_id
                 # this group is definitely active
-                if player.current_url and group_player.player_id in player.current_url:
+                if player.current_item_id and group_player.player_id in player.current_item_id:
                     return group_player.player_id
             # fallback to the first powered group player
             for group_player in group_players:
                 if group_player.powered:
                     return group_player.player_id
-        # guess source from player's current url
-        if player.current_url and player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            if self.mass.streams.base_url in player.current_url:
-                return player.player_id
-            if ":" in player.current_url:
-                # extract source from uri/url
-                return player.current_url.split(":")[0]
-            return player.current_url
-        # defaults to the player's own player id
-        return player.player_id
+        # defaults to the player's own player id if not active source set
+        return player.active_source or player.player_id
 
     def _get_group_volume_level(self, player: Player) -> int:
         """Calculate a group volume from the grouped members."""
