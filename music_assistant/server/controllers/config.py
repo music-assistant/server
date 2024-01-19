@@ -360,7 +360,10 @@ class ConfigController:
 
         Note that this only returns the stored value without any validation or default.
         """
-        return self.get(f"{CONF_PLAYERS}/{player_id}/values/{key}", default)
+        return self.get(
+            f"{CONF_PLAYERS}/{player_id}/values/{key}",
+            self.get(f"{CONF_PLAYERS}/{player_id}/{key}", default),
+        )
 
     @api_command("config/players/save")
     async def save_player_config(
@@ -417,7 +420,12 @@ class ConfigController:
             provider.on_player_config_removed(player_id)
 
     def create_default_player_config(
-        self, player_id: str, provider: str, name: str, enabled: bool
+        self,
+        player_id: str,
+        provider: str,
+        name: str,
+        enabled: bool,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> None:
         """
         Create default/empty PlayerConfig.
@@ -428,16 +436,20 @@ class ConfigController:
         # return early if the config already exists
         if self.get(f"{CONF_PLAYERS}/{player_id}"):
             # update default name if needed
-            self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
+            if name:
+                self.set(f"{CONF_PLAYERS}/{player_id}/default_name", name)
             return
         # config does not yet exist, create a default one
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
             values={}, provider=provider, player_id=player_id, enabled=enabled, default_name=name
         )
+        default_conf_raw = default_conf.to_raw()
+        if values is not None:
+            default_conf_raw["values"] = values
         self.set(
             conf_key,
-            default_conf.to_raw(),
+            default_conf_raw,
         )
 
     async def create_default_provider_config(self, provider_domain: str) -> None:

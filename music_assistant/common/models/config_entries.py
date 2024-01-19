@@ -18,7 +18,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
-    CONF_HIDE_GROUP_CHILDS,
+    CONF_GROUPED_POWER_ON,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
@@ -385,18 +385,18 @@ CONF_ENTRY_EQ_TREBLE = ConfigEntry(
     advanced=True,
 )
 
-CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
-    key=CONF_HIDE_GROUP_CHILDS,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("Always", "always"),
-        ConfigValueOption("Only if the group is active/powered", "active"),
-        ConfigValueOption("Never", "never"),
-    ],
-    default_value="active",
-    label="Hide playergroup members in UI",
-    description="Hide the individual player entry for the members of this group "
-    "in the user interface.",
+
+CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
+    key=CONF_GROUPED_POWER_ON,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=False,
+    label="Forced Power ON of all group members",
+    description="Power ON all child players when the group player is powered on "
+    "(or playback started). \n"
+    "If this setting is disabled, playback will only start on players that "
+    "are already powered ON at the time of playback start.\n"
+    "When turning OFF the group player, all group members are turned off, "
+    "regardless of this setting.",
     advanced=False,
 )
 

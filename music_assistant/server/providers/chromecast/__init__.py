@@ -21,7 +21,6 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_HIDE_GROUP_MEMBERS,
     ConfigEntry,
     ConfigValueType,
 )
@@ -172,16 +171,8 @@ class ChromecastProvider(PlayerProvider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        cast_player = self.castplayers.get(player_id)
         base_entries = await super().get_player_config_entries(player_id)
-        entries = base_entries + PLAYER_CONFIG_ENTRIES
-        if (
-            cast_player
-            and cast_player.cast_info.is_audio_group
-            and not cast_player.cast_info.is_multichannel_group
-        ):
-            entries = entries + (CONF_ENTRY_HIDE_GROUP_MEMBERS,)
-        return entries
+        return base_entries + PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002

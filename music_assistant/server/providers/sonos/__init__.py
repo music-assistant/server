@@ -539,6 +539,8 @@ class SonosPlayerProvider(PlayerProvider):
         the next successful poll or event where it becomes available again.
         If the player does not need any polling, simply do not override this method.
         """
+        if player_id not in self.sonosplayers:
+            return
         sonos_player = self.sonosplayers[player_id]
         try:
             # the check_poll logic will work out what endpoints need polling now

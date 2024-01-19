@@ -87,7 +87,6 @@ class PlayerController(CoreController):
         )
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task | None = None
-        self._group_players_initialized: set[str] = set()
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of module."""
@@ -179,12 +178,9 @@ class PlayerController(CoreController):
         if not player.enabled:
             return
 
-        # initialize group players as soon as the first player from one provider arrives
-        if (
-            player_provider := self.get_player_provider(player_id)
-        ) and player_provider.instance_id not in self._group_players_initialized:
-            self.mass.loop.call_later(5, player_provider.register_group_players)
-            self._group_players_initialized.add(player_provider.instance_id)
+        # initialize group players as soon as a player is registered
+        if player_provider := self.get_player_provider(player_id):
+            self.mass.loop.create_task(player_provider.register_group_players())
 
         LOGGER.info(
             "Player registered: %s/%s",
@@ -757,7 +753,6 @@ class PlayerController(CoreController):
                         player.available = False
                         player.state = PlayerState.IDLE
                         player.powered = False
-                        self.mass.loop.call_soon(self.update, player_id)
                     except Exception as err:  # pylint: disable=broad-except
                         LOGGER.warning(
                             "Error while requesting latest state from player %s: %s",
@@ -765,6 +760,9 @@ class PlayerController(CoreController):
                             str(err),
                             exc_info=err,
                         )
+                    finally:
+                        # always update player state
+                        self.mass.loop.call_soon(self.update, player_id)
                     if count >= 360:
                         count = 0
             await asyncio.sleep(1)
