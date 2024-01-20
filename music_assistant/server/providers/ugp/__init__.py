@@ -276,6 +276,8 @@ class UniversalGroupProvider(PlayerProvider):
             for x in self.mass.players.iter_group_members(group_player, True)
             if not (not new_power and x.player_id == child_player_id)
         ]
+        if new_power and child_player not in powered_childs:
+            powered_childs.append(child_player)
 
         # if the last player of a group turned off, turn off the group
         if len(powered_childs) == 0:

@@ -987,6 +987,8 @@ class PlayerController(CoreController):
         powered_childs = [x for x in self.iter_group_members(group_player, True)]
         if not new_power and child_player in powered_childs:
             powered_childs.remove(child_player)
+        if new_power and child_player not in powered_childs:
+            powered_childs.append(child_player)
 
         # if the last player of a group turned off, turn off the group
         if len(powered_childs) == 0:
