@@ -294,6 +294,7 @@ class ProviderFeature(StrEnum):
     # PLAYERPROVIDER FEATURES
     #
     PLAYER_GROUP_CREATE = "player_group_create"
+    SYNC_PLAYERS = "sync_players"
 
     #
     # METADATAPROVIDER FEATURES

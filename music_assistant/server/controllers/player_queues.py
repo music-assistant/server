@@ -463,11 +463,6 @@ class PlayerQueuesController(CoreController):
         assert queue.current_item.media_item.media_type == MediaType.TRACK
         assert queue.current_item.duration
         assert position < queue.current_item.duration
-        player = self.mass.players.get(queue_id)
-        if PlayerFeature.SEEK in player.supported_features:
-            player_prov = self.mass.players.get_player_provider(queue_id)
-            await player_prov.cmd_seek(player.player_id, position)
-            return
         await self.play_index(queue_id, queue.current_index, position)
 
     @api_command("players/queue/resume")
@@ -527,8 +522,7 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
         queue.flow_mode = False  # reset
-        player_prov = self.mass.players.get_player_provider(queue_id)
-        await player_prov.play_media(
+        await self.mass.players.play_media(
             player_id=queue_id,
             queue_item=queue_item,
             seek_position=int(seek_position),
@@ -872,10 +866,9 @@ class PlayerQueuesController(CoreController):
             return  # already enqueued
 
         async def _enqueue_next(index: int):
-            player_prov = self.mass.players.get_player_provider(player.player_id)
             with suppress(QueueEmpty):
                 next_item = await self.preload_next_item(queue.queue_id, index)
-                await player_prov.enqueue_next_queue_item(
+                await self.mass.players.enqueue_next_queue_item(
                     player_id=player.player_id, queue_item=next_item
                 )
 

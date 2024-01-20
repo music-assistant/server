@@ -464,6 +464,7 @@ class StreamsController(CoreController):
                 reason=f"Unable to retrieve streamdetails for item: {queue_item}"
             )
         seek_position = int(request.query.get("seek_position", 0))
+        queue_item.streamdetails.seconds_skipped = seek_position
         fade_in = bool(request.query.get("fade_in", 0))
         # work out output format/details
         output_format = await self._get_output_format(

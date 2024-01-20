@@ -178,6 +178,7 @@ class ChromecastProvider(PlayerProvider):
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        super().on_player_config_changed(config, changed_keys)
         if "enabled" in changed_keys and config.player_id not in self.castplayers:
             self.mass.create_task(self.mass.config.reload_provider, self.instance_id)
 
@@ -426,14 +427,9 @@ class ChromecastProvider(PlayerProvider):
         castplayer.player.name = castplayer.cast_info.friendly_name
         castplayer.player.volume_level = int(status.volume_level * 100)
         castplayer.player.volume_muted = status.volume_muted
-        if castplayer.active_group:
-            # use mute as power when group is active
-            castplayer.player.powered = not status.volume_muted
-        else:
-            castplayer.player.powered = (
-                castplayer.cc.app_id is not None
-                and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
-            )
+        castplayer.player.powered = (
+            castplayer.cc.app_id is not None and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
+        )
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.PLAYER

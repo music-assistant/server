@@ -102,7 +102,7 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.PLAYER_GROUP_CREATE,)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -204,7 +204,7 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         await self._snapserver.client_volume(
-            player_id, {"percent": volume_level, "muted": volume_level != 0}
+            player_id, {"percent": volume_level, "muted": volume_level == 0}
         )
 
     async def cmd_stop(self, player_id: str) -> None:

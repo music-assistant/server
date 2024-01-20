@@ -266,7 +266,7 @@ class SonosPlayerProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.PLAYER_GROUP_CREATE,)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -338,6 +338,7 @@ class SonosPlayerProvider(PlayerProvider):
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        super().on_player_config_changed(config, changed_keys)
         if "enabled" in changed_keys:
             # run discovery to catch any re-enabled players
             self.mass.create_task(self._run_discovery())
@@ -610,7 +611,7 @@ class SonosPlayerProvider(PlayerProvider):
                 type=PlayerType.PLAYER,
                 name=soco_device.player_name,
                 available=True,
-                powered=True,
+                powered=False,
                 supported_features=PLAYER_FEATURES,
                 device_info=DeviceInfo(
                     model=speaker_info["model_name"],

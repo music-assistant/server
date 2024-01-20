@@ -164,6 +164,7 @@ class AirplayProvider(PlayerProvider):
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        super().on_player_config_changed(config, changed_keys)
         # forward to slimproto too
         slimproto_prov = self.mass.get_provider("slimproto")
         slimproto_prov.on_player_config_changed(config, changed_keys)

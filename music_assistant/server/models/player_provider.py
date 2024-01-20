@@ -2,23 +2,19 @@
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterable
 from typing import TYPE_CHECKING
-
-import shortuuid
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_AUTO_PLAY,
-    CONF_ENTRY_GROUPED_POWER_ON,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     ConfigEntry,
     ConfigValueOption,
     PlayerConfig,
 )
-from music_assistant.common.models.enums import ConfigEntryType, PlayerFeature, PlayerType
-from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS
+from music_assistant.common.models.enums import ConfigEntryType
+from music_assistant.common.models.player import Player
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
@@ -42,29 +38,32 @@ class PlayerProvider(Provider):
             CONF_ENTRY_AUTO_PLAY,
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
         )
-        if not player_id.startswith("syncgroup_"):
-            return entries
-        # add default entries for syncgroups
-        return entries + (
-            ConfigEntry(
-                key=CONF_GROUP_MEMBERS,
-                type=ConfigEntryType.STRING,
-                label="Group members",
-                default_value=[],
-                options=tuple(
-                    ConfigValueOption(x.display_name, x.player_id)
-                    for x in self.mass.players.all(True, True, False)
-                    if x.player_id != player_id and x.provider == self.instance_id
+        if player_id.startswith(SYNCGROUP_PREFIX):
+            # add default entries for syncgroups
+            return entries + (
+                ConfigEntry(
+                    key=CONF_GROUP_MEMBERS,
+                    type=ConfigEntryType.STRING,
+                    label="Group members",
+                    default_value=[],
+                    options=tuple(
+                        ConfigValueOption(x.display_name, x.player_id)
+                        for x in self.mass.players.all(True, False)
+                        if x.player_id != player_id and x.provider == self.instance_id
+                    ),
+                    description="Select all players you want to be part of this group",
+                    multi_value=True,
+                    required=True,
                 ),
-                description="Select all players you want to be part of this group",
-                multi_value=True,
-                required=True,
-            ),
-            CONF_ENTRY_GROUPED_POWER_ON,
-        )
+            )
+        return entries
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        if f"values/{CONF_GROUP_MEMBERS}" in changed_keys:
+            player = self.mass.players.get(config.player_id)
+            player.group_childs = config.get_value(CONF_GROUP_MEMBERS)
+            self.mass.players.update(config.player_id)
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
@@ -98,6 +97,7 @@ class PlayerProvider(Provider):
         - player_id: player_id of the player to handle the command.
         """
         # will only be called for players with Pause feature set.
+        raise NotImplementedError()
 
     async def play_media(
         self,
@@ -116,6 +116,7 @@ class PlayerProvider(Provider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
+        raise NotImplementedError()
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """
@@ -146,6 +147,7 @@ class PlayerProvider(Provider):
         - powered: bool if player should be powered on or off.
         """
         # will only be called for players with Power feature set.
+        raise NotImplementedError()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
@@ -154,6 +156,7 @@ class PlayerProvider(Provider):
         - volume_level: volume level (0..100) to set on the player.
         """
         # will only be called for players with Volume feature set.
+        raise NotImplementedError()
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player.
@@ -162,6 +165,7 @@ class PlayerProvider(Provider):
         - muted: bool if player should be muted.
         """
         # will only be called for players with Mute feature set.
+        raise NotImplementedError()
 
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """Handle SEEK command for given queue.
@@ -170,6 +174,7 @@ class PlayerProvider(Provider):
         - position: position in seconds to seek to in the current playing item.
         """
         # will only be called for players with Seek feature set.
+        raise NotImplementedError()
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -180,6 +185,7 @@ class PlayerProvider(Provider):
             - target_player: player_id of the syncgroup master or group player.
         """
         # will only be called for players with SYNC feature set.
+        raise NotImplementedError()
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -189,6 +195,7 @@ class PlayerProvider(Provider):
             - player_id: player_id of the player to handle the command.
         """
         # will only be called for players with SYNC feature set.
+        raise NotImplementedError()
 
     async def create_group(self, name: str, members: list[str]) -> Player:
         """Create new PlayerGroup on this provider.
@@ -199,21 +206,7 @@ class PlayerProvider(Provider):
             - members: A list of player_id's that should be part of this group.
         """
         # will only be called for players with PLAYER_GROUP_CREATE feature set.
-        # default implementation: create "fake" player and store in config.
-        # should work for all players that support the sync feature.
-        # may be overridden with provider specific implementation
-        # if the provider supports this natively.
-        new_group_id = f"syncgroup_{shortuuid.random(8)}"
-        # create default config with the user chosen name
-        self.mass.config.create_default_player_config(
-            new_group_id,
-            self.instance_id,
-            name=name,
-            enabled=True,
-            values={CONF_GROUP_MEMBERS: members},
-        )
-        player = self._register_group_player(new_group_id, members=members)
-        return player
+        raise NotImplementedError()
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
@@ -231,53 +224,12 @@ class PlayerProvider(Provider):
         If the player does not need any polling, simply do not override this method.
         """
 
-    async def on_child_power(self, player_id: str, child_player: Player, new_power: bool) -> None:
+    async def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
         """
-        Call when a power command was executed on one of the child players.
+        Call when a power command was executed on one of the child player of a Player/Sync group.
 
-        This is used to handle special actions such as muting as power or (re)syncing.
+        This is used to handle special actions such as (re)syncing.
         """
-
-    async def register_group_players(self) -> None:
-        """Register all (virtual/fake) group players in the Player controller."""
-        player_configs = await self.mass.config.get_player_configs(self.instance_id)
-        for player_config in player_configs:
-            if not player_config.player_id.startswith("syncgroup_"):
-                continue
-            members = player_config.get_value("group_members")
-            self._register_group_player(
-                player_config.player_id, player_config.name or player_config.default_name, members
-            )
-
-    def _register_group_player(
-        self, group_player_id: str, name: str, members: Iterable[str]
-    ) -> Player:
-        """Register a (virtual/fake) group player in the Player controller."""
-        # extract player features from first/random player
-        if first_player := next(
-            (self.mass.players.get(x) for x in members if x in self.players), None
-        ):
-            supported_features = tuple(
-                x
-                for x in first_player.supported_features
-                if x not in (PlayerFeature.POWER, PlayerFeature.SYNC, PlayerFeature.VOLUME_MUTE)
-            )
-        else:
-            # edge case: no child player is (yet) available; use safe default feature set
-            supported_features = (PlayerFeature.PAUSE, PlayerFeature.VOLUME_SET)
-        player = Player(
-            player_id=group_player_id,
-            provider=self.instance_id,
-            type=PlayerType.SYNC_GROUP,
-            name=name,
-            available=True,
-            powered=False,
-            device_info=DeviceInfo(model="Group", manufacturer=self.name),
-            supported_features=supported_features,
-            group_childs=set(members),
-        )
-        self.mass.players.register_or_update(player)
-        return player
 
     # DO NOT OVERRIDE BELOW
 

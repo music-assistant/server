@@ -18,7 +18,6 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
-    CONF_GROUPED_POWER_ON,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
@@ -385,20 +384,6 @@ CONF_ENTRY_EQ_TREBLE = ConfigEntry(
     advanced=True,
 )
 
-
-CONF_ENTRY_GROUPED_POWER_ON = ConfigEntry(
-    key=CONF_GROUPED_POWER_ON,
-    type=ConfigEntryType.BOOLEAN,
-    default_value=False,
-    label="Forced Power ON of all group members",
-    description="Power ON all child players when the group player is powered on "
-    "(or playback started). \n"
-    "If this setting is disabled, playback will only start on players that "
-    "are already powered ON at the time of playback start.\n"
-    "When turning OFF the group player, all group members are turned off, "
-    "regardless of this setting.",
-    advanced=False,
-)
 
 CONF_ENTRY_CROSSFADE = ConfigEntry(
     key=CONF_CROSSFADE,

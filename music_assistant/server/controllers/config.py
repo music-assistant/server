@@ -678,9 +678,7 @@ class ConfigController:
             await self.mass.unload_provider(config.instance_id)
             if config.type == ProviderType.PLAYER:
                 # cleanup entries in player manager
-                for player in self.mass.players.all(
-                    return_unavailable=True, return_hidden=True, return_disabled=True
-                ):
+                for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
                     if player.provider != instance_id:
                         continue
                     self.mass.players.remove(player.player_id, cleanup_config=False)

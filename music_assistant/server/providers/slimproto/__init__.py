@@ -194,7 +194,7 @@ class SlimprotoProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.PLAYER_GROUP_CREATE,)
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -396,6 +396,10 @@ class SlimprotoProvider(PlayerProvider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
+        # fix race condition where resync and play media are called at more or less the same time
+        if self._resync_handle:
+            self._resync_handle.cancel()
+            self._resync_handle = None
         player = self.mass.players.get(player_id)
         if player.synced_to:
             raise RuntimeError("A synced player cannot receive play commands directly")

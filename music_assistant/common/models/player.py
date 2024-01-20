@@ -81,11 +81,12 @@ class Player(DataClassDictMixin):
     # enabled: if the player is enabled
     # will be set by the player manager based on config
     # a disabled player is hidden in the UI and updates will not be processed
+    # nor will it be added to the HA integration
     enabled: bool = True
 
     # hidden_by: if the player is enabled
     # will be set by the player manager based on config
-    # a disabled player is hidden in the UI only
+    # a disabled player is hidden in the UI only but can still be controlled
     hidden_by: set = field(default_factory=set)
 
     # group_volume: if the player is a player group or syncgroup master,

@@ -303,6 +303,7 @@ class DLNAPlayerProvider(PlayerProvider):
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        super().on_player_config_changed(config, changed_keys)
         # run discovery to catch any re-enabled players
         self.mass.create_task(self._run_discovery())
         # reset player features based on config values
