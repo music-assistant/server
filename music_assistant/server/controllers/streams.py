@@ -78,6 +78,8 @@ class MultiClientStreamJob:
     In case a stream is restarted (e.g. when seeking), a new MultiClientStreamJob will be created.
     """
 
+    _audio_task: asyncio.Task | None = None
+
     def __init__(
         self,
         stream_controller: StreamsController,
@@ -102,15 +104,13 @@ class MultiClientStreamJob:
         self.bytes_streamed: int = 0
         self.client_seconds_skipped: dict[str, int] = {}
         self._all_clients_connected = asyncio.Event()
-        # start running the audio task in the background
-        self._audio_task = asyncio.create_task(self._stream_job_runner())
         self.logger = stream_controller.logger.getChild(f"streamjob_{self.job_id}")
         self._finished: bool = False
 
     @property
     def finished(self) -> bool:
         """Return if this StreamJob is finished."""
-        return self._finished or self._audio_task.done()
+        return self._finished or self._audio_task and self._audio_task.done()
 
     @property
     def pending(self) -> bool:
@@ -122,12 +122,18 @@ class MultiClientStreamJob:
         """Return if this Job is running."""
         return not self.finished and not self.pending
 
+    def start(self) -> None:
+        """Start running this streamjob."""
+        # start running the audio task in the background
+        self._audio_task = asyncio.create_task(self._stream_job_runner())
+
     def stop(self) -> None:
         """Stop running this job."""
         self._finished = True
-        if self._audio_task.done():
+        if self._audio_task and self._audio_task.done():
             return
-        self._audio_task.cancel()
+        if self._audio_task:
+            self._audio_task.cancel()
         for sub_queue in self.subscribed_players.values():
             with suppress(asyncio.QueueFull):
                 sub_queue.put_nowait(b"")
@@ -416,6 +422,8 @@ class StreamsController(CoreController):
         start_queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        pcm_bit_depth: int = 24,
+        pcm_sample_rate: int = 48000,
     ) -> MultiClientStreamJob:
         """Create a MultiClientStreamJob for the given queue..
 
@@ -427,9 +435,6 @@ class StreamsController(CoreController):
             if not existing_job.finished:
                 self.logger.warning("Detected existing (running) stream job for queue %s", queue_id)
                 existing_job.stop()
-        queue_player = self.mass.players.get(queue_id)
-        pcm_bit_depth = 24 if queue_player.supports_24bit else 16
-        pcm_sample_rate = min(queue_player.max_sample_rate, 96000)
         self.multi_client_jobs[queue_id] = stream_job = MultiClientStreamJob(
             self,
             queue_id=queue_id,

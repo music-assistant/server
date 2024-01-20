@@ -46,6 +46,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -428,6 +429,7 @@ class SlimprotoProvider(PlayerProvider):
                             auto_play=False,
                         )
                     )
+            stream_job.start()
         else:
             # regular, single player playback
             client = self._socket_clients[player_id]
@@ -447,6 +449,27 @@ class SlimprotoProvider(PlayerProvider):
                 send_flush=True,
                 auto_play=True,
             )
+
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        # forward command to player and any connected sync members
+        sync_clients = self._get_sync_clients(player_id)
+        async with asyncio.TaskGroup() as tg:
+            for client in sync_clients:
+                tg.create_task(
+                    self._handle_play_url(
+                        client,
+                        url=stream_job.resolve_stream_url(
+                            client.player_id, output_codec=ContentType.FLAC
+                        ),
+                        queue_item=None,
+                        send_flush=True,
+                        auto_play=False,
+                    )
+                )
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """Handle enqueuing of the next queue item on the player."""

@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -431,7 +432,18 @@ class SonosPlayerProvider(PlayerProvider):
             - target_player: player_id of the syncgroup master or group player.
         """
         sonos_player = self.sonosplayers[player_id]
-        await asyncio.to_thread(sonos_player.soco.join, self.sonosplayers[target_player].soco)
+        retries = 0
+        while True:
+            try:
+                await asyncio.to_thread(
+                    sonos_player.soco.join, self.sonosplayers[target_player].soco
+                )
+                break
+            except soco.exceptions.SoCoUPnPException as err:
+                if retries >= 3:
+                    raise err
+                retries += 1
+                await asyncio.sleep(1)
         await asyncio.to_thread(
             sonos_player.update_info,
             update_group_info=True,
@@ -487,6 +499,31 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.clear_queue)
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
         await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
+        # optimistically set this timestamp to help figure out elapsed time later
+        now = time.time()
+        sonos_player.playback_started = now
+        sonos_player.player.elapsed_time = 0
+        sonos_player.player.elapsed_time_last_updated = now
+
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        url = stream_job.resolve_stream_url(player_id, ContentType.FLAC)
+        sonos_player = self.sonosplayers[player_id]
+        if not sonos_player.soco.is_coordinator:
+            # this should be already handled by the player manager, but just in case...
+            raise PlayerCommandFailed(
+                f"Player {sonos_player.player.display_name} can not "
+                "accept play_stream command, it is synced to another player."
+            )
+        # always stop and clear queue first
+        await asyncio.to_thread(sonos_player.soco.stop)
+        await asyncio.to_thread(sonos_player.soco.clear_queue)
+        await asyncio.to_thread(
+            sonos_player.soco.play_uri, uri=url, title="Music Assistant", force_radio=False
+        )
         # optimistically set this timestamp to help figure out elapsed time later
         now = time.time()
         sonos_player.playback_started = now

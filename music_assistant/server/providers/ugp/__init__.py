@@ -7,12 +7,13 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable, Iterator
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import shortuuid
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_CROSSFADE_DURATION,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -26,7 +27,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_GROUP_MEMBERS
+from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -80,7 +81,7 @@ class UniversalGroupProvider(PlayerProvider):
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self.prev_sync_leaders = {}
-        self.mass.loop.create_task(self.register_group_players())
+        self.mass.loop.create_task(self._register_all_players())
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -94,6 +95,7 @@ class UniversalGroupProvider(PlayerProvider):
                 options=tuple(
                     ConfigValueOption(x.display_name, x.player_id)
                     for x in self.mass.players.all(True, False)
+                    if x.player_id != player_id
                 ),
                 description="Select all players you want to be part of this universal group",
                 multi_value=True,
@@ -106,6 +108,17 @@ class UniversalGroupProvider(PlayerProvider):
                 "allows you to group any player, it will not enable audio sync "
                 "between players of different ecosystems.",
             ),
+            ConfigEntry(
+                key=CONF_CROSSFADE,
+                type=ConfigEntryType.BOOLEAN,
+                label="Enable crossfade",
+                default_value=False,
+                description="Enable a crossfade transition between (queue) tracks. \n\n"
+                "Note that DLNA does not natively support crossfading so you need to enable "
+                "the 'flow mode' workaround to use crossfading with DLNA players.",
+                advanced=False,
+            ),
+            CONF_ENTRY_CROSSFADE_DURATION,
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -114,22 +127,27 @@ class UniversalGroupProvider(PlayerProvider):
         group_player.state = PlayerState.IDLE
         # forward command to player and any connected sync child's
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                group_player, only_powered=True, skip_sync_childs=True
-            ):
+            for member in self.mass.players.iter_group_members(group_player, only_powered=True):
                 if member.state == PlayerState.IDLE:
                     continue
                 tg.create_task(self.mass.players.cmd_stop(member.player_id))
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
-        group_player = self.mass.players.get(player_id)
-        group_player.state = PlayerState.PLAYING
-        async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                group_player, only_powered=False, skip_sync_childs=True
-            ):
-                tg.create_task(self.mass.players.cmd_play(member.player_id))
+
+    async def cmd_pause(self, player_id: str) -> None:
+        """Send PAUSE command to given player."""
+
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
+        """Send POWER command to given player."""
+        await self.mass.players.cmd_group_power(player_id, powered)
+
+    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
+        """Send VOLUME_SET command to given player."""
+        # group volume is already handled in the player manager
+
+    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
+        """Send VOLUME MUTE command to given player."""
 
     async def play_media(
         self,
@@ -152,78 +170,19 @@ class UniversalGroupProvider(PlayerProvider):
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
 
-        # forward the command to all (sync master) group child's
-        members_powered = False
+        # create multi-client stream job
+        stream_job = await self.mass.streams.create_multi_client_stream_job(
+            player_id, start_queue_item=queue_item, seek_position=seek_position, fade_in=fade_in
+        )
+
+        # forward the stream job to all group members
         async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                group_player, only_powered=True, skip_sync_childs=True
-            ):
+            for member in self.mass.players.iter_group_members(group_player, only_powered=True):
                 player_prov = self.mass.players.get_player_provider(member.player_id)
-                members_powered = True
-                tg.create_task(
-                    player_prov.play_media(
-                        member.player_id,
-                        queue_item=queue_item,
-                        seek_position=seek_position,
-                        fade_in=fade_in,
-                    )
-                )
-        if members_powered:
-            # set state optimistically
-            group_player.state = PlayerState.PLAYING
-        else:
-            self.logger.warning(
-                "Play media requested for player %s but no member players are powered!",
-                group_player.display_name,
-            )
-
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
-        """
-        Handle enqueuing of the next queue item on the player.
-
-        If the player supports PlayerFeature.ENQUE_NEXT:
-          This will be called about 10 seconds before the end of the track.
-        If the player does NOT report support for PlayerFeature.ENQUE_NEXT:
-          This will be called when the end of the track is reached.
-
-        A PlayerProvider implementation is in itself responsible for handling this
-        so that the queue items keep playing until its empty or the player stopped.
-
-        This will NOT be called if the end of the queue is reached (and repeat disabled).
-        This will NOT be called if the player is using flow mode to playback the queue.
-        """
-        group_player = self.mass.players.get(player_id)
-        # forward the command to all (sync master) group child's
-        async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                group_player, only_powered=False, skip_sync_childs=True
-            ):
-                player_prov = self.mass.players.get_player_provider(member.player_id)
-                tg.create_task(player_prov.enqueue_next_queue_item(member.player_id, queue_item))
-
-    async def cmd_pause(self, player_id: str) -> None:
-        """Send PAUSE command to given player."""
-        group_player = self.mass.players.get(player_id)
-        group_player.state = PlayerState.PAUSED
-        async with asyncio.TaskGroup() as tg:
-            for member in self._get_active_members(
-                group_player, only_powered=True, skip_sync_childs=True
-            ):
-                tg.create_task(self.mass.players.cmd_pause(member.player_id))
-
-    async def cmd_power(self, player_id: str, powered: bool) -> None:
-        """Send POWER command to given player."""
-        await self.mass.players.cmd_group_power(player_id, powered)
-        if powered:
-            # sync all players on power on
-            await self._sync_players(player_id)
-
-    async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
-        """Send VOLUME_SET command to given player."""
-        # group volume is already handled in the player manager
-
-    async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
-        """Send VOLUME MUTE command to given player."""
+                if member.player_id.startswith(SYNCGROUP_PREFIX):
+                    member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
+                tg.create_task(player_prov.play_stream(member.player_id, stream_job))
+        stream_job.start()
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
@@ -239,6 +198,13 @@ class UniversalGroupProvider(PlayerProvider):
             - members: A list of player_id's that should be part of this group.
         """
         new_group_id = f"{UGP_PREFIX}{shortuuid.random(8).lower()}"
+        # cleanup list, filter groups (should be handled by frontend, but just in case)
+        members = [
+            x.player_id
+            for x in self.mass.players
+            if x.player_id in members
+            if x.provider != self.instance_id
+        ]
         # create default config with the user chosen name
         self.mass.config.create_default_player_config(
             new_group_id,
@@ -250,7 +216,7 @@ class UniversalGroupProvider(PlayerProvider):
         player = self._register_group_player(new_group_id, name=name, members=members)
         return player
 
-    async def register_group_players(self) -> None:
+    async def _register_all_players(self) -> None:
         """Register all (virtual/fake) group players in the Player controller."""
         player_configs = await self.mass.config.get_player_configs(self.instance_id)
         for player_config in player_configs:
@@ -263,15 +229,6 @@ class UniversalGroupProvider(PlayerProvider):
         self, group_player_id: str, name: str, members: Iterable[str]
     ) -> Player:
         """Register a UGP group player in the Player controller."""
-        # extract player features from first/random player
-        # TODO: should we gather only the features that exist on ALL child players?
-        for member in members:
-            if first_player := self.mass.players.get(member):
-                supported_features = first_player.supported_features
-                break
-        else:
-            # edge case: no child player is (yet) available; use safe default feature set
-            supported_features = (PlayerFeature.VOLUME_SET, PlayerFeature.POWER)
         player = Player(
             player_id=group_player_id,
             provider=self.instance_id,
@@ -280,7 +237,7 @@ class UniversalGroupProvider(PlayerProvider):
             available=True,
             powered=False,
             device_info=DeviceInfo(model="Group", manufacturer=self.name),
-            supported_features=supported_features,
+            supported_features=(PlayerFeature.VOLUME_SET, PlayerFeature.POWER),
             group_childs=set(members),
         )
         self.mass.players.register_or_update(player)
@@ -294,23 +251,16 @@ class UniversalGroupProvider(PlayerProvider):
             return
 
         # read the state from the first active group member
-        for member in self._get_active_members(
-            group_player, only_powered=False, skip_sync_childs=False
-        ):
-            if member.synced_to:
-                continue
-            player_powered = member.powered
-            if not player_powered:
-                continue
+        for member in self.mass.players.iter_group_members(group_player, only_powered=True):
             group_player.current_item_id = member.current_item_id
             group_player.elapsed_time = member.elapsed_time
             group_player.elapsed_time_last_updated = member.elapsed_time_last_updated
             group_player.state = member.state
             break
 
-    async def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
+    def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
         """
-        Call when a power command was executed on one of the child player of a Player/Sync group.
+        Call when a power command was executed on one of the child player of a PlayerGroup.
 
         This is used to handle special actions such as (re)syncing.
         """
@@ -321,96 +271,28 @@ class UniversalGroupProvider(PlayerProvider):
             # guard, this should be caught in the player controller but just in case...
             return
 
-        powered_childs = [x for x in self._get_active_members(group_player, True, False)]
-        if not new_power and child_player in powered_childs:
-            powered_childs.remove(child_player)
+        powered_childs = [
+            x
+            for x in self.mass.players.iter_group_members(group_player, True)
+            if not (not new_power and x.player_id == child_player_id)
+        ]
 
         # if the last player of a group turned off, turn off the group
         if len(powered_childs) == 0:
             self.logger.debug(
-                "Group %s has no more powered members, turning off group player", player_id
+                "Group %s has no more powered members, turning off group player",
+                group_player.display_name,
             )
             self.mass.create_task(self.cmd_power(player_id, False))
             return False
 
-        group_playing = group_player.state == PlayerState.PLAYING
         # if a child player turned ON while the group player is already playing
         # we need to resync/resume
-        if new_power and group_playing:
-            if sync_leader := next(
-                (x for x in child_player.can_sync_with if x in self.prev_sync_leaders[player_id]),
-                None,
-            ):
-                # prevent resume when player platform supports sync
-                # and one of its players is already playing
-                self.logger.debug(
-                    "Groupplayer %s forced resync due to groupmember change", player_id
-                )
-                self.mass.create_task(
-                    self.mass.players.cmd_sync(child_player.player_id, sync_leader)
-                )
-            else:
-                self.logger.debug(
-                    "Groupplayer %s forced resume due to groupmember change", player_id
-                )
-                self.mass.create_task(self.mass.player_queues.resume(group_player.player_id))
-        elif (
-            not new_power
-            and group_playing
-            and child_player.player_id in self.prev_sync_leaders[player_id]
-        ):
-            # a sync master player turned OFF while the group player
-            # should still be playing - we need to resync/resume
-            self.logger.debug("Groupplayer %s forced resume due to groupmember change", player_id)
-            self.mass.create_task(self.mass.player_queues.resume, group_player.player_id)
-
-    def _get_active_members(
-        self,
-        group_player: Player,
-        only_powered: bool = False,
-        skip_sync_childs: bool = True,
-    ) -> Iterator[Player]:
-        """Get all (child) players attached to this grouped player."""
-        for child_id in group_player.group_childs:
-            child_player = self.mass.players.get(child_id, False)
-            if not child_player or not child_player.available:
-                continue
-            # work out power state
-            if not (not only_powered or child_player.powered):
-                continue
-            if child_player.synced_to and skip_sync_childs:
-                continue
-            if child_player.powered and (
-                child_player.type == PlayerType.SYNC_GROUP or child_player.provider == self.domain
-            ):
-                # handle group within a group, unpack members
-                for sub_child_id in child_player.group_childs:
-                    sub_child_player = self.mass.players.get(sub_child_id, False)
-                    if not sub_child_player or not sub_child_player.available:
-                        continue
-                    if sub_child_player.synced_to and skip_sync_childs:
-                        continue
-                    yield sub_child_player
-                continue
-            yield child_player
-
-    async def _sync_players(self, player_id: str) -> None:
-        """Sync all (possible) players."""
-        sync_leaders = set()
-        group_player = self.mass.players.get(player_id)
-        for member in self._get_active_members(group_player, only_powered=True):
-            if member.synced_to is not None:
-                continue
-            if not member.can_sync_with:
-                continue
-            # check if we can join this player to an already chosen sync leader
-            if existing_leader := next(
-                (x for x in member.can_sync_with if x in sync_leaders), None
-            ):
-                await self.mass.players.cmd_sync(member.player_id, existing_leader)
-                # set optimistic state to prevent race condition in play media
-                member.synced_to = existing_leader
-                continue
-            # pick this member as new sync leader
-            sync_leaders.add(member.player_id)
-        self.prev_sync_leaders[player_id] = tuple(sync_leaders)
+        if new_power and group_player.state == PlayerState.PLAYING:
+            self.logger.warning(
+                "Player %s turned on while syncgroup is playing, "
+                "a forced resume for %s will be performed...",
+                child_player.display_name,
+                group_player.display_name,
+            )
+            self.mass.create_task(self.mass.player_queues.resume(group_player.player_id))

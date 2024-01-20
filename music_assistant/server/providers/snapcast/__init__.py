@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 CONF_SNAPCAST_SERVER_HOST = "snapcast_server_host"
@@ -263,7 +264,7 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
-        async def queue_streamer():
+        async def _streamer():
             host = self.snapcast_server_host
             _, writer = await asyncio.open_connection(host, port)
             self.logger.debug("Opened connection to %s:%s", host, port)
@@ -300,7 +301,54 @@ class SnapCastProvider(PlayerProvider):
                 self.logger.debug("Closed connection to %s:%s", host, port)
 
         # start streaming the queue (pcm) audio in a background task
-        self._stream_tasks[player_id] = asyncio.create_task(queue_streamer())
+        self._stream_tasks[player_id] = asyncio.create_task(_streamer())
+
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        player = self.mass.players.get(player_id)
+        if player.synced_to:
+            raise RuntimeError("A synced player cannot receive play commands directly")
+        # stop any existing streams first
+        await self.cmd_stop(player_id)
+        # TEMP - TODO - WARNING - ACHTUNG - HACK
+        # override pcm format of streamjob due to issue with snapcast
+        # that seems to only accept a 48000/16 stream somehow ?!
+        stream_job.pcm_format.content_type = ContentType.PCM_S16LE
+        stream_job.pcm_format.sample_rate = 48000
+        stream_job.pcm_format.bit_depth = 16
+        # end of hack
+        stream, port = await self._create_stream()
+        stream_job.expected_players.add(player_id)
+        snap_group = self._get_snapgroup(player_id)
+        await snap_group.set_stream(stream.identifier)
+
+        async def _streamer():
+            host = self.snapcast_server_host
+            _, writer = await asyncio.open_connection(host, port)
+            self.logger.debug("Opened connection to %s:%s", host, port)
+            player.current_item_id = f"flow/{stream_job.queue_id}"
+            player.elapsed_time = 0
+            player.elapsed_time_last_updated = time.time()
+            player.state = PlayerState.PLAYING
+            self._set_childs_state(player_id, PlayerState.PLAYING)
+            self.mass.players.register_or_update(player)
+            try:
+                async for pcm_chunk in stream_job.subscribe(player_id):
+                    writer.write(pcm_chunk)
+                    await writer.drain()
+            finally:
+                await self._snapserver.stream_remove_stream(stream.identifier)
+                if writer.can_write_eof():
+                    writer.close()
+                if not writer.is_closing():
+                    writer.close()
+                self.logger.debug("Closed connection to %s:%s", host, port)
+
+        # start streaming the queue (pcm) audio in a background task
+        self._stream_tasks[player_id] = asyncio.create_task(_streamer())
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
@@ -334,7 +382,8 @@ class SnapCastProvider(PlayerProvider):
             port = random.randint(4953, 4953 + 200)
             name = f"MusicAssistant--{port}"
             result = await self._snapserver.stream_add_stream(
-                # TODO: can we handle 24 bits bit depth ?
+                # NOTE: setting the sampleformat to something else
+                # (like 24 bits bit depth) does not seem to work at all!
                 f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
             )
             if "id" not in result:
