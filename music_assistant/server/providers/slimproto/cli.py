@@ -534,7 +534,7 @@ class LmsCli:
                 await resp.write(chunk)
                 cometd_client.last_seen = int(time.time())
             except ConnectionResetError:
-                return
+                return resp
         return resp
 
     def _handle_cometd_request(self, client: CometDClient, cometd_request: dict[str, Any]) -> None:
