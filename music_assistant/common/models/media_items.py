@@ -17,6 +17,8 @@ from music_assistant.common.models.enums import (
     LinkType,
     MediaType,
 )
+from music_assistant.common.models.errors import InvalidDataError
+from music_assistant.server.helpers.util import is_valid_uuid
 
 MetadataTypes = int | bool | str | list[str]
 
@@ -222,8 +224,8 @@ class _MediaItemBase(DataClassDictMixin):
         """Set MusicBrainz External ID."""
         if not value:
             return
-        if len(value.split("-")) != 5:
-            raise RuntimeError("Invalid MusicBrainz identifier")
+        if not is_valid_uuid(value):
+            raise InvalidDataError(f"Invalid MusicBrainz identifier: {value}")
         if existing := next((x for x in self.external_ids if x[0] == ExternalID.MUSICBRAINZ), None):
             # Musicbrainz ID is unique so remove existing entry
             self.external_ids.remove(existing)
