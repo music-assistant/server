@@ -18,6 +18,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
+    CONF_HIDE_PLAYER,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
@@ -402,5 +403,16 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     label="Crossfade duration",
     description="Duration in seconds of the crossfade between tracks (if enabled)",
     depends_on=CONF_CROSSFADE,
+    advanced=True,
+)
+
+CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
+    key=CONF_HIDE_PLAYER,
+    type=ConfigEntryType.BOOLEAN,
+    label="Hide this player in the user interface",
+    default_value=False,
+    description="Hide this player in the user interface. \n\n"
+    "Note that it can still be controlled and it will also show up in any "
+    "sync groups the player belongs to.",
     advanced=True,
 )
