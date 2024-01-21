@@ -187,7 +187,7 @@ class AirplayProvider(PlayerProvider):
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
-        super().on_player_config_removed()
+        super().on_player_config_removed(player_id)
         self._removed_players.add(player_id)
         self.restart_bridge()
 
