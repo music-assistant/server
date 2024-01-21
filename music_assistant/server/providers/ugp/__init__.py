@@ -299,4 +299,6 @@ class UniversalGroupProvider(PlayerProvider):
                 child_player.display_name,
                 group_player.display_name,
             )
-            self.mass.create_task(self.mass.player_queues.resume(group_player.player_id))
+            self.mass.loop.call_later(
+                1, self.mass.create_task, self.mass.player_queues.resume(group_player.player_id)
+            )
