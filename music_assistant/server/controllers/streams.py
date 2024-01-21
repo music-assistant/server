@@ -211,6 +211,9 @@ class MultiClientStreamJob:
         async for chunk in self.stream_controller.get_flow_stream(
             self.queue, self.start_queue_item, self.pcm_format, self.seek_position, self.fade_in
         ):
+            if chunk_num > 1 and len(self.subscribed_players) == 0:
+                await asyncio.sleep(2)
+
             if chunk_num == 0:
                 # wait until all expected clients are connected
                 try:

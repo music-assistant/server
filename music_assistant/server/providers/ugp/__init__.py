@@ -181,6 +181,8 @@ class UniversalGroupProvider(PlayerProvider):
                 player_prov = self.mass.players.get_player_provider(member.player_id)
                 if member.player_id.startswith(SYNCGROUP_PREFIX):
                     member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
+                    if member is None:
+                        continue
                 tg.create_task(player_prov.play_stream(member.player_id, stream_job))
         stream_job.start()
 

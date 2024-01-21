@@ -817,12 +817,6 @@ class PlayerController(CoreController):
                     or child_player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
                 ):
                     continue
-                if child_player.active_source not in (
-                    group_player.player_id,
-                    child_player.player_id,
-                    None,
-                ):
-                    continue
                 yield child_player
 
     async def _poll_players(self) -> None:
@@ -882,9 +876,8 @@ class PlayerController(CoreController):
             x.player_id
             for x in self
             if x.player_id in members
-            if x.provider == provider
-            and PlayerFeature.SYNC in x.supported_features
-            and not x.player_id.startswith(SYNCGROUP_PREFIX)
+            if not x.player_id.startswith(SYNCGROUP_PREFIX)
+            if x.provider == provider and PlayerFeature.SYNC in x.supported_features
         ]
         # create default config with the user chosen name
         self.mass.config.create_default_player_config(
@@ -908,8 +901,6 @@ class PlayerController(CoreController):
             group_player, only_powered=True, only_playing=False
         ):
             if not child_player.group_childs:
-                continue
-            if child_player.active_source != group_player.player_id:
                 continue
             return child_player
         return None

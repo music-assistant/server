@@ -510,7 +510,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         This is a special feature from the Universal Group provider.
         """
-        url = stream_job.resolve_stream_url(player_id, ContentType.FLAC)
+        url = stream_job.resolve_stream_url(player_id, ContentType.MP3)
         sonos_player = self.sonosplayers[player_id]
         if not sonos_player.soco.is_coordinator:
             # this should be already handled by the player manager, but just in case...
@@ -522,7 +522,7 @@ class SonosPlayerProvider(PlayerProvider):
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
         await asyncio.to_thread(
-            sonos_player.soco.play_uri, uri=url, title="Music Assistant", force_radio=False
+            sonos_player.soco.play_uri, url, title="Music Assistant", force_radio=True
         )
         # optimistically set this timestamp to help figure out elapsed time later
         now = time.time()
