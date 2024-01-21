@@ -322,7 +322,7 @@ class AirplayProvider(PlayerProvider):
                     *[bridge_binary_path, "-t", "-x", self._config_file],
                     stdout=asyncio.subprocess.PIPE,
                 )
-                stdout, sterr = await bridge_binary.communicate()
+                stdout, _ = await bridge_binary.communicate()
                 if (
                     bridge_binary.returncode == 1
                     and b"This program is free software: you can redistribute it and/or modify"
