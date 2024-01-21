@@ -25,6 +25,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
@@ -37,6 +38,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -212,7 +214,7 @@ class SonosPlayer:
             group_members = {x.uid for x in self.group_info.members if x.is_visible}
             if not group_members:
                 # not sure about this ?!
-                self.player.type = PlayerType.STEREO_PAIR
+                self.player.type = PlayerType.PLAYER
             elif group_members == {self.player_id}:
                 self.player.group_childs = set()
             else:
@@ -261,6 +263,11 @@ class SonosPlayerProvider(PlayerProvider):
     sonosplayers: dict[str, SonosPlayer] | None = None
     _discovery_running: bool = False
     _discovery_reschedule_timer: asyncio.TimerHandle | None = None
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -332,6 +339,7 @@ class SonosPlayerProvider(PlayerProvider):
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        super().on_player_config_changed(config, changed_keys)
         if "enabled" in changed_keys:
             # run discovery to catch any re-enabled players
             self.mass.create_task(self._run_discovery())
@@ -424,7 +432,18 @@ class SonosPlayerProvider(PlayerProvider):
             - target_player: player_id of the syncgroup master or group player.
         """
         sonos_player = self.sonosplayers[player_id]
-        await asyncio.to_thread(sonos_player.soco.join, self.sonosplayers[target_player].soco)
+        retries = 0
+        while True:
+            try:
+                await asyncio.to_thread(
+                    sonos_player.soco.join, self.sonosplayers[target_player].soco
+                )
+                break
+            except soco.exceptions.SoCoUPnPException as err:
+                if retries >= 3:
+                    raise err
+                retries += 1
+                await asyncio.sleep(1)
         await asyncio.to_thread(
             sonos_player.update_info,
             update_group_info=True,
@@ -486,6 +505,29 @@ class SonosPlayerProvider(PlayerProvider):
         sonos_player.player.elapsed_time = 0
         sonos_player.player.elapsed_time_last_updated = now
 
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        url = stream_job.resolve_stream_url(player_id, ContentType.MP3)
+        sonos_player = self.sonosplayers[player_id]
+        if not sonos_player.soco.is_coordinator:
+            # this should be already handled by the player manager, but just in case...
+            raise PlayerCommandFailed(
+                f"Player {sonos_player.player.display_name} can not "
+                "accept play_stream command, it is synced to another player."
+            )
+        # always stop and clear queue first
+        await asyncio.to_thread(sonos_player.soco.stop)
+        await asyncio.to_thread(sonos_player.soco.clear_queue)
+        await asyncio.to_thread(sonos_player.soco.play_uri, url, force_radio=True)
+        # optimistically set this timestamp to help figure out elapsed time later
+        now = time.time()
+        sonos_player.playback_started = now
+        sonos_player.player.elapsed_time = 0
+        sonos_player.player.elapsed_time_last_updated = now
+
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """
         Handle enqueuing of the next queue item on the player.
@@ -533,6 +575,8 @@ class SonosPlayerProvider(PlayerProvider):
         the next successful poll or event where it becomes available again.
         If the player does not need any polling, simply do not override this method.
         """
+        if player_id not in self.sonosplayers:
+            return
         sonos_player = self.sonosplayers[player_id]
         try:
             # the check_poll logic will work out what endpoints need polling now
@@ -602,7 +646,7 @@ class SonosPlayerProvider(PlayerProvider):
                 type=PlayerType.PLAYER,
                 name=soco_device.player_name,
                 available=True,
-                powered=True,
+                powered=False,
                 supported_features=PLAYER_FEATURES,
                 device_info=DeviceInfo(
                     model=speaker_info["model_name"],

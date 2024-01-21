@@ -78,6 +78,8 @@ class MultiClientStreamJob:
     In case a stream is restarted (e.g. when seeking), a new MultiClientStreamJob will be created.
     """
 
+    _audio_task: asyncio.Task | None = None
+
     def __init__(
         self,
         stream_controller: StreamsController,
@@ -102,15 +104,14 @@ class MultiClientStreamJob:
         self.bytes_streamed: int = 0
         self.client_seconds_skipped: dict[str, int] = {}
         self._all_clients_connected = asyncio.Event()
-        # start running the audio task in the background
-        self._audio_task = asyncio.create_task(self._stream_job_runner())
         self.logger = stream_controller.logger.getChild(f"streamjob_{self.job_id}")
         self._finished: bool = False
+        self._first_chunk: bytes = b""
 
     @property
     def finished(self) -> bool:
         """Return if this StreamJob is finished."""
-        return self._finished or self._audio_task.done()
+        return self._finished or self._audio_task and self._audio_task.done()
 
     @property
     def pending(self) -> bool:
@@ -122,12 +123,18 @@ class MultiClientStreamJob:
         """Return if this Job is running."""
         return not self.finished and not self.pending
 
+    def start(self) -> None:
+        """Start running this streamjob."""
+        # start running the audio task in the background
+        self._audio_task = asyncio.create_task(self._stream_job_runner())
+
     def stop(self) -> None:
         """Stop running this job."""
         self._finished = True
-        if self._audio_task.done():
+        if self._audio_task and self._audio_task.done():
             return
-        self._audio_task.cancel()
+        if self._audio_task:
+            self._audio_task.cancel()
         for sub_queue in self.subscribed_players.values():
             with suppress(asyncio.QueueFull):
                 sub_queue.put_nowait(b"")
@@ -157,6 +164,9 @@ class MultiClientStreamJob:
         """Subscribe consumer and iterate incoming chunks on the queue."""
         try:
             self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
+
+            if self._first_chunk:
+                yield self._first_chunk
 
             if self._all_clients_connected.is_set():
                 # client subscribes while we're already started
@@ -205,7 +215,8 @@ class MultiClientStreamJob:
         async for chunk in self.stream_controller.get_flow_stream(
             self.queue, self.start_queue_item, self.pcm_format, self.seek_position, self.fade_in
         ):
-            if chunk_num == 0:
+            chunk_num += 1
+            if chunk_num == 1:
                 # wait until all expected clients are connected
                 try:
                     async with asyncio.timeout(10):
@@ -229,8 +240,13 @@ class MultiClientStreamJob:
                         len(self.subscribed_players),
                         len(self.expected_players),
                     )
+
             await self._put_chunk(chunk)
-            chunk_num += 1
+
+            # keep first chunk to workaround (dlna) players that do multiple get requests
+            if chunk_num == 1:
+                self._first_chunk = chunk
+                await asyncio.sleep(0.1)
 
         # mark EOF with empty chunk
         await self._put_chunk(b"")
@@ -416,6 +432,8 @@ class StreamsController(CoreController):
         start_queue_item: QueueItem,
         seek_position: int = 0,
         fade_in: bool = False,
+        pcm_bit_depth: int = 24,
+        pcm_sample_rate: int = 48000,
     ) -> MultiClientStreamJob:
         """Create a MultiClientStreamJob for the given queue..
 
@@ -427,9 +445,6 @@ class StreamsController(CoreController):
             if not existing_job.finished:
                 self.logger.warning("Detected existing (running) stream job for queue %s", queue_id)
                 existing_job.stop()
-        queue_player = self.mass.players.get(queue_id)
-        pcm_bit_depth = 24 if queue_player.supports_24bit else 16
-        pcm_sample_rate = min(queue_player.max_sample_rate, 96000)
         self.multi_client_jobs[queue_id] = stream_job = MultiClientStreamJob(
             self,
             queue_id=queue_id,
@@ -464,6 +479,7 @@ class StreamsController(CoreController):
                 reason=f"Unable to retrieve streamdetails for item: {queue_item}"
             )
         seek_position = int(request.query.get("seek_position", 0))
+        queue_item.streamdetails.seconds_skipped = seek_position
         fade_in = bool(request.query.get("fade_in", 0))
         # work out output format/details
         output_format = await self._get_output_format(
@@ -812,10 +828,11 @@ class StreamsController(CoreController):
                 chunk_num += 1
 
                 # throttle buffer, do not allow more than 30 seconds in buffer
-                seconds_buffered = total_bytes_written / pcm_sample_size
+                seconds_buffered = (total_bytes_written + bytes_written) / pcm_sample_size
                 player = self.mass.players.get(queue.queue_id)
-                while (seconds_buffered - player.corrected_elapsed_time) > 30:
-                    await asyncio.sleep(1)
+                if seconds_buffered > 60 and player.corrected_elapsed_time > 30:
+                    while (seconds_buffered - player.corrected_elapsed_time) > 30:
+                        await asyncio.sleep(1)
 
                 ####  HANDLE FIRST PART OF TRACK
 
@@ -874,6 +891,7 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration = (
                 seek_position + queue_track.streamdetails.seconds_streamed
             )
+            total_bytes_written += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s - seconds streamed: %s",
                 queue_track.streamdetails.uri,

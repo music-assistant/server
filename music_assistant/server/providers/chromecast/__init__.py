@@ -21,7 +21,6 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_HIDE_GROUP_MEMBERS,
     ConfigEntry,
     ConfigValueType,
 )
@@ -49,6 +48,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -172,21 +172,14 @@ class ChromecastProvider(PlayerProvider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        cast_player = self.castplayers.get(player_id)
         base_entries = await super().get_player_config_entries(player_id)
-        entries = base_entries + PLAYER_CONFIG_ENTRIES
-        if (
-            cast_player
-            and cast_player.cast_info.is_audio_group
-            and not cast_player.cast_info.is_multichannel_group
-        ):
-            entries = entries + (CONF_ENTRY_HIDE_GROUP_MEMBERS,)
-        return entries
+        return base_entries + PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(
         self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        super().on_player_config_changed(config, changed_keys)
         if "enabled" in changed_keys and config.player_id not in self.castplayers:
             self.mass.create_task(self.mass.config.reload_provider, self.instance_id)
 
@@ -208,11 +201,6 @@ class ChromecastProvider(PlayerProvider):
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
         castplayer = self.castplayers[player_id]
-        # set mute_as_power feature for group members
-        if castplayer.player.type == PlayerType.GROUP:
-            for child_player_id in castplayer.player.group_childs:
-                if child_player := self.mass.players.get(child_player_id):
-                    child_player.mute_as_power = powered
         if powered:
             await self._launch_app(castplayer)
         else:
@@ -281,6 +269,21 @@ class ChromecastProvider(PlayerProvider):
         # send queue info to the CC
         media_controller = castplayer.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, queuedata, True)
+
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        url = stream_job.resolve_stream_url(player_id, ContentType.FLAC)
+        castplayer = self.castplayers[player_id]
+        await asyncio.to_thread(
+            castplayer.cc.play_media,
+            url,
+            content_type="audio/flac",
+            title="Music Assistant",
+            thumb=MASS_LOGO_ONLINE,
+        )
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """Handle enqueuing of the next queue item on the player."""
@@ -440,17 +443,12 @@ class ChromecastProvider(PlayerProvider):
         castplayer.player.name = castplayer.cast_info.friendly_name
         castplayer.player.volume_level = int(status.volume_level * 100)
         castplayer.player.volume_muted = status.volume_muted
-        if castplayer.active_group:
-            # use mute as power when group is active
-            castplayer.player.powered = not status.volume_muted
-        else:
-            castplayer.player.powered = (
-                castplayer.cc.app_id is not None
-                and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
-            )
+        castplayer.player.powered = (
+            castplayer.cc.app_id is not None and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
+        )
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
-            castplayer.player.type = PlayerType.STEREO_PAIR
+            castplayer.player.type = PlayerType.PLAYER
             castplayer.player.group_childs = set()
         # handle cast groups
         if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:

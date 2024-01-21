@@ -52,6 +52,9 @@ class Provider:
         """Return the features supported by this Provider."""
         return tuple()
 
+    async def handle_setup(self) -> None:
+        """Handle async initialization of the provider."""
+
     async def unload(self) -> None:
         """
         Handle unload/close of the provider.

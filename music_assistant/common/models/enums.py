@@ -200,13 +200,13 @@ class PlayerType(StrEnum):
     """Enum with possible Player Types.
 
     player: A regular player.
-    group: A (dedicated) group player or playergroup.
-    stereo_pair: Two speakers playing as one stereo pair.
+    group: A (dedicated) group player or (universal) playergroup.
+    sync_group: A group/preset of players that can be synced together.
     """
 
     PLAYER = "player"
     GROUP = "group"
-    STEREO_PAIR = "stereo_pair"
+    SYNC_GROUP = "sync_group"
 
 
 class PlayerFeature(StrEnum):
@@ -218,8 +218,7 @@ class PlayerFeature(StrEnum):
     sync: The player supports syncing with other players (of the same platform).
     accurate_time: The player provides millisecond accurate timing information.
     seek: The player supports seeking to a specific.
-    set_members: The PlayerGroup supports adding/removing members.
-    queue: The player supports (en)queuing of media items.
+    queue: The player supports (en)queuing of media items natively.
     """
 
     POWER = "power"
@@ -227,10 +226,8 @@ class PlayerFeature(StrEnum):
     VOLUME_MUTE = "volume_mute"
     PAUSE = "pause"
     SYNC = "sync"
-    ACCURATE_TIME = "accurate_time"
     SEEK = "seek"
     ENQUEUE_NEXT = "enqueue_next"
-    CROSSFADE = "crossfade"
 
 
 class EventType(StrEnum):
@@ -296,7 +293,8 @@ class ProviderFeature(StrEnum):
     #
     # PLAYERPROVIDER FEATURES
     #
-    # we currently have none ;-)
+    PLAYER_GROUP_CREATE = "player_group_create"
+    SYNC_PLAYERS = "sync_players"
 
     #
     # METADATAPROVIDER FEATURES

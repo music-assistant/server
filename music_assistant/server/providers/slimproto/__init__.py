@@ -32,6 +32,7 @@ from music_assistant.common.models.enums import (
     PlayerFeature,
     PlayerState,
     PlayerType,
+    ProviderFeature,
 )
 from music_assistant.common.models.errors import QueueEmpty, SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
@@ -45,6 +46,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -189,6 +191,11 @@ class SlimprotoProvider(PlayerProvider):
     _do_not_resync_before: dict[str, float]
     _cli: LmsCli
     port: int = DEFAULT_SLIMPROTO_PORT
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -390,6 +397,10 @@ class SlimprotoProvider(PlayerProvider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
+        # fix race condition where resync and play media are called at more or less the same time
+        if self._resync_handle:
+            self._resync_handle.cancel()
+            self._resync_handle = None
         player = self.mass.players.get(player_id)
         if player.synced_to:
             raise RuntimeError("A synced player cannot receive play commands directly")
@@ -418,6 +429,7 @@ class SlimprotoProvider(PlayerProvider):
                             auto_play=False,
                         )
                     )
+            stream_job.start()
         else:
             # regular, single player playback
             client = self._socket_clients[player_id]
@@ -437,6 +449,27 @@ class SlimprotoProvider(PlayerProvider):
                 send_flush=True,
                 auto_play=True,
             )
+
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        # forward command to player and any connected sync members
+        sync_clients = self._get_sync_clients(player_id)
+        async with asyncio.TaskGroup() as tg:
+            for client in sync_clients:
+                tg.create_task(
+                    self._handle_play_url(
+                        client,
+                        url=stream_job.resolve_stream_url(
+                            client.player_id, output_codec=ContentType.FLAC
+                        ),
+                        queue_item=None,
+                        send_flush=True,
+                        auto_play=False,
+                    )
+                )
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """Handle enqueuing of the next queue item on the player."""
@@ -590,7 +623,6 @@ class SlimprotoProvider(PlayerProvider):
                     manufacturer=client.device_type,
                 ),
                 supported_features=(
-                    PlayerFeature.ACCURATE_TIME,
                     PlayerFeature.POWER,
                     PlayerFeature.SYNC,
                     PlayerFeature.VOLUME_SET,

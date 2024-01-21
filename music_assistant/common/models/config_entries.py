@@ -18,7 +18,6 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
-    CONF_HIDE_GROUP_CHILDS,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
@@ -385,20 +384,6 @@ CONF_ENTRY_EQ_TREBLE = ConfigEntry(
     advanced=True,
 )
 
-CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
-    key=CONF_HIDE_GROUP_CHILDS,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("Always", "always"),
-        ConfigValueOption("Only if the group is active/powered", "active"),
-        ConfigValueOption("Never", "never"),
-    ],
-    default_value="active",
-    label="Hide playergroup members in UI",
-    description="Hide the individual player entry for the members of this group "
-    "in the user interface.",
-    advanced=False,
-)
 
 CONF_ENTRY_CROSSFADE = ConfigEntry(
     key=CONF_CROSSFADE,

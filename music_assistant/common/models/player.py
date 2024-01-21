@@ -81,11 +81,12 @@ class Player(DataClassDictMixin):
     # enabled: if the player is enabled
     # will be set by the player manager based on config
     # a disabled player is hidden in the UI and updates will not be processed
+    # nor will it be added to the HA integration
     enabled: bool = True
 
     # hidden_by: if the player is enabled
     # will be set by the player manager based on config
-    # a disabled player is hidden in the UI only
+    # a disabled player is hidden in the UI only but can still be controlled
     hidden_by: set = field(default_factory=set)
 
     # group_volume: if the player is a player group or syncgroup master,
@@ -100,9 +101,6 @@ class Player(DataClassDictMixin):
     # extra_data: any additional data to store on the player object
     # and pass along freely
     extra_data: dict[str, Any] = field(default_factory=dict)
-
-    # mute_as_power: special feature from the universal group
-    mute_as_power: bool = False
 
     @property
     def corrected_elapsed_time(self) -> float:

@@ -16,7 +16,7 @@ from typing import TYPE_CHECKING
 import aiofiles
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.constants import CONF_LOG_LEVEL, CONF_PLAYERS
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
+    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.slimproto import SlimprotoProvider
 
@@ -130,6 +131,11 @@ class AirplayProvider(PlayerProvider):
     _log_reader_task: asyncio.Task | None = None
     _removed_players: set[str] | None = None
 
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.SYNC_PLAYERS,)
+
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._removed_players = set()
@@ -164,6 +170,7 @@ class AirplayProvider(PlayerProvider):
 
     def on_player_config_changed(self, config: PlayerConfig, changed_keys: set[str]) -> None:
         """Call (by config manager) when the configuration of a player changes."""
+        super().on_player_config_changed(config, changed_keys)
         # forward to slimproto too
         slimproto_prov = self.mass.get_provider("slimproto")
         slimproto_prov.on_player_config_changed(config, changed_keys)
@@ -177,6 +184,7 @@ class AirplayProvider(PlayerProvider):
 
     def on_player_config_removed(self, player_id: str) -> None:
         """Call (by config manager) when the configuration of a player is removed."""
+        super().on_player_config_removed()
         self._removed_players.add(player_id)
         self.restart_bridge()
 
@@ -217,6 +225,15 @@ class AirplayProvider(PlayerProvider):
             seek_position=seek_position,
             fade_in=fade_in,
         )
+
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        # simply forward to underlying slimproto player
+        slimproto_prov = self.mass.get_provider("slimproto")
+        await slimproto_prov.play_stream(player_id, stream_job)
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """Handle enqueuing of the next queue item on the player."""

@@ -44,13 +44,14 @@ CONF_OUTPUT_CHANNELS: Final[str] = "output_channels"
 CONF_FLOW_MODE: Final[str] = "flow_mode"
 CONF_LOG_LEVEL: Final[str] = "log_level"
 CONF_HIDE_GROUP_CHILDS: Final[str] = "hide_group_childs"
-CONF_GROUPED_POWER_ON: Final[str] = "grouped_power_on"
 CONF_CROSSFADE_DURATION: Final[str] = "crossfade_duration"
 CONF_BIND_IP: Final[str] = "bind_ip"
 CONF_BIND_PORT: Final[str] = "bind_port"
 CONF_PUBLISH_IP: Final[str] = "publish_ip"
 CONF_AUTO_PLAY: Final[str] = "auto_play"
+CONF_GROUP_PLAYERS: Final[str] = "group_players"
 CONF_CROSSFADE: Final[str] = "crossfade"
+CONF_GROUP_MEMBERS: Final[str] = "group_members"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -85,3 +86,4 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "music",
     "player_queues",
 )
+SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
