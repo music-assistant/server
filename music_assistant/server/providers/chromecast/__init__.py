@@ -459,6 +459,8 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.supported_features = (
                 PlayerFeature.POWER,
                 PlayerFeature.VOLUME_SET,
+                PlayerFeature.ENQUEUE_NEXT,
+                PlayerFeature.PAUSE,
             )
 
         # send update to player manager
