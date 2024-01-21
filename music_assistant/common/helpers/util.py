@@ -6,6 +6,7 @@ import os
 import socket
 from collections.abc import Callable
 from typing import Any, TypeVar
+from uuid import UUID
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -277,3 +278,12 @@ def empty_queue(q: asyncio.Queue) -> None:
             q.task_done()
         except (asyncio.QueueEmpty, ValueError):
             pass
+
+
+def is_valid_uuid(uuid_to_test: str, version: int = 4) -> bool:
+    """Check if uuid string is a valid UUID."""
+    try:
+        uuid_obj = UUID(uuid_to_test, version=version)
+    except ValueError:
+        return False
+    return str(uuid_obj) == uuid_to_test

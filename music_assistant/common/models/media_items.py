@@ -8,7 +8,7 @@ from typing import Any, Self
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name, merge_lists
+from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
@@ -17,6 +17,7 @@ from music_assistant.common.models.enums import (
     LinkType,
     MediaType,
 )
+from music_assistant.common.models.errors import InvalidDataError
 
 MetadataTypes = int | bool | str | list[str]
 
@@ -222,8 +223,8 @@ class _MediaItemBase(DataClassDictMixin):
         """Set MusicBrainz External ID."""
         if not value:
             return
-        if len(value.split("-")) != 5:
-            raise RuntimeError("Invalid MusicBrainz identifier")
+        if not is_valid_uuid(value):
+            raise InvalidDataError(f"Invalid MusicBrainz identifier: {value}")
         if existing := next((x for x in self.external_ids if x[0] == ExternalID.MUSICBRAINZ), None):
             # Musicbrainz ID is unique so remove existing entry
             self.external_ids.remove(existing)
