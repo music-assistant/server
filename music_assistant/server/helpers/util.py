@@ -14,7 +14,6 @@ from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from typing import TYPE_CHECKING
-from uuid import UUID
 
 import ifaddr
 import memory_tempfile
@@ -110,12 +109,3 @@ def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:
     """Chunk bytes data into smaller chunks."""
     for i in range(0, len(data), chunk_size):
         yield data[i : i + chunk_size]
-
-
-def is_valid_uuid(uuid_to_test: str, version: int = 4) -> bool:
-    """Check if uuid string is a valid UUID."""
-    try:
-        uuid_obj = UUID(uuid_to_test, version=version)
-    except ValueError:
-        return False
-    return str(uuid_obj) == uuid_to_test

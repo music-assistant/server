@@ -8,7 +8,7 @@ from typing import Any, Self
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name, merge_lists
+from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
@@ -18,7 +18,6 @@ from music_assistant.common.models.enums import (
     MediaType,
 )
 from music_assistant.common.models.errors import InvalidDataError
-from music_assistant.server.helpers.util import is_valid_uuid
 
 MetadataTypes = int | bool | str | list[str]
 
