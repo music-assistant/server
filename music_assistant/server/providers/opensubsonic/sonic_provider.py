@@ -1,6 +1,7 @@
 """The provider class for Open Subsonic."""
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncGenerator, Callable
 from typing import Any
 
@@ -428,7 +429,9 @@ class OpenSonicProvider(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Return the requested Artist."""
         try:
-            sonic_artist = await self._run_async(self._conn.getArtist, artist_id=prov_artist_id)
+            sonic_artist: SonicArtist = await self._run_async(
+                self._conn.getArtist, artist_id=prov_artist_id
+            )
             sonic_info = await self._run_async(self._conn.getArtistInfo2, aid=prov_artist_id)
         except (ParameterError, DataNotFoundError) as e:
             if self._enable_podcasts:
@@ -446,7 +449,7 @@ class OpenSonicProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Return the specified track."""
         try:
-            sonic_song = await self._run_async(self._conn.getSong, prov_track_id)
+            sonic_song: SonicSong = await self._run_async(self._conn.getSong, prov_track_id)
         except (ParameterError, DataNotFoundError) as e:
             raise MediaNotFoundError(f"Item {prov_track_id} not found") from e
         return self._parse_track(sonic_song)
@@ -454,7 +457,7 @@ class OpenSonicProvider(MusicProvider):
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Return a list of all Albums by specified Artist."""
         try:
-            sonic_artist = await self._run_async(self._conn.getArtist, prov_artist_id)
+            sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
         except (ParameterError, DataNotFoundError) as e:
             raise MediaNotFoundError(f"Album {prov_artist_id} not found") from e
         albums = []
@@ -465,7 +468,9 @@ class OpenSonicProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Return the specified Playlist."""
         try:
-            sonic_playlist = await self._run_async(self._conn.getPlaylist, prov_playlist_id)
+            sonic_playlist: SonicPlaylist = await self._run_async(
+                self._conn.getPlaylist, prov_playlist_id
+            )
         except (ParameterError, DataNotFoundError) as e:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
         return self._parse_playlist(sonic_playlist)
@@ -473,7 +478,9 @@ class OpenSonicProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Provide a generator for the tracks on a specified Playlist."""
         try:
-            sonic_playlist = await self._run_async(self._conn.getPlaylist, prov_playlist_id)
+            sonic_playlist: SonicPlaylist = await self._run_async(
+                self._conn.getPlaylist, prov_playlist_id
+            )
         except (ParameterError, DataNotFoundError) as e:
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
         for index, sonic_song in enumerate(sonic_playlist.songs):
@@ -482,10 +489,9 @@ class OpenSonicProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Get the details needed to process a specified track."""
         try:
-            sonic_song = await self._run_async(self._conn.getSong, item_id)
+            sonic_song: SonicSong = await self._run_async(self._conn.getSong, item_id)
         except (ParameterError, DataNotFoundError) as e:
             raise MediaNotFoundError(f"Item {item_id} not found") from e
-
         mime_type = sonic_song.content_type
         if mime_type.endswith("mpeg"):
             mime_type = sonic_song.suffix
@@ -500,8 +506,28 @@ class OpenSonicProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Provide a generator for the stream data."""
-        with self._conn.stream(
-            streamdetails.item_id, timeOffset=seek_position, estimateContentLength=True
-        ) as stream:
-            for chunk in stream.iter_content(chunk_size=40960):
+        audio_buffer = asyncio.Queue(1)
+
+        def _streamer():
+            with self._conn.stream(
+                streamdetails.item_id, timeOffset=seek_position, estimateContentLength=True
+            ) as stream:
+                for chunk in stream.iter_content(chunk_size=40960):
+                    asyncio.run_coroutine_threadsafe(
+                        audio_buffer.put(chunk), self.mass.loop
+                    ).result()
+            # send empty chunk when we're done
+            asyncio.run_coroutine_threadsafe(audio_buffer.put(b""), self.mass.loop).result()
+
+        # fire up an executor thread to put the audio chunks (threadsafe) on the audio buffer
+        streamer_task = self.mass.loop.run_in_executor(None, _streamer)
+        try:
+            while True:
+                # keep reading from the audio buffer until there is no more data
+                chunk = await audio_buffer.get()
+                if chunk == b"":
+                    break
                 yield chunk
+        finally:
+            if not streamer_task.done():
+                streamer_task.cancel()
