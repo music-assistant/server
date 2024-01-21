@@ -106,6 +106,7 @@ class MultiClientStreamJob:
         self._all_clients_connected = asyncio.Event()
         self.logger = stream_controller.logger.getChild(f"streamjob_{self.job_id}")
         self._finished: bool = False
+        self._first_chunk: bytes = b""
 
     @property
     def finished(self) -> bool:
@@ -164,6 +165,9 @@ class MultiClientStreamJob:
         try:
             self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
 
+            if self._first_chunk:
+                yield self._first_chunk
+
             if self._all_clients_connected.is_set():
                 # client subscribes while we're already started
                 self.logger.debug(
@@ -211,10 +215,8 @@ class MultiClientStreamJob:
         async for chunk in self.stream_controller.get_flow_stream(
             self.queue, self.start_queue_item, self.pcm_format, self.seek_position, self.fade_in
         ):
-            if chunk_num > 1 and len(self.subscribed_players) == 0:
-                await asyncio.sleep(2)
-
-            if chunk_num == 0:
+            chunk_num += 1
+            if chunk_num == 1:
                 # wait until all expected clients are connected
                 try:
                     async with asyncio.timeout(10):
@@ -238,8 +240,13 @@ class MultiClientStreamJob:
                         len(self.subscribed_players),
                         len(self.expected_players),
                     )
+
             await self._put_chunk(chunk)
-            chunk_num += 1
+
+            # keep first chunk to workaround (dlna) players that do multiple get requests
+            if chunk_num == 1:
+                self._first_chunk = chunk
+                await asyncio.sleep(0.1)
 
         # mark EOF with empty chunk
         await self._put_chunk(b"")
@@ -821,10 +828,11 @@ class StreamsController(CoreController):
                 chunk_num += 1
 
                 # throttle buffer, do not allow more than 30 seconds in buffer
-                seconds_buffered = total_bytes_written / pcm_sample_size
+                seconds_buffered = (total_bytes_written + bytes_written) / pcm_sample_size
                 player = self.mass.players.get(queue.queue_id)
-                while (seconds_buffered - player.corrected_elapsed_time) > 30:
-                    await asyncio.sleep(1)
+                if seconds_buffered > 60 and player.corrected_elapsed_time > 30:
+                    while (seconds_buffered - player.corrected_elapsed_time) > 30:
+                        await asyncio.sleep(1)
 
                 ####  HANDLE FIRST PART OF TRACK
 
@@ -883,6 +891,7 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration = (
                 seek_position + queue_track.streamdetails.seconds_streamed
             )
+            total_bytes_written += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s - seconds streamed: %s",
                 queue_track.streamdetails.uri,

@@ -521,9 +521,7 @@ class SonosPlayerProvider(PlayerProvider):
         # always stop and clear queue first
         await asyncio.to_thread(sonos_player.soco.stop)
         await asyncio.to_thread(sonos_player.soco.clear_queue)
-        await asyncio.to_thread(
-            sonos_player.soco.play_uri, url, title="Music Assistant", force_radio=True
-        )
+        await asyncio.to_thread(sonos_player.soco.play_uri, url, force_radio=True)
         # optimistically set this timestamp to help figure out elapsed time later
         now = time.time()
         sonos_player.playback_started = now
