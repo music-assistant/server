@@ -134,7 +134,10 @@ class AirplayProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        # for now do not allow creation of airplay groups
+        # in preparation of new airplay provider coming up soon
+        # return (ProviderFeature.SYNC_PLAYERS,)
+        return tuple()
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -308,10 +311,6 @@ class AirplayProvider(PlayerProvider):
 
     def _handle_player_update_callback(self, player: Player) -> None:
         """Handle player update callback from slimproto source player."""
-        # only allow syncing with airplay players,
-        # in preparation of new airplay provider coming up soon
-        our_player_ids = (x.player_id for x in self.players)
-        player.can_sync_with = tuple(x for x in player.can_sync_with if x in our_player_ids)
 
     async def _get_bridge_binary(self):
         """Find the correct bridge binary belonging to the platform."""
