@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_HIDE_PLAYER,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     ConfigEntry,
@@ -38,6 +39,7 @@ class PlayerProvider(Provider):
             CONF_ENTRY_VOLUME_NORMALIZATION,
             CONF_ENTRY_AUTO_PLAY,
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
+            CONF_ENTRY_HIDE_PLAYER,
         )
         if player_id.startswith(SYNCGROUP_PREFIX):
             # add default entries for syncgroups

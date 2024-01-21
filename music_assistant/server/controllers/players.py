@@ -30,6 +30,7 @@ from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_GROUP_MEMBERS,
+    CONF_HIDE_PLAYER,
     CONF_PLAYERS,
     ROOT_LOGGER_NAME,
     SYNCGROUP_PREFIX,
@@ -234,7 +235,7 @@ class PlayerController(CoreController):
             player.volume_level = player.group_volume
         # prefer any overridden name from config
         player.display_name = (
-            self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/name")
+            self.mass.config.get_raw_player_config_value(player.player_id, "name")
             or player.name
             or player.player_id
         )
@@ -247,7 +248,9 @@ class PlayerController(CoreController):
             # mark player as powered if its playing
             # could happen for players that do not officially support power commands
             player.powered = True
-
+        player.hidden = self.mass.config.get_raw_player_config_value(
+            player.player_id, CONF_HIDE_PLAYER, False
+        )
         # handle syncgroup - get attributes from first player that has this group as source
         if player.player_id.startswith(SYNCGROUP_PREFIX):
             if sync_leader := self.get_sync_leader(player):

@@ -134,7 +134,10 @@ class AirplayProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        # for now do not allow creation of airplay groups
+        # in preparation of new airplay provider coming up soon
+        # return (ProviderFeature.SYNC_PLAYERS,)
+        return tuple()
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -287,6 +290,9 @@ class AirplayProvider(PlayerProvider):
             manufacturer="Generic",
         )
         player.supports_24bit = False
+        # disable sonos by default
+        if "sonos" in player.name.lower() or "rincon" in player.name.lower():
+            player.enabled_by_default = False
 
         # extend info from the discovery xml
         async with aiofiles.open(self._config_file, "r") as _file:
@@ -301,20 +307,10 @@ class AirplayProvider(PlayerProvider):
                     udn = device_elem.find("udn").text
                     udn_name = udn.split("@")[1].split("._")[0]
                     player.name = udn_name
-                    # disable sonos by default
-                    if "sonos" in (device_elem.find("friendly_name").text or "").lower():
-                        player.enabled_by_default = False
-                        # TODO: query more info directly from the device
-                        player.device_info = DeviceInfo(
-                            model="Airplay device",
-                            address=player.device_info.address,
-                            manufacturer="SONOS",
-                        )
                     break
 
     def _handle_player_update_callback(self, player: Player) -> None:
         """Handle player update callback from slimproto source player."""
-        # we could override anything on the player object here
 
     async def _get_bridge_binary(self):
         """Find the correct bridge binary belonging to the platform."""

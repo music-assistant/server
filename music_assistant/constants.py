@@ -52,6 +52,7 @@ CONF_AUTO_PLAY: Final[str] = "auto_play"
 CONF_GROUP_PLAYERS: Final[str] = "group_players"
 CONF_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
+CONF_HIDE_PLAYER: Final[str] = "hide_player"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
