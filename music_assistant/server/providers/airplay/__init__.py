@@ -322,7 +322,7 @@ class AirplayProvider(PlayerProvider):
                     *[bridge_binary_path, "-t", "-x", self._config_file],
                     stdout=asyncio.subprocess.PIPE,
                 )
-                stdout, _ = await bridge_binary.communicate()
+                stdout, sterr = await bridge_binary.communicate()
                 if (
                     bridge_binary.returncode == 1
                     and b"This program is free software: you can redistribute it and/or modify"
@@ -330,52 +330,21 @@ class AirplayProvider(PlayerProvider):
                 ):
                     self._bridge_bin = bridge_binary_path
                     return bridge_binary_path
-            except OSError:
+            except OSError as err:
+                self.logger.exception(err)
                 return None
 
         base_path = os.path.join(os.path.dirname(__file__), "bin")
-        if platform.system() == "Windows" and (
-            bridge_binary := await check_bridge_binary(
-                os.path.join(base_path, "squeeze2raop-static.exe")
-            )
+
+        system = platform.system().lower()
+        architecture = platform.machine().lower()
+
+        if bridge_binary := await check_bridge_binary(
+            os.path.join(base_path, f"squeeze2raop-{system}-{architecture}-static")
         ):
             return bridge_binary
-        if platform.system() == "Darwin":
-            # macos binary is autoselect x86_64/arm64
-            if bridge_binary := await check_bridge_binary(
-                os.path.join(base_path, "squeeze2raop-macos-static")
-            ):
-                return bridge_binary
 
-        if platform.system() == "FreeBSD":
-            # FreeBSD binary is x86_64 intel
-            if bridge_binary := await check_bridge_binary(
-                os.path.join(base_path, "squeeze2raop-freebsd-x86_64-static")
-            ):
-                return bridge_binary
-
-        if platform.system() == "Linux":
-            architecture = platform.machine()
-            if architecture in ["AMD64", "x86_64"]:
-                # generic linux x86_64 binary
-                if bridge_binary := await check_bridge_binary(
-                    os.path.join(
-                        base_path,
-                        "squeeze2raop-linux-x86_64-static",
-                    )
-                ):
-                    return bridge_binary
-
-            # other linux architecture... try all options one by one...
-            for arch in ["aarch64", "arm", "armv6", "mips", "sparc64", "x86"]:
-                if bridge_binary := await check_bridge_binary(
-                    os.path.join(base_path, f"squeeze2raop-linux-{arch}-static")
-                ):
-                    return bridge_binary
-
-        raise RuntimeError(
-            f"Unable to locate RaopBridge for {platform.system()} ({platform.machine()})"
-        )
+        raise RuntimeError(f"Unable to locate RaopBridge for {system}/{architecture}")
 
     async def _bridge_process_runner(self, slimproto_prov: SlimprotoProvider) -> None:
         """Run the bridge binary in the background."""
