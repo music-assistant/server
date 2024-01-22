@@ -282,7 +282,7 @@ class ConfigController:
             await self.mass.music.cleanup_provider(instance_id)
         if existing["type"] == "player":
             # cleanup entries in player manager
-            for player in self.mass.players:
+            for player in list(self.mass.players):
                 if player.provider != instance_id:
                     continue
                 self.mass.players.remove(player.player_id, cleanup_config=True)
@@ -314,7 +314,7 @@ class ConfigController:
         available_providers = {x.domain for x in self.mass.providers}
         return [
             await self.get_player_config(player_id)
-            for player_id, raw_conf in self.get(CONF_PLAYERS).items()
+            for player_id, raw_conf in self.get(CONF_PLAYERS, {}).items()
             # filter out unavailable providers
             if raw_conf["provider"] in available_providers
             # optional provider filter
