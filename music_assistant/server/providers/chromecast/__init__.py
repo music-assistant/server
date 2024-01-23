@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pychromecast
-from pychromecast.controllers.bubbleupnp import BubbleUPNPController
 from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
@@ -52,9 +51,6 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
 
 
-CONF_ALT_APP = "alt_app"
-
-
 PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
         key=CONF_CROSSFADE,
@@ -65,15 +61,6 @@ PLAYER_CONFIG_ENTRIES = (
         "Note that Chromecast does not natively support crossfading so Music Assistant "
         "uses a 'flow mode' workaround for this at the cost of on-player metadata.",
         advanced=False,
-    ),
-    ConfigEntry(
-        key=CONF_ALT_APP,
-        type=ConfigEntryType.BOOLEAN,
-        label="Use alternate Media app",
-        default_value=False,
-        description="Using the BubbleUPNP Media controller for playback improves "
-        "the playback experience but may not work on non-Google hardware.",
-        advanced=True,
     ),
     CONF_ENTRY_CROSSFADE_DURATION,
 )
@@ -485,7 +472,9 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.elapsed_time = status.current_time
 
         # active source
-        if status.content_id and castplayer.player_id in status.content_id:
+        if status.content_id and castplayer.player_id in status.content_id:  # noqa: SIM114
+            castplayer.player.active_source = castplayer.player_id
+        elif castplayer.cc.app_id == pychromecast.config.APP_MEDIA_RECEIVER:
             castplayer.player.active_source = castplayer.player_id
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
@@ -538,12 +527,7 @@ class ChromecastProvider(PlayerProvider):
     async def _launch_app(self, castplayer: CastPlayer) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
-        if use_alt_app := await self.mass.config.get_player_config_value(
-            castplayer.player_id, CONF_ALT_APP
-        ):
-            app_id = pychromecast.config.APP_BUBBLEUPNP
-        else:
-            app_id = pychromecast.config.APP_MEDIA_RECEIVER
+        app_id = pychromecast.config.APP_MEDIA_RECEIVER
 
         if castplayer.cc.app_id == app_id:
             return  # already active
@@ -555,21 +539,8 @@ class ChromecastProvider(PlayerProvider):
             # Quit the previous app before starting splash screen or media player
             if castplayer.cc.app_id is not None:
                 castplayer.cc.quit_app()
-            # Use BubbleUPNP media receiver app if configured
-            # which enables a more rich display but does not work on all players
-            # so its configurable to turn it on/off
-            if use_alt_app:
-                castplayer.logger.debug(
-                    "Launching BubbleUPNPController (%s) as active app.", app_id
-                )
-                controller = BubbleUPNPController()
-                castplayer.cc.register_handler(controller)
-                controller.launch(launched_callback)
-            else:
-                castplayer.logger.debug(
-                    "Launching Default Media Receiver (%s) as active app.", app_id
-                )
-                castplayer.cc.media_controller.launch(launched_callback)
+            castplayer.logger.debug("Launching Default Media Receiver (%s) as active app.", app_id)
+            castplayer.cc.media_controller.launch(launched_callback)
 
         await self.mass.loop.run_in_executor(None, launch)
         await event.wait()
