@@ -13,7 +13,6 @@ colorlog==6.8.0
 cryptography==41.0.7
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
-git+https://github.com/gieljnssns/python-radios.git@main
 git+https://github.com/music-assistant/deezer-python-async@v0.1.2
 ifaddr==0.2.0
 mashumaro==3.11
@@ -27,6 +26,7 @@ PyChromecast==13.0.8
 pycryptodome==3.20.0
 python-ffmpeg==2.0.9
 python-slugify==8.0.1
+radios==0.3.0
 shortuuid==1.0.11
 snapcast-mod==2.4.3
 soco==0.30.2
