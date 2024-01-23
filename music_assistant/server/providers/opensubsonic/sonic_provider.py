@@ -530,6 +530,7 @@ class OpenSonicProvider(MusicProvider):
                 # keep reading from the audio buffer until there is no more data
                 chunk = await audio_buffer.get()
                 if chunk == b"":
+                    await self._run_async(self._conn.scrobble, streamdetails.item_id)
                     break
                 yield chunk
         finally:
