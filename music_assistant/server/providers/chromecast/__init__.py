@@ -233,16 +233,21 @@ class ChromecastProvider(PlayerProvider):
         if use_flow_mode:
             # In flow mode, all queue tracks are sent to the player as continuous stream.
             # This comes at the cost of metadata (cast does not support ICY metadata).
-            await asyncio.to_thread(
-                castplayer.cc.play_media,
-                url,
-                content_type=f'audio/{url.split(".")[-1].split("?")[0]}',
-                title="Music Assistant",
-                thumb=MASS_LOGO_ONLINE,
+            cc_queue_items = [
+                self._create_cc_queue_item(None, url),
+            ]
+        else:
+            # handle normal playback using the chromecast queue to play items one by one
+            cc_queue_items = [
+                self._create_cc_queue_item(queue_item, url),
+            ]
+        # add a special 'command' item to the queue
+        # this allows for on-player next buttons/commands to still work
+        cc_queue_items.append(
+            self._create_cc_queue_item(
+                None, self.mass.streams.get_command_url(queue_item.queue_id, "next")
             )
-            return
-        # handle normal playback using the chromecast queue to play items one by one
-        cc_queue_items = [self._create_cc_queue_item(queue_item, url)]
+        )
         queuedata = {
             "type": "QUEUE_LOAD",
             "repeatMode": "REPEAT_OFF",  # handled by our queue controller
@@ -554,8 +559,31 @@ class ChromecastProvider(PlayerProvider):
         castplayer.status_listener = None
         self.castplayers.pop(castplayer.player_id, None)
 
-    def _create_cc_queue_item(self, queue_item: QueueItem, stream_url: str):
+    def _create_cc_queue_item(self, queue_item: QueueItem | None, stream_url: str):
         """Create CC queue item from MA QueueItem."""
+        if queue_item is None:
+            # flow mode or other special type
+            return {
+                "autoplay": True,
+                "preloadTime": 10,
+                "startTime": 0,
+                "activeTrackIds": [],
+                "media": {
+                    "contentId": stream_url,
+                    "customData": {
+                        "uri": stream_url,
+                        "queue_item_id": stream_url,
+                    },
+                    "contentType": "audio/flac",
+                    "streamType": STREAM_TYPE_LIVE,
+                    "metadata": {
+                        "metadataType": 0,
+                        "title": "Music Assistant",
+                        "images": [{"url": MASS_LOGO_ONLINE}],
+                    },
+                    "duration": None,
+                },
+            }
         duration = int(queue_item.duration) if queue_item.duration else None
         image_url = self.mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
         if queue_item.media_type == MediaType.TRACK and queue_item.media_item:

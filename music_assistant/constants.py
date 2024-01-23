@@ -15,7 +15,7 @@ VARIOUS_ARTISTS_ID_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 
 
 RESOURCES_DIR: Final[pathlib.Path] = (
-    pathlib.Path(__file__).parent.resolve().joinpath("helpers/resources")
+    pathlib.Path(__file__).parent.resolve().joinpath("server/helpers/resources")
 )
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
