@@ -7,7 +7,6 @@ This also nicely separates the parsing logic from the Youtube Music provider log
 """
 
 import asyncio
-import json
 from time import time
 
 import ytmusicapi
