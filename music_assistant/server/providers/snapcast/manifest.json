@@ -4,7 +4,7 @@
   "name": "Snapcast",
   "description": "Support for snapcast server and clients.",
   "codeowners": ["@SantigoSotoC"],
-  "requirements": ["snapcast-mod==2.4.3", "python-ffmpeg==2.0.9"],
+  "requirements": ["snapcast-mod==2.4.3"],
   "documentation": "https://github.com/orgs/music-assistant/discussions/1668",
   "multi_instance": false,
   "builtin": false,
