@@ -39,6 +39,7 @@ from music_assistant.constants import (
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
+    SILENCE_FILE,
 )
 from music_assistant.server.helpers.audio import (
     check_audio_support,
@@ -371,6 +372,11 @@ class StreamsController(CoreController):
                     "*",
                     "/{queue_id}/single/{queue_item_id}.{fmt}",
                     self.serve_queue_item_stream,
+                ),
+                (
+                    "*",
+                    "/{queue_id}/command/{command}.mp3",
+                    self.serve_command_request,
                 ),
             ],
         )
@@ -757,6 +763,19 @@ class StreamsController(CoreController):
                     break
 
         return resp
+
+    async def serve_command_request(self, request: web.Request) -> web.Response:
+        """Handle special 'command' request for a player."""
+        self._log_request(request)
+        queue_id = request.match_info["queue_id"]
+        command = request.match_info["command"]
+        if command == "next":
+            self.mass.create_task(self.mass.player_queues.next(queue_id))
+        return web.FileResponse(SILENCE_FILE)
+
+    def get_command_url(self, player_or_queue_id: str, command: str) -> str:
+        """Get the url for the special command stream."""
+        return f"{self.base_url}/{player_or_queue_id}/command/{command}.mp3"
 
     async def get_flow_stream(
         self,
