@@ -696,7 +696,6 @@ class PlayerQueuesController(CoreController):
                 idx += 1
         if next_item is None:
             raise QueueEmpty("No more (playable) tracks left in the queue.")
-        queue.next_track_enqueued = True
         return next_item
 
     # Main queue manipulation methods
@@ -845,33 +844,41 @@ class PlayerQueuesController(CoreController):
             duration = current_item.streamdetails.seconds_streamed
         else:
             duration = current_item.duration
-        seconds_remaining = duration - player.corrected_elapsed_time
+        seconds_remaining = int(duration - player.corrected_elapsed_time)
+
+        async def _enqueue_next(index: int, supports_enqueue: bool = False):
+            with suppress(QueueEmpty):
+                next_item = await self.preload_next_item(queue.queue_id, index)
+                if supports_enqueue:
+                    await self.mass.players.enqueue_next_queue_item(
+                        player_id=player.player_id, queue_item=next_item
+                    )
+                    return
+                await self.play_index(queue.queue_id, next_item.queue_item_id)
 
         if PlayerFeature.ENQUEUE_NEXT in player.supported_features:
             # player supports enqueue next feature.
-            # we enqueue the next track 15 seconds before the current track ends
-            end_of_track_reached = seconds_remaining <= 15
-        else:
-            # player does not support enqueue next feature.
-            # we wait for the player to stop after it reaches the end of the track
-            prev_seconds_remaining = prev_state.get("seconds_remaining", seconds_remaining)
-            end_of_track_reached = prev_seconds_remaining <= 6 and queue.state == PlayerState.IDLE
-            new_state["seconds_remaining"] = seconds_remaining
-
-        if not end_of_track_reached:
-            queue.next_track_enqueued = False  # reset
+            # we enqueue the next track after a new track
+            # has started playing and before the current track ends
+            new_track_started = new_state.get("state") == PlayerState.PLAYING and prev_state.get(
+                "current_index"
+            ) != new_state.get("current_index")
+            if (
+                new_track_started
+                or seconds_remaining == 15
+                or int(player.corrected_elapsed_time) == 1
+            ):
+                self.mass.create_task(_enqueue_next(queue.current_index, True))
             return
-        if queue.next_track_enqueued:
-            return  # already enqueued
 
-        async def _enqueue_next(index: int):
-            with suppress(QueueEmpty):
-                next_item = await self.preload_next_item(queue.queue_id, index)
-                await self.mass.players.enqueue_next_queue_item(
-                    player_id=player.player_id, queue_item=next_item
-                )
+        # player does not support enqueue next feature.
+        # we wait for the player to stop after it reaches the end of the track
+        prev_seconds_remaining = prev_state.get("seconds_remaining", seconds_remaining)
+        if prev_seconds_remaining <= 6 and queue.state == PlayerState.IDLE:
+            self.mass.create_task(_enqueue_next(queue.current_index, False))
+            return
 
-        self.mass.create_task(_enqueue_next(queue.current_index))
+        new_state["seconds_remaining"] = seconds_remaining
 
     async def _get_radio_tracks(self, queue_id: str) -> list[MediaItemType]:
         """Call the registered music providers for dynamic tracks."""

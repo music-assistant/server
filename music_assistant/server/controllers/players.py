@@ -608,10 +608,9 @@ class PlayerController(CoreController):
         """
         Handle enqueuing of the next queue item on the player.
 
-        If the player supports PlayerFeature.ENQUE_NEXT:
-          This will be called about 10 seconds before the end of the track.
-        If the player does NOT report support for PlayerFeature.ENQUE_NEXT:
-          This will be called when the end of the track is reached.
+        Only called if the player supports PlayerFeature.ENQUE_NEXT.
+        Called about 1 second after a new track started playing.
+        Called about 15 seconds before the end of the current track.
 
         A PlayerProvider implementation is in itself responsible for handling this
         so that the queue items keep playing until its empty or the player stopped.
@@ -944,7 +943,6 @@ class PlayerController(CoreController):
         # extract player features from first/random player
         for member in members:
             if first_player := self.get(member):
-                supported_features = first_player.supported_features
                 break
         else:
             # edge case: no child player is (yet) available; postpone register
@@ -957,7 +955,7 @@ class PlayerController(CoreController):
             available=True,
             powered=False,
             device_info=DeviceInfo(model="SyncGroup", manufacturer=provider.title()),
-            supported_features=supported_features,
+            supported_features=first_player.supported_features,
             group_childs=set(members),
         )
         self.mass.players.register_or_update(player)

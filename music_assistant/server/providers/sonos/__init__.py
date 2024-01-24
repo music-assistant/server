@@ -497,11 +497,8 @@ class SonosPlayerProvider(PlayerProvider):
                 f"Player {sonos_player.player.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-        # always stop and clear queue first
-        await asyncio.to_thread(sonos_player.soco.stop)
-        await asyncio.to_thread(sonos_player.soco.clear_queue)
-        await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
-        await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
+        metadata = create_didl_metadata(self.mass, url, queue_item)
+        await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
         # optimistically set this timestamp to help figure out elapsed time later
         now = time.time()
         sonos_player.playback_started = now
@@ -521,10 +518,13 @@ class SonosPlayerProvider(PlayerProvider):
                 f"Player {sonos_player.player.display_name} can not "
                 "accept play_stream command, it is synced to another player."
             )
-        # always stop and clear queue first
-        await asyncio.to_thread(sonos_player.soco.stop)
-        await asyncio.to_thread(sonos_player.soco.clear_queue)
-        await asyncio.to_thread(sonos_player.soco.play_uri, url, force_radio=True)
+        metadata = create_didl_metadata(self.mass, url, None)
+        await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
+        # add a special 'command' item to the sonos queue
+        # this allows for on-player next buttons/commands to still work
+        await self._enqueue_item(
+            sonos_player, self.mass.streams.get_command_url(player_id, "next"), None
+        )
         # optimistically set this timestamp to help figure out elapsed time later
         now = time.time()
         sonos_player.playback_started = now
@@ -735,23 +735,17 @@ class SonosPlayerProvider(PlayerProvider):
         self,
         sonos_player: SonosPlayer,
         url: str,
-        queue_item: QueueItem,
+        queue_item: QueueItem | None,
     ) -> None:
         """Enqueue a queue item to the Sonos player Queue."""
         metadata = create_didl_metadata(self.mass, url, queue_item)
         await asyncio.to_thread(
-            sonos_player.soco.avTransport.AddURIToQueue,
-            [
-                ("InstanceID", 0),
-                ("EnqueuedURI", url),
-                ("EnqueuedURIMetaData", metadata),
-                ("DesiredFirstTrackNumberEnqueued", 0),
-                ("EnqueueAsNext", 0),
-            ],
+            sonos_player.soco.avTransport.SetNextAVTransportURI,
+            [("InstanceID", 0), ("NextURI", url), ("NextURIMetaData", metadata)],
             timeout=60,
         )
-        self.logger.debug(
-            "Enqued track (%s) to player %s",
+        self.logger.info(
+            "Enqued next track (%s) to player %s",
             queue_item.name if queue_item else url,
             sonos_player.player.display_name,
         )
