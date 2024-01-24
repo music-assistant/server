@@ -196,11 +196,8 @@ class SonosPlayer:
             self.player.active_source = self.player.player_id
         elif "spotify" in self.player.current_item_id:
             self.player.active_source = "spotify"
-        elif self.player.current_item_id.startswith("http"):
-            self.player.active_source = "http"
         else:
-            # TODO: handle other possible sources here
-            self.player.active_source = None
+            self.player.active_source = self.soco.music_source_from_uri(self.track_info["uri"])
         if not self.need_elapsed_time_workaround:
             self.player.elapsed_time = self.elapsed_time
             self.player.elapsed_time_last_updated = self.track_info_updated
@@ -293,11 +290,11 @@ class SonosPlayerProvider(PlayerProvider):
             for player_id in list(self.sonosplayers):
                 player = self.sonosplayers.pop(player_id)
                 player.player.available = False
-                if player.soco.is_coordinator:
-                    try:
-                        player.soco.end_direct_control_session()
-                    except Exception as err:
-                        self.logger.exception(err)
+                self.logger.debug("Unsubscribing from events for %s", player.player.display_name)
+                await asyncio.gather(
+                    *(subscription.unsubscribe() for subscription in player.subscriptions),
+                    return_exceptions=True,
+                )
         self.sonosplayers = None
 
     async def get_player_config_entries(
@@ -715,7 +712,7 @@ class SonosPlayerProvider(PlayerProvider):
         if "volume" in event.variables:
             sonos_player.rendering_control_info["volume"] = event.variables["volume"]["Master"]
         if "mute" in event.variables:
-            sonos_player.rendering_control_info["mute"] = bool(event.variables["mute"]["Master"])
+            sonos_player.rendering_control_info["mute"] = event.variables["mute"]["Master"] == "1"
         sonos_player.rendering_control_info_updated = time.time()
         asyncio.run_coroutine_threadsafe(self._update_player(sonos_player), self.mass.loop)
 
