@@ -315,10 +315,14 @@ class OpenSonicProvider(MusicProvider):
     async def _run_async(self, call: Callable, *args, **kwargs):
         return await self.mass.create_task(call, *args, **kwargs)
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> bytes:
         """Return the image."""
-        with self._conn.getCoverArt(path) as art:
-            return art.content
+
+        def _get_cover_art() -> bytes:
+            with self._conn.getCoverArt(path) as art:
+                return art.content
+
+        await asyncio.to_thread(_get_cover_art)
 
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 20
