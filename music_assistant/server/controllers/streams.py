@@ -515,7 +515,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Start serving audio stream for QueueItem %s to %s", queue_item.uri, queue.display_name
         )
-        queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_item_id)
+        queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(
@@ -821,7 +821,9 @@ class StreamsController(CoreController):
                 queue_track.name,
                 queue.display_name,
             )
-            queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_track.queue_item_id)
+            queue.index_in_buffer = self.mass.player_queues.index_by_id(
+                queue.queue_id, queue_track.queue_item_id
+            )
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
