@@ -515,7 +515,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Start serving audio stream for QueueItem %s to %s", queue_item.uri, queue.display_name
         )
-
+        queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_item_id)
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(
@@ -785,7 +785,7 @@ class StreamsController(CoreController):
         seek_position: int = 0,
         fade_in: bool = False,
     ) -> AsyncGenerator[bytes, None]:
-        """Get a flow stream of all tracks in the queue."""
+        """Get a flow stream of all tracks in the queue as raw PCM audio."""
         # ruff: noqa: PLR0915
         assert pcm_format.content_type.is_pcm()
         queue_track = None
@@ -821,6 +821,7 @@ class StreamsController(CoreController):
                 queue_track.name,
                 queue.display_name,
             )
+            queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_track.queue_item_id)
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)

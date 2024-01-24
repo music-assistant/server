@@ -696,7 +696,6 @@ class PlayerQueuesController(CoreController):
                 idx += 1
         if next_item is None:
             raise QueueEmpty("No more (playable) tracks left in the queue.")
-        queue.index_in_buffer = next_index
         queue.next_track_enqueued = True
         return next_item
 

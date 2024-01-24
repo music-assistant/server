@@ -102,6 +102,7 @@ class ContentType(StrEnum):
     M4A = "m4a"
     M4B = "m4b"
     DSF = "dsf"
+    OPUS = "opus"
     WAVPACK = "wv"
     PCM_S16LE = "s16le"  # PCM signed 16-bit little-endian
     PCM_S24LE = "s24le"  # PCM signed 24-bit little-endian
