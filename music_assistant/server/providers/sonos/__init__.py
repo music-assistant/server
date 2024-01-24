@@ -292,7 +292,10 @@ class SonosPlayerProvider(PlayerProvider):
                 player = self.sonosplayers.pop(player_id)
                 player.player.available = False
                 if player.soco.is_coordinator:
-                    player.soco.end_direct_control_session()
+                    try:
+                        player.soco.end_direct_control_session()
+                    except Exception as err:
+                        self.logger.exception(err)
         self.sonosplayers = None
 
     async def get_player_config_entries(
