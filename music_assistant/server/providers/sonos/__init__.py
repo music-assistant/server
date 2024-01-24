@@ -66,6 +66,8 @@ HIRES_MODELS = (
     "Sonos Amp",
     "SYMFONISK Bookshelf",
     "SYMFONISK Table Lamp",
+    "Sonos Era 100",
+    "Sonos Era 300",
 )
 
 
@@ -656,7 +658,7 @@ class SonosPlayerProvider(PlayerProvider):
                     address=soco_device.ip_address,
                     manufacturer=self.name,
                 ),
-                max_sample_rate=441000,
+                max_sample_rate=44100,
                 supports_24bit=False,
             ),
             speaker_info=speaker_info,
