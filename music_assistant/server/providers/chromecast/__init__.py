@@ -12,7 +12,7 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pychromecast
-from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE
+from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE, MediaController
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
 from pychromecast.models import CastInfo
@@ -64,6 +64,21 @@ PLAYER_CONFIG_ENTRIES = (
     ),
     CONF_ENTRY_CROSSFADE_DURATION,
 )
+
+
+# Monkey patch the Media controller here to store the queue items
+_patched_process_media_status_org = MediaController._process_media_status
+
+
+def _patched_process_media_status(self, data):
+    """Process STATUS message(s) of the media controller."""
+    _patched_process_media_status_org(self, data)
+    for status_msg in data.get("status", []):
+        if items := status_msg.get("items"):
+            self.status.items = items
+
+
+MediaController._process_media_status = _patched_process_media_status
 
 
 async def setup(
@@ -284,9 +299,11 @@ class ChromecastProvider(PlayerProvider):
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )
+        if cast_queue_items := getattr(castplayer.cc.media_controller.status, "items"):
+            next_item_id = cast_queue_items[-1]["itemId"]
         queuedata = {
             "type": "QUEUE_INSERT",
-            "insertBefore": None,
+            "insertBefore": next_item_id,
             "items": [self._create_cc_queue_item(queue_item, url)],
         }
         media_controller = castplayer.cc.media_controller
