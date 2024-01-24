@@ -238,9 +238,10 @@ class OpenSonicProvider(MusicProvider):
                 type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
             ),
         ]
-        album.artists.append(
-            self._get_item_mapping(MediaType.ARTIST, sonic_album.artist_id, sonic_album.artist)
-        )
+        if sonic_album.artist_id is not None and sonic_album.artist is not None:
+            album.artists.append(
+                self._get_item_mapping(MediaType.ARTIST, sonic_album.artist_id, sonic_album.artist)
+            )
 
         if sonic_info:
             if sonic_info.small_url:
@@ -259,11 +260,16 @@ class OpenSonicProvider(MusicProvider):
             track_class = PlaylistTrack
         else:
             track_class = AlbumTrack
+
+        mapping = None
+        if sonic_song.album_id is not None and sonic_song.album is not None:
+            mapping = self._get_item_mapping(MediaType.ALBUM, sonic_song.album_id, sonic_song.album)
+
         track = track_class(
             item_id=sonic_song.id,
             provider=self.instance_id,
             name=sonic_song.title,
-            album=self._get_item_mapping(MediaType.ALBUM, sonic_song.album_id, sonic_song.album),
+            album=mapping,
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
             **extra_init_kwargs or {},
             provider_mappings={
@@ -282,13 +288,15 @@ class OpenSonicProvider(MusicProvider):
         if not extra_init_kwargs:
             track.track_number = int(sonic_song.track) if sonic_song.track is not None else 1
 
-        track.artists.append(
-            self._get_item_mapping(MediaType.ARTIST, sonic_song.artist_id, sonic_song.artist)
-        )
+        if sonic_song.artist_id is not None and sonic_song.artist is not None:
+            track.artists.append(
+                self._get_item_mapping(MediaType.ARTIST, sonic_song.artist_id, sonic_song.artist)
+            )
         for entry in sonic_song.artists:
             if entry.id == sonic_song.artist_id:
                 continue
-            track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
+            if entry.id is not None and entry.name is not None:
+                track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
         return track
 
     def _parse_playlist(self, sonic_playlist: SonicPlaylist) -> Playlist:
