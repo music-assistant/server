@@ -5,7 +5,6 @@ import asyncio
 import logging
 import time
 from contextlib import suppress
-from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import soco
@@ -41,6 +40,7 @@ if TYPE_CHECKING:
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
+LOGGER = logging.getLogger(__name__)
 
 PLAYER_FEATURES = (
     PlayerFeature.SYNC,
@@ -66,6 +66,8 @@ HIRES_MODELS = (
     "Sonos Amp",
     "SYMFONISK Bookshelf",
     "SYMFONISK Table Lamp",
+    "Sonos Era 100",
+    "Sonos Era 300",
 )
 
 
@@ -104,31 +106,29 @@ async def get_config_entries(
     )
 
 
-@dataclass
 class SonosPlayer:
     """Wrapper around Sonos/SoCo with some additional attributes."""
 
-    player_id: str
-    soco: soco.SoCo
-    player: Player
-    is_stereo_pair: bool = False
-    elapsed_time: int = 0
-    playback_started: float | None = None
-    need_elapsed_time_workaround: bool = False
-
-    subscriptions: list[SubscriptionBase] = field(default_factory=list)
-
-    transport_info: dict = field(default_factory=dict)
-    track_info: dict = field(default_factory=dict)
-    speaker_info: dict = field(default_factory=dict)
-    rendering_control_info: dict = field(default_factory=dict)
-    group_info: ZoneGroup | None = None
-
-    speaker_info_updated: float = 0.0
-    transport_info_updated: float = 0.0
-    track_info_updated: float = 0.0
-    rendering_control_info_updated: float = 0.0
-    group_info_updated: float = 0.0
+    def __init__(self, sonos_prov: SonosPlayerProvider, soco_device: soco.SoCo) -> None:
+        """Initialize SonosPlayer instance."""
+        self.sonos_prov = sonos_prov
+        self.player_id = soco_device.uid
+        self.soco_device = soco_device
+        self.is_stereo_pair: bool = False
+        self.elapsed_time: int = 0
+        self.playback_started: float | None = None
+        self.need_elapsed_time_workaround: bool = False
+        self.subscriptions: list[SubscriptionBase] = []
+        self.transport_info: dict = {}
+        self.track_info: dict = {}
+        self.speaker_info: dict = {}
+        self.rendering_control_info: dict = {}
+        self.group_info: ZoneGroup | None = None
+        self.speaker_info_updated: float = 0.0
+        self.transport_info_updated: float = 0.0
+        self.track_info_updated: float = 0.0
+        self.rendering_control_info_updated: float = 0.0
+        self.group_info_updated: float = 0.0
 
     def update_info(
         self,
@@ -141,13 +141,13 @@ class SonosPlayer:
         """Poll all info from player (must be run in executor thread)."""
         # transport info
         if update_transport_info:
-            transport_info = self.soco.get_current_transport_info()
+            transport_info = self.soco_device.get_current_transport_info()
             if transport_info.get("current_transport_state") != "TRANSITIONING":
                 self.transport_info = transport_info
                 self.transport_info_updated = time.time()
         # track info
         if update_track_info:
-            self.track_info = self.soco.get_current_track_info()
+            self.track_info = self.soco_device.get_current_track_info()
             # sonos reports bullshit elapsed time while playing radio (or flow mode),
             # trying to be "smart" and resetting the counter when new ICY metadata is detected
             # we try to detect this and work around it
@@ -158,30 +158,33 @@ class SonosPlayer:
 
         # speaker info
         if update_speaker_info:
-            self.speaker_info = self.soco.get_speaker_info()
+            self.speaker_info = self.soco_device.get_speaker_info()
             self.speaker_info_updated = time.time()
         # rendering control info
         if update_rendering_control_info:
-            self.rendering_control_info["volume"] = self.soco.volume
-            self.rendering_control_info["mute"] = self.soco.mute
+            self.rendering_control_info["volume"] = self.soco_device.volume
+            self.rendering_control_info["mute"] = self.soco_device.mute
             self.rendering_control_info_updated = time.time()
         # group info
         if update_group_info:
-            self.group_info = self.soco.group
+            self.group_info = self.soco_device.group
             self.group_info_updated = time.time()
 
     def update_attributes(self):
         """Update attributes of the MA Player from soco.SoCo state."""
+        mass_player = self.sonos_prov.mass.players.get(self.player_id)
+        if not mass_player:
+            return
         now = time.time()
         # generic attributes (speaker_info)
-        self.player.available = True
-        self.player.name = self.speaker_info["zone_name"]
-        self.player.volume_level = int(self.rendering_control_info["volume"])
-        self.player.volume_muted = self.rendering_control_info["mute"]
+        mass_player.available = True
+        mass_player.name = self.speaker_info["zone_name"]
+        mass_player.volume_level = int(self.rendering_control_info["volume"])
+        mass_player.volume_muted = self.rendering_control_info["mute"]
 
         # transport info (playback state)
         current_transport_state = self.transport_info["current_transport_state"]
-        self.player.state = current_state = _convert_state(current_transport_state)
+        mass_player.state = current_state = _convert_state(current_transport_state)
 
         if self.playback_started is not None and current_state == PlayerState.IDLE:
             self.playback_started = None
@@ -189,19 +192,18 @@ class SonosPlayer:
             self.playback_started = now
 
         # media info (track info)
-        self.player.current_item_id = self.track_info["uri"]
-        if self.player.player_id in self.player.current_item_id:
-            self.player.active_source = self.player.player_id
-        elif "spotify" in self.player.current_item_id:
-            self.player.active_source = "spotify"
-        elif self.player.current_item_id.startswith("http"):
-            self.player.active_source = "http"
+        mass_player.current_item_id = self.track_info["uri"]
+        if mass_player.player_id in mass_player.current_item_id:
+            mass_player.active_source = mass_player.player_id
+        elif "spotify" in mass_player.current_item_id:
+            mass_player.active_source = "spotify"
         else:
-            # TODO: handle other possible sources here
-            self.player.active_source = None
+            mass_player.active_source = self.soco_device.music_source_from_uri(
+                self.track_info["uri"]
+            )
         if not self.need_elapsed_time_workaround:
-            self.player.elapsed_time = self.elapsed_time
-            self.player.elapsed_time_last_updated = self.track_info_updated
+            mass_player.elapsed_time = self.elapsed_time
+            mass_player.elapsed_time_last_updated = self.track_info_updated
 
         # zone topology (syncing/grouping) details
         if (
@@ -210,22 +212,22 @@ class SonosPlayer:
             and self.group_info.coordinator.uid == self.player_id
         ):
             # this player is the sync leader
-            self.player.synced_to = None
+            mass_player.synced_to = None
             group_members = {x.uid for x in self.group_info.members if x.is_visible}
             if not group_members:
                 # not sure about this ?!
-                self.player.type = PlayerType.PLAYER
+                mass_player.type = PlayerType.PLAYER
             elif group_members == {self.player_id}:
-                self.player.group_childs = set()
+                mass_player.group_childs = set()
             else:
-                self.player.group_childs = group_members
+                mass_player.group_childs = group_members
         elif self.group_info and self.group_info.coordinator:
             # player is synced to
-            self.player.group_childs = set()
-            self.player.synced_to = self.group_info.coordinator.uid
+            mass_player.group_childs = set()
+            mass_player.synced_to = self.group_info.coordinator.uid
         else:
             # unsure
-            self.player.group_childs = set()
+            mass_player.group_childs = set()
 
     async def check_poll(self) -> None:
         """Check if any of the endpoints needs to be polled for info."""
@@ -254,6 +256,85 @@ class SonosPlayer:
             update_speaker_info,
             update_rendering_control_info,
             update_group_info,
+        )
+
+    async def connect(self) -> None:
+        """Handle (re)connect of the Sonos player."""
+        # poll all endpoints once and update attributes
+        self.speaker_info = await asyncio.to_thread(self.soco_device.get_speaker_info, True)
+        self.speaker_info_updated = time.time()
+        await self.check_poll()
+        self.update_attributes()
+
+        # handle subscriptions to events
+        def subscribe(service, _callback):
+            queue = ProcessSonosEventQueue(_callback)
+            sub = service.subscribe(auto_renew=True, event_queue=queue)
+            self.subscriptions.append(sub)
+
+        subscribe(self.soco_device.avTransport, self._handle_av_transport_event)
+        subscribe(self.soco_device.renderingControl, self._handle_rendering_control_event)
+        subscribe(self.soco_device.zoneGroupTopology, self._handle_zone_group_topology_event)
+
+    def disconnect(self) -> None:
+        """Handle disconnect."""
+        mass_player = self.sonos_prov.mass.players.get(self.player_id)
+        mass_player.available = False
+        LOGGER.debug("Unsubscribing from events for %s", mass_player.display_name)
+        for subscription in self.subscriptions:
+            subscription.unsubscribe()
+        self.subscriptions = []
+
+    async def reconnect(self, soco_device: soco.SoCo) -> None:
+        """Handle reconnect."""
+        if self.subscriptions:
+            self.disconnect()
+        self.soco_device = soco_device
+        await self.connect()
+
+    def _handle_av_transport_event(self, event: SonosEvent):
+        """Handle a soco.SoCo AVTransport event."""
+        LOGGER.debug("Received AVTransport event for Player %s", self.soco_device.player_name)
+
+        if "transport_state" in event.variables:
+            new_state = event.variables["transport_state"]
+            if new_state == "TRANSITIONING":
+                return
+            self.transport_info["current_transport_state"] = new_state
+
+        if "current_track_uri" in event.variables:
+            self.transport_info["uri"] = event.variables["current_track_uri"]
+
+        self.transport_info_updated = time.time()
+        asyncio.run_coroutine_threadsafe(
+            self.sonos_prov.update_player(self), self.sonos_prov.mass.loop
+        )
+
+    def _handle_rendering_control_event(self, event: SonosEvent):
+        """Handle a soco.SoCo RenderingControl event."""
+        LOGGER.debug(
+            "Received RenderingControl event for Player %s",
+            self.soco_device.player_name,
+        )
+        if "volume" in event.variables:
+            self.rendering_control_info["volume"] = event.variables["volume"]["Master"]
+        if "mute" in event.variables:
+            self.rendering_control_info["mute"] = event.variables["mute"]["Master"] == "1"
+        self.rendering_control_info_updated = time.time()
+        asyncio.run_coroutine_threadsafe(
+            self.sonos_prov.update_player(self), self.sonos_prov.mass.loop
+        )
+
+    def _handle_zone_group_topology_event(self, event: SonosEvent):  # noqa: ARG002
+        """Handle a soco.SoCo ZoneGroupTopology event."""
+        LOGGER.debug(
+            "Received ZoneGroupTopology event for Player %s",
+            self.soco_device.player_name,
+        )
+        self.group_info = self.soco_device.group
+        self.group_info_updated = time.time()
+        asyncio.run_coroutine_threadsafe(
+            self.sonos_prov.update_player(self), self.sonos_prov.mass.loop
         )
 
 
@@ -290,12 +371,7 @@ class SonosPlayerProvider(PlayerProvider):
         if self.sonosplayers:
             for player_id in list(self.sonosplayers):
                 player = self.sonosplayers.pop(player_id)
-                player.player.available = False
-                if player.soco.is_coordinator:
-                    try:
-                        player.soco.end_direct_control_session()
-                    except Exception as err:
-                        self.logger.exception(err)
+                player.disconnect()
         self.sonosplayers = None
 
     async def get_player_config_entries(
@@ -314,7 +390,7 @@ class SonosPlayerProvider(PlayerProvider):
                 default_value=0,
                 range=(-10, 10),
                 description="Set the Bass level for the Sonos player",
-                value=sonos_player.soco.bass,
+                value=sonos_player.soco_device.bass,
                 advanced=True,
             ),
             ConfigEntry(
@@ -324,7 +400,7 @@ class SonosPlayerProvider(PlayerProvider):
                 default_value=0,
                 range=(-10, 10),
                 description="Set the Treble level for the Sonos player",
-                value=sonos_player.soco.treble,
+                value=sonos_player.soco_device.treble,
                 advanced=True,
             ),
             ConfigEntry(
@@ -333,7 +409,7 @@ class SonosPlayerProvider(PlayerProvider):
                 label="Loudness compensation",
                 default_value=True,
                 description="Enable loudness compensation on the Sonos player",
-                value=sonos_player.soco.loudness,
+                value=sonos_player.soco_device.loudness,
                 advanced=True,
             ),
         )
@@ -350,18 +426,18 @@ class SonosPlayerProvider(PlayerProvider):
             return
         if "values/sonos_bass" in changed_keys:
             self.mass.create_task(
-                sonos_player.soco.renderingControl.SetBass,
+                sonos_player.soco_device.renderingControl.SetBass,
                 [("InstanceID", 0), ("DesiredBass", config.get_value("sonos_bass"))],
             )
         if "values/sonos_treble" in changed_keys:
             self.mass.create_task(
-                sonos_player.soco.renderingControl.SetTreble,
+                sonos_player.soco_device.renderingControl.SetTreble,
                 [("InstanceID", 0), ("DesiredTreble", config.get_value("sonos_treble"))],
             )
         if "values/sonos_loudness" in changed_keys:
             loudness_value = "1" if config.get_value("sonos_loudness") else "0"
             self.mass.create_task(
-                sonos_player.soco.renderingControl.SetLoudness,
+                sonos_player.soco_device.renderingControl.SetLoudness,
                 [
                     ("InstanceID", 0),
                     ("Channel", "Master"),
@@ -372,31 +448,31 @@ class SonosPlayerProvider(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         sonos_player = self.sonosplayers[player_id]
-        if not sonos_player.soco.is_coordinator:
+        if not sonos_player.soco_device.is_coordinator:
             self.logger.debug(
                 "Ignore STOP command for %s: Player is synced to another player.",
                 player_id,
             )
             return
-        await asyncio.to_thread(sonos_player.soco.stop)
-        await asyncio.to_thread(sonos_player.soco.clear_queue)
+        await asyncio.to_thread(sonos_player.soco_device.stop)
+        await asyncio.to_thread(sonos_player.soco_device.clear_queue)
         sonos_player.playback_started = None
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
         sonos_player = self.sonosplayers[player_id]
-        if not sonos_player.soco.is_coordinator:
+        if not sonos_player.soco_device.is_coordinator:
             self.logger.debug(
                 "Ignore PLAY command for %s: Player is synced to another player.",
                 player_id,
             )
             return
-        await asyncio.to_thread(sonos_player.soco.play)
+        await asyncio.to_thread(sonos_player.soco_device.play)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         sonos_player = self.sonosplayers[player_id]
-        if not sonos_player.soco.is_coordinator:
+        if not sonos_player.soco_device.is_coordinator:
             self.logger.debug(
                 "Ignore PLAY command for %s: Player is synced to another player.",
                 player_id,
@@ -406,14 +482,14 @@ class SonosPlayerProvider(PlayerProvider):
             # no pause allowed when radio/flow mode is active
             await self.cmd_stop(player_id)
             return
-        await asyncio.to_thread(sonos_player.soco.pause)
+        await asyncio.to_thread(sonos_player.soco_device.pause)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
 
         def set_volume_level(player_id: str, volume_level: int) -> None:
             sonos_player = self.sonosplayers[player_id]
-            sonos_player.soco.volume = volume_level
+            sonos_player.soco_device.volume = volume_level
 
         await asyncio.to_thread(set_volume_level, player_id, volume_level)
 
@@ -422,7 +498,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         def set_volume_mute(player_id: str, muted: bool) -> None:
             sonos_player = self.sonosplayers[player_id]
-            sonos_player.soco.mute = muted
+            sonos_player.soco_device.mute = muted
 
         await asyncio.to_thread(set_volume_mute, player_id, muted)
 
@@ -439,7 +515,7 @@ class SonosPlayerProvider(PlayerProvider):
         while True:
             try:
                 await asyncio.to_thread(
-                    sonos_player.soco.join, self.sonosplayers[target_player].soco
+                    sonos_player.soco_device.join, self.sonosplayers[target_player].soco
                 )
                 break
             except soco.exceptions.SoCoUPnPException as err:
@@ -460,7 +536,7 @@ class SonosPlayerProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
         """
         sonos_player = self.sonosplayers[player_id]
-        await asyncio.to_thread(sonos_player.soco.unjoin)
+        await asyncio.to_thread(sonos_player.soco_device.unjoin)
         await asyncio.to_thread(
             sonos_player.update_info,
             update_group_info=True,
@@ -491,22 +567,20 @@ class SonosPlayerProvider(PlayerProvider):
             flow_mode=False,
         )
         sonos_player = self.sonosplayers[player_id]
-        if not sonos_player.soco.is_coordinator:
+        mass_player = self.mass.players.get(player_id)
+        if not sonos_player.soco_device.is_coordinator:
             # this should be already handled by the player manager, but just in case...
             raise PlayerCommandFailed(
-                f"Player {sonos_player.player.display_name} can not "
+                f"Player {mass_player.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
-        # always stop and clear queue first
-        await asyncio.to_thread(sonos_player.soco.stop)
-        await asyncio.to_thread(sonos_player.soco.clear_queue)
-        await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
-        await asyncio.to_thread(sonos_player.soco.play_from_queue, 0)
+        metadata = create_didl_metadata(self.mass, url, queue_item)
+        await asyncio.to_thread(sonos_player.soco_device.play_uri, url, meta=metadata)
         # optimistically set this timestamp to help figure out elapsed time later
         now = time.time()
         sonos_player.playback_started = now
-        sonos_player.player.elapsed_time = 0
-        sonos_player.player.elapsed_time_last_updated = now
+        mass_player.elapsed_time = 0
+        mass_player.elapsed_time_last_updated = now
 
     async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle PLAY STREAM on given player.
@@ -515,21 +589,25 @@ class SonosPlayerProvider(PlayerProvider):
         """
         url = stream_job.resolve_stream_url(player_id, ContentType.MP3)
         sonos_player = self.sonosplayers[player_id]
-        if not sonos_player.soco.is_coordinator:
+        mass_player = self.mass.players.get(player_id)
+        if not sonos_player.soco_device.is_coordinator:
             # this should be already handled by the player manager, but just in case...
             raise PlayerCommandFailed(
-                f"Player {sonos_player.player.display_name} can not "
+                f"Player {mass_player.display_name} can not "
                 "accept play_stream command, it is synced to another player."
             )
-        # always stop and clear queue first
-        await asyncio.to_thread(sonos_player.soco.stop)
-        await asyncio.to_thread(sonos_player.soco.clear_queue)
-        await asyncio.to_thread(sonos_player.soco.play_uri, url, force_radio=True)
+        metadata = create_didl_metadata(self.mass, url, None)
+        await asyncio.to_thread(sonos_player.soco_device.play_uri, url, meta=metadata)
+        # add a special 'command' item to the sonos queue
+        # this allows for on-player next buttons/commands to still work
+        await self._enqueue_item(
+            sonos_player, self.mass.streams.get_command_url(player_id, "next"), None
+        )
         # optimistically set this timestamp to help figure out elapsed time later
         now = time.time()
         sonos_player.playback_started = now
-        sonos_player.player.elapsed_time = 0
-        sonos_player.player.elapsed_time_last_updated = now
+        mass_player.elapsed_time = 0
+        mass_player.elapsed_time_last_updated = now
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """
@@ -553,11 +631,11 @@ class SonosPlayerProvider(PlayerProvider):
         )
         # set crossfade according to player setting
         crossfade = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
-        if sonos_player.soco.cross_fade != crossfade:
+        if sonos_player.soco_device.cross_fade != crossfade:
 
             def set_crossfade():
                 with suppress(Exception):
-                    sonos_player.soco.cross_fade = crossfade
+                    sonos_player.soco_device.cross_fade = crossfade
 
             await asyncio.to_thread(set_crossfade)
 
@@ -586,7 +664,7 @@ class SonosPlayerProvider(PlayerProvider):
             # based on when we last received info from the device
             await sonos_player.check_poll()
             # always update the attributes
-            await self._update_player(sonos_player, signal_update=False)
+            await self.update_player(sonos_player, signal_update=False)
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
@@ -602,13 +680,10 @@ class SonosPlayerProvider(PlayerProvider):
             )
             if discovered_devices is None:
                 discovered_devices = set()
-            new_device_ids = {item.uid for item in discovered_devices}
-            cur_player_ids = set(self.sonosplayers.keys())
-            added_devices = new_device_ids.difference(cur_player_ids)
 
             # process new players
             for device in discovered_devices:
-                if device.uid not in added_devices:
+                if (existing := self.mass.players.get(device.uid)) and existing.available:
                     continue
                 try:
                     await self._device_discovered(device)
@@ -628,22 +703,22 @@ class SonosPlayerProvider(PlayerProvider):
     async def _device_discovered(self, soco_device: soco.SoCo) -> None:
         """Handle discovered Sonos player."""
         player_id = soco_device.uid
-
         enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
             return
 
-        speaker_info = await asyncio.to_thread(soco_device.get_speaker_info, True)
-        assert player_id not in self.sonosplayers
-
         if soco_device not in soco_device.visible_zones:
             return
 
-        sonos_player = SonosPlayer(
-            player_id=player_id,
-            soco=soco_device,
-            player=Player(
+        if not (sonos_player := self.sonosplayers.get(player_id)):
+            self.sonosplayers[player_id] = sonos_player = SonosPlayer(
+                self,
+                soco_device,
+            )
+
+        if not (mass_player := self.mass.players.get(player_id)):
+            mass_player = Player(
                 player_id=soco_device.uid,
                 provider=self.domain,
                 type=PlayerType.PLAYER,
@@ -651,121 +726,55 @@ class SonosPlayerProvider(PlayerProvider):
                 available=True,
                 powered=False,
                 supported_features=PLAYER_FEATURES,
-                device_info=DeviceInfo(
-                    model=speaker_info["model_name"],
-                    address=soco_device.ip_address,
-                    manufacturer=self.name,
-                ),
-                max_sample_rate=441000,
+                device_info=DeviceInfo(),
+                max_sample_rate=44100,
                 supports_24bit=False,
-            ),
-            speaker_info=speaker_info,
-            speaker_info_updated=time.time(),
+            )
+
+        await sonos_player.reconnect(soco_device)
+
+        if sonos_player.speaker_info["model_name"] in HIRES_MODELS:
+            mass_player.max_sample_rate = 48000
+            mass_player.supports_24bit = True
+
+        mass_player.device_info = DeviceInfo(
+            model=sonos_player.speaker_info["model_name"],
+            address=sonos_player.soco_device.ip_address,
+            manufacturer="SONOS",
         )
-        if speaker_info["model_name"] in HIRES_MODELS:
-            sonos_player.player.max_sample_rate = 48000
-            sonos_player.player.supports_24bit = True
 
-        # poll all endpoints once and update attributes
-        await sonos_player.check_poll()
-        sonos_player.update_attributes()
-
-        # handle subscriptions to events
-        def subscribe(service, _callback):
-            queue = ProcessSonosEventQueue(sonos_player, _callback)
-            sub = service.subscribe(auto_renew=True, event_queue=queue)
-            sonos_player.subscriptions.append(sub)
-
-        subscribe(soco_device.avTransport, self._handle_av_transport_event)
-        subscribe(soco_device.renderingControl, self._handle_rendering_control_event)
-        subscribe(soco_device.zoneGroupTopology, self._handle_zone_group_topology_event)
-
-        self.sonosplayers[player_id] = sonos_player
-
-        self.mass.players.register_or_update(sonos_player.player)
-
-    def _handle_av_transport_event(self, sonos_player: SonosPlayer, event: SonosEvent):
-        """Handle a soco.SoCo AVTransport event."""
-        if self.mass.closing:
-            return
-        self.logger.debug("Received AVTransport event for Player %s", sonos_player.soco.player_name)
-
-        if "transport_state" in event.variables:
-            new_state = event.variables["transport_state"]
-            if new_state == "TRANSITIONING":
-                return
-            sonos_player.transport_info["current_transport_state"] = new_state
-
-        if "current_track_uri" in event.variables:
-            sonos_player.transport_info["uri"] = event.variables["current_track_uri"]
-
-        sonos_player.transport_info_updated = time.time()
-        asyncio.run_coroutine_threadsafe(self._update_player(sonos_player), self.mass.loop)
-
-    def _handle_rendering_control_event(self, sonos_player: SonosPlayer, event: SonosEvent):
-        """Handle a soco.SoCo RenderingControl event."""
-        if self.mass.closing:
-            return
-        self.logger.debug(
-            "Received RenderingControl event for Player %s",
-            sonos_player.soco.player_name,
-        )
-        if "volume" in event.variables:
-            sonos_player.rendering_control_info["volume"] = event.variables["volume"]["Master"]
-        if "mute" in event.variables:
-            sonos_player.rendering_control_info["mute"] = bool(event.variables["mute"]["Master"])
-        sonos_player.rendering_control_info_updated = time.time()
-        asyncio.run_coroutine_threadsafe(self._update_player(sonos_player), self.mass.loop)
-
-    def _handle_zone_group_topology_event(
-        self, sonos_player: SonosPlayer, event: SonosEvent  # noqa: ARG002
-    ):
-        """Handle a soco.SoCo ZoneGroupTopology event."""
-        if self.mass.closing:
-            return
-        self.logger.debug(
-            "Received ZoneGroupTopology event for Player %s",
-            sonos_player.soco.player_name,
-        )
-        sonos_player.group_info = sonos_player.soco.group
-        sonos_player.group_info_updated = time.time()
-        asyncio.run_coroutine_threadsafe(self._update_player(sonos_player), self.mass.loop)
+        self.mass.players.register_or_update(mass_player)
 
     async def _enqueue_item(
         self,
         sonos_player: SonosPlayer,
         url: str,
-        queue_item: QueueItem,
+        queue_item: QueueItem | None,
     ) -> None:
         """Enqueue a queue item to the Sonos player Queue."""
         metadata = create_didl_metadata(self.mass, url, queue_item)
         await asyncio.to_thread(
-            sonos_player.soco.avTransport.AddURIToQueue,
-            [
-                ("InstanceID", 0),
-                ("EnqueuedURI", url),
-                ("EnqueuedURIMetaData", metadata),
-                ("DesiredFirstTrackNumberEnqueued", 0),
-                ("EnqueueAsNext", 0),
-            ],
+            sonos_player.soco_device.avTransport.SetNextAVTransportURI,
+            [("InstanceID", 0), ("NextURI", url), ("NextURIMetaData", metadata)],
             timeout=60,
         )
-        self.logger.debug(
-            "Enqued track (%s) to player %s",
+        self.logger.info(
+            "Enqued next track (%s) to player %s",
             queue_item.name if queue_item else url,
-            sonos_player.player.display_name,
+            sonos_player.soco_device.player_name,
         )
 
-    async def _update_player(self, sonos_player: SonosPlayer, signal_update: bool = True) -> None:
+    async def update_player(self, sonos_player: SonosPlayer, signal_update: bool = True) -> None:
         """Update Sonos Player."""
-        prev_url = sonos_player.player.current_item_id
-        prev_state = sonos_player.player.state
+        mass_player = self.mass.players.get(sonos_player.player_id)
+        prev_url = mass_player.current_item_id
+        prev_state = mass_player.state
         sonos_player.update_attributes()
-        sonos_player.player.can_sync_with = tuple(
+        mass_player.can_sync_with = tuple(
             x for x in self.sonosplayers if x != sonos_player.player_id
         )
-        current_url = sonos_player.player.current_item_id
-        current_state = sonos_player.player.state
+        current_url = mass_player.current_item_id
+        current_state = mass_player.state
 
         if (prev_url != current_url) or (prev_state != current_state):
             # fetch track details on state or url change
@@ -779,7 +788,7 @@ class SonosPlayerProvider(PlayerProvider):
             # send update to the player manager right away only if we are triggered from an event
             # when we're just updating from a manual poll, the player manager
             # will detect changes to the player object itself
-            self.mass.players.update(sonos_player.player_id)
+            self.mass.players.update(mass_player.player_id)
 
 
 def _convert_state(sonos_state: str) -> PlayerState:
@@ -805,14 +814,12 @@ class ProcessSonosEventQueue:
 
     def __init__(
         self,
-        sonos_player: SonosPlayer,
-        callback_handler: callable[[SonosPlayer, dict], None],
+        callback_handler: callable[[dict], None],
     ) -> None:
         """Initialize Sonos event queue."""
         self._callback_handler = callback_handler
-        self._sonos_player = sonos_player
 
     def put(self, info: Any, block=True, timeout=None) -> None:  # noqa: ARG002
         """Process event."""
         # noqa: ARG001
-        self._callback_handler(self._sonos_player, info)
+        self._callback_handler(info)

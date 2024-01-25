@@ -132,10 +132,9 @@ class PlayerProvider(Provider):
         """
         Handle enqueuing of the next queue item on the player.
 
-        If the player supports PlayerFeature.ENQUE_NEXT:
-          This will be called about 10 seconds before the end of the track.
-        If the player does NOT report support for PlayerFeature.ENQUE_NEXT:
-          This will be called when the end of the track is reached.
+        Only called if the player supports PlayerFeature.ENQUE_NEXT.
+        Called about 1 second after a new track started playing.
+        Called about 15 seconds before the end of the current track.
 
         A PlayerProvider implementation is in itself responsible for handling this
         so that the queue items keep playing until its empty or the player stopped.
@@ -143,12 +142,6 @@ class PlayerProvider(Provider):
         This will NOT be called if the end of the queue is reached (and repeat disabled).
         This will NOT be called if the player is using flow mode to playback the queue.
         """
-        # default implementation (for a player without enqueue_next feature):
-        # simply start playback of the next track.
-        # player providers need to override this behavior if/when needed
-        await self.play_media(
-            player_id=player_id, queue_item=queue_item, seek_position=0, fade_in=False
-        )
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.

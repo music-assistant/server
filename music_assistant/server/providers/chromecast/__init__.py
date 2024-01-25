@@ -250,19 +250,17 @@ class ChromecastProvider(PlayerProvider):
             # This comes at the cost of metadata (cast does not support ICY metadata).
             cc_queue_items = [
                 self._create_cc_queue_item(None, url),
+                # add a special 'command' item to the queue
+                # this allows for on-player next buttons/commands to still work
+                self._create_cc_queue_item(
+                    None, self.mass.streams.get_command_url(queue_item.queue_id, "next")
+                ),
             ]
         else:
             # handle normal playback using the chromecast queue to play items one by one
             cc_queue_items = [
                 self._create_cc_queue_item(queue_item, url),
             ]
-        # add a special 'command' item to the queue
-        # this allows for on-player next buttons/commands to still work
-        cc_queue_items.append(
-            self._create_cc_queue_item(
-                None, self.mass.streams.get_command_url(queue_item.queue_id, "next")
-            )
-        )
         queuedata = {
             "type": "QUEUE_LOAD",
             "repeatMode": "REPEAT_OFF",  # handled by our queue controller
@@ -299,8 +297,16 @@ class ChromecastProvider(PlayerProvider):
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )
-        if cast_queue_items := getattr(castplayer.cc.media_controller.status, "items"):
+        next_item_id = None
+        if (cast_queue_items := getattr(castplayer.cc.media_controller.status, "items")) and len(
+            cast_queue_items
+        ) > 1:
             next_item_id = cast_queue_items[-1]["itemId"]
+            if (
+                cast_queue_items[-1].get("media", {}).get("customData", {}).get("queue_item_id")
+                == queue_item.queue_item_id
+            ):
+                return
         queuedata = {
             "type": "QUEUE_INSERT",
             "insertBefore": next_item_id,
@@ -308,7 +314,12 @@ class ChromecastProvider(PlayerProvider):
         }
         media_controller = castplayer.cc.media_controller
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
-        await asyncio.to_thread(media_controller.send_message, queuedata, True)
+        self.mass.create_task(media_controller.send_message, queuedata, inc_session_id=True)
+        self.logger.info(
+            "Enqued next track (%s) to player %s",
+            queue_item.name if queue_item else url,
+            castplayer.player.display_name,
+        )
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.

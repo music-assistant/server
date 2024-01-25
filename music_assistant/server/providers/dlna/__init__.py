@@ -410,20 +410,7 @@ class DLNAPlayerProvider(PlayerProvider):
 
     @catch_request_errors
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
-        """
-        Handle enqueuing of the next queue item on the player.
-
-        If the player supports PlayerFeature.ENQUE_NEXT:
-          This will be called about 10 seconds before the end of the track.
-        If the player does NOT report support for PlayerFeature.ENQUE_NEXT:
-          This will be called when the end of the track is reached.
-
-        A PlayerProvider implementation is in itself responsible for handling this
-        so that the queue items keep playing until its empty or the player stopped.
-
-        This will NOT be called if the end of the queue is reached (and repeat disabled).
-        This will NOT be called if flow mode is enabled on the queue.
-        """
+        """Handle enqueuing of the next queue item on the player."""
         dlna_player = self.dlnaplayers[player_id]
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
@@ -431,25 +418,12 @@ class DLNAPlayerProvider(PlayerProvider):
         )
         didl_metadata = create_didl_metadata(self.mass, url, queue_item)
         title = queue_item.name
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENQUEUE_NEXT, False):
-            # use the 'next_transport_uri' feature
-            await dlna_player.device.async_set_next_transport_uri(url, title, didl_metadata)
-            self.logger.debug(
-                "Enqued next track (%s) to player %s",
-                title,
-                dlna_player.player.display_name,
-            )
-        else:
-            # simply use regular play command
-            await dlna_player.device.async_set_transport_uri(url, title, didl_metadata)
-            # Play it
-            await dlna_player.device.async_wait_for_can_play(10)
-            # optimistically set this timestamp to help in case of a player
-            # that does not report the progress
-            now = time.time()
-            dlna_player.player.elapsed_time = 0
-            dlna_player.player.elapsed_time_last_updated = now
-            await dlna_player.device.async_play()
+        await dlna_player.device.async_set_next_transport_uri(url, title, didl_metadata)
+        self.logger.info(
+            "Enqued next track (%s) to player %s",
+            title,
+            dlna_player.player.display_name,
+        )
 
     @catch_request_errors
     async def cmd_pause(self, player_id: str) -> None:

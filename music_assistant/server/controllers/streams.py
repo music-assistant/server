@@ -397,27 +397,7 @@ class StreamsController(CoreController):
         fmt = output_codec.value
         # handle raw pcm
         if output_codec.is_pcm():
-            player = self.mass.players.get(queue_item.queue_id)
-            player_max_bit_depth = 24 if player.supports_24bit else 16
-            if flow_mode:
-                output_sample_rate = min(FLOW_MAX_SAMPLE_RATE, player.max_sample_rate)
-                output_bit_depth = min(FLOW_MAX_BIT_DEPTH, player_max_bit_depth)
-            else:
-                await set_stream_details(self.mass, queue_item)
-                output_sample_rate = min(
-                    queue_item.streamdetails.audio_format.sample_rate, player.max_sample_rate
-                )
-                output_bit_depth = min(
-                    queue_item.streamdetails.audio_format.bit_depth, player_max_bit_depth
-                )
-            output_channels = self.mass.config.get_raw_player_config_value(
-                queue_item.queue_id, CONF_OUTPUT_CHANNELS, "stereo"
-            )
-            channels = 1 if output_channels != "stereo" else 2
-            fmt += (
-                f";codec=pcm;rate={output_sample_rate};"
-                f"bitrate={output_bit_depth};channels={channels}"
-            )
+            raise RuntimeError("PCM is not possible as output format")
         query_params = {}
         base_path = "flow" if flow_mode else "single"
         url = f"{self._server.base_url}/{queue_item.queue_id}/{base_path}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
@@ -515,7 +495,7 @@ class StreamsController(CoreController):
         self.logger.debug(
             "Start serving audio stream for QueueItem %s to %s", queue_item.uri, queue.display_name
         )
-        queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_item_id)
+        queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(
@@ -821,7 +801,9 @@ class StreamsController(CoreController):
                 queue_track.name,
                 queue.display_name,
             )
-            queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_track.queue_item_id)
+            queue.index_in_buffer = self.mass.player_queues.index_by_id(
+                queue.queue_id, queue_track.queue_item_id
+            )
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
