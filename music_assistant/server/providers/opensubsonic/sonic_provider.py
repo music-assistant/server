@@ -139,7 +139,7 @@ class OpenSonicProvider(MusicProvider):
         )
         if sonic_channel.description is not None:
             artist.metadata.description = sonic_channel.description
-        if sonic_channel.original_image_url is not None:
+        if sonic_channel.original_image_url:
             artist.metadata.images = [
                 MediaItemImage(type=ImageType.THUMB, path=sonic_channel.original_image_url)
             ]
@@ -212,11 +212,12 @@ class OpenSonicProvider(MusicProvider):
                 )
             },
         )
-        artist.metadata.images = [
-            MediaItemImage(
-                type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
-            )
-        ]
+        if sonic_artist.cover_id:
+            artist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
+                )
+            ]
         if sonic_info:
             if sonic_info.biography:
                 artist.metadata.description = sonic_info.biography
@@ -241,11 +242,12 @@ class OpenSonicProvider(MusicProvider):
             },
             year=sonic_album.year,
         )
-        album.metadata.images = [
-            MediaItemImage(
-                type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
-            ),
-        ]
+        if sonic_album.cover_id:
+            album.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
+                ),
+            ]
         if sonic_album.artist_id is None:
             album.artists.append(
                 Artist(
@@ -360,11 +362,12 @@ class OpenSonicProvider(MusicProvider):
                 )
             },
         )
-        playlist.metadata.images = [
-            MediaItemImage(
-                type=ImageType.THUMB, path=sonic_playlist.cover_id, provider=self.instance_id
-            )
-        ]
+        if sonic_playlist.cover_id:
+            playlist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB, path=sonic_playlist.cover_id, provider=self.instance_id
+                )
+            ]
         return playlist
 
     async def _run_async(self, call: Callable, *args, **kwargs):
