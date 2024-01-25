@@ -671,7 +671,7 @@ class PlayerQueuesController(CoreController):
         if not queue:
             raise PlayerUnavailableError(f"PlayerQueue {queue_id} is not available")
         if current_item_id_or_index is None:
-            cur_index = queue.index_in_buffer or queue.current_index or 0
+            cur_index = queue.index_in_buffer
         elif isinstance(current_item_id_or_index, str):
             cur_index = self.index_by_id(queue_id, current_item_id_or_index)
         else:
@@ -795,15 +795,13 @@ class PlayerQueuesController(CoreController):
         if not queue_items or cur_index is None:
             # queue is empty
             return None
-        if cur_index is None:
-            cur_index = queue.current_index
         # handle repeat single track
         if queue.repeat_mode == RepeatMode.ONE and not is_skip:
             return cur_index
         # handle cur_index is last index of the queue
         if cur_index >= (len(queue_items) - 1):
             # if repeat all is enabled, we simply start again from the beginning
-            return 0 if RepeatMode.ALL else None
+            return 0 if queue.repeat_mode == RepeatMode.ALL else None
         return cur_index + 1
 
     def _get_next_item(self, queue_id: str, cur_index: int | None = None) -> QueueItem | None:
