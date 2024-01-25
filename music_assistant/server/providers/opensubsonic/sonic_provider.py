@@ -39,11 +39,19 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_PORT, CONF_USERNAME
+from music_assistant.constants import (
+    CONF_PASSWORD,
+    CONF_PATH,
+    CONF_PORT,
+    CONF_USERNAME,
+    UNKNOWN_ARTIST,
+)
 from music_assistant.server.models.music_provider import MusicProvider
 
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
+
+UNKNOWN_ARTIST_ID = "fake_artist_unknown"
 
 
 class OpenSonicProvider(MusicProvider):
@@ -131,7 +139,7 @@ class OpenSonicProvider(MusicProvider):
         )
         if sonic_channel.description is not None:
             artist.metadata.description = sonic_channel.description
-        if sonic_channel.original_image_url is not None:
+        if sonic_channel.original_image_url:
             artist.metadata.images = [
                 MediaItemImage(type=ImageType.THUMB, path=sonic_channel.original_image_url)
             ]
@@ -204,11 +212,12 @@ class OpenSonicProvider(MusicProvider):
                 )
             },
         )
-        artist.metadata.images = [
-            MediaItemImage(
-                type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
-            )
-        ]
+        if sonic_artist.cover_id:
+            artist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
+                )
+            ]
         if sonic_info:
             if sonic_info.biography:
                 artist.metadata.description = sonic_info.biography
@@ -233,14 +242,34 @@ class OpenSonicProvider(MusicProvider):
             },
             year=sonic_album.year,
         )
-        album.metadata.images = [
-            MediaItemImage(
-                type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
-            ),
-        ]
-        if sonic_album.artist_id is not None and sonic_album.artist is not None:
+        if sonic_album.cover_id:
+            album.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
+                ),
+            ]
+        if sonic_album.artist_id is None:
             album.artists.append(
-                self._get_item_mapping(MediaType.ARTIST, sonic_album.artist_id, sonic_album.artist)
+                Artist(
+                    item_id=UNKNOWN_ARTIST_ID,
+                    name=UNKNOWN_ARTIST,
+                    provider=self.instance_id,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=UNKNOWN_ARTIST_ID,
+                            provider_domain=self.domain,
+                            provider_instance=self.instance_id,
+                        )
+                    },
+                )
+            )
+        else:
+            album.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    sonic_album.artist_id,
+                    sonic_album.artist if sonic_album.artist else UNKNOWN_ARTIST,
+                )
             )
 
         if sonic_info:
@@ -288,10 +317,30 @@ class OpenSonicProvider(MusicProvider):
         if not extra_init_kwargs:
             track.track_number = int(sonic_song.track) if sonic_song.track is not None else 1
 
-        if sonic_song.artist_id is not None and sonic_song.artist is not None:
+        if sonic_song.artist_id is None:
             track.artists.append(
-                self._get_item_mapping(MediaType.ARTIST, sonic_song.artist_id, sonic_song.artist)
+                Artist(
+                    item_id=UNKNOWN_ARTIST_ID,
+                    name=UNKNOWN_ARTIST,
+                    provider=self.instance_id,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=UNKNOWN_ARTIST_ID,
+                            provider_domain=self.domain,
+                            provider_instance=self.instance_id,
+                        )
+                    },
+                )
             )
+        else:
+            track.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    sonic_song.artist_id,
+                    sonic_song.artist if sonic_song.artist else UNKNOWN_ARTIST,
+                )
+            )
+
         for entry in sonic_song.artists:
             if entry.id == sonic_song.artist_id:
                 continue
@@ -313,11 +362,12 @@ class OpenSonicProvider(MusicProvider):
                 )
             },
         )
-        playlist.metadata.images = [
-            MediaItemImage(
-                type=ImageType.THUMB, path=sonic_playlist.cover_id, provider=self.instance_id
-            )
-        ]
+        if sonic_playlist.cover_id:
+            playlist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB, path=sonic_playlist.cover_id, provider=self.instance_id
+                )
+            ]
         return playlist
 
     async def _run_async(self, call: Callable, *args, **kwargs):
@@ -440,6 +490,20 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Return the requested Artist."""
+        if prov_artist_id == UNKNOWN_ARTIST_ID:
+            return Artist(
+                item_id=UNKNOWN_ARTIST_ID,
+                name=UNKNOWN_ARTIST,
+                provider=self.instance_id,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=UNKNOWN_ARTIST_ID,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
+
         try:
             sonic_artist: SonicArtist = await self._run_async(
                 self._conn.getArtist, artist_id=prov_artist_id
@@ -468,6 +532,9 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Return a list of all Albums by specified Artist."""
+        if prov_artist_id == UNKNOWN_ARTIST_ID:
+            return []
+
         try:
             sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
         except (ParameterError, DataNotFoundError) as e:
