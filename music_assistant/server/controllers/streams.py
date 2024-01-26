@@ -62,7 +62,7 @@ DEFAULT_STREAM_HEADERS = {
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
     "Cache-Control": "no-cache",
     "Connection": "close",
-    # "Accept-Ranges": "none",
+    "Accept-Ranges": "none",
     "icy-name": "Music Assistant",
     "icy-pub": "0",
 }
