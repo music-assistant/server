@@ -344,7 +344,6 @@ class DLNAPlayerProvider(PlayerProvider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
-        # DLNA players do not support crossfading so we enforce flow mode to provide this feature
         use_flow_mode = await self.mass.config.get_player_config_value(
             player_id, CONF_FLOW_MODE
         ) or await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
