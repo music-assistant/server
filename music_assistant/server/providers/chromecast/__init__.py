@@ -20,6 +20,7 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_FLOW_MODE,
     ConfigEntry,
     ConfigValueType,
 )
@@ -34,7 +35,13 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_LOG_LEVEL, CONF_PLAYERS, MASS_LOGO_ONLINE
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_FLOW_MODE,
+    CONF_LOG_LEVEL,
+    CONF_PLAYERS,
+    MASS_LOGO_ONLINE,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -57,11 +64,13 @@ PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         label="Enable crossfade",
         default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n"
-        "Note that Chromecast does not natively support crossfading so Music Assistant "
-        "uses a 'flow mode' workaround for this at the cost of on-player metadata.",
+        description="Enable a crossfade transition between (queue) tracks. \n\n"
+        "Note that Cast does not natively support crossfading so you need to enable "
+        "the 'flow mode' workaround to use crossfading with Cast players.",
         advanced=False,
+        depends_on=CONF_FLOW_MODE,
     ),
+    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
 )
 
@@ -236,8 +245,9 @@ class ChromecastProvider(PlayerProvider):
             - fade_in: Optionally fade in the item at playback start.
         """
         castplayer = self.castplayers[player_id]
-        # Google cast does not support crossfading so we use flow mode to provide this feature
-        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
+        use_flow_mode = await self.mass.config.get_player_config_value(
+            player_id, CONF_FLOW_MODE
+        ) or await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
@@ -490,19 +500,24 @@ class ChromecastProvider(PlayerProvider):
         """Handle updated MediaStatus."""
         castplayer.logger.debug("Received media status update: %s", status.player_state)
         # player state
-        # NOTE: only update current item and elapsed time when playing/paused
         castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
             castplayer.player.state = PlayerState.PLAYING
             castplayer.player.current_item_id = status.content_id
-            castplayer.player.elapsed_time = status.adjusted_current_time
         elif status.player_is_paused:
             castplayer.player.state = PlayerState.PAUSED
             castplayer.player.current_item_id = status.content_id
-            castplayer.player.elapsed_time = status.adjusted_current_time
         else:
             castplayer.player.state = PlayerState.IDLE
             castplayer.player.current_item_id = None
+
+        # elapsed time
+        castplayer.player.elapsed_time_last_updated = time.time()
+        castplayer.player.elapsed_time = status.adjusted_current_time
+        if status.player_is_playing:
+            castplayer.player.elapsed_time = status.adjusted_current_time
+        else:
+            castplayer.player.elapsed_time = status.current_time
 
         # active source
         if status.content_id and castplayer.player_id in status.content_id:  # noqa: SIM114
