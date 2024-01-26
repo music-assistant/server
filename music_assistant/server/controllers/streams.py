@@ -487,8 +487,8 @@ class StreamsController(CoreController):
         )
         await resp.prepare(request)
 
-        # return early if this is only a HEAD request
-        if request.method == "HEAD":
+        # return early if this is not a GET request
+        if request.method != "GET":
             return resp
 
         # all checks passed, start streaming!
@@ -578,8 +578,8 @@ class StreamsController(CoreController):
         )
         await resp.prepare(request)
 
-        # return early if this is only a HEAD request
-        if request.method == "HEAD":
+        # return early if this is not a GET request
+        if request.method != "GET":
             return resp
 
         # all checks passed, start streaming!
@@ -691,8 +691,8 @@ class StreamsController(CoreController):
         )
         await resp.prepare(request)
 
-        # return early if this is only a HEAD request
-        if request.method == "HEAD":
+        # return early if this is not a GET request
+        if request.method != "GET":
             return resp
 
         # some players (e.g. dlna, sonos) misbehave and do multiple GET requests
