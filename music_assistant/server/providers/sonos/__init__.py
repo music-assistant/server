@@ -758,7 +758,7 @@ class SonosPlayerProvider(PlayerProvider):
             [("InstanceID", 0), ("NextURI", url), ("NextURIMetaData", metadata)],
             timeout=60,
         )
-        self.logger.info(
+        self.logger.debug(
             "Enqued next track (%s) to player %s",
             queue_item.name if queue_item else url,
             sonos_player.soco_device.player_name,

@@ -419,7 +419,7 @@ class DLNAPlayerProvider(PlayerProvider):
         didl_metadata = create_didl_metadata(self.mass, url, queue_item)
         title = queue_item.name
         await dlna_player.device.async_set_next_transport_uri(url, title, didl_metadata)
-        self.logger.info(
+        self.logger.debug(
             "Enqued next track (%s) to player %s",
             title,
             dlna_player.player.display_name,
