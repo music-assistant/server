@@ -315,7 +315,7 @@ class ChromecastProvider(PlayerProvider):
         media_controller = castplayer.cc.media_controller
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
         self.mass.create_task(media_controller.send_message, queuedata, inc_session_id=True)
-        self.logger.info(
+        self.logger.debug(
             "Enqued next track (%s) to player %s",
             queue_item.name if queue_item else url,
             castplayer.player.display_name,
@@ -490,19 +490,19 @@ class ChromecastProvider(PlayerProvider):
         """Handle updated MediaStatus."""
         castplayer.logger.debug("Received media status update: %s", status.player_state)
         # player state
-        if status.player_is_playing:
-            castplayer.player.state = PlayerState.PLAYING
-        elif status.player_is_paused:
-            castplayer.player.state = PlayerState.PAUSED
-        else:
-            castplayer.player.state = PlayerState.IDLE
-
-        # elapsed time
+        # NOTE: only update current item and elapsed time when playing/paused
         castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
+            castplayer.player.state = PlayerState.PLAYING
+            castplayer.player.current_item_id = status.content_id
+            castplayer.player.elapsed_time = status.adjusted_current_time
+        elif status.player_is_paused:
+            castplayer.player.state = PlayerState.PAUSED
+            castplayer.player.current_item_id = status.content_id
             castplayer.player.elapsed_time = status.adjusted_current_time
         else:
-            castplayer.player.elapsed_time = status.current_time
+            castplayer.player.state = PlayerState.IDLE
+            castplayer.player.current_item_id = None
 
         # active source
         if status.content_id and castplayer.player_id in status.content_id:  # noqa: SIM114
@@ -513,17 +513,7 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.active_source = castplayer.cc.app_display_name
 
         # current media
-        castplayer.player.current_item_id = status.content_id
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
-
-        # handle end of MA queue - reset current_item_id
-        if (
-            castplayer.player.state == PlayerState.IDLE
-            and castplayer.player.current_item_id
-            and (queue := self.mass.player_queues.get(castplayer.player_id))
-            and queue.next_item is None
-        ):
-            castplayer.player.current_item_id = None
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
