@@ -840,7 +840,7 @@ class PlayerController(CoreController):
                 # - every 30 seconds if the player is powered
                 # - every 10 seconds if the player is playing
                 if (
-                    player.available
+                    (player.available or count == 360)
                     and (
                         (player.powered and count % 30 == 0)
                         or (player_playing and count % 10 == 0)
