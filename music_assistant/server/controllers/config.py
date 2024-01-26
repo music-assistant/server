@@ -311,7 +311,7 @@ class ConfigController:
     @api_command("config/players")
     async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        available_providers = {x.domain for x in self.mass.providers}
+        available_providers = {x.instance_id for x in self.mass.providers}
         return [
             await self.get_player_config(player_id)
             for player_id, raw_conf in self.get(CONF_PLAYERS, {}).items()
