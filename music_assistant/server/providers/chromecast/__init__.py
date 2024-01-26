@@ -84,6 +84,7 @@ def _patched_process_media_status(self, data):
     _patched_process_media_status_org(self, data)
     for status_msg in data.get("status", []):
         if items := status_msg.get("items"):
+            self.status.current_item_id = status_msg.get("currentItemId", 0)
             self.status.items = items
 
 
@@ -308,12 +309,21 @@ class ChromecastProvider(PlayerProvider):
             output_codec=ContentType.FLAC,
         )
         next_item_id = None
-        if (cast_queue_items := getattr(castplayer.cc.media_controller.status, "items")) and len(
-            cast_queue_items
-        ) > 1:
-            next_item_id = cast_queue_items[-1]["itemId"]
+        status = castplayer.cc.media_controller.status
+        # lookup position of current track in cast queue
+        cast_current_item_id = getattr(status, "current_item_id", 0)
+        cast_queue_items = getattr(status, "items", [])
+        cur_item_found = False
+        for item in cast_queue_items:
+            if item["itemId"] == cast_current_item_id:
+                cur_item_found = True
+                continue
+            elif not cur_item_found:
+                continue
+            next_item_id = item["itemId"]
+            # check if the next queue item isn't already queued
             if (
-                cast_queue_items[-1].get("media", {}).get("customData", {}).get("queue_item_id")
+                item.get("media", {}).get("customData", {}).get("queue_item_id")
                 == queue_item.queue_item_id
             ):
                 return
