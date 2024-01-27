@@ -311,7 +311,7 @@ class ConfigController:
     @api_command("config/players")
     async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        available_providers = {x.domain for x in self.mass.providers}
+        available_providers = {x.instance_id for x in self.mass.providers}
         return [
             await self.get_player_config(player_id)
             for player_id, raw_conf in self.get(CONF_PLAYERS, {}).items()
@@ -469,12 +469,13 @@ class ConfigController:
         else:
             raise KeyError(f"Unknown provider domain: {provider_domain}")
         config_entries = await self.get_provider_config_entries(provider_domain)
+        instance_id = f"{manifest.domain}--{shortuuid.random(8)}"
         default_config: ProviderConfig = ProviderConfig.parse(
             config_entries,
             {
                 "type": manifest.type.value,
                 "domain": manifest.domain,
-                "instance_id": manifest.domain,
+                "instance_id": instance_id,
                 "name": manifest.name,
                 # note: this will only work for providers that do
                 # not have any required config entries or provide defaults
@@ -716,13 +717,7 @@ class ConfigController:
         # determine instance id based on previous configs
         if existing and not manifest.multi_instance:
             raise ValueError(f"Provider {manifest.name} does not support multiple instances")
-        if len(existing) == 0:
-            instance_id = provider_domain
-            name = manifest.name
-        else:
-            random_id = shortuuid.random(6)
-            instance_id = f"{provider_domain}_{random_id}"
-            name = f"{manifest.name} {random_id}"
+        instance_id = f"{manifest.domain}--{shortuuid.random(8)}"
         # all checks passed, create config object
         config_entries = await self.get_provider_config_entries(
             provider_domain=provider_domain, instance_id=instance_id, values=values
@@ -733,7 +728,7 @@ class ConfigController:
                 "type": manifest.type.value,
                 "domain": manifest.domain,
                 "instance_id": instance_id,
-                "name": name,
+                "name": manifest.name,
                 "values": values,
             },
         )

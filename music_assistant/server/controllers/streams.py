@@ -62,7 +62,7 @@ DEFAULT_STREAM_HEADERS = {
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
     "Cache-Control": "no-cache",
     "Connection": "close",
-    # "Accept-Ranges": "none",
+    "Accept-Ranges": "none",
     "icy-name": "Music Assistant",
     "icy-pub": "0",
 }
@@ -487,8 +487,8 @@ class StreamsController(CoreController):
         )
         await resp.prepare(request)
 
-        # return early if this is only a HEAD request
-        if request.method == "HEAD":
+        # return early if this is not a GET request
+        if request.method != "GET":
             return resp
 
         # all checks passed, start streaming!
@@ -578,8 +578,8 @@ class StreamsController(CoreController):
         )
         await resp.prepare(request)
 
-        # return early if this is only a HEAD request
-        if request.method == "HEAD":
+        # return early if this is not a GET request
+        if request.method != "GET":
             return resp
 
         # all checks passed, start streaming!
@@ -691,8 +691,8 @@ class StreamsController(CoreController):
         )
         await resp.prepare(request)
 
-        # return early if this is only a HEAD request
-        if request.method == "HEAD":
+        # return early if this is not a GET request
+        if request.method != "GET":
             return resp
 
         # some players (e.g. dlna, sonos) misbehave and do multiple GET requests

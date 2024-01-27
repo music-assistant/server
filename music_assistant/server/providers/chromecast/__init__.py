@@ -20,6 +20,7 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_FLOW_MODE,
     ConfigEntry,
     ConfigValueType,
 )
@@ -34,7 +35,13 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_LOG_LEVEL, CONF_PLAYERS, MASS_LOGO_ONLINE
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_FLOW_MODE,
+    CONF_LOG_LEVEL,
+    CONF_PLAYERS,
+    MASS_LOGO_ONLINE,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -57,11 +64,13 @@ PLAYER_CONFIG_ENTRIES = (
         type=ConfigEntryType.BOOLEAN,
         label="Enable crossfade",
         default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n"
-        "Note that Chromecast does not natively support crossfading so Music Assistant "
-        "uses a 'flow mode' workaround for this at the cost of on-player metadata.",
+        description="Enable a crossfade transition between (queue) tracks. \n\n"
+        "Note that Cast does not natively support crossfading so you need to enable "
+        "the 'flow mode' workaround to use crossfading with Cast players.",
         advanced=False,
+        depends_on=CONF_FLOW_MODE,
     ),
+    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
 )
 
@@ -75,6 +84,7 @@ def _patched_process_media_status(self, data):
     _patched_process_media_status_org(self, data)
     for status_msg in data.get("status", []):
         if items := status_msg.get("items"):
+            self.status.current_item_id = status_msg.get("currentItemId", 0)
             self.status.items = items
 
 
@@ -236,8 +246,9 @@ class ChromecastProvider(PlayerProvider):
             - fade_in: Optionally fade in the item at playback start.
         """
         castplayer = self.castplayers[player_id]
-        # Google cast does not support crossfading so we use flow mode to provide this feature
-        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
+        use_flow_mode = await self.mass.config.get_player_config_value(
+            player_id, CONF_FLOW_MODE
+        ) or await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
         url = await self.mass.streams.resolve_stream_url(
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
@@ -298,12 +309,21 @@ class ChromecastProvider(PlayerProvider):
             output_codec=ContentType.FLAC,
         )
         next_item_id = None
-        if (cast_queue_items := getattr(castplayer.cc.media_controller.status, "items")) and len(
-            cast_queue_items
-        ) > 1:
-            next_item_id = cast_queue_items[-1]["itemId"]
+        status = castplayer.cc.media_controller.status
+        # lookup position of current track in cast queue
+        cast_current_item_id = getattr(status, "current_item_id", 0)
+        cast_queue_items = getattr(status, "items", [])
+        cur_item_found = False
+        for item in cast_queue_items:
+            if item["itemId"] == cast_current_item_id:
+                cur_item_found = True
+                continue
+            elif not cur_item_found:
+                continue
+            next_item_id = item["itemId"]
+            # check if the next queue item isn't already queued
             if (
-                cast_queue_items[-1].get("media", {}).get("customData", {}).get("queue_item_id")
+                item.get("media", {}).get("customData", {}).get("queue_item_id")
                 == queue_item.queue_item_id
             ):
                 return
@@ -315,7 +335,7 @@ class ChromecastProvider(PlayerProvider):
         media_controller = castplayer.cc.media_controller
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
         self.mass.create_task(media_controller.send_message, queuedata, inc_session_id=True)
-        self.logger.info(
+        self.logger.debug(
             "Enqued next track (%s) to player %s",
             queue_item.name if queue_item else url,
             castplayer.player.display_name,
@@ -490,15 +510,20 @@ class ChromecastProvider(PlayerProvider):
         """Handle updated MediaStatus."""
         castplayer.logger.debug("Received media status update: %s", status.player_state)
         # player state
+        castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
             castplayer.player.state = PlayerState.PLAYING
+            castplayer.player.current_item_id = status.content_id
         elif status.player_is_paused:
             castplayer.player.state = PlayerState.PAUSED
+            castplayer.player.current_item_id = status.content_id
         else:
             castplayer.player.state = PlayerState.IDLE
+            castplayer.player.current_item_id = None
 
         # elapsed time
         castplayer.player.elapsed_time_last_updated = time.time()
+        castplayer.player.elapsed_time = status.adjusted_current_time
         if status.player_is_playing:
             castplayer.player.elapsed_time = status.adjusted_current_time
         else:
@@ -513,17 +538,7 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.active_source = castplayer.cc.app_display_name
 
         # current media
-        castplayer.player.current_item_id = status.content_id
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
-
-        # handle end of MA queue - reset current_item_id
-        if (
-            castplayer.player.state == PlayerState.IDLE
-            and castplayer.player.current_item_id
-            and (queue := self.mass.player_queues.get(castplayer.player_id))
-            and queue.next_item is None
-        ):
-            castplayer.player.current_item_id = None
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""

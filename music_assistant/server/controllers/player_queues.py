@@ -631,14 +631,15 @@ class PlayerQueuesController(CoreController):
             self._prev_states[queue_id] = new_state
             return
         # handle player was playing and is now stopped
-        # if player finished playing a track for 90%, mark current item as finished
+        # if player finished playing a track for 85%, mark current item as finished
         if (
             prev_state.get("state") == "playing"
             and queue.state == PlayerState.IDLE
             and (
                 queue.current_item
                 and queue.current_item.duration
-                and queue.elapsed_time > (queue.current_item.duration * 0.8)
+                and prev_state.get("elapsed_time", queue.elapsed_time)
+                > (queue.current_item.duration * 0.85)
             )
         ):
             queue.current_index += 1
