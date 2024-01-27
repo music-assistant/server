@@ -1038,6 +1038,7 @@ class PlayerQueuesController(CoreController):
                 ):
                     if album_track not in all_items:
                         all_items.append(album_track)
+            random.shuffle(all_items)
             return all_items
         if artist_items_conf == "all_tracks":
             artist = await self.mass.music.artists.get(
@@ -1046,16 +1047,17 @@ class PlayerQueuesController(CoreController):
             all_items: list[Track] = []
             unique_tracks = set()
             for provider in artist.provider_mappings:
-                for album_track in await self.mass.music.albums.tracks(
+                for artist_track in await self.mass.music.artists.tracks(
                     provider.item_id, provider.provider_instance
                 ):
-                    if album_track in all_items:
+                    if artist_track in all_items:
                         continue
-                    unique_key = f"{album_track.name}.{album_track.version}.{album_track.duration}"
+                    unique_key = f"{artist_track.name.lower()}.{artist_track.version.lower()}"
                     if unique_key in unique_tracks:
                         continue
-                    all_items.append(album_track)
+                    all_items.append(artist_track)
                     unique_tracks.add(unique_key)
+            random.shuffle(all_items)
             return all_items
         if artist_items_conf == "all_album_tracks":
             artist = await self.mass.music.artists.get(
@@ -1072,13 +1074,12 @@ class PlayerQueuesController(CoreController):
                     ):
                         if album_track in all_items:
                             continue
-                        unique_key = (
-                            f"{album_track.name}.{album_track.version}.{album_track.duration}"
-                        )
+                        unique_key = f"{album_track.name.lower()}.{album_track.version.lower()}.{album_track.duration}"  # noqa: E501
                         if unique_key in unique_tracks:
                             continue
                         all_items.append(album_track)
                         unique_tracks.add(unique_key)
+            random.shuffle(all_items)
             return all_items
         return []
 
