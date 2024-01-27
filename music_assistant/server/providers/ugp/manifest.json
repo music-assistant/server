@@ -1,0 +1,13 @@
+{
+  "type": "player",
+  "domain": "ugp",
+  "name": "Universal Group Player",
+  "description": "Create Player Groups with your favorite players, regardless of type and model.",
+  "codeowners": ["@music-assistant"],
+  "requirements": [],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1701",
+  "multi_instance": false,
+  "builtin": false,
+  "load_by_default": true,
+  "icon": "speaker-multiple"
+}

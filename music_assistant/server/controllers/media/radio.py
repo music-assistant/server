@@ -1,4 +1,5 @@
 """Manage MediaItems of type Radio."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,9 +7,10 @@ import asyncio
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType
-from music_assistant.common.models.media_items import Radio, Track
+from music_assistant.common.models.errors import InvalidDataError
+from music_assistant.common.models.media_items import ItemMapping, Radio, Track
 from music_assistant.constants import DB_TABLE_RADIOS
-from music_assistant.server.helpers.compare import loose_compare_strings
+from music_assistant.server.helpers.compare import compare_strings, loose_compare_strings
 
 from .base import MediaControllerBase
 
@@ -19,17 +21,21 @@ class RadioController(MediaControllerBase[Radio]):
     db_table = DB_TABLE_RADIOS
     media_type = MediaType.RADIO
     item_cls = Radio
-    _db_add_lock = asyncio.Lock()
 
     def __init__(self, *args, **kwargs):
         """Initialize class."""
         super().__init__(*args, **kwargs)
+        self._db_add_lock = asyncio.Lock()
         # register api handlers
-        self.mass.register_api_command("music/radios", self.db_items)
-        self.mass.register_api_command("music/radio", self.get)
-        self.mass.register_api_command("music/radio/versions", self.versions)
-        self.mass.register_api_command("music/radio/update", self._update_db_item)
-        self.mass.register_api_command("music/radio/delete", self.delete)
+        self.mass.register_api_command("music/radio/library_items", self.library_items)
+        self.mass.register_api_command("music/radio/get_radio", self.get)
+        self.mass.register_api_command(
+            "music/radio/update_item_in_library", self.update_item_in_library
+        )
+        self.mass.register_api_command(
+            "music/radio/remove_item_from_library", self.remove_item_from_library
+        )
+        self.mass.register_api_command("music/radio/radio_versions", self.versions)
 
     async def versions(
         self,
@@ -57,91 +63,105 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add(self, item: Radio, skip_metadata_lookup: bool = False) -> Radio:
-        """Add radio to local db and return the new database item."""
-        if not skip_metadata_lookup:
+    async def add_item_to_library(self, item: Radio, metadata_lookup: bool = True) -> Radio:
+        """Add radio to library and return the new database item."""
+        if isinstance(item, ItemMapping):
+            metadata_lookup = False
+            item = Radio.from_item_mapping(item)
+        if not isinstance(item, Radio):
+            raise InvalidDataError("Not a valid Radio object")
+        if not item.provider_mappings:
+            raise InvalidDataError("Radio is missing provider mapping(s)")
+        if metadata_lookup:
             await self.mass.metadata.get_radio_metadata(item)
-        if item.provider == "database":
-            db_item = await self._update_db_item(item.item_id, item)
+        # check for existing item first
+        library_item = None
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            # existing item match by provider id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
         else:
+            # search by name
+            async for db_item in self.iter_library_items(search=item.name):
+                if compare_strings(db_item.name, item.name):
+                    # existing item found: update it
+                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    break
+        if not library_item:
+            # actually add a new item in the library db
             # use the lock to prevent a race condition of the same item being added twice
             async with self._db_add_lock:
-                db_item = await self._add_db_item(item)
-        return db_item
+                library_item = await self._add_library_item(item)
+        self.mass.signal_event(
+            EventType.MEDIA_ITEM_ADDED,
+            library_item.uri,
+            library_item,
+        )
+        return library_item
 
-    async def update(self, item_id: str | int, update: Radio, overwrite: bool = False) -> Radio:
-        """Update existing record in the database."""
-        return await self._update_db_item(item_id=item_id, item=update, overwrite=overwrite)
-
-    async def _add_db_item(self, item: Radio) -> Radio:
-        """Add a new item record to the database."""
-        assert item.provider_mappings, "Item is missing provider mapping(s)"
-        cur_item = None
-        # safety guard: check for existing item first
-        if cur_item := await self.get_db_item_by_prov_id(item.item_id, item.provider):
-            # existing item found: update it
-            return await self._update_db_item(cur_item.item_id, item)
-        # try name matching
-        match = {"name": item.name}
-        if db_row := await self.mass.music.database.get_row(self.db_table, match):
-            cur_item = Radio.from_db_row(db_row)
-            # existing item found: update it
-            return await self._update_db_item(cur_item.item_id, item)
-        # insert new item
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
-        new_item = await self.mass.music.database.insert(self.db_table, item.to_db_row())
-        db_id = new_item["item_id"]
-        # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database", item.name)
-        # get full created object
-        db_item = await self.get_db_item(db_id)
-        # only signal event if we're not running a sync (to prevent a floodstorm of events)
-        if not self.mass.music.get_running_sync_tasks():
-            self.mass.signal_event(
-                EventType.MEDIA_ITEM_ADDED,
-                db_item.uri,
-                db_item,
-            )
-        # return the full item we just added
-        return db_item
-
-    async def _update_db_item(
-        self, item_id: str | int, item: Radio, overwrite: bool = False
+    async def update_item_in_library(
+        self, item_id: str | int, update: Radio, overwrite: bool = False
     ) -> Radio:
-        """Update Radio record in the database."""
+        """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_db_item(db_id)
-        metadata = cur_item.metadata.update(getattr(item, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, item, overwrite)
+        cur_item = await self.get_library_item(db_id)
+        metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
+        cur_item.external_ids.update(update.external_ids)
         match = {"item_id": db_id}
         await self.mass.music.database.update(
             self.db_table,
             match,
             {
                 # always prefer name from updated item here
-                "name": item.name or cur_item.name,
-                "sort_name": item.sort_name or cur_item.sort_name,
+                "name": update.name or cur_item.name,
+                "sort_name": update.sort_name or cur_item.sort_name,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
                 "timestamp_modified": int(utc_timestamp()),
             },
         )
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, provider_mappings)
-        self.logger.debug("updated %s in database: %s", item.name, db_id)
+        self.logger.debug("updated %s in database: %s", update.name, db_id)
         # get full created object
-        db_item = await self.get_db_item(db_id)
-        # only signal event if we're not running a sync (to prevent a floodstorm of events)
-        if not self.mass.music.get_running_sync_tasks():
-            self.mass.signal_event(
-                EventType.MEDIA_ITEM_UPDATED,
-                db_item.uri,
-                db_item,
-            )
+        library_item = await self.get_library_item(db_id)
+        self.mass.signal_event(
+            EventType.MEDIA_ITEM_UPDATED,
+            library_item.uri,
+            library_item,
+        )
         # return the full item we just updated
-        return db_item
+        return library_item
+
+    async def _add_library_item(self, item: Radio) -> Radio:
+        """Add a new item record to the database."""
+        item.timestamp_added = int(utc_timestamp())
+        item.timestamp_modified = int(utc_timestamp())
+        new_item = await self.mass.music.database.insert(
+            self.db_table,
+            {
+                "name": item.name,
+                "sort_name": item.sort_name,
+                "favorite": item.favorite,
+                "metadata": serialize_to_json(item.metadata),
+                "provider_mappings": serialize_to_json(item.provider_mappings),
+                "external_ids": serialize_to_json(item.external_ids),
+                "timestamp_added": int(utc_timestamp()),
+                "timestamp_modified": int(utc_timestamp()),
+            },
+        )
+        db_id = new_item["item_id"]
+        # update/set provider_mappings table
+        await self._set_provider_mappings(db_id, item.provider_mappings)
+        self.logger.debug("added %s to database", item.name)
+        # return the full item we just added
+        return await self.get_library_item(db_id)
 
     async def _get_provider_dynamic_tracks(
         self,

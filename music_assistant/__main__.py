@@ -1,17 +1,31 @@
 """Run the Music Assistant Server."""
+
 from __future__ import annotations
 
 import argparse
 import asyncio
 import logging
 import os
-from logging.handlers import TimedRotatingFileHandler
+import subprocess
+import sys
+import threading
+from contextlib import suppress
+from logging.handlers import RotatingFileHandler
+from typing import Final
 
-import coloredlogs
 from aiorun import run
+from colorlog import ColoredFormatter
 
 from music_assistant.common.helpers.json import json_loads
+from music_assistant.constants import ROOT_LOGGER_NAME
 from music_assistant.server import MusicAssistant
+from music_assistant.server.helpers.logging import activate_log_queue_handler
+
+FORMAT_DATE: Final = "%Y-%m-%d"
+FORMAT_TIME: Final = "%H:%M:%S"
+FORMAT_DATETIME: Final = f"{FORMAT_DATE} {FORMAT_TIME}"
+MAX_LOG_FILESIZE = 1000000 * 10  # 10 MB
+ALPINE_RELEASE_FILE = "/etc/alpine-release"
 
 
 def get_arguments():
@@ -35,41 +49,91 @@ def get_arguments():
         help="Provide logging level. Example --log-level debug, "
         "default=info, possible=(critical, error, warning, info, debug)",
     )
+    parser.add_argument("-u", "--enable-uvloop", action="store_true")
     arguments = parser.parse_args()
     return arguments
 
 
 def setup_logger(data_path: str, level: str = "DEBUG"):
     """Initialize logger."""
-    logs_dir = os.path.join(data_path, "logs")
-    if not os.path.isdir(logs_dir):
-        os.mkdir(logs_dir)
-    logger = logging.getLogger()
-    log_fmt = "%(asctime)-15s %(levelname)-5s %(name)s  -- %(message)s"
-    log_formatter = logging.Formatter(log_fmt)
-    consolehandler = logging.StreamHandler()
-    consolehandler.setFormatter(log_formatter)
-    consolehandler.setLevel(logging.DEBUG)
-    logger.addHandler(consolehandler)
-    log_filename = os.path.join(logs_dir, "musicassistant.log")
-    file_handler = TimedRotatingFileHandler(
-        log_filename, when="midnight", interval=1, backupCount=10
+    # define log formatter
+    log_fmt = "%(asctime)s.%(msecs)03d %(levelname)s (%(threadName)s) [%(name)s] %(message)s"
+
+    # base logging config for the root logger
+    logging.basicConfig(level=logging.INFO)
+
+    colorfmt = f"%(log_color)s{log_fmt}%(reset)s"
+    logging.getLogger().handlers[0].setFormatter(
+        ColoredFormatter(
+            colorfmt,
+            datefmt=FORMAT_DATETIME,
+            reset=True,
+            log_colors={
+                "DEBUG": "cyan",
+                "INFO": "green",
+                "WARNING": "yellow",
+                "ERROR": "red",
+                "CRITICAL": "red",
+            },
+        )
     )
-    file_handler.setLevel(logging.DEBUG)
-    file_handler.setFormatter(log_formatter)
+
+    # Capture warnings.warn(...) and friends messages in logs.
+    # The standard destination for them is stderr, which may end up unnoticed.
+    # This way they're where other messages are, and can be filtered as usual.
+    logging.captureWarnings(True)
+
+    # setup file handler
+    log_filename = os.path.join(data_path, "musicassistant.log")
+    file_handler = RotatingFileHandler(log_filename, maxBytes=MAX_LOG_FILESIZE, backupCount=1)
+    # rotate log at each start
+    with suppress(OSError):
+        file_handler.doRollover()
+    file_handler.setFormatter(logging.Formatter(log_fmt, datefmt=FORMAT_DATETIME))
+    # file_handler.setLevel(logging.INFO)
+
+    logger = logging.getLogger()
     logger.addHandler(file_handler)
 
-    # global level is debug by default unless overridden
-    logger.setLevel(level)
+    # apply the configured global log level to the (root) music assistant logger
+    logging.getLogger(ROOT_LOGGER_NAME).setLevel(level)
 
-    # silence some loggers
+    # silence some noisy loggers
     logging.getLogger("asyncio").setLevel(logging.WARNING)
     logging.getLogger("aiosqlite").setLevel(logging.WARNING)
     logging.getLogger("databases").setLevel(logging.WARNING)
+    logging.getLogger("requests").setLevel(logging.WARNING)
+    logging.getLogger("urllib3").setLevel(logging.WARNING)
+    logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
 
-    # enable coloredlogs
-    coloredlogs.install(level=level, fmt=log_fmt)
+    sys.excepthook = lambda *args: logging.getLogger(None).exception(
+        "Uncaught exception", exc_info=args  # type: ignore[arg-type]
+    )
+    threading.excepthook = lambda args: logging.getLogger(None).exception(
+        "Uncaught thread exception",
+        exc_info=(  # type: ignore[arg-type]
+            args.exc_type,
+            args.exc_value,
+            args.exc_traceback,
+        ),
+    )
+
     return logger
+
+
+def _enable_posix_spawn() -> None:
+    """Enable posix_spawn on Alpine Linux."""
+    # pylint: disable=protected-access
+    if subprocess._USE_POSIX_SPAWN:
+        return
+
+    # The subprocess module does not know about Alpine Linux/musl
+    # and will use fork() instead of posix_spawn() which significantly
+    # less efficient. This is a workaround to force posix_spawn()
+    # on Alpine Linux which is supported by musl.
+    subprocess._USE_POSIX_SPAWN = os.path.exists(ALPINE_RELEASE_FILE)
 
 
 def main():
@@ -89,11 +153,15 @@ def main():
         hass_options = {}
 
     log_level = hass_options.get("log_level", args.log_level).upper()
-    dev_mode = bool(os.environ.get("PYTHONDEVMODE", "0"))
+    enable_uvloop = bool(hass_options.get("enable_uvloop", args.enable_uvloop))
+    dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
     mass = MusicAssistant(data_dir)
+
+    # enable alpine subprocess workaround
+    _enable_posix_spawn()
 
     def on_shutdown(loop):
         logger.info("shutdown requested!")
@@ -101,15 +169,16 @@ def main():
 
     async def start_mass():
         loop = asyncio.get_running_loop()
-        if dev_mode:
+        activate_log_queue_handler()
+        if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
         await mass.start()
 
     run(
         start_mass(),
-        use_uvloop=False,
+        use_uvloop=enable_uvloop,
         shutdown_callback=on_shutdown,
-        executor_workers=32,
+        executor_workers=64,
     )
 
 

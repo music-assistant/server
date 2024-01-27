@@ -1,7 +1,8 @@
 """Database helpers and logic."""
+
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any
 
 import aiosqlite
@@ -78,14 +79,14 @@ class DatabaseConnection:
 
     async def search(self, table: str, search: str, column: str = "name") -> list[Mapping]:
         """Search table by column."""
-        sql_query = f"SELECT * FROM {table} WHERE {column} LIKE :search"
+        sql_query = f"SELECT * FROM {table} WHERE {table}.{column} LIKE :search"
         params = {"search": f"%{search}%"}
         return await self._db.execute_fetchall(sql_query, params)
 
     async def get_row(self, table: str, match: dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
-        sql_query += " AND ".join(f"{x} = :{x}" for x in match)
+        sql_query += " AND ".join(f"{table}.{x} = :{x}" for x in match)
         async with self._db.execute(sql_query, match) as cursor:
             return await cursor.fetchone()
 
@@ -101,7 +102,7 @@ class DatabaseConnection:
             sql_query = f'INSERT OR REPLACE INTO {table}({",".join(keys)})'
         else:
             sql_query = f'INSERT INTO {table}({",".join(keys)})'
-        sql_query += f' VALUES ({",".join((f":{x}" for x in keys))})'
+        sql_query += f' VALUES ({",".join(f":{x}" for x in keys)})'
         await self.execute(sql_query, values)
         await self._db.commit()
         # return inserted/replaced item
@@ -120,7 +121,7 @@ class DatabaseConnection:
     ) -> Mapping:
         """Update record."""
         keys = tuple(values.keys())
-        sql_query = f'UPDATE {table} SET {",".join((f"{x}=:{x}" for x in keys))} WHERE '
+        sql_query = f'UPDATE {table} SET {",".join(f"{x}=:{x}" for x in keys)} WHERE '
         sql_query += " AND ".join(f"{x} = :{x}" for x in match)
         await self.execute(sql_query, {**match, **values})
         await self._db.commit()
@@ -149,3 +150,24 @@ class DatabaseConnection:
     async def execute(self, query: str | str, values: dict = None) -> Any:
         """Execute command on the database."""
         return await self._db.execute(query, values)
+
+    async def iter_items(
+        self,
+        table: str,
+        match: dict = None,
+    ) -> AsyncGenerator[Mapping, None]:
+        """Iterate all items within a table."""
+        limit: int = 500
+        offset: int = 0
+        while True:
+            next_items = await self.get_rows(
+                table=table,
+                match=match,
+                offset=offset,
+                limit=limit,
+            )
+            for item in next_items:
+                yield item
+            if len(next_items) < limit:
+                break
+            offset += limit

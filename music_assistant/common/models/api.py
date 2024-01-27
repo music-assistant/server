@@ -63,6 +63,7 @@ class ServerInfoMessage(DataClassORJSONMixin):
     schema_version: int
     min_supported_schema_version: int
     base_url: str
+    homeassistant_addon: bool = False
 
 
 MessageType = (

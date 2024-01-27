@@ -10,5 +10,5 @@
   "builtin": false,
   "load_by_default": true,
   "depends_on": "slimproto",
-  "icon": "md:airplay"
+  "icon":"cast-variant"
 }

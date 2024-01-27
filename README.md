@@ -12,7 +12,7 @@ Music Assistant is a free, opensource Media library manager that connects to you
 
 **Documentation and support**
 
-For issues, please go to [the issue tracker](https://github.com/music-assistant/hass-music-assistant/issues/issues).
+For issues, please go to [the issue tracker](https://github.com/music-assistant/hass-music-assistant/issues).
 
 For feature requests, please see [feature requests](https://github.com/music-assistant/hass-music-assistant/discussions/categories/feature-requests-and-ideas).
 
@@ -31,7 +31,7 @@ By far the most convenient way to run the Music Assistant Server is to install t
 1. Add the Music Assistant repository to your Home Assistant instance.
 2. Install the Music Assistant add-on.
 
-[![Add repository on my Home Assistant][repository-badge]][repository-url]
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fmusic-assistant%2Fhome-assistant-addon)
 
 
 ### Alternative method: Docker image
@@ -39,10 +39,10 @@ By far the most convenient way to run the Music Assistant Server is to install t
 An alternative way to run the Music Assistant server is by running the docker image:
 
 ```
-docker run --network host --privileged ghcr.io/music-assistant/server
+docker run --network host --privileged -v <dir>:/data ghcr.io/music-assistant/server
 ```
 
-You must run the docker container with host network mode and the data volume is `/data`.
+You must run the docker container with host network mode. The data volume is `/data` - replace `<dir>` with a writable directory to ensure the data volume persists between updates.
 If you want access to your local music files from within MA, make sure to also mount that, e.g. /media.
 Note that accessing remote (SMB) shares can be done from within MA itself using the SMB File provider (but requires the privileged flag).
 

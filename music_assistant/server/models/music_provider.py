@@ -1,15 +1,19 @@
 """Model/base for a Music Provider implementation."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
+from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
     BrowseFolder,
     MediaItemType,
     Playlist,
+    PlaylistTrack,
     Radio,
     SearchResults,
     StreamDetails,
@@ -28,17 +32,19 @@ class MusicProvider(Provider):
     """
 
     @property
-    def is_unique(self) -> bool:
+    def is_streaming_provider(self) -> bool:
         """
-        Return True if the (non user related) data in this provider instance is unique.
+        Return True if the provider is a streaming provider.
 
-        For example on a global streaming provider (like Spotify),
-        the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to False will only query one instance of the provider for search and lookups.
-        Setting this to True will query all instances of this provider for search and lookups.
+        This literally means that the catalog is not the same as the library contents.
+        For local based providers (files, plex), the catalog is the same as the library content.
+        It also means that data is if this provider is NOT a streaming provider,
+        data cross instances is unique, the catalog and library differs per instance.
+
+        Setting this to True will only query one instance of the provider for search and lookups.
+        Setting this to False will query all instances of this provider for search and lookups.
         """
-        return False
+        return True
 
     async def search(
         self,
@@ -68,7 +74,7 @@ class MusicProvider(Provider):
             raise NotImplementedError
         yield  # type: ignore
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
         """Retrieve library tracks from the provider."""
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
             raise NotImplementedError
@@ -122,14 +128,16 @@ class MusicProvider(Provider):
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
             raise NotImplementedError
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:  # type: ignore[return]
+    async def get_album_tracks(
+        self, prov_album_id: str  # type: ignore[return]
+    ) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
@@ -259,130 +267,88 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> BrowseFolder:
+    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
         """Browse this provider's items.
 
-        :param path: The path to browse, (e.g. provid://artists).
+        :param path: The path to browse, (e.g. provider_id://artists).
         """
         if ProviderFeature.BROWSE not in self.supported_features:
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
 
-        _, subpath = path.split("://")
-
+        subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
-        if not subpath:
-            # return main listing
-            root_items: list[BrowseFolder] = []
-            if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="artists",
-                        provider=self.domain,
-                        path=path + "artists",
-                        name="",
-                        label="artists",
-                    )
-                )
-            if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="albums",
-                        provider=self.domain,
-                        path=path + "albums",
-                        name="",
-                        label="albums",
-                    )
-                )
-            if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="tracks",
-                        provider=self.domain,
-                        path=path + "tracks",
-                        name="",
-                        label="tracks",
-                    )
-                )
-            if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="playlists",
-                        provider=self.domain,
-                        path=path + "playlists",
-                        name="",
-                        label="playlists",
-                    )
-                )
-            if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-                root_items.append(
-                    BrowseFolder(
-                        item_id="radios",
-                        provider=self.domain,
-                        path=path + "radios",
-                        name="",
-                        label="radios",
-                    )
-                )
-            return BrowseFolder(
-                item_id="root",
-                provider=self.domain,
-                path=path,
-                name=self.name,
-                items=root_items,
-            )
-        # sublevel
         if subpath == "artists":
-            return BrowseFolder(
+            async for artist in self.get_library_artists():
+                yield artist
+            return
+        if subpath == "albums":
+            async for album in self.get_library_albums():
+                yield album
+            return
+        if subpath == "tracks":
+            async for track in self.get_library_tracks():
+                yield track
+            return
+        if subpath == "radios":
+            async for radio in self.get_library_radios():
+                yield radio
+            return
+        if subpath == "playlists":
+            async for playlist in self.get_library_playlists():
+                yield playlist
+            return
+        if subpath:
+            # unknown path
+            raise KeyError("Invalid subpath")
+        # no subpath: return main listing
+        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
+            yield BrowseFolder(
                 item_id="artists",
                 provider=self.domain,
-                path=path,
+                path=path + "artists",
                 name="",
                 label="artists",
-                items=[x async for x in self.get_library_artists()],
             )
-        if subpath == "albums":
-            return BrowseFolder(
+        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
+            yield BrowseFolder(
                 item_id="albums",
                 provider=self.domain,
-                path=path,
+                path=path + "albums",
                 name="",
                 label="albums",
-                items=[x async for x in self.get_library_albums()],
             )
-        if subpath == "tracks":
-            return BrowseFolder(
+        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
+            yield BrowseFolder(
                 item_id="tracks",
                 provider=self.domain,
-                path=path,
+                path=path + "tracks",
                 name="",
                 label="tracks",
-                items=[x async for x in self.get_library_tracks()],
             )
-        if subpath == "radios":
-            return BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path,
-                name="",
-                label="radios",
-                items=[x async for x in self.get_library_radios()],
-            )
-        if subpath == "playlists":
-            return BrowseFolder(
+        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
+            yield BrowseFolder(
                 item_id="playlists",
                 provider=self.domain,
-                path=path,
+                path=path + "playlists",
                 name="",
                 label="playlists",
-                items=[x async for x in self.get_library_playlists()],
             )
-        raise KeyError("Invalid subpath")
+        if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
+            yield BrowseFolder(
+                item_id="radios",
+                provider=self.domain,
+                path=path + "radios",
+                name="",
+                label="radios",
+            )
 
-    async def recommendations(self) -> list[BrowseFolder]:
+    async def recommendations(self) -> list[MediaItemType]:
         """Get this provider's recommendations.
 
-        Returns a list of BrowseFolder items with (max 25) mediaitems in the items attribute.
+        Returns a actual and personalised list of Media items with recommendations
+        form this provider for the user/account. It may return nested levels with
+        BrowseFolder items.
         """
         if ProviderFeature.RECOMMENDATIONS in self.supported_features:
             raise NotImplementedError
@@ -399,30 +365,67 @@ class MusicProvider(Provider):
             controller = self.mass.music.get_controller(media_type)
             cur_db_ids = set()
             async for prov_item in self._get_library_gen(media_type):
-                db_item = await controller.get_db_item_by_prov_mappings(
+                library_item = await controller.get_library_item_by_prov_mappings(
                     prov_item.provider_mappings,
                 )
-                if not db_item:
-                    # create full db item
-                    prov_item.in_library = True
-                    db_item = await controller.add(prov_item, skip_metadata_lookup=True)
-                elif (
-                    db_item.metadata.checksum and prov_item.metadata.checksum
-                ) and db_item.metadata.checksum != prov_item.metadata.checksum:
-                    # existing dbitem checksum changed
-                    db_item = await controller.update(db_item.item_id, prov_item)
-                cur_db_ids.add(db_item.item_id)
-                if not db_item.in_library:
-                    await controller.set_db_library(db_item.item_id, True)
+                try:
+                    if not library_item and not prov_item.available:
+                        # skip unavailable tracks
+                        self.logger.debug(
+                            "Skipping sync of item %s because it is unavailable", prov_item.uri
+                        )
+                        continue
+                    if not library_item:
+                        # create full db item
+                        # note that we skip the metadata lookup purely to speed up the sync
+                        # the additional metadata is then lazy retrieved afterwards
+
+                        prov_item.favorite = True
+                        extra_kwargs = (
+                            {"add_album_tracks": True} if media_type == MediaType.ALBUM else {}
+                        )
+                        library_item = await controller.add_item_to_library(
+                            prov_item, metadata_lookup=False, **extra_kwargs
+                        )
+                    elif (
+                        library_item.metadata.checksum and prov_item.metadata.checksum
+                    ) and library_item.metadata.checksum != prov_item.metadata.checksum:
+                        # existing dbitem checksum changed
+                        library_item = await controller.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
+                    cur_db_ids.add(library_item.item_id)
+                except MusicAssistantError as err:
+                    self.logger.warning(
+                        "Skipping sync of item %s - error details: %s", prov_item.uri, str(err)
+                    )
 
             # process deletions (= no longer in library)
-            cache_key = f"db_items.{media_type}.{self.instance_id}"
-            prev_db_items: list[int] | None
-            if prev_db_items := await self.mass.cache.get(cache_key):
-                for db_id in prev_db_items:
+            cache_key = f"library_items.{media_type}.{self.instance_id}"
+            prev_library_items: list[int] | None
+            if prev_library_items := await self.mass.cache.get(cache_key):
+                for db_id in prev_library_items:
                     if db_id not in cur_db_ids:
-                        # only mark the item as not in library and leave the metadata in db
-                        await controller.set_db_library(db_id, False)
+                        try:
+                            item = await controller.get_library_item(db_id)
+                        except MediaNotFoundError:
+                            # edge case: the item is already removed
+                            continue
+                        remaining_providers = {
+                            x.provider_domain
+                            for x in item.provider_mappings
+                            if x.provider_domain != self.domain
+                        }
+                        if not remaining_providers and media_type != MediaType.ARTIST:
+                            # this item is removed from the provider's library
+                            # and we have no other providers attached to it
+                            # it is safe to remove it from the MA library too
+                            # note we skip artists here to prevent a recursive removal
+                            # of all albums and tracks underneath this artist
+                            await controller.remove_item_from_library(db_id)
+                        else:
+                            # otherwise: just unmark favorite
+                            await controller.set_favorite(db_id, False)
             await self.mass.cache.set(cache_key, list(cur_db_ids))
 
     # DO NOT OVERRIDE BELOW

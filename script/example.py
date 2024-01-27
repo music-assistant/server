@@ -8,7 +8,6 @@ from os.path import abspath, dirname
 from pathlib import Path
 from sys import path
 
-import coloredlogs
 from aiorun import run
 
 path.insert(1, dirname(dirname(abspath(__file__))))
@@ -46,7 +45,6 @@ args = parser.parse_args()
 if __name__ == "__main__":
     # configure logging
     logging.basicConfig(level=args.log_level.upper())
-    coloredlogs.install(level=args.log_level.upper())
 
     # make sure storage path exists
     if not os.path.isdir(args.config):

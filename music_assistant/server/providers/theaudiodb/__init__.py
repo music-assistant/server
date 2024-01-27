@@ -1,4 +1,5 @@
 """The AudioDB Metadata provider for Music Assistant."""
+
 from __future__ import annotations
 
 from json import JSONDecodeError
@@ -26,8 +27,6 @@ from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
-
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -37,7 +36,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.ARTIST_METADATA,
     ProviderFeature.ALBUM_METADATA,
     ProviderFeature.TRACK_METADATA,
-    ProviderFeature.GET_ARTIST_MBID,
 )
 
 IMG_MAPPING = {
@@ -117,41 +115,27 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""
-        if data := await self._get_data("artist-mb.php", i=artist.musicbrainz_id):  # noqa: SIM102
+        if not artist.mbid:
+            # for 100% accuracy we require the musicbrainz id for all lookups
+            return None
+        if data := await self._get_data("artist-mb.php", i=artist.mbid):  # noqa: SIM102
             if data.get("artists"):
                 return self.__parse_artist(data["artists"][0])
         return None
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on theaudiodb."""
-        adb_album = None
-        if album.musicbrainz_id:
-            result = await self._get_data("album-mb.php", i=album.musicbrainz_id)
-            if result and result.get("album"):
-                adb_album = result["album"][0]
-        elif album.artists:
-            # lookup by name
-            artist = album.artists[0]
-            result = await self._get_data("searchalbum.php", s=artist.name, a=album.name)
-            if result and result.get("album"):
-                for item in result["album"]:
-                    assert isinstance(artist, Artist)
-                    if artist.musicbrainz_id:
-                        if artist.musicbrainz_id != item["strMusicBrainzArtistID"]:
-                            continue
-                    elif not compare_strings(artist.name, item["strArtistStripped"]):
-                        continue
-                    if compare_strings(album.name, item["strAlbumStripped"]):
-                        adb_album = item
-                        break
-        if adb_album:
+        if not album.mbid:
+            # for 100% accuracy we require the musicbrainz id for all lookups
+            return None
+        result = await self._get_data("album-mb.php", i=album.mbid)
+        if result and result.get("album"):
+            adb_album = result["album"][0]
+            # fill in some missing album info if needed
             if not album.year:
                 album.year = int(adb_album.get("intYearReleased", "0"))
-            if not album.musicbrainz_id:
-                album.musicbrainz_id = adb_album["strMusicBrainzID"]
-            assert isinstance(album.artists[0], Artist)
-            if album.artists and not album.artists[0].musicbrainz_id:
-                album.artists[0].musicbrainz_id = adb_album["strMusicBrainzArtistID"]
+            if album.artists and not album.artists[0].mbid:
+                album.artists[0].mbid = adb_album["strMusicBrainzArtistID"]
             if album.album_type == AlbumType.UNKNOWN:
                 album.album_type = ALBUMTYPE_MAPPING.get(
                     adb_album.get("strReleaseFormat"), AlbumType.UNKNOWN
@@ -161,62 +145,33 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for track on theaudiodb."""
-        adb_track = None
-        if track.musicbrainz_id:
-            result = await self._get_data("track-mb.php", i=track.musicbrainz_id)
+        if track.mbid:
+            result = await self._get_data("track-mb.php", i=track.mbid)
             if result and result.get("track"):
                 return self.__parse_track(result["track"][0])
-
-        # lookup by name
+            # if there was no match on mbid, there will certainly be no match by name
+            return None
+        # fallback if no musicbrainzid: lookup by name
         for track_artist in track.artists:
-            assert isinstance(track_artist, Artist)
-            result = await self._get_data("searchtrack.php?", s=track_artist.name, t=track.name)
+            # make sure to include the version in the track name
+            track_name = f"{track.name} {track.version}" if track.version else track.name
+            result = await self._get_data("searchtrack.php?", s=track_artist.name, t=track_name)
             if result and result.get("track"):
                 for item in result["track"]:
-                    if track_artist.musicbrainz_id:
-                        if track_artist.musicbrainz_id != item["strMusicBrainzArtistID"]:
-                            continue
-                    elif not compare_strings(track_artist.name, item["strArtist"]):
+                    # some safety checks
+                    if track_artist.mbid and track_artist.mbid != item["strMusicBrainzArtistID"]:
                         continue
-                    if compare_strings(track.name, item["strTrack"]):
-                        adb_track = item
-                        break
-            if adb_track:
-                if not track.musicbrainz_id:
-                    track.musicbrainz_id = adb_track["strMusicBrainzID"]
-                assert isinstance(track.album, Album)
-                if track.album and not track.album.musicbrainz_id:
-                    track.album.musicbrainz_id = adb_track["strMusicBrainzAlbumID"]
-                if not track_artist.musicbrainz_id:
-                    track_artist.musicbrainz_id = adb_track["strMusicBrainzArtistID"]
-
-                return self.__parse_track(adb_track)
+                    if (
+                        track.album
+                        and track.album.mbid
+                        and track.album.mbid != item["strMusicBrainzAlbumID"]
+                    ):
+                        continue
+                    if not compare_strings(track_artist.name, item["strArtist"]):
+                        continue
+                    if compare_strings(track_name, item["strTrack"]):
+                        return self.__parse_track(item)
         return None
-
-    async def get_musicbrainz_artist_id(
-        self,
-        artist: Artist,
-        ref_albums: Iterable[Album],
-        ref_tracks: Iterable[Track],  # noqa: ARG002
-    ) -> str | None:
-        """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
-        musicbrainz_id = None
-        if data := await self._get_data("searchalbum.php", s=artist.name):
-            # NOTE: object is 'null' when no records found instead of empty array
-            albums = data.get("album") or []
-            for item in albums:
-                if not compare_strings(item["strArtistStripped"], artist.name):
-                    continue
-                for ref_album in ref_albums:
-                    if not compare_strings(item["strAlbumStripped"], ref_album.name):
-                        continue
-                    # found match - update album metadata too while we're here
-                    if not ref_album.musicbrainz_id:
-                        ref_album.metadata = self.__parse_album(item)
-                        await self.mass.music.albums.add(ref_album, skip_metadata_lookup=True)
-                    musicbrainz_id = item["strMusicBrainzArtistID"]
-
-        return musicbrainz_id
 
     def __parse_artist(self, artist_obj: dict[str, Any]) -> MediaItemMetadata:
         """Parse audiodb artist object to MediaItemMetadata."""
@@ -231,7 +186,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.links = set()
         for key, link_type in LINK_MAPPING.items():
             if link := artist_obj.get(key):
-                metadata.links.add(MediaItemLink(link_type, link))
+                metadata.links.add(MediaItemLink(type=link_type, url=link))
         # description/biography
         if desc := artist_obj.get(f"strBiography{self.mass.metadata.preferred_language}"):
             metadata.description = desc
@@ -242,7 +197,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := artist_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(type=img_type, path=img))
                 else:
                     break
         return metadata
@@ -260,11 +215,11 @@ class AudioDbMetadataProvider(MetadataProvider):
         metadata.links = set()
         if link := album_obj.get("strWikipediaID"):
             metadata.links.add(
-                MediaItemLink(LinkType.WIKIPEDIA, f"https://wikipedia.org/wiki/{link}")
+                MediaItemLink(type=LinkType.WIKIPEDIA, url=f"https://wikipedia.org/wiki/{link}")
             )
         if link := album_obj.get("strAllMusicID"):
             metadata.links.add(
-                MediaItemLink(LinkType.ALLMUSIC, f"https://www.allmusic.com/album/{link}")
+                MediaItemLink(type=LinkType.ALLMUSIC, url=f"https://www.allmusic.com/album/{link}")
             )
 
         # description
@@ -278,7 +233,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := album_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(type=img_type, path=img))
                 else:
                     break
         return metadata
@@ -302,7 +257,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := track_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(img_type, img))
+                    metadata.images.append(MediaItemImage(type=img_type, path=img))
                 else:
                     break
         return metadata
@@ -311,25 +266,27 @@ class AudioDbMetadataProvider(MetadataProvider):
     async def _get_data(self, endpoint, **kwargs) -> dict | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
-        async with self.throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                try:
-                    result = await response.json()
-                except (
-                    aiohttp.client_exceptions.ContentTypeError,
-                    JSONDecodeError,
-                ):
-                    self.logger.error("Failed to retrieve %s", endpoint)
-                    text_result = await response.text()
-                    self.logger.debug(text_result)
-                    return None
-                except (
-                    aiohttp.client_exceptions.ClientConnectorError,
-                    aiohttp.client_exceptions.ServerDisconnectedError,
-                ):
-                    self.logger.warning("Failed to retrieve %s", endpoint)
-                    return None
-                if "error" in result and "limit" in result["error"]:
-                    self.logger.warning(result["error"])
-                    return None
-                return result
+        async with (
+            self.throttler,
+            self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
+        ):
+            try:
+                result = await response.json()
+            except (
+                aiohttp.client_exceptions.ContentTypeError,
+                JSONDecodeError,
+            ):
+                self.logger.error("Failed to retrieve %s", endpoint)
+                text_result = await response.text()
+                self.logger.debug(text_result)
+                return None
+            except (
+                aiohttp.client_exceptions.ClientConnectorError,
+                aiohttp.client_exceptions.ServerDisconnectedError,
+            ):
+                self.logger.warning("Failed to retrieve %s", endpoint)
+                return None
+            if "error" in result and "limit" in result["error"]:
+                self.logger.warning(result["error"])
+                return None
+            return result

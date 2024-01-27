@@ -1,4 +1,5 @@
 """Youtube Music support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -10,8 +11,6 @@ from urllib.parse import unquote
 
 import pytube
 
-from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
 from music_assistant.common.models.errors import (
@@ -22,14 +21,17 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     AlbumType,
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     ItemMapping,
     MediaItemImage,
     MediaType,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
@@ -74,11 +76,25 @@ CONF_EXPIRY_TIME = "expiry_time"
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
-# Youtube Music has the very unique id of "LM" for the likes playlist
-# when this playlist ID is detected, we make the id unique to the user
-# by adding the user's instance id to it
-YT_YOUR_LIKES_PLAYLIST_ID = "LM"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
+# Playlist ID's are not unique across instances for lists like 'Liked videos', 'SuperMix' etc.
+# So we need to add a delimiter to make them unique
+YT_PLAYLIST_ID_DELIMITER = "🎵"
+YT_PERSONAL_PLAYLISTS = (
+    "LM",  # Liked songs
+    "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
+    "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
+    "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
+    "RDTMAK5uy_k5UUl0lmrrfrjMpsT0CoMpdcBz1ruAO1k",  # My Mix 3
+    "RDTMAK5uy_nTsa0Irmcu2li2-qHBoZxtrpG9HuC3k_Q",  # My Mix 4
+    "RDTMAK5uy_lfZhS7zmIcmUhsKtkWylKzc0EN0LW90-s",  # My Mix 5
+    "RDTMAK5uy_k78ni6Y4fyyl0r2eiKkBEICh9Q5wJdfXk",  # My Mix 6
+    "RDTMAK5uy_lfhhWWw9v71CPrR7MRMHgZzbH6Vku9iJc",  # My Mix 7
+    "RDTMAK5uy_n_5IN6hzAOwdCnM8D8rzrs3vDl12UcZpA",  # Discover Mix
+    "RDTMAK5uy_lr0LWzGrq6FU9GIxWvFHTRPQD2LHMqlFA",  # New Release Mix
+    "RDTMAK5uy_nilrsVWxrKskY0ZUpVZ3zpB0u4LwWTVJ4",  # Replay Mix
+    "RDTMAK5uy_mZtXeU08kxXJOUhL0ETdAuZTh1z7aAFAo",  # Archive Mix
+)
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -264,78 +280,82 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
+        await self._check_oauth_token()
         if album_obj := await get_album(prov_album_id=prov_album_id):
             return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
         raise MediaNotFoundError(f"Item {prov_album_id} not found")
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
+        await self._check_oauth_token()
         album_obj = await get_album(prov_album_id=prov_album_id)
         if not album_obj.get("tracks"):
             return []
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
+            track_obj["disc_number"] = 0
+            track_obj["track_number"] = idx
             try:
                 track = await self._parse_track(track_obj=track_obj)
             except InvalidDataError:
                 continue
-            track.disc_number = 0
-            track.track_number = idx
             tracks.append(track)
         return tracks
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
+        await self._check_oauth_token()
         if artist_obj := await get_artist(prov_artist_id=prov_artist_id, headers=self._headers):
             return await self._parse_artist(artist_obj=artist_obj)
         raise MediaNotFoundError(f"Item {prov_artist_id} not found")
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        if track_obj := await get_track(prov_track_id=prov_track_id):
+        await self._check_oauth_token()
+        if track_obj := await get_track(
+            prov_track_id=prov_track_id,
+            headers=self._headers,
+            signature_timestamp=self._signature_timestamp,
+        ):
             return await self._parse_track(track_obj)
         raise MediaNotFoundError(f"Item {prov_track_id} not found")
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
-        if playlist_obj := await get_playlist(prov_playlist_id=playlist_id, headers=self._headers):
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+        if playlist_obj := await get_playlist(
+            prov_playlist_id=prov_playlist_id, headers=self._headers
+        ):
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {playlist_id} not found")
+        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
-        playlist_obj = await get_playlist(prov_playlist_id=playlist_id, headers=self._headers)
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+        playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return
-        for index, track in enumerate(playlist_obj["tracks"]):
-            if track["isAvailable"]:
+        for index, track_obj in enumerate(playlist_obj["tracks"]):
+            if track_obj["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id
                 try:
-                    track = await self._parse_track(track)
-                    if track:
-                        track.position = index + 1
+                    track_obj["position"] = index + 1
+                    if track := await self._parse_track(track_obj):
                         yield track
                 except InvalidDataError:
-                    track = await self.get_track(track["videoId"])
-                    if track:
-                        track.position = index + 1
-                        yield track
+                    if track := await self.get_track(track_obj["videoId"]):
+                        yield PlaylistTrack.from_dict({**track.to_dict(), "position": index + 1})
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
+        await self._check_oauth_token()
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if "albums" in artist_obj and "results" in artist_obj["albums"]:
             albums = []
@@ -350,6 +370,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
+        await self._check_oauth_token()
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
@@ -402,14 +423,12 @@ class YoutubeMusicProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
         return await add_remove_playlist_tracks(
             headers=self._headers,
-            prov_playlist_id=playlist_id,
+            prov_playlist_id=prov_playlist_id,
             prov_track_ids=prov_track_ids,
             add=True,
         )
@@ -419,12 +438,10 @@ class YoutubeMusicProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         await self._check_oauth_token()
-        playlist_id = (
-            YT_YOUR_LIKES_PLAYLIST_ID
-            if prov_playlist_id == f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            else prov_playlist_id
-        )
-        playlist_obj = await get_playlist(prov_playlist_id=playlist_id, headers=self._headers)
+        # Grab the playlist id from the full url in case of personal playlists
+        if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
+            prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
+        playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         if "tracks" not in playlist_obj:
             return None
         tracks_to_delete = []
@@ -463,35 +480,42 @@ class YoutubeMusicProvider(MusicProvider):
                     if track:
                         tracks.append(track)
                 except InvalidDataError:
-                    track = await self.get_track(track["videoId"])
-                    if track:
+                    if track := await self.get_track(track["videoId"]):
                         tracks.append(track)
             return tracks
         return []
 
-    async def get_stream_details(self, item_id: str, retry=True) -> StreamDetails:
+    async def get_stream_details(self, item_id: str, retry=0) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        data = {
-            "playbackContext": {
-                "contentPlaybackContext": {"signatureTimestamp": self._signature_timestamp}
-            },
-            "video_id": item_id,
-        }
-        track_obj = await self._post_data("player", data=data)
+        await self._check_oauth_token()
+        track_obj = await get_track(
+            prov_track_id=item_id,
+            headers=self._headers,
+            signature_timestamp=self._signature_timestamp,
+        )
+        if not track_obj:
+            raise MediaNotFoundError(f"Item {item_id} not found")
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):
-            if not retry:
+            if retry > 4:
+                self.logger.warn(
+                    f"Could not resolve a valid URL for item '{item_id}'. "
+                    "Are you playing music on another device using the same account?"
+                )
                 raise UnplayableMediaError(f"Could not resolve a valid URL for item '{item_id}'.")
             self.logger.debug(
                 "Invalid playback URL encountered. Retrying with new signature timestamp."
             )
+            self._cipher = None
             self._signature_timestamp = await self._get_signature_timestamp()
-            return await self.get_stream_details(item_id=item_id, retry=False)
+            return await self.get_stream_details(item_id=item_id, retry=retry + 1)
         stream_details = StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=ContentType.try_parse(stream_format["mimeType"]),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(stream_format["mimeType"]),
+            ),
             direct=url,
         )
         if (
@@ -502,14 +526,9 @@ class YoutubeMusicProvider(MusicProvider):
                 track_obj["streamingData"].get("expiresInSeconds")
             )
         if stream_format.get("audioChannels") and str(stream_format.get("audioChannels")).isdigit():
-            stream_details.channels = int(stream_format.get("audioChannels"))
+            stream_details.audio_format.channels = int(stream_format.get("audioChannels"))
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
-            stream_details.sample_rate = int(stream_format.get("audioSampleRate"))
-        if not stream_details:
-            self.logger.debug(
-                f"Returning NULL stream details for stream_format {stream_format}, "
-                "track_obj {track_obj}. "
-            )
+            stream_details.audio_format.sample_rate = int(stream_format.get("audioSampleRate"))
         return stream_details
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
@@ -580,6 +599,13 @@ class YoutubeMusicProvider(MusicProvider):
             item_id=album_id,
             name=name,
             provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(album_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
         if album_obj.get("year") and album_obj["year"].isdigit():
             album.year = album_obj["year"]
@@ -607,13 +633,6 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 album_type = AlbumType.UNKNOWN
             album.album_type = album_type
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(album_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
-        )
         return album
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
@@ -627,29 +646,46 @@ class YoutubeMusicProvider(MusicProvider):
             artist_id = VARIOUS_ARTISTS_YTM_ID
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")
-        artist = Artist(item_id=artist_id, name=artist_obj["name"], provider=self.domain)
+        artist = Artist(
+            item_id=artist_id,
+            name=artist_obj["name"],
+            provider=self.domain,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(artist_id),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=f"https://music.youtube.com/channel/{artist_id}",
+                )
+            },
+        )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
         if "thumbnails" in artist_obj and artist_obj["thumbnails"]:
             artist.metadata.images = await self._parse_thumbnails(artist_obj["thumbnails"])
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(artist_id),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=f"https://music.youtube.com/channel/{artist_id}",
-            )
-        )
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a YT Playlist response to a Playlist object."""
-        playlist_id = (
-            f"{YT_YOUR_LIKES_PLAYLIST_ID}-{self.instance_id}"
-            if playlist_obj["id"] == YT_YOUR_LIKES_PLAYLIST_ID
-            else playlist_obj["id"]
+        playlist_id = playlist_obj["id"]
+        playlist_name = playlist_obj["title"]
+        # Playlist ID's are not unique across instances for lists like 'Likes', 'Supermix', etc.
+        # So suffix with the instance id to make them unique
+        if playlist_id in YT_PERSONAL_PLAYLISTS:
+            playlist_id = f"{playlist_id}{YT_PLAYLIST_ID_DELIMITER}{self.instance_id}"
+            playlist_name = f"{playlist_name} ({self.name})"
+        playlist = Playlist(
+            item_id=playlist_id,
+            provider=self.domain,
+            name=playlist_name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=playlist_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                )
+            },
         )
-        playlist = Playlist(item_id=playlist_id, provider=self.domain, name=playlist_obj["title"])
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
         if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
@@ -658,13 +694,6 @@ class YoutubeMusicProvider(MusicProvider):
         if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
             is_editable = True
         playlist.is_editable = is_editable
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-            )
-        )
         if authors := playlist_obj.get("author"):
             if isinstance(authors, str):
                 playlist.owner = authors
@@ -677,12 +706,42 @@ class YoutubeMusicProvider(MusicProvider):
         playlist.metadata.checksum = playlist_obj.get("checksum")
         return playlist
 
-    async def _parse_track(self, track_obj: dict) -> Track:
+    async def _parse_track(self, track_obj: dict) -> Track | AlbumTrack | PlaylistTrack:
         """Parse a YT Track response to a Track model object."""
         if not track_obj.get("videoId"):
             raise InvalidDataError("Track is missing videoId")
-        track = Track(item_id=track_obj["videoId"], provider=self.domain, name=track_obj["title"])
-        if "artists" in track_obj:
+
+        if "position" in track_obj:
+            track_class = PlaylistTrack
+            extra_init_kwargs = {"position": track_obj["position"]}
+        elif "disc_number" in track_obj and "track_number" in track_obj:
+            track_class = AlbumTrack
+            extra_init_kwargs = {
+                "disc_number": track_obj["disc_number"],
+                "track_number": track_obj["track_number"],
+            }
+        else:
+            track_class = Track
+            extra_init_kwargs = {}
+        track = track_class(
+            item_id=track_obj["videoId"],
+            provider=self.domain,
+            name=track_obj["title"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=str(track_obj["videoId"]),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=track_obj.get("isAvailable", True),
+                    audio_format=AudioFormat(
+                        content_type=ContentType.M4A,
+                    ),
+                )
+            },
+            **extra_init_kwargs,
+        )
+
+        if "artists" in track_obj and track_obj["artists"]:
             track.artists = [
                 self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
@@ -708,18 +767,6 @@ class YoutubeMusicProvider(MusicProvider):
             track.duration = int(track_obj["duration"])
         elif "duration_seconds" in track_obj and str(track_obj["duration_seconds"]).isdigit():
             track.duration = int(track_obj["duration_seconds"])
-        available = True
-        if "isAvailable" in track_obj:
-            available = track_obj["isAvailable"]
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=str(track_obj["videoId"]),
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                available=available,
-                content_type=ContentType.M4A,
-            )
-        )
         return track
 
     async def _get_signature_timestamp(self):
@@ -773,6 +820,7 @@ class YoutubeMusicProvider(MusicProvider):
             return cipher
 
         if not self._cipher:
+            self.logger.debug("Creating a new cipher")
             self._cipher = await asyncio.to_thread(_decipher)
         return self._cipher.get_signature(ciphered_signature)
 
@@ -786,12 +834,10 @@ class YoutubeMusicProvider(MusicProvider):
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
-            media_type,
-            key,
-            self.instance_id,
-            name,
-            create_uri(media_type, self.instance_id, key),
-            create_sort_name(self.name),
+            media_type=media_type,
+            item_id=key,
+            provider=self.instance_id,
+            name=name,
         )
 
     def _get_artist_item_mapping(self, artist_obj: dict) -> ItemMapping:
@@ -804,7 +850,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
         """Parse and sort a list of thumbnails and return the highest quality."""
         thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
-        return [MediaItemImage(ImageType.THUMB, thumb["url"])]
+        return [MediaItemImage(type=ImageType.THUMB, path=thumb["url"])]
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:

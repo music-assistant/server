@@ -1,4 +1,5 @@
 """Helpers for dealing with API's to interact with Music Assistant."""
+
 from __future__ import annotations
 
 import inspect
@@ -13,8 +14,6 @@ from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get
 if TYPE_CHECKING:
     pass
 
-
-API_SCHEMA_VERSION = 1
 
 LOGGER = logging.getLogger(__name__)
 

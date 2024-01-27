@@ -10,5 +10,5 @@
   "builtin": true,
   "hidden": true,
   "load_by_default": true,
-  "icon": "mdi:mdi-web"
+  "icon": "web"
 }
