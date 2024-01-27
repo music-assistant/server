@@ -10,7 +10,13 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.util import get_changed_keys
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import (
+    ConfigEntryType,
     EventType,
     MediaType,
     PlayerFeature,
@@ -35,10 +41,22 @@ from music_assistant.server.models.core_controller import CoreController
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from music_assistant.common.models.media_items import Album, Artist, Track
     from music_assistant.common.models.player import Player
 
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players.queue")
+CONF_DEFAULT_ENQUEUE_SELECT_ARTIST = "default_enqueue_select_artist"
+CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
+
+ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
+ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
+
+CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_action_artist"
+CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_action_album"
+CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_action_track"
+CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_action_radio"
+CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_action_playlist"
 
 
 class PlayerQueuesController(CoreController):
@@ -65,6 +83,96 @@ class PlayerQueuesController(CoreController):
             if queue.state not in (PlayerState.PLAYING, PlayerState.PAUSED):
                 continue
             await self.stop(queue.queue_id)
+
+    async def get_config_entries(
+        self,
+        action: str | None = None,  # noqa: ARG002
+        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+    ) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        enqueue_options = tuple(ConfigValueOption(x.name, x.value) for x in QueueOption)
+        return (
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+                type=ConfigEntryType.STRING,
+                default_value=ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
+                label="Items to select when you play a (in-library) artist.",
+                options=(
+                    ConfigValueOption(
+                        title="Only in-library tracks",
+                        value="library_tracks",
+                    ),
+                    ConfigValueOption(
+                        title="All tracks from all albums in the library",
+                        value="library_album_tracks",
+                    ),
+                    ConfigValueOption(
+                        title="All (top) tracks from (all) streaming provider(s)",
+                        value="all_tracks",
+                    ),
+                    ConfigValueOption(
+                        title="All tracks from all albums from (all) streaming provider(s)",
+                        value="all_album_tracks",
+                    ),
+                ),
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+                type=ConfigEntryType.STRING,
+                default_value=ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
+                label="Items to select when you play a (in-library) album.",
+                options=(
+                    ConfigValueOption(
+                        title="Only in-library tracks",
+                        value="library_tracks",
+                    ),
+                    ConfigValueOption(
+                        title="All tracks for album on (streaming) provider",
+                        value="all_tracks",
+                    ),
+                ),
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
+                type=ConfigEntryType.STRING,
+                default_value=QueueOption.REPLACE,
+                label="Default enqueue option for Artist item(s).",
+                options=enqueue_options,
+                description="Define the default enqueue action for this mediatype.",
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
+                type=ConfigEntryType.STRING,
+                default_value=QueueOption.REPLACE,
+                label="Default enqueue option for Album item(s).",
+                options=enqueue_options,
+                description="Define the default enqueue action for this mediatype.",
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
+                type=ConfigEntryType.STRING,
+                default_value=QueueOption.PLAY,
+                label="Default enqueue option for Track item(s).",
+                options=enqueue_options,
+                description="Define the default enqueue action for this mediatype.",
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
+                type=ConfigEntryType.STRING,
+                default_value=QueueOption.REPLACE,
+                label="Default enqueue option for Track item(s).",
+                options=enqueue_options,
+                description="Define the default enqueue action for this mediatype.",
+            ),
+            ConfigEntry(
+                key=CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
+                type=ConfigEntryType.STRING,
+                default_value=QueueOption.REPLACE,
+                label="Default enqueue option for Playlist item(s).",
+                options=enqueue_options,
+                description="Define the default enqueue action for this mediatype.",
+            ),
+        )
 
     def __iter__(self) -> Iterator[PlayerQueue]:
         """Iterate over (available) players."""
@@ -146,7 +254,7 @@ class PlayerQueuesController(CoreController):
         self,
         queue_id: str,
         media: MediaItemType | list[MediaItemType] | str | list[str],
-        option: QueueOption = QueueOption.PLAY,
+        option: QueueOption | None = None,
         radio_mode: bool = False,
         start_item: str | None = None,
     ) -> None:
@@ -163,9 +271,6 @@ class PlayerQueuesController(CoreController):
             LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
 
-        if option in QueueOption.REPLACE:
-            self.clear(queue_id)
-
         # a single item or list of items may be provided
         if not isinstance(media, list):
             media = [media]
@@ -175,11 +280,8 @@ class PlayerQueuesController(CoreController):
             queue.current_index = None
             self._queue_items[queue_id] = []
 
-        # clear radio source items if needed
-        if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
-            queue.radio_source = []
-
         tracks: list[MediaItemType] = []
+        radio_source: list[MediaItemType] = []
         for item in media:
             # parse provided uri into a MA MediaItem or Basic QueueItem from URL
             if isinstance(item, str):
@@ -193,21 +295,31 @@ class PlayerQueuesController(CoreController):
             else:
                 media_item = item
 
+            # handle default enqueue option if needed
+            if option is None:
+                option = QueueOption(
+                    self.mass.config.get_core_config_value(
+                        self.domain, f"default_enqueue_action_{media_item.media_type.value}"
+                    )
+                )
+
             # collect tracks to play
             ctrl = self.mass.music.get_controller(media_item.media_type)
             if radio_mode:
-                queue.radio_source.append(media_item)
+                radio_source.append(media_item)
             elif media_item.media_type == MediaType.PLAYLIST:
                 async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
                     tracks.append(playlist_track)
                 await self.mass.music.mark_item_played(
                     media_item.media_type, media_item.item_id, media_item.provider
                 )
-            elif media_item.media_type in (
-                MediaType.ARTIST,
-                MediaType.ALBUM,
-            ):
-                tracks += await ctrl.tracks(media_item.item_id, media_item.provider)
+            elif media_item.media_type == MediaType.ARTIST:
+                tracks += await self._get_artist_tracks(media_item)
+                await self.mass.music.mark_item_played(
+                    media_item.media_type, media_item.item_id, media_item.provider
+                )
+            elif media_item.media_type == MediaType.ALBUM:
+                tracks += await self._get_album_tracks(media_item)
                 await self.mass.music.mark_item_played(
                     media_item.media_type, media_item.item_id, media_item.provider
                 )
@@ -226,6 +338,11 @@ class PlayerQueuesController(CoreController):
                         prev_items.append(track)
                 tracks = next_items + prev_items
 
+        # overwrite or append radio source items
+        if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
+            queue.radio_source = radio_mode
+        else:
+            queue.radio_source += radio_mode
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
             tracks = await self._get_radio_tracks(queue_id)
@@ -242,6 +359,7 @@ class PlayerQueuesController(CoreController):
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
+            self.clear(queue_id)
             self.load(
                 queue_id,
                 queue_items=queue_items,
@@ -894,6 +1012,94 @@ class PlayerQueuesController(CoreController):
             if len(tracks) >= 50:
                 break
         return tracks
+
+    async def _get_artist_tracks(self, artist: Artist) -> list[Track]:
+        """Return tracks for given artist, based on user preference."""
+        artist_items_conf = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_DEFAULT_ENQUEUE_SELECT_ARTIST, ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE
+        )
+        if artist_items_conf == "library_tracks":
+            # make sure we have an in-library artist
+            artist = await self.mass.music.artists.get(
+                artist.item_id, artist.provider, lazy=False, details=artist
+            )
+            return await self.mass.music.artists.get_library_artist_tracks(artist.item_id)
+        if artist_items_conf == "library_album_tracks":
+            # make sure we have an in-library artist
+            artist = await self.mass.music.artists.get(
+                artist.item_id, artist.provider, lazy=False, details=artist
+            )
+            all_items: list[Track] = []
+            for library_album in await self.mass.music.artists.get_library_artist_albums(
+                artist.item_id
+            ):
+                for album_track in self.mass.music.albums.tracks(
+                    library_album.item_id, library_album.provider
+                ):
+                    if album_track not in all_items:
+                        all_items.append(album_track)
+            return all_items
+        if artist_items_conf == "all_tracks":
+            artist = await self.mass.music.artists.get(
+                artist.item_id, artist.provider, details=artist
+            )
+            all_items: list[Track] = []
+            unique_tracks = set()
+            for provider in artist.provider_mappings:
+                for album_track in await self.mass.music.albums.tracks(
+                    provider.item_id, provider.provider_instance
+                ):
+                    if album_track in all_items:
+                        continue
+                    unique_key = f"{album_track.name}.{album_track.version}.{album_track.duration}"
+                    if unique_key in unique_tracks:
+                        continue
+                    all_items.append(album_track)
+                    unique_tracks.add(unique_key)
+            return all_items
+        if artist_items_conf == "all_album_tracks":
+            artist = await self.mass.music.artists.get(
+                artist.item_id, artist.provider, details=artist
+            )
+            all_items: list[Track] = []
+            unique_tracks = set()
+            for provider in artist.provider_mappings:
+                for album in await self.mass.music.artists.albums(
+                    provider.item_id, provider.provider_instance
+                ):
+                    for album_track in await self.mass.music.albums.tracks(
+                        album.item_id, album.provider
+                    ):
+                        if album_track in all_items:
+                            continue
+                        unique_key = (
+                            f"{album_track.name}.{album_track.version}.{album_track.duration}"
+                        )
+                        if unique_key in unique_tracks:
+                            continue
+                        all_items.append(album_track)
+                        unique_tracks.add(unique_key)
+            return all_items
+        return []
+
+    async def _get_album_tracks(self, album: Album) -> list[Track]:
+        """Return tracks for given album, based on user preference."""
+        album_items_conf = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_DEFAULT_ENQUEUE_SELECT_ALBUM, ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE
+        )
+        if album_items_conf == "library_tracks":
+            # make sure we have an in-library album
+            album = await self.mass.music.albums.get(
+                album.item_id, album.provider, lazy=False, details=album
+            )
+            return await self.mass.music.albums.tracks(album.item_id, album.provider)
+        if album_items_conf == "all_tracks":
+            for provider in album.provider_mappings:
+                if album_tracks := await self.mass.music.albums.tracks(
+                    provider.item_id, provider.provider_instance
+                ):
+                    return album_tracks
+        return []
 
     def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
