@@ -453,11 +453,28 @@ class OpenSonicProvider(MusicProvider):
 
         Note the lack of item count on this method.
         """
+        offset = 0
+        count = 500
         results = await self._run_async(
-            self._conn.search3, query="", artistCount=0, albumCount=0, songCount=999999
+            self._conn.search3,
+            query="",
+            artistCount=0,
+            albumCount=0,
+            songOffset=offset,
+            songCount=count,
         )
-        for entry in results["songs"]:
-            yield self._parse_track(entry)
+        while results["songs"]:
+            for entry in results["songs"]:
+                yield self._parse_track(entry)
+            offset += count
+            results = await self._run_async(
+                self._conn.search3,
+                query="",
+                artistCount=0,
+                albumCount=0,
+                songOffset=offset,
+                songCount=count,
+            )
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Return the requested Album."""
