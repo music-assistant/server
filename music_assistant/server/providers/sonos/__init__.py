@@ -516,7 +516,7 @@ class SonosPlayerProvider(PlayerProvider):
         while True:
             try:
                 await asyncio.to_thread(
-                    sonos_player.soco_device.join, self.sonosplayers[target_player].soco
+                    sonos_player.soco_device.join, self.sonosplayers[target_player].soco_device
                 )
                 break
             except soco.exceptions.SoCoUPnPException as err:
