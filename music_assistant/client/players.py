@@ -264,7 +264,7 @@ class Players:
         self,
         queue_id: str,
         media: MediaItemType | list[MediaItemType] | str | list[str],
-        option: QueueOption = QueueOption.PLAY,
+        option: QueueOption | None = None,
         radio_mode: bool = False,
     ) -> None:
         """
