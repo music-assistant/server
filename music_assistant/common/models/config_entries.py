@@ -288,7 +288,6 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
         ConfigValueOption("debug", "DEBUG"),
     ),
     default_value="GLOBAL",
-    description="Set the log verbosity for this provider",
     advanced=True,
 )
 
@@ -302,9 +301,6 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Enable queue flow mode",
     default_value=False,
-    description='Enable "flow" mode where all queue tracks are sent as a continuous '
-    "audio stream. \nUse for players that do not natively support gapless and/or "
-    "crossfading or if the player has trouble transitioning between tracks.",
     advanced=False,
 )
 
@@ -329,18 +325,15 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     ],
     default_value="stereo",
     label="Output Channel Mode",
-    description="You can configure this player to play only the left or right channel, "
-    "for example to a create a stereo pair with 2 players.",
     advanced=True,
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION,
     type=ConfigEntryType.BOOLEAN,
-    label="Enable volume normalization (EBU-R128 based)",
+    label="Enable volume normalization",
     default_value=True,
-    description="Enable volume normalization based on the EBU-R128 "
-    "standard without affecting dynamic range",
+    description="Enable volume normalization (EBU-R128 based)",
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
@@ -349,8 +342,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     range=(-30, 0),
     default_value=-17,
     label="Target level for volume normalization",
-    description="Adjust average (perceived) loudness to this target level, "
-    "default is -17 LUFS \n\n WARNING: Setting levels higher than this may result in clipping",
+    description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
     advanced=True,
 )
@@ -411,8 +403,5 @@ CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Hide this player in the user interface",
     default_value=False,
-    description="Hide this player in the user interface. \n\n"
-    "Note that it can still be controlled and it will also show up in any "
-    "sync groups the player belongs to.",
     advanced=True,
 )
