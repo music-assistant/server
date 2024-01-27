@@ -1,4 +1,5 @@
 """Several helpers/utils for the Plex Music Provider."""
+
 from __future__ import annotations
 
 import asyncio

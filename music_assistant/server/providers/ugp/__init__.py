@@ -4,6 +4,7 @@ Universal Group Player provider.
 This is more like a "virtual" player provider,
 allowing the user to create player groups from all players known in the system.
 """
+
 from __future__ import annotations
 
 import asyncio

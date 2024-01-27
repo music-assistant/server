@@ -1,4 +1,5 @@
 """Logic to handle storage of persistent (configuration) settings."""
+
 from __future__ import annotations
 
 import asyncio

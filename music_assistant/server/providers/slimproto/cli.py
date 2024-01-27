@@ -8,6 +8,7 @@ Output is adjusted to conform to Music Assistant logic or just for simplificatio
 Goal is player compatibility, not API compatibility.
 Users that need more, should just stay with a full blown LMS server.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -362,9 +363,7 @@ class LmsCli:
                         "timestamp": time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()),
                         "advice": {
                             # update interval for streaming mode
-                            "interval": 5000
-                            if streaming
-                            else 0
+                            "interval": 5000 if streaming else 0
                         },
                     }
                 )
@@ -1260,9 +1259,9 @@ class LmsCli:
                         "favorites_title": item.name,
                         "favorites_url": item.uri,
                         "favorites_type": item.media_type.value,
-                        "icon": self.mass.metadata.get_image_url(item.image, 256)
-                        if item.image
-                        else "",
+                        "icon": (
+                            self.mass.metadata.get_image_url(item.image, 256) if item.image else ""
+                        ),
                     },
                     "textkey": item.name[0].upper(),
                     "commonParams": {

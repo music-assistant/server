@@ -1,4 +1,5 @@
 """Run the Music Assistant Server."""
+
 from __future__ import annotations
 
 import argparse

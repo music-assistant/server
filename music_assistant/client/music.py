@@ -1,4 +1,5 @@
 """Handle Music/library related endpoints for Music Assistant."""
+
 from __future__ import annotations
 
 import urllib.parse

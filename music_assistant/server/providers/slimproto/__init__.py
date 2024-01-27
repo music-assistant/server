@@ -1,4 +1,5 @@
 """Base/builtin provider with support for players using slimproto."""
+
 from __future__ import annotations
 
 import asyncio
@@ -496,9 +497,11 @@ class SlimprotoProvider(PlayerProvider):
         await client.play_url(
             url=url,
             mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
-            metadata={"item_id": queue_item.queue_item_id, "title": queue_item.name}
-            if queue_item
-            else {"item_id": client.player_id, "title": "Music Assistant"},
+            metadata=(
+                {"item_id": queue_item.queue_item_id, "title": queue_item.name}
+                if queue_item
+                else {"item_id": client.player_id, "title": "Music Assistant"}
+            ),
             send_flush=send_flush,
             transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
             transition_duration=transition_duration,

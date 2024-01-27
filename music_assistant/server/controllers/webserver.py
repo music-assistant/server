@@ -4,6 +4,7 @@ Controller that manages the builtin webserver that hosts the api and frontend.
 Unlike the streamserver (which is as simple and unprotected as possible),
 this webserver allows for more fine grained configuration to better secure it.
 """
+
 from __future__ import annotations
 
 import asyncio

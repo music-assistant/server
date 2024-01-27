@@ -1,4 +1,5 @@
 """All logic for metadata retrieval."""
+
 from __future__ import annotations
 
 import asyncio

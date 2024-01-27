@@ -1,4 +1,5 @@
 """All enums used by the Music Assistant models."""
+
 from __future__ import annotations
 
 from enum import StrEnum

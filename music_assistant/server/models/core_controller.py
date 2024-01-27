@@ -1,4 +1,5 @@
 """Model/base for a Core controller within Music Assistant."""
+
 from __future__ import annotations
 
 import logging

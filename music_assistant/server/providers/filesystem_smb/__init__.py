@@ -1,4 +1,5 @@
 """SMB filesystem provider for Music Assistant."""
+
 from __future__ import annotations
 
 import asyncio

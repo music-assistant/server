@@ -1,4 +1,5 @@
 """Logic to play music from MusicProviders to supported players."""
+
 from __future__ import annotations
 
 import asyncio

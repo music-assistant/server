@@ -1,4 +1,5 @@
 """Base Webserver logic for an HTTPServer that can handle dynamic routes."""
+
 from __future__ import annotations
 
 import logging
