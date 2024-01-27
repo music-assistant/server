@@ -572,15 +572,27 @@ class OpenSonicProvider(MusicProvider):
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, item_id)
         except (ParameterError, DataNotFoundError) as e:
             raise MediaNotFoundError(f"Item {item_id} not found") from e
+
+        self.mass.create_task(self._report_playback_started(item_id))
+
         mime_type = sonic_song.content_type
         if mime_type.endswith("mpeg"):
             mime_type = sonic_song.suffix
+
         return StreamDetails(
             item_id=sonic_song.id,
             provider=self.instance_id,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
+            callback=self._report_playback_stopped,
         )
+
+    async def _report_playback_started(self, item_id: str) -> None:
+        await self._run_async(self._conn.scrobble, sid=item_id, submission=False)
+
+    async def _report_playback_stopped(self, streamdetails: StreamDetails) -> None:
+        if streamdetails.seconds_streamed >= streamdetails.duration / 2:
+            await self._run_async(self._conn.scrobble, sid=streamdetails.item_id, submission=True)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -606,7 +618,6 @@ class OpenSonicProvider(MusicProvider):
                 # keep reading from the audio buffer until there is no more data
                 chunk = await audio_buffer.get()
                 if chunk == b"":
-                    await self._run_async(self._conn.scrobble, streamdetails.item_id)
                     break
                 yield chunk
         finally:
