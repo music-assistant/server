@@ -670,9 +670,6 @@ class PlayerController(CoreController):
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
-        # optimistically update the player to update the UI as fast as possible
-        parent_player.group_childs.add(player_id)
-        self.update(player_id)
 
     @api_command("players/cmd/unsync")
     @log_player_command
@@ -699,9 +696,6 @@ class PlayerController(CoreController):
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
-        # optimistically update the player to update the UI as fast as possible
-        player.synced_to = None
-        self.update(player_id)
 
     @api_command("players/create_group")
     async def create_group(self, provider: str, name: str, members: list[str]) -> Player:

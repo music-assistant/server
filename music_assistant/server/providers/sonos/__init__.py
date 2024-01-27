@@ -12,7 +12,6 @@ import soco
 from soco import config
 from soco.events_base import Event as SonosEvent
 from soco.events_base import SubscriptionBase
-from soco.groups import ZoneGroup
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
@@ -124,12 +123,10 @@ class SonosPlayer:
         self.track_info: dict = {}
         self.speaker_info: dict = {}
         self.rendering_control_info: dict = {}
-        self.group_info: ZoneGroup | None = None
         self.speaker_info_updated: float = 0.0
         self.transport_info_updated: float = 0.0
         self.track_info_updated: float = 0.0
         self.rendering_control_info_updated: float = 0.0
-        self.group_info_updated: float = 0.0
 
     def update_info(
         self,
@@ -137,7 +134,6 @@ class SonosPlayer:
         update_track_info: bool = False,
         update_speaker_info: bool = False,
         update_rendering_control_info: bool = False,
-        update_group_info: bool = False,
     ):
         """Poll all info from player (must be run in executor thread)."""
         # transport info
@@ -166,10 +162,6 @@ class SonosPlayer:
             self.rendering_control_info["volume"] = self.soco_device.volume
             self.rendering_control_info["mute"] = self.soco_device.mute
             self.rendering_control_info_updated = time.time()
-        # group info
-        if update_group_info:
-            self.group_info = self.soco_device.group
-            self.group_info_updated = time.time()
 
     def update_attributes(self):
         """Update attributes of the MA Player from soco.SoCo state."""
@@ -191,6 +183,7 @@ class SonosPlayer:
             self.playback_started = None
         elif self.playback_started is None and current_state == PlayerState.PLAYING:
             self.playback_started = now
+            mass_player.powered = True
 
         # media info (track info)
         mass_player.current_item_id = self.track_info["uri"]
@@ -208,13 +201,13 @@ class SonosPlayer:
 
         # zone topology (syncing/grouping) details
         if (
-            self.group_info
-            and self.group_info.coordinator
-            and self.group_info.coordinator.uid == self.player_id
+            self.soco_device.group
+            and self.soco_device.group.coordinator
+            and self.soco_device.group.coordinator.uid == self.player_id
         ):
             # this player is the sync leader
             mass_player.synced_to = None
-            group_members = {x.uid for x in self.group_info.members if x.is_visible}
+            group_members = {x.uid for x in self.soco_device.group.members if x.is_visible}
             if not group_members:
                 # not sure about this ?!
                 mass_player.type = PlayerType.PLAYER
@@ -222,10 +215,10 @@ class SonosPlayer:
                 mass_player.group_childs = set()
             else:
                 mass_player.group_childs = group_members
-        elif self.group_info and self.group_info.coordinator:
+        elif self.soco_device.group and self.soco_device.group.coordinator:
             # player is synced to
             mass_player.group_childs = set()
-            mass_player.synced_to = self.group_info.coordinator.uid
+            mass_player.synced_to = self.soco_device.group.coordinator.uid
         else:
             # unsure
             mass_player.group_childs = set()
@@ -239,14 +232,12 @@ class SonosPlayer:
         )
         update_speaker_info = (cur_time - self.speaker_info_updated) > 300
         update_rendering_control_info = (cur_time - self.rendering_control_info_updated) > 30
-        update_group_info = (cur_time - self.group_info_updated) > 300
 
         if not (
             update_transport_info
             or update_track_info
             or update_speaker_info
             or update_rendering_control_info
-            or update_group_info
         ):
             return
 
@@ -256,7 +247,6 @@ class SonosPlayer:
             update_track_info,
             update_speaker_info,
             update_rendering_control_info,
-            update_group_info,
         )
 
     async def connect(self) -> None:
@@ -289,8 +279,9 @@ class SonosPlayer:
     async def reconnect(self, soco_device: soco.SoCo) -> None:
         """Handle reconnect."""
         if self.subscriptions:
+            # handle reconnect
             self.disconnect()
-        self.soco_device = soco_device
+            self.soco_device = soco_device
         await self.connect()
 
     def _handle_av_transport_event(self, event: SonosEvent):
@@ -329,11 +320,10 @@ class SonosPlayer:
     def _handle_zone_group_topology_event(self, event: SonosEvent):  # noqa: ARG002
         """Handle a soco.SoCo ZoneGroupTopology event."""
         LOGGER.debug(
-            "Received ZoneGroupTopology event for Player %s",
+            "Received ZoneGroupTopology event for Player %s - members: %s",
             self.soco_device.player_name,
+            "/".join([x.player_name for x in self.soco_device.group.members]),
         )
-        self.group_info = self.soco_device.group
-        self.group_info_updated = time.time()
         asyncio.run_coroutine_threadsafe(
             self.sonos_prov.update_player(self), self.sonos_prov.mass.loop
         )
@@ -512,22 +502,19 @@ class SonosPlayerProvider(PlayerProvider):
             - target_player: player_id of the syncgroup master or group player.
         """
         sonos_player = self.sonosplayers[player_id]
+        sonos_master_player = self.sonosplayers[target_player].soco_device
         retries = 0
         while True:
             try:
-                await asyncio.to_thread(
-                    sonos_player.soco_device.join, self.sonosplayers[target_player].soco_device
-                )
+                await asyncio.to_thread(sonos_player.soco_device.join, sonos_master_player)
                 break
             except soco.exceptions.SoCoUPnPException as err:
                 if retries >= 3:
                     raise err
                 retries += 1
                 await asyncio.sleep(1)
-        await asyncio.to_thread(
-            sonos_player.update_info,
-            update_group_info=True,
-        )
+        # optimistically update player state
+        # await self.update_player(sonos_player)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -538,10 +525,8 @@ class SonosPlayerProvider(PlayerProvider):
         """
         sonos_player = self.sonosplayers[player_id]
         await asyncio.to_thread(sonos_player.soco_device.unjoin)
-        await asyncio.to_thread(
-            sonos_player.update_info,
-            update_group_info=True,
-        )
+        # optimistically update player state
+        # await self.update_player(sonos_player)
 
     async def play_media(
         self,
