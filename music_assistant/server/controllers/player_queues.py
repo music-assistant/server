@@ -298,7 +298,7 @@ class PlayerQueuesController(CoreController):
             # handle default enqueue option if needed
             if option is None:
                 option = QueueOption(
-                    self.mass.config.get_core_config_value(
+                    await self.mass.config.get_core_config_value(
                         self.domain, f"default_enqueue_action_{media_item.media_type.value}"
                     )
                 )
