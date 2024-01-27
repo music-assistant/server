@@ -1,4 +1,5 @@
 """Helpers for dealing with API's to interact with Music Assistant."""
+
 from __future__ import annotations
 
 import inspect

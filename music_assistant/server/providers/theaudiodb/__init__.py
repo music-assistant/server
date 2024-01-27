@@ -1,4 +1,5 @@
 """The AudioDB Metadata provider for Music Assistant."""
+
 from __future__ import annotations
 
 from json import JSONDecodeError
@@ -265,9 +266,10 @@ class AudioDbMetadataProvider(MetadataProvider):
     async def _get_data(self, endpoint, **kwargs) -> dict | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
-        async with self.throttler, self.mass.http_session.get(
-            url, params=kwargs, ssl=False
-        ) as response:
+        async with (
+            self.throttler,
+            self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
+        ):
             try:
                 result = await response.json()
             except (

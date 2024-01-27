@@ -1,4 +1,5 @@
 """MusicController: Orchestrates all data from music providers and sync to internal database."""
+
 from __future__ import annotations
 
 import asyncio

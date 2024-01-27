@@ -1,4 +1,5 @@
 """Deezer music provider support for MusicAssistant."""
+
 import datetime
 import hashlib
 import uuid

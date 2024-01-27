@@ -5,6 +5,7 @@ The streams controller hosts a basic, unprotected HTTP-only webserver
 purely to stream audio packets to players and some control endpoints such as
 the upnp callbacks and json rpc api for slimproto clients.
 """
+
 from __future__ import annotations
 
 import asyncio

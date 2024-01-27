@@ -1,4 +1,5 @@
 """Model/base for a Provider implementation within Music Assistant."""
+
 from __future__ import annotations
 
 import logging

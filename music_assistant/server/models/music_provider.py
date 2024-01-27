@@ -1,4 +1,5 @@
 """Model/base for a Music Provider implementation."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator

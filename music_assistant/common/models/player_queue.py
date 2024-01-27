@@ -1,4 +1,5 @@
 """Model(s) for PlayerQueue."""
+
 from __future__ import annotations
 
 import time

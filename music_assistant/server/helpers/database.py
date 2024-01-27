@@ -1,4 +1,5 @@
 """Database helpers and logic."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Mapping

@@ -1,4 +1,5 @@
 """Manage MediaItems of type Album."""
+
 from __future__ import annotations
 
 import asyncio

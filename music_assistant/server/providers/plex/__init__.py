@@ -1,4 +1,5 @@
 """Plex musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -462,9 +463,9 @@ class PlexProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     available=available,
                     audio_format=AudioFormat(
-                        content_type=ContentType.try_parse(content)
-                        if content
-                        else ContentType.UNKNOWN,
+                        content_type=(
+                            ContentType.try_parse(content) if content else ContentType.UNKNOWN
+                        ),
                     ),
                     url=plex_track.getWebURL(),
                 )

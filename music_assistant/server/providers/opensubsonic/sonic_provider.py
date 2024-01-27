@@ -1,4 +1,5 @@
 """The provider class for Open Subsonic."""
+
 from __future__ import annotations
 
 import asyncio

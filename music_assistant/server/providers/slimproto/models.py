@@ -1,4 +1,5 @@
 """Models used for the JSON-RPC API."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, TypedDict
@@ -190,9 +191,9 @@ def playlist_item_from_mass(
         "artist": artist,
         "album": album,
         "remote": 1,
-        "artwork_url": mass.metadata.get_image_url(queue_item.image, 512)
-        if queue_item.image
-        else "",
+        "artwork_url": (
+            mass.metadata.get_image_url(queue_item.image, 512) if queue_item.image else ""
+        ),
         "coverid": "-187651250107376",
         "duration": queue_item.duration,
         "bitrate": bitrate,

@@ -2,6 +2,7 @@
 
 At this time only used for retrieval of ID's but to be expanded to fetch metadata too.
 """
+
 from __future__ import annotations
 
 import re
@@ -423,9 +424,10 @@ class MusicbrainzProvider(MetadataProvider):
             "User-Agent": f"Music Assistant/{self.mass.version} ( https://github.com/music-assistant )"  # noqa: E501
         }
         kwargs["fmt"] = "json"  # type: ignore[assignment]
-        async with self.throttler, self.mass.http_session.get(
-            url, headers=headers, params=kwargs, ssl=False
-        ) as response:
+        async with (
+            self.throttler,
+            self.mass.http_session.get(url, headers=headers, params=kwargs, ssl=False) as response,
+        ):
             try:
                 result = await response.json()
             except (

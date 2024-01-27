@@ -1,4 +1,5 @@
 """Model and helpers for Config entries."""
+
 from __future__ import annotations
 
 import logging

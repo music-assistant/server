@@ -1,4 +1,5 @@
 """Handle player related endpoints for Music Assistant."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator

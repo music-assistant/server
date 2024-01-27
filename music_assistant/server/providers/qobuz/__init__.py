@@ -1,4 +1,5 @@
 """Qobuz musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import datetime
@@ -683,9 +684,10 @@ class QobuzProvider(MusicProvider):
             kwargs["request_sig"] = request_sig
             kwargs["app_id"] = app_var(0)
             kwargs["user_auth_token"] = await self._auth_token()
-        async with self._throttler, self.mass.http_session.get(
-            url, headers=headers, params=kwargs, ssl=False
-        ) as response:
+        async with (
+            self._throttler,
+            self.mass.http_session.get(url, headers=headers, params=kwargs, ssl=False) as response,
+        ):
             try:
                 result = await response.json()
                 # check for error in json

@@ -1,4 +1,5 @@
 """Chromecast Player provider for Music Assistant, utilizing the pychromecast library."""
+
 from __future__ import annotations
 
 import asyncio
@@ -633,13 +634,13 @@ class ChromecastProvider(PlayerProvider):
             stream_type = STREAM_TYPE_BUFFERED
             metadata = {
                 "metadataType": 3,
-                "albumName": queue_item.media_item.album.name
-                if queue_item.media_item.album
-                else "",
+                "albumName": (
+                    queue_item.media_item.album.name if queue_item.media_item.album else ""
+                ),
                 "songName": queue_item.media_item.name,
-                "artist": queue_item.media_item.artists[0].name
-                if queue_item.media_item.artists
-                else "",
+                "artist": (
+                    queue_item.media_item.artists[0].name if queue_item.media_item.artists else ""
+                ),
                 "title": queue_item.media_item.name,
                 "images": [{"url": image_url}] if image_url else None,
             }

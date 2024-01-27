@@ -1,4 +1,5 @@
 """Open Subsonic music provider support for MusicAssistant."""
+
 from __future__ import annotations
 
 from music_assistant.common.models.config_entries import (
