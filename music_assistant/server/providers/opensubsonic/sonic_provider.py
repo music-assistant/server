@@ -453,23 +453,36 @@ class OpenSonicProvider(MusicProvider):
 
         Note the lack of item count on this method.
         """
+        query = ""
         offset = 0
         count = 500
-        results = await self._run_async(
-            self._conn.search3,
-            query="",
-            artistCount=0,
-            albumCount=0,
-            songOffset=offset,
-            songCount=count,
-        )
+        try:
+            results = await self._run_async(
+                self._conn.search3,
+                query=query,
+                artistCount=0,
+                albumCount=0,
+                songOffset=offset,
+                songCount=count,
+            )
+        except ParameterError:
+            # Older Navidrome does not accept an empty string and requires the empty quotes
+            query = '""'
+            results = await self._run_async(
+                self._conn.search3,
+                query=query,
+                artistCount=0,
+                albumCount=0,
+                songOffset=offset,
+                songCount=count,
+            )
         while results["songs"]:
             for entry in results["songs"]:
                 yield self._parse_track(entry)
             offset += count
             results = await self._run_async(
                 self._conn.search3,
-                query="",
+                query=query,
                 artistCount=0,
                 albumCount=0,
                 songOffset=offset,
