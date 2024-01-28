@@ -346,7 +346,6 @@ class SonosPlayerProvider(PlayerProvider):
             output_codec=ContentType.FLAC,
             seek_position=seek_position,
             fade_in=fade_in,
-            flow_mode=False,
         )
         sonos_player = self.sonosplayers[player_id]
         mass_player = self.mass.players.get(player_id)
@@ -357,18 +356,14 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_media command, it is synced to another player."
             )
         metadata = create_didl_metadata(self.mass, url, queue_item)
-        await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
-        # optimistically set this timestamp to help figure out elapsed time later
-        now = time.time()
-        mass_player.elapsed_time = 0
-        mass_player.elapsed_time_last_updated = now
+        self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
 
     async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle PLAY STREAM on given player.
 
         This is a special feature from the Universal Group provider.
         """
-        url = stream_job.resolve_stream_url(player_id, ContentType.MP3)
+        url = stream_job.resolve_stream_url(player_id, ContentType.FLAC)
         sonos_player = self.sonosplayers[player_id]
         mass_player = self.mass.players.get(player_id)
         if sonos_player.sync_coordinator:
@@ -378,12 +373,10 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_stream command, it is synced to another player."
             )
         metadata = create_didl_metadata(self.mass, url, None)
-        await asyncio.to_thread(sonos_player.soco.play_uri, url, meta=metadata)
-        # add a special 'command' item to the sonos queue
-        # this allows for on-player next buttons/commands to still work
-        await self._enqueue_item(
-            sonos_player, self.mass.streams.get_command_url(player_id, "next"), None
-        )
+        # sonos players do not like our multi client stream
+        # add to the workaround players list
+        self.mass.streams.workaround_players.add(player_id)
+        await self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
         # optimistically set this timestamp to help figure out elapsed time later
         mass_player.elapsed_time = 0
         mass_player.elapsed_time_last_updated = time.time()

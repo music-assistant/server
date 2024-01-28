@@ -104,11 +104,12 @@ class MultiClientStreamJob:
         self.expected_players: set[str] = set()
         self.subscribed_players: dict[str, asyncio.Queue[bytes]] = {}
         self.bytes_streamed: int = 0
-        self.client_seconds_skipped: dict[str, int] = {}
         self._all_clients_connected = asyncio.Event()
         self.logger = stream_controller.logger.getChild(f"streamjob_{self.job_id}")
         self._finished: bool = False
-        self._first_chunk: bytes = b""
+        self.workaround_players_seen: set[str] = set()
+        # start running the audio task in the background
+        self._audio_task = asyncio.create_task(self._stream_job_runner())
 
     @property
     def finished(self) -> bool:
@@ -124,11 +125,6 @@ class MultiClientStreamJob:
     def running(self) -> bool:
         """Return if this Job is running."""
         return not self.finished and not self.pending
-
-    def start(self) -> None:
-        """Start running this streamjob."""
-        # start running the audio task in the background
-        self._audio_task = asyncio.create_task(self._stream_job_runner())
 
     def stop(self) -> None:
         """Stop running this job."""
@@ -164,20 +160,21 @@ class MultiClientStreamJob:
 
     async def subscribe(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming chunks on the queue."""
+        if (
+            player_id in self.stream_controller.workaround_players
+            and player_id not in self.workaround_players_seen
+        ):
+            self.workaround_players_seen.add(player_id)
+            yield b""
+            return
+
         try:
             self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
 
-            if self._first_chunk:
-                yield self._first_chunk
-
             if self._all_clients_connected.is_set():
                 # client subscribes while we're already started
-                self.logger.debug(
+                self.logger.warning(
                     "Client %s is joining while the stream is already started", player_id
-                )
-                # calculate how many seconds the client missed so far
-                self.client_seconds_skipped[player_id] = (
-                    self.bytes_streamed / self.pcm_format.pcm_sample_size
                 )
             else:
                 self.logger.debug("Subscribed client %s", player_id)
@@ -245,11 +242,6 @@ class MultiClientStreamJob:
 
             await self._put_chunk(chunk)
 
-            # keep first chunk to workaround (dlna) players that do multiple get requests
-            if chunk_num == 1:
-                self._first_chunk = chunk
-                await asyncio.sleep(0.1)
-
         # mark EOF with empty chunk
         await self._put_chunk(b"")
 
@@ -284,6 +276,7 @@ class StreamsController(CoreController):
             "some player specific local control callbacks."
         )
         self.manifest.icon = "cast-audio"
+        self.workaround_players: set[str] = set()
 
     @property
     def base_url(self) -> str:
@@ -706,6 +699,7 @@ class StreamsController(CoreController):
                 "to the same stream, playback may be disturbed!",
                 child_player_id,
             )
+            self.workaround_players.add(child_player_id)
 
         # all checks passed, start streaming!
         self.logger.debug(

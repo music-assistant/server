@@ -185,7 +185,6 @@ class UniversalGroupProvider(PlayerProvider):
                     if member is None:
                         continue
                 tg.create_task(player_prov.play_stream(member.player_id, stream_job))
-        stream_job.start()
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""

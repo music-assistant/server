@@ -197,7 +197,7 @@ class SonosPlayer:
         if not self.available:
             return
 
-        if self._resub_cooldown_expires_at is None and not self.mass.is_stopping:
+        if self._resub_cooldown_expires_at is None and not self.mass.closing:
             self._resub_cooldown_expires_at = time.monotonic() + RESUB_COOLDOWN_SECONDS
             self.logger.debug("Starting resubscription cooldown for %s", self.zone_name)
 
