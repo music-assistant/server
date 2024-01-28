@@ -302,6 +302,9 @@ class PlayerQueuesController(CoreController):
                         self.domain, f"default_enqueue_action_{media_item.media_type.value}"
                     )
                 )
+            # clear queue if needed
+            if option == QueueOption.REPLACE:
+                self.clear(queue_id)
 
             # collect tracks to play
             ctrl = self.mass.music.get_controller(media_item.media_type)
@@ -359,7 +362,6 @@ class PlayerQueuesController(CoreController):
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            self.clear(queue_id)
             self.load(
                 queue_id,
                 queue_items=queue_items,
