@@ -701,7 +701,9 @@ class SonosPlayer:
 
         # zone topology (syncing/grouping) details
         self.mass_player.can_sync_with = tuple(
-            x.player_id for x in self.sonos_prov.sonosplayers.values() if x.sync_coordinator is None
+            x.player_id
+            for x in self.sonos_prov.sonosplayers.values()
+            if x.sync_coordinator is None and x.player_id != self.player_id
         )
         if self.sync_coordinator:
             # player is syned to another player
