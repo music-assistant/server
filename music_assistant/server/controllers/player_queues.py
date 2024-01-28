@@ -340,9 +340,9 @@ class PlayerQueuesController(CoreController):
 
         # overwrite or append radio source items
         if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
-            queue.radio_source = radio_mode
+            queue.radio_source = radio_source
         else:
-            queue.radio_source += radio_mode
+            queue.radio_source += radio_source
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
             tracks = await self._get_radio_tracks(queue_id)
