@@ -11,6 +11,7 @@ async-upnp-client==0.38.1
 asyncio-throttle==1.0.2
 colorlog==6.8.0
 cryptography==41.0.7
+defusedxml==0.7.1
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
 git+https://github.com/music-assistant/deezer-python-async@v0.1.2
@@ -30,6 +31,7 @@ radios==0.3.0
 shortuuid==1.0.11
 snapcast-mod==2.4.3
 soco==0.30.2
+sonos-websocket==0.1.3
 tidalapi==0.7.3
 unidecode==1.3.8
 uvloop==0.19.0
