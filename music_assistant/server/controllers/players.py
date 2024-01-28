@@ -253,7 +253,7 @@ class PlayerController(CoreController):
         )
         # handle syncgroup - get attributes from first player that has this group as source
         if player.player_id.startswith(SYNCGROUP_PREFIX):
-            if sync_leader := self.get_sync_leader(player):
+            if player.powered and (sync_leader := self.get_sync_leader(player)):
                 player.state = sync_leader.state
                 player.current_item_id = sync_leader.current_item_id
                 player.elapsed_time = sync_leader.elapsed_time
