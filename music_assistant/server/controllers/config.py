@@ -586,9 +586,17 @@ class ConfigController:
         """
         Set (raw) single config(entry) value for a provider.
 
-        Note that this only returns the stored value without any validation or default.
+        Note that this only stores the (raw) value without any validation or default.
         """
-        return self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+        self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+
+    def set_raw_player_config_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
+        """
+        Set (raw) single config(entry) value for a player.
+
+        Note that this only stores the (raw) value without any validation or default.
+        """
+        self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
 
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""

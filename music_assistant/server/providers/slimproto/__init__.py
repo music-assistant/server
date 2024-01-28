@@ -430,7 +430,6 @@ class SlimprotoProvider(PlayerProvider):
                             auto_play=False,
                         )
                     )
-            stream_job.start()
         else:
             # regular, single player playback
             client = self._socket_clients[player_id]

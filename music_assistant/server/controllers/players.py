@@ -21,7 +21,6 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import (
     AlreadyRegisteredError,
-    PlayerCommandFailed,
     PlayerUnavailableError,
     ProviderUnavailableError,
     UnsupportedFeaturedException,
@@ -427,6 +426,9 @@ class PlayerController(CoreController):
             # forward to player provider
             player_provider = self.get_player_provider(player_id)
             await player_provider.cmd_power(player_id, powered)
+        else:
+            # allow the stop command to process and prevent race conditions
+            await asyncio.sleep(0.2)
         # always optimistically set the power state to update the UI
         # as fast as possible and prevent race conditions
         player.powered = powered
@@ -656,8 +658,6 @@ class PlayerController(CoreController):
             raise UnsupportedFeaturedException(
                 f"Player {parent_player.name} does not support (un)sync commands"
             )
-        if player_id not in parent_player.can_sync_with:
-            raise PlayerCommandFailed(f"Player {player_id} can not be synced to {target_player}.")
         if child_player.synced_to:
             if child_player.synced_to == parent_player.player_id:
                 # nothing to do: already synced to this parent
@@ -775,7 +775,7 @@ class PlayerController(CoreController):
         """Return the active_source id for given player."""
         # if player is synced, return group leader's active source
         if player.synced_to and (parent_player := self.get(player.synced_to)):
-            return self._get_active_source(parent_player)
+            return parent_player.player_id
         if active_player_group := self._get_active_player_group(player):
             return active_player_group.player_id
         # defaults to the player's own player id if not active source set
@@ -890,16 +890,20 @@ class PlayerController(CoreController):
         return player
 
     def get_sync_leader(self, group_player: Player) -> Player | None:
-        """Get the sync leader player for a syncgroup or synced player."""
+        """Get the active sync leader player for a syncgroup or synced player."""
         if group_player.synced_to:
             # should not happen but just in case...
             return group_player.synced_to
         for child_player in self.iter_group_members(
             group_player, only_powered=True, only_playing=False
         ):
-            if not child_player.group_childs:
+            if child_player.synced_to and child_player.synced_to in group_player.group_childs:
+                return self.get(child_player.synced_to)
+            elif child_player.synced_to:
+                # player is already synced to a member outside this group ?!
                 continue
-            return child_player
+            elif child_player.group_childs:
+                return child_player
         return None
 
     async def _sync_syncgroup(self, player_id: str) -> None:
@@ -952,6 +956,7 @@ class PlayerController(CoreController):
             device_info=DeviceInfo(model="SyncGroup", manufacturer=provider.title()),
             supported_features=first_player.supported_features,
             group_childs=set(members),
+            active_source=group_player_id,
         )
         self.mass.players.register_or_update(player)
         return player

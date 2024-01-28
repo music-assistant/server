@@ -51,7 +51,7 @@ class Player(DataClassDictMixin):
     # active_source: return player_id of the active queue for this player
     # if the player is grouped and a group is active, this will be set to the group's player_id
     # otherwise it will be set to the own player_id
-    active_source: str = ""
+    active_source: str | None = None
 
     # current_item_id: return item_id/uri of the current active/loaded item on the player
     # this may be a MA queue_item_id, url, uri or some provider specific string
