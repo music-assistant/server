@@ -835,14 +835,10 @@ class PlayerController(CoreController):
                 # - every 30 seconds if the player is powered
                 # - every 10 seconds if the player is playing
                 if (
-                    (player.available or count == 360)
-                    and (
-                        (player.powered and count % 30 == 0)
-                        or (player_playing and count % 10 == 0)
-                        or count == 360
-                    )
-                    and (player_prov := self.get_player_provider(player_id))
-                ):
+                    (player.powered and count % 30 == 0)
+                    or (player_playing and count % 10 == 0)
+                    or count == 360
+                ) and (player_prov := self.get_player_provider(player_id)):
                     try:
                         await player_prov.poll_player(player_id)
                     except PlayerUnavailableError:
