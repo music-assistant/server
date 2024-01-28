@@ -177,8 +177,6 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not (sonos_player := self.sonosplayers.get(player_id)):
-            return base_entries
         return base_entries + (
             CONF_ENTRY_CROSSFADE,
             ConfigEntry(
@@ -188,7 +186,6 @@ class SonosPlayerProvider(PlayerProvider):
                 default_value=0,
                 range=(-10, 10),
                 description="Set the Bass level for the Sonos player",
-                value=sonos_player.soco.bass,
                 advanced=True,
             ),
             ConfigEntry(
@@ -198,7 +195,6 @@ class SonosPlayerProvider(PlayerProvider):
                 default_value=0,
                 range=(-10, 10),
                 description="Set the Treble level for the Sonos player",
-                value=sonos_player.soco.treble,
                 advanced=True,
             ),
             ConfigEntry(
@@ -207,7 +203,6 @@ class SonosPlayerProvider(PlayerProvider):
                 label="Loudness compensation",
                 default_value=True,
                 description="Enable loudness compensation on the Sonos player",
-                value=sonos_player.soco.loudness,
                 advanced=True,
             ),
         )
@@ -256,7 +251,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        await asyncio.to_thread(sonos_player.soco.stop)
+        await self.mass.create_task(sonos_player.soco.stop)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
@@ -267,7 +262,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        await asyncio.to_thread(sonos_player.soco.play)
+        await self.mass.create_task(sonos_player.soco.play)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -282,7 +277,7 @@ class SonosPlayerProvider(PlayerProvider):
             # pause not possible
             await self.cmd_stop(player_id)
             return
-        await asyncio.to_thread(sonos_player.soco.pause)
+        await self.mass.create_task(sonos_player.soco.pause)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -291,7 +286,7 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player = self.sonosplayers[player_id]
             sonos_player.soco.volume = volume_level
 
-        await asyncio.to_thread(set_volume_level, player_id, volume_level)
+        await self.mass.create_task(set_volume_level, player_id, volume_level)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -300,7 +295,7 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player = self.sonosplayers[player_id]
             sonos_player.soco.mute = muted
 
-        await asyncio.to_thread(set_volume_mute, player_id, muted)
+        await self.mass.create_task(set_volume_mute, player_id, muted)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -356,7 +351,7 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_media command, it is synced to another player."
             )
         metadata = create_didl_metadata(self.mass, url, queue_item)
-        self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
+        await self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
 
     async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle PLAY STREAM on given player.
@@ -403,11 +398,12 @@ class SonosPlayerProvider(PlayerProvider):
         )
         # set crossfade according to player setting
         crossfade = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
-        if sonos_player.soco.cross_fade != crossfade:
+        if sonos_player.crossfade != crossfade:
 
             def set_crossfade():
                 with suppress(Exception):
                     sonos_player.soco.cross_fade = crossfade
+                    sonos_player.crossfade = crossfade
 
             await asyncio.to_thread(set_crossfade)
 

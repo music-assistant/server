@@ -125,6 +125,7 @@ class SonosPlayer:
         self.mass_player: Player = mass_player
         self.available: bool = True
         # cached attributes
+        self.crossfade: bool = False
         self.play_mode: str | None = None
         self.playback_status: str | None = None
         self.channel: str | None = None
@@ -173,9 +174,27 @@ class SonosPlayer:
 
     def setup(self) -> None:
         """Run initial setup of the speaker (NOT async friendly)."""
-        # update volume
+        self.crossfade = self.soco.cross_fade
         self.mass_player.volume_level = self.soco.volume
         self.mass_player.volume_muted = self.soco.mute
+        self.mass.loop.call_soon_threadsafe(
+            self.mass.config.set_raw_player_config_value,
+            self.player_id,
+            "sonos_loudness",
+            self.soco.loudness,
+        )
+        self.mass.loop.call_soon_threadsafe(
+            self.mass.config.set_raw_player_config_value,
+            self.player_id,
+            "sonos_bass",
+            self.soco.bass,
+        )
+        self.mass.loop.call_soon_threadsafe(
+            self.mass.config.set_raw_player_config_value,
+            self.player_id,
+            "sonos_treble",
+            self.soco.treble,
+        )
         self.update_groups()
         if not self.sync_coordinator:
             self.poll_media()
@@ -415,7 +434,7 @@ class SonosPlayer:
             return
 
         if crossfade := event.variables.get("current_crossfade_mode"):
-            self.logger.debug("crossfade changed to %s", crossfade)
+            self.crossfade = bool(int(crossfade))
 
         # Missing transport_state indicates a transient error
         if (new_status := event.variables.get("transport_state")) is None:
@@ -476,8 +495,11 @@ class SonosPlayer:
 
         if loudness := variables.get("loudness"):
             # TODO: handle this is a better way
-            self.mass.config.set_raw_player_config_value(
-                self.player_id, "sonos_loudness", loudness["Master"] == "1"
+            self.mass.loop.call_soon_threadsafe(
+                self.mass.config.set_raw_player_config_value,
+                self.player_id,
+                "sonos_loudness",
+                loudness["Master"] == "1",
             )
 
         for int_var in (
@@ -486,8 +508,11 @@ class SonosPlayer:
         ):
             if int_var in variables:
                 # TODO: handle this is a better way
-                self.mass.config.set_raw_player_config_value(
-                    self.player_id, f"sonos_{int_var}", variables[int_var]
+                self.mass.loop.call_soon_threadsafe(
+                    self.mass.config.set_raw_player_config_value,
+                    self.player_id,
+                    f"sonos_{int_var}",
+                    variables[int_var],
                 )
 
         self.update_player()
