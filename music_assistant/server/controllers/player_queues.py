@@ -302,6 +302,9 @@ class PlayerQueuesController(CoreController):
                         self.domain, f"default_enqueue_action_{media_item.media_type.value}"
                     )
                 )
+            # clear queue if needed
+            if option == QueueOption.REPLACE:
+                self.clear(queue_id)
 
             # collect tracks to play
             ctrl = self.mass.music.get_controller(media_item.media_type)
@@ -340,9 +343,9 @@ class PlayerQueuesController(CoreController):
 
         # overwrite or append radio source items
         if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
-            queue.radio_source = radio_mode
+            queue.radio_source = radio_source
         else:
-            queue.radio_source += radio_mode
+            queue.radio_source += radio_source
         # Use collected media items to calculate the radio if radio mode is on
         if radio_mode:
             tracks = await self._get_radio_tracks(queue_id)
@@ -359,7 +362,6 @@ class PlayerQueuesController(CoreController):
 
         # handle replace: clear all items and replace with the new items
         if option == QueueOption.REPLACE:
-            self.clear(queue_id)
             self.load(
                 queue_id,
                 queue_items=queue_items,

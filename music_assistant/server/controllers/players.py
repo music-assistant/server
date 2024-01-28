@@ -253,7 +253,7 @@ class PlayerController(CoreController):
         )
         # handle syncgroup - get attributes from first player that has this group as source
         if player.player_id.startswith(SYNCGROUP_PREFIX):
-            if sync_leader := self.get_sync_leader(player):
+            if player.powered and (sync_leader := self.get_sync_leader(player)):
                 player.state = sync_leader.state
                 player.current_item_id = sync_leader.current_item_id
                 player.elapsed_time = sync_leader.elapsed_time
@@ -835,14 +835,10 @@ class PlayerController(CoreController):
                 # - every 30 seconds if the player is powered
                 # - every 10 seconds if the player is playing
                 if (
-                    (player.available or count == 360)
-                    and (
-                        (player.powered and count % 30 == 0)
-                        or (player_playing and count % 10 == 0)
-                        or count == 360
-                    )
-                    and (player_prov := self.get_player_provider(player_id))
-                ):
+                    (player.powered and count % 30 == 0)
+                    or (player_playing and count % 10 == 0)
+                    or count == 360
+                ) and (player_prov := self.get_player_provider(player_id)):
                     try:
                         await player_prov.poll_player(player_id)
                     except PlayerUnavailableError:
