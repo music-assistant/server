@@ -171,6 +171,13 @@ class SonosPlayer:
         subscribed_services = {sub.service.service_type for sub in self._subscriptions}
         return SUBSCRIPTION_SERVICES - subscribed_services
 
+    @property
+    def should_poll(self) -> bool:
+        """Return if this player should bepolled/pinged."""
+        if not self.available:
+            return
+        return (time.monotonic() - self._last_activity) > 600
+
     def setup(self) -> None:
         """Run initial setup of the speaker (NOT async friendly)."""
         if self.soco.is_coordinator:
@@ -289,8 +296,9 @@ class SonosPlayer:
 
     async def check_poll(self) -> None:
         """Validate availability of the speaker based on recent activity."""
-        if not (not self.available or (time.monotonic() - self._last_activity) > 600):
+        if not self.should_poll:
             return
+        self.logger.debug("Polling player for availability...")
         try:
             await self.mass.create_task(self.ping)
             self._speaker_activity("ping")
@@ -667,6 +675,13 @@ class SonosPlayer:
         """Update attributes of the MA Player from SoCo state."""
         # generic attributes (player_info)
         self.mass_player.available = self.available
+
+        if not self.available:
+            self.mass_player.powered = False
+            self.mass_player.state = PlayerState.IDLE
+            self.mass_player.synced_to = None
+            self.mass_player.group_childs = set()
+            return
 
         # transport info (playback state)
         self.mass_player.state = current_state = _convert_state(self.playback_status)

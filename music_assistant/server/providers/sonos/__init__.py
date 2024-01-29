@@ -490,10 +490,8 @@ class SonosPlayerProvider(PlayerProvider):
             self.boot_counts[soco.uid] = soco.boot_seqnum
         self.logger.debug("Adding new player: %s", speaker_info)
         support_hires = speaker_info["model_name"] in HIRES_MODELS
-        self.sonosplayers[player_id] = sonos_player = SonosPlayer(
-            self,
-            soco=soco,
-            mass_player=Player(
+        if not (mass_player := self.mass.players.get(soco.uid)):
+            mass_player = Player(
                 player_id=soco.uid,
                 provider=self.domain,
                 type=PlayerType.PLAYER,
@@ -508,7 +506,11 @@ class SonosPlayerProvider(PlayerProvider):
                 ),
                 max_sample_rate=48000 if support_hires else 44100,
                 supports_24bit=support_hires,
-            ),
+            )
+        self.sonosplayers[player_id] = sonos_player = SonosPlayer(
+            self,
+            soco=soco,
+            mass_player=mass_player,
         )
         sonos_player.setup()
         self.mass.loop.call_soon_threadsafe(self.mass.players.register, sonos_player.mass_player)
