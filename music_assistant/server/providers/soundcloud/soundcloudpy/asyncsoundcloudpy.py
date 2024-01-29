@@ -338,7 +338,7 @@ class SoundcloudAsyncAPI:
             params = {}
 
         url = f"{BASE_URL}{path}?client_id={self.client_id}&app_version={self.app_version}"
-        for k, v in params.values():
+        for k, v in params.items():
             url += f"&{k}={v}"
 
         while True:
