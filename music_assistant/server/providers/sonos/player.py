@@ -34,7 +34,8 @@ from music_assistant.common.helpers.datetime import utc
 from music_assistant.common.models.enums import PlayerFeature, PlayerState
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.server.providers.sonos.helpers import soco_error
+
+from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
     from . import SonosPlayerProvider
@@ -98,10 +99,6 @@ HIRES_MODELS = (
 
 class SonosSubscriptionsFailed(PlayerCommandFailed):
     """Subscription creation failed."""
-
-
-class SonosUpdateError(PlayerCommandFailed):
-    """Update failed."""
 
 
 class SonosPlayer:
@@ -303,6 +300,8 @@ class SonosPlayer:
             await self.mass.create_task(self.ping)
             self._speaker_activity("ping")
         except SonosUpdateError:
+            if not self.available:
+                return  # already offline
             self.logger.warning(
                 "No recent activity and cannot reach %s, marking unavailable",
                 self.zone_name,

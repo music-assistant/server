@@ -28,6 +28,10 @@ _FuncType = Callable[Concatenate[_T, _P], _R]
 _ReturnFuncType = Callable[Concatenate[_T, _P], _R | None]
 
 
+class SonosUpdateError(PlayerCommandFailed):
+    """Update failed."""
+
+
 @overload
 def soco_error(
     errorcodes: None = ...,
@@ -64,7 +68,7 @@ def soco_error(
                     raise RuntimeError("Unexpected use of soco_error") from err
 
                 message = f"Error calling {function} on {target}: {err}"
-                raise PlayerCommandFailed(message) from err
+                raise SonosUpdateError(message) from err
 
             return result
 
