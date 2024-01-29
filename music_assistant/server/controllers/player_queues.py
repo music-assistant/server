@@ -617,6 +617,9 @@ class PlayerQueuesController(CoreController):
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
             fade_in = fade_in if fade_in is not None else resume_pos > 0
+            if resume_item.media_type == MediaType.RADIO:
+                # we're not able to skip in online radio so this is pointless
+                resume_pos = 0
             await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
             raise QueueEmpty(f"Resume queue requested but queue {queue_id} is empty")
