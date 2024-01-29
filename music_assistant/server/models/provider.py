@@ -1,4 +1,5 @@
 """Model/base for a Provider implementation within Music Assistant."""
+
 from __future__ import annotations
 
 import logging
@@ -26,7 +27,7 @@ class Provider:
         self.manifest = manifest
         self.config = config
         mass_logger = logging.getLogger(ROOT_LOGGER_NAME)
-        self.logger = mass_logger.getChild(f"providers.{self.instance_id}")
+        self.logger = mass_logger.getChild(f"providers.{self.domain}")
         log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
@@ -51,6 +52,9 @@ class Provider:
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
         return tuple()
+
+    async def handle_setup(self) -> None:
+        """Handle async initialization of the provider."""
 
     async def unload(self) -> None:
         """

@@ -1,4 +1,5 @@
 """Spotify musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -797,45 +798,13 @@ class SpotifyProvider(MusicProvider):
             except OSError:
                 return None
 
-        base_path = os.path.join(os.path.dirname(__file__), "librespot")
-        if platform.system() == "Windows" and (
-            librespot := await check_librespot(os.path.join(base_path, "windows", "librespot.exe"))
+        base_path = os.path.join(os.path.dirname(__file__), "bin")
+        system = platform.system().lower()
+        architecture = platform.machine().lower()
+
+        if bridge_binary := await check_librespot(
+            os.path.join(base_path, f"librespot-{system}-{architecture}")
         ):
-            return librespot
-        if platform.system() == "Darwin":
-            # macos binary is x86_64 intel
-            if librespot := await check_librespot(os.path.join(base_path, "osx", "librespot")):
-                return librespot
+            return bridge_binary
 
-        if platform.system() == "FreeBSD":
-            # FreeBSD binary is x86_64 intel
-            if librespot := await check_librespot(os.path.join(base_path, "freebsd", "librespot")):
-                return librespot
-
-        if platform.system() == "Linux":
-            architecture = platform.machine()
-            if architecture in ["AMD64", "x86_64"]:
-                # generic linux x86_64 binary
-                if librespot := await check_librespot(
-                    os.path.join(
-                        base_path,
-                        "linux",
-                        "librespot-x86_64",
-                    )
-                ):
-                    return librespot
-
-            # arm architecture... try all options one by one...
-            for arch in ["aarch64", "armv7", "armhf", "arm"]:
-                if librespot := await check_librespot(
-                    os.path.join(
-                        base_path,
-                        "linux",
-                        f"librespot-{arch}",
-                    )
-                ):
-                    return librespot
-
-        raise RuntimeError(
-            f"Unable to locate Libespot for {platform.system()} ({platform.machine()})"
-        )
+        raise RuntimeError(f"Unable to locate Librespot for {system}/{architecture}")

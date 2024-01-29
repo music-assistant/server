@@ -1,4 +1,5 @@
 """Filesystem musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -72,7 +73,7 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     ),
 )
 
-TRACK_EXTENSIONS = ("mp3", "m4a", "m4b", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf")
+TRACK_EXTENSIONS = ("mp3", "m4a", "m4b", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf", "opus")
 PLAYLIST_EXTENSIONS = ("m3u", "pls", "m3u8")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
@@ -375,9 +376,9 @@ class FileSystemProviderBase(MusicProvider):
                 await self.mass.music.albums.remove_item_from_library(album_id)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:
-            if not self.mass.music.artists.albums(
-                artist_id, "library"
-            ) and self.mass.music.artists.tracks(artist_id, "library"):
+            artist_albums = await self.mass.music.artists.albums(artist_id, "library")
+            artist_tracks = self.mass.music.artists.tracks(artist_id, "library")
+            if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(album_id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:

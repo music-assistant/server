@@ -1,4 +1,5 @@
 """Qobuz musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import datetime
@@ -446,7 +447,7 @@ class QobuzProvider(MusicProvider):
                     item_id=str(artist_obj["id"]),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=artist_obj.get("url", f'https://open.qobuz.com/artist/{artist_obj["id"]}'),
+                    url=f'https://open.qobuz.com/artist/{artist_obj["id"]}',
                 )
             },
         )
@@ -481,7 +482,7 @@ class QobuzProvider(MusicProvider):
                         sample_rate=album_obj["maximum_sampling_rate"] * 1000,
                         bit_depth=album_obj["maximum_bit_depth"],
                     ),
-                    url=album_obj.get("url", f'https://open.qobuz.com/album/{album_obj["id"]}'),
+                    url=f'https://open.qobuz.com/album/{album_obj["id"]}',
                 )
             },
         )
@@ -550,7 +551,7 @@ class QobuzProvider(MusicProvider):
                         sample_rate=track_obj["maximum_sampling_rate"] * 1000,
                         bit_depth=track_obj["maximum_bit_depth"],
                     ),
-                    url=track_obj.get("url", f'https://open.qobuz.com/track/{track_obj["id"]}'),
+                    url=f'https://open.qobuz.com/track/{track_obj["id"]}',
                 )
             },
             **extra_init_kwargs,
@@ -607,9 +608,7 @@ class QobuzProvider(MusicProvider):
                     item_id=str(playlist_obj["id"]),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=playlist_obj.get(
-                        "url", f'https://open.qobuz.com/playlist/{playlist_obj["id"]}'
-                    ),
+                    url=f'https://open.qobuz.com/playlist/{playlist_obj["id"]}',
                 )
             },
         )
@@ -685,9 +684,10 @@ class QobuzProvider(MusicProvider):
             kwargs["request_sig"] = request_sig
             kwargs["app_id"] = app_var(0)
             kwargs["user_auth_token"] = await self._auth_token()
-        async with self._throttler, self.mass.http_session.get(
-            url, headers=headers, params=kwargs, ssl=False
-        ) as response:
+        async with (
+            self._throttler,
+            self.mass.http_session.get(url, headers=headers, params=kwargs, ssl=False) as response,
+        ):
             try:
                 result = await response.json()
                 # check for error in json

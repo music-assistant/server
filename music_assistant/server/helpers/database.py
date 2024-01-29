@@ -1,4 +1,5 @@
 """Database helpers and logic."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator, Mapping
@@ -170,3 +171,8 @@ class DatabaseConnection:
             if len(next_items) < limit:
                 break
             offset += limit
+
+    async def vacuum(self) -> None:
+        """Run vacuum command on database."""
+        await self._db.execute("VACUUM")
+        await self._db.commit()

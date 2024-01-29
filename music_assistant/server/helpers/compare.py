@@ -1,4 +1,5 @@
 """Several helper/utils to compare objects."""
+
 from __future__ import annotations
 
 import re
@@ -22,6 +23,7 @@ IGNORE_VERSIONS = (
     "explicit",
     "music from and inspired by the motion picture",
     "original soundtrack",
+    "hi-res",
 )
 
 

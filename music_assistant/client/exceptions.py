@@ -1,4 +1,5 @@
 """Client-specific Exceptions for Music Assistant."""
+
 from __future__ import annotations
 
 

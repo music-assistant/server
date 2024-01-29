@@ -1,4 +1,5 @@
 """The AudioDB Metadata provider for Music Assistant."""
+
 from __future__ import annotations
 
 from json import JSONDecodeError
@@ -152,7 +153,6 @@ class AudioDbMetadataProvider(MetadataProvider):
             return None
         # fallback if no musicbrainzid: lookup by name
         for track_artist in track.artists:
-            assert isinstance(track_artist, Artist)
             # make sure to include the version in the track name
             track_name = f"{track.name} {track.version}" if track.version else track.name
             result = await self._get_data("searchtrack.php?", s=track_artist.name, t=track_name)
@@ -161,7 +161,11 @@ class AudioDbMetadataProvider(MetadataProvider):
                     # some safety checks
                     if track_artist.mbid and track_artist.mbid != item["strMusicBrainzArtistID"]:
                         continue
-                    if track.album.mbid and track.album.mbid != item["strMusicBrainzAlbumID"]:
+                    if (
+                        track.album
+                        and track.album.mbid
+                        and track.album.mbid != item["strMusicBrainzAlbumID"]
+                    ):
                         continue
                     if not compare_strings(track_artist.name, item["strArtist"]):
                         continue
@@ -262,9 +266,10 @@ class AudioDbMetadataProvider(MetadataProvider):
     async def _get_data(self, endpoint, **kwargs) -> dict | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
-        async with self.throttler, self.mass.http_session.get(
-            url, params=kwargs, ssl=False
-        ) as response:
+        async with (
+            self.throttler,
+            self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
+        ):
             try:
                 result = await response.json()
             except (

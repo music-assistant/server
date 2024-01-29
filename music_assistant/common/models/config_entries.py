@@ -1,4 +1,5 @@
 """Model and helpers for Config entries."""
+
 from __future__ import annotations
 
 import logging
@@ -12,15 +13,15 @@ from mashumaro import DataClassDictMixin
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
+    CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
-    CONF_HIDE_GROUP_CHILDS,
+    CONF_HIDE_PLAYER,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
-    CONF_OUTPUT_CODEC,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     SECURE_STRING_SUBSTITUTE,
@@ -288,7 +289,6 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
         ConfigValueOption("debug", "DEBUG"),
     ),
     default_value="GLOBAL",
-    description="Set the log verbosity for this provider",
     advanced=True,
 )
 
@@ -297,35 +297,14 @@ DEFAULT_CORE_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
 
 # some reusable player config entries
 
-CONF_ENTRY_OUTPUT_CODEC = ConfigEntry(
-    key=CONF_OUTPUT_CODEC,
-    type=ConfigEntryType.STRING,
-    label="Output codec",
-    options=[
-        ConfigValueOption("FLAC (lossless, compact file size)", "flac"),
-        ConfigValueOption("AAC (lossy, superior quality)", "aac"),
-        ConfigValueOption("MP3 (lossy, average quality)", "mp3"),
-        ConfigValueOption("WAV (lossless, huge file size)", "wav"),
-        ConfigValueOption("PCM (lossless, huge file size)", "pcm"),
-    ],
-    default_value="flac",
-    description="Define the codec that is sent to the player when streaming audio. "
-    "By default Music Assistant prefers FLAC because it is lossless, has a "
-    "respectable filesize and is supported by most player devices. "
-    "Change this setting only if needed for your device/environment.",
-    advanced=True,
-)
-
 CONF_ENTRY_FLOW_MODE = ConfigEntry(
     key=CONF_FLOW_MODE,
     type=ConfigEntryType.BOOLEAN,
     label="Enable queue flow mode",
     default_value=False,
-    description='Enable "flow" mode where all queue tracks are sent as a continuous '
-    "audio stream. Use for players that do not natively support gapless and/or "
-    "crossfading or if the player has trouble transitioning between tracks.",
     advanced=False,
 )
+
 
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
@@ -347,18 +326,15 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     ],
     default_value="stereo",
     label="Output Channel Mode",
-    description="You can configure this player to play only the left or right channel, "
-    "for example to a create a stereo pair with 2 players.",
     advanced=True,
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION,
     type=ConfigEntryType.BOOLEAN,
-    label="Enable volume normalization (EBU-R128 based)",
+    label="Enable volume normalization",
     default_value=True,
-    description="Enable volume normalization based on the EBU-R128 "
-    "standard without affecting dynamic range",
+    description="Enable volume normalization (EBU-R128 based)",
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
@@ -367,8 +343,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     range=(-30, 0),
     default_value=-17,
     label="Target level for volume normalization",
-    description="Adjust average (perceived) loudness to this target level, "
-    "default is -17 LUFS \n\n WARNING: Setting levels higher than this may result in clipping",
+    description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
     advanced=True,
 )
@@ -403,42 +378,31 @@ CONF_ENTRY_EQ_TREBLE = ConfigEntry(
     advanced=True,
 )
 
-CONF_ENTRY_HIDE_GROUP_MEMBERS = ConfigEntry(
-    key=CONF_HIDE_GROUP_CHILDS,
-    type=ConfigEntryType.STRING,
-    options=[
-        ConfigValueOption("Always", "always"),
-        ConfigValueOption("Only if the group is active/powered", "active"),
-        ConfigValueOption("Never", "never"),
-    ],
-    default_value="active",
-    label="Hide playergroup members in UI",
-    description="Hide the individual player entry for the members of this group "
-    "in the user interface.",
+
+CONF_ENTRY_CROSSFADE = ConfigEntry(
+    key=CONF_CROSSFADE,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enable crossfade",
+    default_value=False,
+    description="Enable a crossfade transition between (queue) tracks.",
     advanced=False,
 )
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     key=CONF_CROSSFADE_DURATION,
     type=ConfigEntryType.INTEGER,
-    range=(1, 20),
+    range=(1, 10),
     default_value=8,
     label="Crossfade duration",
     description="Duration in seconds of the crossfade between tracks (if enabled)",
-    depends_on=CONF_FLOW_MODE,
+    depends_on=CONF_CROSSFADE,
     advanced=True,
 )
 
-
-DEFAULT_PLAYER_CONFIG_ENTRIES = (
-    CONF_ENTRY_VOLUME_NORMALIZATION,
-    CONF_ENTRY_FLOW_MODE,
-    CONF_ENTRY_AUTO_PLAY,
-    CONF_ENTRY_OUTPUT_CODEC,
-    CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
-    CONF_ENTRY_EQ_BASS,
-    CONF_ENTRY_EQ_MID,
-    CONF_ENTRY_EQ_TREBLE,
-    CONF_ENTRY_OUTPUT_CHANNELS,
-    CONF_ENTRY_CROSSFADE_DURATION,
+CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
+    key=CONF_HIDE_PLAYER,
+    type=ConfigEntryType.BOOLEAN,
+    label="Hide this player in the user interface",
+    default_value=False,
+    advanced=True,
 )

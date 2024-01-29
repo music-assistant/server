@@ -1,4 +1,5 @@
 """Basic provider allowing for external URL's to be streamed."""
+
 from __future__ import annotations
 
 import os

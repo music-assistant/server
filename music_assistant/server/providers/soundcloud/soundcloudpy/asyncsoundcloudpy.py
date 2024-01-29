@@ -4,6 +4,7 @@ Async helpers for connecting to the Soundcloud API.
 This file is based on soundcloudpy from Naím Rodríguez https://github.com/naim-prog
 Original package https://github.com/naim-prog/soundcloud-py
 """
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
@@ -337,7 +338,7 @@ class SoundcloudAsyncAPI:
             params = {}
 
         url = f"{BASE_URL}{path}?client_id={self.client_id}&app_version={self.app_version}"
-        for k, v in params.values():
+        for k, v in params.items():
             url += f"&{k}={v}"
 
         while True:

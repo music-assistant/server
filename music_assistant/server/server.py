@@ -1,4 +1,5 @@
 """Main Music Assistant class."""
+
 from __future__ import annotations
 
 import asyncio
@@ -340,6 +341,21 @@ class MusicAssistant:
         self._tracked_tasks[task_id] = task
         task.add_done_callback(task_done_callback)
         return task
+
+    def call_later(
+        self,
+        delay: float,
+        target: Coroutine | Awaitable | Callable | asyncio.Future,
+        *args: Any,
+        task_id: str | None = None,
+        **kwargs: Any,
+    ) -> asyncio.Task | asyncio.Future:
+        """Run callable/awaitable after given delay."""
+
+        def _create_task():
+            self.create_task(target, *args, task_id=task_id, **kwargs)
+
+        self.loop.call_later(delay, _create_task)
 
     def get_task(self, task_id: str) -> asyncio.Task | asyncio.Future:
         """Get existing scheduled task."""

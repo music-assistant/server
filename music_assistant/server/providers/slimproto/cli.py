@@ -8,6 +8,7 @@ Output is adjusted to conform to Music Assistant logic or just for simplificatio
 Goal is player compatibility, not API compatibility.
 Users that need more, should just stay with a full blown LMS server.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -362,9 +363,7 @@ class LmsCli:
                         "timestamp": time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()),
                         "advice": {
                             # update interval for streaming mode
-                            "interval": 5000
-                            if streaming
-                            else 0
+                            "interval": 5000 if streaming else 0
                         },
                     }
                 )
@@ -534,7 +533,7 @@ class LmsCli:
                 await resp.write(chunk)
                 cometd_client.last_seen = int(time.time())
             except ConnectionResetError:
-                return
+                return resp
         return resp
 
     def _handle_cometd_request(self, client: CometDClient, cometd_request: dict[str, Any]) -> None:
@@ -915,9 +914,6 @@ class LmsCli:
             new_repeat_mode = repeat_map.get(int(arg))
             self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
             return
-        if subcommand == "crossfade":
-            self.mass.player_queues.set_crossfade(queue.queue_id, bool(arg))
-            return
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
 
@@ -1263,9 +1259,9 @@ class LmsCli:
                         "favorites_title": item.name,
                         "favorites_url": item.uri,
                         "favorites_type": item.media_type.value,
-                        "icon": self.mass.metadata.get_image_url(item.image, 256)
-                        if item.image
-                        else "",
+                        "icon": (
+                            self.mass.metadata.get_image_url(item.image, 256) if item.image else ""
+                        ),
                     },
                     "textkey": item.name[0].upper(),
                     "commonParams": {

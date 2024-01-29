@@ -1,4 +1,5 @@
 """Provides a simple stateless caching system."""
+
 from __future__ import annotations
 
 import asyncio
@@ -67,24 +68,11 @@ class CacheController(CoreController):
                 label="Clear cache",
                 description="Reset/clear all items in the cache. ",
             ),
-            # ConfigEntry(
-            #     key=CONF_BIND_IP,
-            #     type=ConfigEntryType.STRING,
-            #     default_value=default_ip,
-            #     label="Bind to IP/interface",
-            #     description="Start the streamserver on this specific interface. \n"
-            #     "This IP address is communicated to players where to find this server. "
-            #     "Override the default in advanced scenarios, such as multi NIC configurations. \n"
-            #     "Make sure that this server can be reached "
-            #     "on the given IP and TCP port by players on the local network. \n"
-            #     "This is an advanced setting that should normally "
-            #     "not be adjusted in regular setups.",
-            #     advanced=True,
-            # ),
         )
 
     async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
         """Async initialize of cache module."""
+        self.logger.info("Initializing cache controller...")
         await self._setup_database()
         self.__schedule_cleanup_task()
 
@@ -153,18 +141,29 @@ class CacheController(CoreController):
     async def clear(self, key_filter: str | None = None) -> None:
         """Clear all/partial items from cache."""
         self._mem_cache = {}
+        self.logger.info("Clearing database...")
         query = f"key LIKE '%{key_filter}%'" if key_filter else None
         await self.database.delete(DB_TABLE_CACHE, query=query)
+        await self.database.vacuum()
+        self.logger.info("Clearing database DONE")
 
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
+        self.logger.debug("Running automatic cleanup...")
         # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
+        cleaned_records = 0
         for db_row in await self.database.get_rows(DB_TABLE_CACHE):
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
+                cleaned_records += 1
+        if cleaned_records > 50:
+            self.logger.debug("Compacting database...")
+            await self.database.vacuum()
+            self.logger.debug("Compacting database done")
+        self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     async def _setup_database(self):
         """Initialize database."""
@@ -183,7 +182,7 @@ class CacheController(CoreController):
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
-            LOGGER.info(
+            LOGGER.warning(
                 "Performing database migration from %s to %s",
                 prev_version,
                 DB_SCHEMA_VERSION,
@@ -201,8 +200,6 @@ class CacheController(CoreController):
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
-        # compact db
-        await self.database.execute("VACUUM")
 
     async def __create_database_tables(self) -> None:
         """Create database table(s)."""

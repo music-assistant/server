@@ -49,21 +49,29 @@ async def library_items_add_remove(
     def inner() -> None:
         match media_type:
             case MediaType.ARTIST:
-                TidalFavorites(session, user_id).add_artist(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_artist(item_id)
+                (
+                    TidalFavorites(session, user_id).add_artist(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_artist(item_id)
+                )
             case MediaType.ALBUM:
-                TidalFavorites(session, user_id).add_album(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_album(item_id)
+                (
+                    TidalFavorites(session, user_id).add_album(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_album(item_id)
+                )
             case MediaType.TRACK:
-                TidalFavorites(session, user_id).add_track(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_track(item_id)
+                (
+                    TidalFavorites(session, user_id).add_track(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_track(item_id)
+                )
             case MediaType.PLAYLIST:
-                TidalFavorites(session, user_id).add_playlist(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_playlist(item_id)
+                (
+                    TidalFavorites(session, user_id).add_playlist(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_playlist(item_id)
+                )
             case MediaType.UNKNOWN:
                 return
 

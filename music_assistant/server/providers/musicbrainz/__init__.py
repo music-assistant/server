@@ -2,6 +2,7 @@
 
 At this time only used for retrieval of ID's but to be expanded to fetch metadata too.
 """
+
 from __future__ import annotations
 
 import re
@@ -14,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 from mashumaro import DataClassDictMixin
+from mashumaro.exceptions import MissingField
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -314,7 +316,10 @@ class MusicbrainzProvider(MetadataProvider):
             if "id" not in result:
                 result["id"] = artist_id
             # TODO: Parse all the optional data like relations and such
-            return MusicBrainzArtist.from_dict(replace_hyphens(result))
+            try:
+                return MusicBrainzArtist.from_dict(replace_hyphens(result))
+            except MissingField as err:
+                raise InvalidDataError from err
         raise InvalidDataError("Invalid MusicBrainz Artist ID provided")
 
     async def get_recording_details(
@@ -331,7 +336,10 @@ class MusicbrainzProvider(MetadataProvider):
         if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
             if "id" not in result:
                 result["id"] = recording_id
-            return MusicBrainzRecording.from_dict(replace_hyphens(result))
+            try:
+                return MusicBrainzRecording.from_dict(replace_hyphens(result))
+            except MissingField as err:
+                raise InvalidDataError from err
         raise InvalidDataError("Invalid ISRC provided")
 
     async def get_releasegroup_details(
@@ -350,7 +358,10 @@ class MusicbrainzProvider(MetadataProvider):
         if result := await self.get_data(endpoint):
             if "id" not in result:
                 result["id"] = releasegroup_id
-            return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
+            try:
+                return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
+            except MissingField as err:
+                raise InvalidDataError from err
         raise InvalidDataError("Invalid MusicBrainz ReleaseGroup ID or barcode provided")
 
     async def get_artist_details_by_album(
@@ -413,9 +424,10 @@ class MusicbrainzProvider(MetadataProvider):
             "User-Agent": f"Music Assistant/{self.mass.version} ( https://github.com/music-assistant )"  # noqa: E501
         }
         kwargs["fmt"] = "json"  # type: ignore[assignment]
-        async with self.throttler, self.mass.http_session.get(
-            url, headers=headers, params=kwargs, ssl=False
-        ) as response:
+        async with (
+            self.throttler,
+            self.mass.http_session.get(url, headers=headers, params=kwargs, ssl=False) as response,
+        ):
             try:
                 result = await response.json()
             except (
