@@ -513,7 +513,9 @@ class SonosPlayerProvider(PlayerProvider):
             mass_player=mass_player,
         )
         sonos_player.setup()
-        self.mass.loop.call_soon_threadsafe(self.mass.players.register, sonos_player.mass_player)
+        self.mass.loop.call_soon_threadsafe(
+            self.mass.players.register_or_update, sonos_player.mass_player
+        )
 
     async def _enqueue_item(
         self,
