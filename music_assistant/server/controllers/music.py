@@ -728,7 +728,9 @@ class MusicController(CoreController):
         # create indexes if needed
         await self.__create_database_indexes()
         # compact db
-        await self.database.execute("VACUUM")
+        self.logger.debug("Compacting database...")
+        await self.database.vacuum()
+        self.logger.debug("Compacting database done")
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
