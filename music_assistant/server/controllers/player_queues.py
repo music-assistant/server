@@ -302,6 +302,12 @@ class PlayerQueuesController(CoreController):
                         self.domain, f"default_enqueue_action_{media_item.media_type.value}"
                     )
                 )
+            if option == QueueOption.REPLACE_NEXT and queue.state not in (
+                PlayerState.PLAYING,
+                PlayerState.PAUSED,
+            ):
+                # replace next requested but nothing is playing
+                option = QueueOption.REPLACE
             # clear queue if needed
             if option == QueueOption.REPLACE:
                 self.clear(queue_id)
@@ -982,7 +988,7 @@ class PlayerQueuesController(CoreController):
         if PlayerFeature.ENQUEUE_NEXT in player.supported_features:
             # player supports enqueue next feature.
             # we enqueue the next track after a new track
-            # has started playing and before the current track ends
+            # has started playing and (repeat) before the current track ends
             new_track_started = new_state.get("state") == PlayerState.PLAYING and prev_state.get(
                 "current_index"
             ) != new_state.get("current_index")
