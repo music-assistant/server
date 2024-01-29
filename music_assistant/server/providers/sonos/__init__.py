@@ -36,7 +36,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_PLAYERS
+from music_assistant.constants import CONF_CROSSFADE
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -473,16 +473,16 @@ class SonosPlayerProvider(PlayerProvider):
     def _add_player(self, soco: SoCo) -> None:
         """Add discovered Sonos player."""
         player_id = soco.uid
-        if player_id in self.sonosplayers:
-            return  # already added
+        # check if existing player changed IP
+        if existing := self.sonosplayers.get(player_id):
+            if existing.soco.ip_address != soco.ip_address:
+                existing.update_ip(soco.ip_address)
+            return
         if not soco.is_visible:
             return
-        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
+        enabled = self.mass.config.get_raw_player_config_value(player_id, "enabled", True)
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
-            return
-
-        if soco not in soco.visible_zones:
             return
 
         speaker_info = soco.get_speaker_info(True, timeout=7)

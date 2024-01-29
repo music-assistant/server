@@ -33,7 +33,7 @@ from sonos_websocket import SonosWebsocket
 from music_assistant.common.helpers.datetime import utc
 from music_assistant.common.models.enums import PlayerFeature, PlayerState
 from music_assistant.common.models.errors import PlayerCommandFailed
-from music_assistant.common.models.player import Player
+from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.server.providers.sonos.helpers import soco_error
 
 if TYPE_CHECKING:
@@ -308,6 +308,26 @@ class SonosPlayer:
                 self.zone_name,
             )
             await self.offline()
+
+    def update_ip(self, ip_address: str) -> None:
+        """Handle updated IP of a Sonos player (NOT async friendly)."""
+        if self.available:
+            return
+        self.logger.info(
+            "Player IP-address changed from %s to %s", self.soco.ip_address, ip_address
+        )
+        try:
+            self.ping()
+        except SonosUpdateError:
+            return
+        self.soco.ip_address = ip_address
+        self.setup()
+        self.mass_player.device_info = DeviceInfo(
+            model=self.mass_player.device_info.model,
+            address=ip_address,
+            manufacturer=self.mass_player.device_info.manufacturer,
+        )
+        self.update_player()
 
     @soco_error()
     def ping(self) -> None:
