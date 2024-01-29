@@ -133,6 +133,9 @@ class SonosPlayer:
         self.uri: str | None = None
         self.position: int | None = None
         self.position_updated_at: datetime.datetime | None = None
+        self.loudness: bool = False
+        self.bass: int = 0
+        self.treble: int = 0
         # Subscriptions and events
         self._subscriptions: list[SubscriptionBase] = []
         self._subscription_lock: asyncio.Lock | None = None
@@ -181,24 +184,9 @@ class SonosPlayer:
             self.crossfade = self.soco.cross_fade
         self.mass_player.volume_level = self.soco.volume
         self.mass_player.volume_muted = self.soco.mute
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.config.set_raw_player_config_value,
-            self.player_id,
-            "sonos_loudness",
-            self.soco.loudness,
-        )
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.config.set_raw_player_config_value,
-            self.player_id,
-            "sonos_bass",
-            self.soco.bass,
-        )
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.config.set_raw_player_config_value,
-            self.player_id,
-            "sonos_treble",
-            self.soco.treble,
-        )
+        self.loudness = self.soco.loudness
+        self.bass = self.soco.bass
+        self.treble = self.soco.treble
         self.update_groups()
         if not self.sync_coordinator:
             self.poll_media()
@@ -514,12 +502,14 @@ class SonosPlayer:
 
         if loudness := variables.get("loudness"):
             # TODO: handle this is a better way
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.config.set_raw_player_config_value,
-                self.player_id,
-                "sonos_loudness",
-                loudness["Master"] == "1",
-            )
+            self.loudness = loudness["Master"] == "1"
+            with contextlib.suppress(KeyError):
+                self.mass.loop.call_soon_threadsafe(
+                    self.mass.config.set_raw_player_config_value,
+                    self.player_id,
+                    "sonos_loudness",
+                    loudness["Master"] == "1",
+                )
 
         for int_var in (
             "bass",
@@ -527,12 +517,14 @@ class SonosPlayer:
         ):
             if int_var in variables:
                 # TODO: handle this is a better way
-                self.mass.loop.call_soon_threadsafe(
-                    self.mass.config.set_raw_player_config_value,
-                    self.player_id,
-                    f"sonos_{int_var}",
-                    variables[int_var],
-                )
+                setattr(self, int_var, variables[int_var])
+                with contextlib.suppress(KeyError):
+                    self.mass.loop.call_soon_threadsafe(
+                        self.mass.config.set_raw_player_config_value,
+                        self.player_id,
+                        f"sonos_{int_var}",
+                        variables[int_var],
+                    )
 
         self.update_player()
 

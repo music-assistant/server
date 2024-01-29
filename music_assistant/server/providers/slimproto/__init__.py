@@ -890,14 +890,10 @@ class SlimprotoProvider(PlayerProvider):
 
     def _get_corrected_elapsed_milliseconds(self, client: SlimClient) -> int:
         """Return corrected elapsed milliseconds."""
-        skipped_millis = 0
-        active_queue = self.mass.player_queues.get_active_queue(client.player_id)
-        if stream_job := self.mass.streams.multi_client_jobs.get(active_queue.queue_id):
-            skipped_millis = stream_job.client_seconds_skipped.get(client.player_id, 0) * 1000
         sync_delay = self.mass.config.get_raw_player_config_value(
             client.player_id, CONF_SYNC_ADJUST, 0
         )
-        current_millis = int(skipped_millis + client.elapsed_milliseconds)
+        current_millis = client.elapsed_milliseconds
         if sync_delay != 0:
             return current_millis - sync_delay
         return current_millis

@@ -20,6 +20,7 @@ from requests.exceptions import RequestException
 from soco import events_asyncio, zonegroupstate
 from soco.core import SoCo
 from soco.discovery import discover
+from soco.exceptions import SoCoUPnPException
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
@@ -177,13 +178,16 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
+        if not (sonos_player := self.sonosplayers.get(player_id)):
+            return base_entries
         return base_entries + (
             CONF_ENTRY_CROSSFADE,
             ConfigEntry(
                 key="sonos_bass",
                 type=ConfigEntryType.INTEGER,
                 label="Bass",
-                default_value=0,
+                default_value=sonos_player.bass,
+                value=sonos_player.bass,
                 range=(-10, 10),
                 description="Set the Bass level for the Sonos player",
                 advanced=True,
@@ -192,7 +196,8 @@ class SonosPlayerProvider(PlayerProvider):
                 key="sonos_treble",
                 type=ConfigEntryType.INTEGER,
                 label="Treble",
-                default_value=0,
+                default_value=sonos_player.treble,
+                value=sonos_player.treble,
                 range=(-10, 10),
                 description="Set the Treble level for the Sonos player",
                 advanced=True,
@@ -201,7 +206,8 @@ class SonosPlayerProvider(PlayerProvider):
                 key="sonos_loudness",
                 type=ConfigEntryType.BOOLEAN,
                 label="Loudness compensation",
-                default_value=True,
+                default_value=sonos_player.loudness,
+                value=sonos_player.loudness,
                 description="Enable loudness compensation on the Sonos player",
                 advanced=True,
             ),
@@ -401,11 +407,11 @@ class SonosPlayerProvider(PlayerProvider):
         if sonos_player.crossfade != crossfade:
 
             def set_crossfade():
-                with suppress(Exception):
-                    sonos_player.soco.cross_fade = crossfade
-                    sonos_player.crossfade = crossfade
+                sonos_player.soco.cross_fade = crossfade
+                sonos_player.crossfade = crossfade
 
-            await asyncio.to_thread(set_crossfade)
+            with suppress(SoCoUPnPException):
+                await asyncio.to_thread(set_crossfade)
 
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
 

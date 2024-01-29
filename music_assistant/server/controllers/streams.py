@@ -172,12 +172,11 @@ class MultiClientStreamJob:
             self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
 
             if self._all_clients_connected.is_set():
-                # client subscribes while we're already started
-                self.logger.warning(
-                    "Client %s is joining while the stream is already started", player_id
+                # client subscribes while we're already started - we dont support that (for now?)
+                raise RuntimeError(
+                    f"Client {player_id} is joining while the stream is already started"
                 )
-            else:
-                self.logger.debug("Subscribed client %s", player_id)
+            self.logger.debug("Subscribed client %s", player_id)
 
             if len(self.subscribed_players) == len(self.expected_players):
                 # we reached the number of expected subscribers, set event

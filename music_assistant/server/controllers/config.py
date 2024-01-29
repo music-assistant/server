@@ -71,6 +71,15 @@ class ConfigController:
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
+        #### temp fix issue introduced in b89 ##########
+        # TODO: remove after b92
+        final_player_configs = {}
+        for player_id, player_conf in self.get(CONF_PLAYERS, {}).items():
+            if "provider" in player_conf:
+                final_player_configs[player_id] = player_conf
+        self.set(CONF_PLAYERS, final_player_configs)
+        #### end of temp fix ############################
+
         # create default server ID if needed (also used for encrypting passwords)
         self.set_default(CONF_SERVER_ID, uuid4().hex)
         server_id: str = self.get(CONF_SERVER_ID)
@@ -588,6 +597,9 @@ class ConfigController:
 
         Note that this only stores the (raw) value without any validation or default.
         """
+        if not self.get(f"{CONF_PROVIDERS}/{provider_instance}"):
+            # only allow setting raw values if main entry exists
+            raise KeyError(f"Invalid provider_instance: {provider_instance}")
         self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
 
     def set_raw_player_config_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
@@ -596,6 +608,9 @@ class ConfigController:
 
         Note that this only stores the (raw) value without any validation or default.
         """
+        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # only allow setting raw values if main entry exists
+            raise KeyError(f"Invalid player_id: {player_id}")
         self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
 
     def save(self, immediate: bool = False) -> None:
