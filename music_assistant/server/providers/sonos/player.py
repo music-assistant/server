@@ -141,7 +141,6 @@ class SonosPlayer:
         self._subscription_lock: asyncio.Lock | None = None
         self._last_activity: float = NEVER_TIME
         self._resub_cooldown_expires_at: float | None = None
-        self._needs_poll: bool = False
         # Grouping
         self.sync_coordinator: SonosPlayer | None = None
         self.group_members: list[SonosPlayer] = [self]
@@ -174,7 +173,8 @@ class SonosPlayer:
 
     def setup(self) -> None:
         """Run initial setup of the speaker (NOT async friendly)."""
-        self.crossfade = self.soco.cross_fade
+        if self.soco.is_coordinator:
+            self.crossfade = self.soco.cross_fade
         self.mass_player.volume_level = self.soco.volume
         self.mass_player.volume_muted = self.soco.mute
         self.mass.loop.call_soon_threadsafe(
@@ -221,15 +221,11 @@ class SonosPlayer:
             self.logger.debug("Starting resubscription cooldown for %s", self.zone_name)
 
         self.available = False
+        self.mass_player.available = False
         self.mass.players.update(self.player_id)
         self._share_link_plugin = None
 
-        if self._poll_timer:
-            self._poll_timer()
-            self._poll_timer = None
-
         await self.unsubscribe()
-        self.sonos_prov.discovery_known.discard(self.soco.uid)
 
     def log_subscription_result(self, result: Any, event: str, level: int = logging.DEBUG) -> None:
         """Log a message if a subscription action (create/renew/stop) results in an exception."""
@@ -293,16 +289,16 @@ class SonosPlayer:
 
     async def check_poll(self) -> None:
         """Validate availability of the speaker based on recent activity."""
-        if not (self._needs_poll or (time.monotonic() - self._last_activity) > 600):
+        if not (not self.available or (time.monotonic() - self._last_activity) > 600):
             return
         try:
             await self.mass.create_task(self.ping)
+            self._speaker_activity("ping")
         except SonosUpdateError:
             self.logger.warning(
                 "No recent activity and cannot reach %s, marking unavailable",
                 self.zone_name,
             )
-            self._needs_poll = True
             await self.offline()
 
     @soco_error()
@@ -387,10 +383,6 @@ class SonosPlayer:
 
     def _handle_event(self, event: SonosEvent) -> None:
         """Handle SonosEvent callback."""
-        if self._needs_poll:
-            self.logger.debug("Received event, cancelling poll timer for %s", self.zone_name)
-            self._needs_poll = False
-
         service_type: str = event.service.service_type
         self._speaker_activity(f"{service_type} subscription")
 
@@ -810,8 +802,8 @@ class SonosPlayer:
         was_available = self.available
         self.available = True
         if not was_available:
-            self.mass.players.update(self.player_id)
-            self.mass.create_task(self.subscribe())
+            self.update_player()
+            self.mass.loop.call_soon_threadsafe(self.mass.create_task, self.subscribe())
 
     @soco_error()
     def _join(self, members: list[SonosPlayer]) -> list[SonosPlayer]:

@@ -147,7 +147,6 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self.sonosplayers: OrderedDict[str, SonosPlayer] = OrderedDict()
         self.topology_condition = asyncio.Condition()
-        self.discovery_known: set[str] = set()
         self.boot_counts: dict[str, int] = {}
         self.mdns_names: dict[str, str] = {}
         self.unjoin_data: dict[str, UnjoinData] = {}
