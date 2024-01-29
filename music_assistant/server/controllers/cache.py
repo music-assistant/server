@@ -149,7 +149,7 @@ class CacheController(CoreController):
 
     async def auto_cleanup(self):
         """Sceduled auto cleanup task."""
-        self.logger.info("Running automatic cleanup...")
+        self.logger.debug("Running automatic cleanup...")
         # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
@@ -163,7 +163,7 @@ class CacheController(CoreController):
             self.logger.debug("Compacting database...")
             await self.database.vacuum()
             self.logger.debug("Compacting database done")
-        self.logger.info("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
+        self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
     async def _setup_database(self):
         """Initialize database."""
@@ -182,7 +182,7 @@ class CacheController(CoreController):
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
-            LOGGER.info(
+            LOGGER.warning(
                 "Performing database migration from %s to %s",
                 prev_version,
                 DB_SCHEMA_VERSION,
