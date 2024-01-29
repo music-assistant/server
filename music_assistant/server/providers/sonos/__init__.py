@@ -20,6 +20,7 @@ from requests.exceptions import RequestException
 from soco import events_asyncio, zonegroupstate
 from soco.core import SoCo
 from soco.discovery import discover
+from soco.exceptions import SoCoUPnPException
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
@@ -406,11 +407,11 @@ class SonosPlayerProvider(PlayerProvider):
         if sonos_player.crossfade != crossfade:
 
             def set_crossfade():
-                with suppress(Exception):
-                    sonos_player.soco.cross_fade = crossfade
-                    sonos_player.crossfade = crossfade
+                sonos_player.soco.cross_fade = crossfade
+                sonos_player.crossfade = crossfade
 
-            await asyncio.to_thread(set_crossfade)
+            with suppress(SoCoUPnPException):
+                await asyncio.to_thread(set_crossfade)
 
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
 
