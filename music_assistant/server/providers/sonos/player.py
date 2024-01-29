@@ -336,7 +336,7 @@ class SonosPlayer:
             # send update to the player manager right away only if we are triggered from an event
             # when we're just updating from a manual poll, the player manager
             # will detect changes to the player object itself
-            self.sonos_prov.mass.players.update(self.player_id)
+            self.mass.loop.call_soon_threadsafe(self.sonos_prov.mass.players.update, self.player_id)
 
     @soco_error()
     def poll_track_info(self) -> dict[str, Any]:
