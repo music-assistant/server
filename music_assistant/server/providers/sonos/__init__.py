@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import soco.config as soco_config
-from requests.exceptions import Timeout
-from soco import SoCoException, events_asyncio, zonegroupstate
+from requests.exceptions import RequestException
+from soco import events_asyncio, zonegroupstate
 from soco.core import SoCo
 from soco.discovery import discover
 
@@ -455,9 +455,12 @@ class SonosPlayerProvider(PlayerProvider):
                 for soco in discovered_devices:
                     try:
                         self._add_player(soco)
-                    except (OSError, SoCoException, Timeout) as err:
+                    except RequestException as err:
+                        # player is offline
+                        self.logger.debug("Failed to add SonosPlayer %s: %s", soco, err)
+                    except Exception as err:
                         self.logger.warning(
-                            "Failed to add SonosPlayer using %s: %s", soco, err, exc_info=err
+                            "Failed to add SonosPlayer %s: %s", soco, err, exc_info=err
                         )
             finally:
                 self._discovery_running = False
@@ -469,7 +472,7 @@ class SonosPlayerProvider(PlayerProvider):
             self.mass.create_task(self._run_discovery())
 
         # reschedule self once finished
-        self._discovery_reschedule_timer = self.mass.loop.call_later(300, reschedule)
+        self._discovery_reschedule_timer = self.mass.loop.call_later(1800, reschedule)
 
     def _add_player(self, soco: SoCo) -> None:
         """Add discovered Sonos player."""

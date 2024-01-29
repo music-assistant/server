@@ -172,8 +172,8 @@ class SonosPlayer:
     def should_poll(self) -> bool:
         """Return if this player should be polled/pinged."""
         if not self.available:
-            return
-        return (time.monotonic() - self._last_activity) > 300
+            return True
+        return (time.monotonic() - self._last_activity) > 120
 
     def setup(self) -> None:
         """Run initial setup of the speaker (NOT async friendly)."""
@@ -297,7 +297,7 @@ class SonosPlayer:
             return
         self.logger.debug("Polling player for availability...")
         try:
-            await self.mass.create_task(self.ping)
+            await asyncio.to_thread(self.ping)
             self._speaker_activity("ping")
         except SonosUpdateError:
             if not self.available:

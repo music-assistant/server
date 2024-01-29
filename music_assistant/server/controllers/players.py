@@ -831,13 +831,13 @@ class PlayerController(CoreController):
                 if player_playing:
                     self.mass.loop.call_soon(self.update, player_id)
                 # Poll player;
-                # - every 360 seconds if the player if not powered
+                # - every 120 seconds if the player if not powered
                 # - every 30 seconds if the player is powered
                 # - every 10 seconds if the player is playing
                 if (
                     (player.powered and count % 30 == 0)
                     or (player_playing and count % 10 == 0)
-                    or count == 360
+                    or count % 120 == 0
                 ) and (player_prov := self.get_player_provider(player_id)):
                     try:
                         await player_prov.poll_player(player_id)
@@ -855,7 +855,7 @@ class PlayerController(CoreController):
                     finally:
                         # always update player state
                         self.mass.loop.call_soon(self.update, player_id)
-                    if count >= 360:
+                    if count >= 120:
                         count = 0
             await asyncio.sleep(1)
 
