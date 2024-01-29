@@ -173,10 +173,10 @@ class SonosPlayer:
 
     @property
     def should_poll(self) -> bool:
-        """Return if this player should bepolled/pinged."""
+        """Return if this player should be polled/pinged."""
         if not self.available:
             return
-        return (time.monotonic() - self._last_activity) > 600
+        return (time.monotonic() - self._last_activity) > 300
 
     def setup(self) -> None:
         """Run initial setup of the speaker (NOT async friendly)."""
