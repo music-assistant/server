@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import soco.config as soco_config
-from requests.exceptions import Timeout
-from soco import SoCoException, events_asyncio, zonegroupstate
+from requests.exceptions import RequestException
+from soco import events_asyncio, zonegroupstate
 from soco.core import SoCo
 from soco.discovery import discover
 
@@ -36,7 +36,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_PLAYERS
+from music_assistant.constants import CONF_CROSSFADE
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -55,6 +55,7 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_MUTE,
     PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE_NEXT,
+    PlayerFeature.PAUSE,
 )
 
 CONF_NETWORK_SCAN = "network_scan"
@@ -454,9 +455,12 @@ class SonosPlayerProvider(PlayerProvider):
                 for soco in discovered_devices:
                     try:
                         self._add_player(soco)
-                    except (OSError, SoCoException, Timeout) as err:
+                    except RequestException as err:
+                        # player is offline
+                        self.logger.debug("Failed to add SonosPlayer %s: %s", soco, err)
+                    except Exception as err:
                         self.logger.warning(
-                            "Failed to add SonosPlayer using %s: %s", soco, err, exc_info=err
+                            "Failed to add SonosPlayer %s: %s", soco, err, exc_info=err
                         )
             finally:
                 self._discovery_running = False
@@ -468,21 +472,21 @@ class SonosPlayerProvider(PlayerProvider):
             self.mass.create_task(self._run_discovery())
 
         # reschedule self once finished
-        self._discovery_reschedule_timer = self.mass.loop.call_later(300, reschedule)
+        self._discovery_reschedule_timer = self.mass.loop.call_later(1800, reschedule)
 
     def _add_player(self, soco: SoCo) -> None:
         """Add discovered Sonos player."""
         player_id = soco.uid
-        if player_id in self.sonosplayers:
-            return  # already added
+        # check if existing player changed IP
+        if existing := self.sonosplayers.get(player_id):
+            if existing.soco.ip_address != soco.ip_address:
+                existing.update_ip(soco.ip_address)
+            return
         if not soco.is_visible:
             return
-        enabled = self.mass.config.get(f"{CONF_PLAYERS}/{player_id}/enabled", True)
+        enabled = self.mass.config.get_raw_player_config_value(player_id, "enabled", True)
         if not enabled:
             self.logger.debug("Ignoring disabled player: %s", player_id)
-            return
-
-        if soco not in soco.visible_zones:
             return
 
         speaker_info = soco.get_speaker_info(True, timeout=7)
@@ -490,10 +494,8 @@ class SonosPlayerProvider(PlayerProvider):
             self.boot_counts[soco.uid] = soco.boot_seqnum
         self.logger.debug("Adding new player: %s", speaker_info)
         support_hires = speaker_info["model_name"] in HIRES_MODELS
-        self.sonosplayers[player_id] = sonos_player = SonosPlayer(
-            self,
-            soco=soco,
-            mass_player=Player(
+        if not (mass_player := self.mass.players.get(soco.uid)):
+            mass_player = Player(
                 player_id=soco.uid,
                 provider=self.domain,
                 type=PlayerType.PLAYER,
@@ -508,10 +510,16 @@ class SonosPlayerProvider(PlayerProvider):
                 ),
                 max_sample_rate=48000 if support_hires else 44100,
                 supports_24bit=support_hires,
-            ),
+            )
+        self.sonosplayers[player_id] = sonos_player = SonosPlayer(
+            self,
+            soco=soco,
+            mass_player=mass_player,
         )
         sonos_player.setup()
-        self.mass.loop.call_soon_threadsafe(self.mass.players.register, sonos_player.mass_player)
+        self.mass.loop.call_soon_threadsafe(
+            self.mass.players.register_or_update, sonos_player.mass_player
+        )
 
     async def _enqueue_item(
         self,

@@ -628,6 +628,7 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.POWER,
                     PlayerFeature.SYNC,
                     PlayerFeature.VOLUME_SET,
+                    PlayerFeature.PAUSE,
                 ),
                 max_sample_rate=int(client.max_sample_rate),
                 supports_24bit=int(client.max_sample_rate) > 44100,

@@ -6,7 +6,6 @@ import logging
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, overload
 
-from requests.exceptions import Timeout
 from soco import SoCo
 from soco.exceptions import SoCoException, SoCoUPnPException
 
@@ -14,20 +13,23 @@ from music_assistant.common.models.errors import PlayerCommandFailed
 
 if TYPE_CHECKING:
     from . import SonosPlayer
-    from .media import SonosMedia
+
 
 UID_PREFIX = "RINCON_"
 UID_POSTFIX = "01400"
-SONOS_SPEAKER_ACTIVITY = "sonos_speaker_activity"
 
 _LOGGER = logging.getLogger(__name__)
 
-_T = TypeVar("_T", bound="SonosPlayer | SonosMedia")
+_T = TypeVar("_T", bound="SonosPlayer")
 _R = TypeVar("_R")
 _P = ParamSpec("_P")
 
 _FuncType = Callable[Concatenate[_T, _P], _R]
 _ReturnFuncType = Callable[Concatenate[_T, _P], _R | None]
+
+
+class SonosUpdateError(PlayerCommandFailed):
+    """Update failed."""
 
 
 @overload
@@ -55,7 +57,7 @@ def soco_error(
             args_soco = next((arg for arg in args if isinstance(arg, SoCo)), None)
             try:
                 result = funct(self, *args, **kwargs)
-            except (OSError, SoCoException, SoCoUPnPException, Timeout) as err:
+            except (OSError, SoCoException, SoCoUPnPException, TimeoutError) as err:
                 error_code = getattr(err, "error_code", None)
                 function = funct.__qualname__
                 if errorcodes and error_code in errorcodes:
@@ -66,7 +68,7 @@ def soco_error(
                     raise RuntimeError("Unexpected use of soco_error") from err
 
                 message = f"Error calling {function} on {target}: {err}"
-                raise PlayerCommandFailed(message) from err
+                raise SonosUpdateError(message) from err
 
             return result
 
@@ -77,15 +79,9 @@ def soco_error(
 
 def _find_target_identifier(instance: Any, fallback_soco: SoCo | None) -> str | None:
     """Extract the best available target identifier from the provided instance object."""
-    if entity_id := getattr(instance, "entity_id", None):
-        # SonosEntity instance
-        return entity_id
     if zone_name := getattr(instance, "zone_name", None):
-        # SonosSpeaker instance
+        # SonosPlayer instance
         return zone_name
-    if speaker := getattr(instance, "speaker", None):
-        # Holds a SonosSpeaker instance attribute
-        return speaker.zone_name
     if soco := getattr(instance, "soco", fallback_soco):
         # Holds a SoCo instance attribute
         # Only use attributes with no I/O

@@ -33,8 +33,9 @@ from sonos_websocket import SonosWebsocket
 from music_assistant.common.helpers.datetime import utc
 from music_assistant.common.models.enums import PlayerFeature, PlayerState
 from music_assistant.common.models.errors import PlayerCommandFailed
-from music_assistant.common.models.player import Player
-from music_assistant.server.providers.sonos.helpers import soco_error
+from music_assistant.common.models.player import DeviceInfo, Player
+
+from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
     from . import SonosPlayerProvider
@@ -98,10 +99,6 @@ HIRES_MODELS = (
 
 class SonosSubscriptionsFailed(PlayerCommandFailed):
     """Subscription creation failed."""
-
-
-class SonosUpdateError(PlayerCommandFailed):
-    """Update failed."""
 
 
 class SonosPlayer:
@@ -170,6 +167,13 @@ class SonosPlayer:
         """Return a list of missing service subscriptions."""
         subscribed_services = {sub.service.service_type for sub in self._subscriptions}
         return SUBSCRIPTION_SERVICES - subscribed_services
+
+    @property
+    def should_poll(self) -> bool:
+        """Return if this player should be polled/pinged."""
+        if not self.available:
+            return True
+        return (time.monotonic() - self._last_activity) > 120
 
     def setup(self) -> None:
         """Run initial setup of the speaker (NOT async friendly)."""
@@ -289,17 +293,40 @@ class SonosPlayer:
 
     async def check_poll(self) -> None:
         """Validate availability of the speaker based on recent activity."""
-        if not (not self.available or (time.monotonic() - self._last_activity) > 600):
+        if not self.should_poll:
             return
+        self.logger.debug("Polling player for availability...")
         try:
-            await self.mass.create_task(self.ping)
+            await asyncio.to_thread(self.ping)
             self._speaker_activity("ping")
         except SonosUpdateError:
+            if not self.available:
+                return  # already offline
             self.logger.warning(
                 "No recent activity and cannot reach %s, marking unavailable",
                 self.zone_name,
             )
             await self.offline()
+
+    def update_ip(self, ip_address: str) -> None:
+        """Handle updated IP of a Sonos player (NOT async friendly)."""
+        if self.available:
+            return
+        self.logger.info(
+            "Player IP-address changed from %s to %s", self.soco.ip_address, ip_address
+        )
+        try:
+            self.ping()
+        except SonosUpdateError:
+            return
+        self.soco.ip_address = ip_address
+        self.setup()
+        self.mass_player.device_info = DeviceInfo(
+            model=self.mass_player.device_info.model,
+            address=ip_address,
+            manufacturer=self.mass_player.device_info.manufacturer,
+        )
+        self.update_player()
 
     @soco_error()
     def ping(self) -> None:
@@ -328,7 +355,7 @@ class SonosPlayer:
             # send update to the player manager right away only if we are triggered from an event
             # when we're just updating from a manual poll, the player manager
             # will detect changes to the player object itself
-            self.sonos_prov.mass.players.update(self.player_id)
+            self.mass.loop.call_soon_threadsafe(self.sonos_prov.mass.players.update, self.player_id)
 
     @soco_error()
     def poll_track_info(self) -> dict[str, Any]:
@@ -667,6 +694,13 @@ class SonosPlayer:
         """Update attributes of the MA Player from SoCo state."""
         # generic attributes (player_info)
         self.mass_player.available = self.available
+
+        if not self.available:
+            self.mass_player.powered = False
+            self.mass_player.state = PlayerState.IDLE
+            self.mass_player.synced_to = None
+            self.mass_player.group_childs = set()
+            return
 
         # transport info (playback state)
         self.mass_player.state = current_state = _convert_state(self.playback_status)

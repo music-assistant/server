@@ -14,7 +14,7 @@ from time import time
 from typing import TYPE_CHECKING
 
 import aiofiles
-from aiohttp import ClientTimeout
+from aiohttp import ClientResponseError, ClientTimeout
 
 from music_assistant.common.models.errors import (
     AudioError,
@@ -539,11 +539,14 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
         # determine ICY metadata support by looking at the http headers
         headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
         timeout = ClientTimeout(total=0, connect=10, sock_read=5)
-        async with mass.http_session.head(
-            url, headers=headers, allow_redirects=True, timeout=timeout
-        ) as resp:
-            headers = resp.headers
-            supports_icy = int(headers.get("icy-metaint", "0")) > 0
+        try:
+            async with mass.http_session.head(
+                url, headers=headers, allow_redirects=True, timeout=timeout
+            ) as resp:
+                headers = resp.headers
+                supports_icy = int(headers.get("icy-metaint", "0")) > 0
+        except ClientResponseError as err:
+            LOGGER.debug("Error while parsing radio URL %s: %s", url, err)
 
     result = (url, supports_icy)
     await mass.cache.set(cache_key, result)

@@ -302,6 +302,12 @@ class PlayerQueuesController(CoreController):
                         self.domain, f"default_enqueue_action_{media_item.media_type.value}"
                     )
                 )
+            if option == QueueOption.REPLACE_NEXT and queue.state not in (
+                PlayerState.PLAYING,
+                PlayerState.PAUSED,
+            ):
+                # replace next requested but nothing is playing
+                option = QueueOption.REPLACE
             # clear queue if needed
             if option == QueueOption.REPLACE:
                 self.clear(queue_id)
@@ -617,6 +623,9 @@ class PlayerQueuesController(CoreController):
         if resume_item is not None:
             resume_pos = resume_pos if resume_pos > 10 else 0
             fade_in = fade_in if fade_in is not None else resume_pos > 0
+            if resume_item.media_type == MediaType.RADIO:
+                # we're not able to skip in online radio so this is pointless
+                resume_pos = 0
             await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
             raise QueueEmpty(f"Resume queue requested but queue {queue_id} is empty")
@@ -979,7 +988,7 @@ class PlayerQueuesController(CoreController):
         if PlayerFeature.ENQUEUE_NEXT in player.supported_features:
             # player supports enqueue next feature.
             # we enqueue the next track after a new track
-            # has started playing and before the current track ends
+            # has started playing and (repeat) before the current track ends
             new_track_started = new_state.get("state") == PlayerState.PLAYING and prev_state.get(
                 "current_index"
             ) != new_state.get("current_index")
