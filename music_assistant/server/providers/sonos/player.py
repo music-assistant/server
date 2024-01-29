@@ -746,7 +746,11 @@ class SonosPlayer:
         self.title = None
         self.uri = None
 
-        track_info = self.poll_track_info()
+        try:
+            track_info = self.poll_track_info()
+        except SonosUpdateError as err:
+            self.logger.warning("Fetching track info failed: %s", err)
+            return
         if not track_info["uri"]:
             return
         self.uri = track_info["uri"]

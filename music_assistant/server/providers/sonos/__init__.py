@@ -11,7 +11,6 @@ import asyncio
 import logging
 import time
 from collections import OrderedDict
-from contextlib import suppress
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -20,7 +19,6 @@ from requests.exceptions import RequestException
 from soco import events_asyncio, zonegroupstate
 from soco.core import SoCo
 from soco.discovery import discover
-from soco.exceptions import SoCoUPnPException
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
@@ -407,11 +405,15 @@ class SonosPlayerProvider(PlayerProvider):
         if sonos_player.crossfade != crossfade:
 
             def set_crossfade():
-                sonos_player.soco.cross_fade = crossfade
-                sonos_player.crossfade = crossfade
+                try:
+                    sonos_player.soco.cross_fade = crossfade
+                    sonos_player.crossfade = crossfade
+                except Exception as err:
+                    self.logger.warning(
+                        "Unable to set crossfade for player %s: %s", sonos_player.zone_name, err
+                    )
 
-            with suppress(SoCoUPnPException):
-                await asyncio.to_thread(set_crossfade)
+            await asyncio.to_thread(set_crossfade)
 
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
 
@@ -535,13 +537,19 @@ class SonosPlayerProvider(PlayerProvider):
     ) -> None:
         """Enqueue a queue item to the Sonos player Queue."""
         metadata = create_didl_metadata(self.mass, url, queue_item)
-        await asyncio.to_thread(
-            sonos_player.soco.avTransport.SetNextAVTransportURI,
-            [("InstanceID", 0), ("NextURI", url), ("NextURIMetaData", metadata)],
-            timeout=60,
-        )
-        self.logger.debug(
-            "Enqued next track (%s) to player %s",
-            queue_item.name if queue_item else url,
-            sonos_player.soco.player_name,
-        )
+        try:
+            await asyncio.to_thread(
+                sonos_player.soco.avTransport.SetNextAVTransportURI,
+                [("InstanceID", 0), ("NextURI", url), ("NextURIMetaData", metadata)],
+                timeout=60,
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Unable to enqueue next track on player: %s: %s", sonos_player.zone_name, err
+            )
+        else:
+            self.logger.debug(
+                "Enqued next track (%s) to player %s",
+                queue_item.name if queue_item else url,
+                sonos_player.soco.player_name,
+            )
