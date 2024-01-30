@@ -128,7 +128,8 @@ async def get_config_entries(
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
-            tidal_session = await tidal_code_login(auth_helper, values.get(CONF_QUALITY))
+            quality: str = values.get(CONF_QUALITY)
+            tidal_session = await tidal_code_login(auth_helper, quality)
             if not tidal_session.check_login():
                 msg = "Authentication to Tidal failed"
                 raise LoginFailed(msg)
@@ -722,13 +723,16 @@ class TidalProvider(MusicProvider):
 
         return playlist
 
-    async def _get_image_url(self, item, size: int):
+    async def _get_image_url(
+        self, item: TidalArtist | TidalAlbum | TidalPlaylist, size: int
+    ) -> str:
         def inner() -> str:
-            return item.image(size)
+            image_url: str = item.image(size)
+            return image_url
 
         return await asyncio.to_thread(inner)
 
-    async def _get_lyrics(self, item):
+    async def _get_lyrics(self, item: TidalTrack) -> TidalLyrics:
         def inner() -> TidalLyrics:
             return item.lyrics
 
@@ -768,4 +772,5 @@ class TidalProvider(MusicProvider):
 
     def _is_hi_res(self, track_obj: TidalTrack) -> bool:
         """Check if track is hi-res."""
-        return track_obj.audio_quality.value == "HI_RES"
+        hi_res: bool = track_obj.audio_quality.value == "HI_RES"
+        return hi_res
