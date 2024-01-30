@@ -36,7 +36,10 @@ async def get_library_artists(
     """Async wrapper around the tidalapi Favorites.artists function."""
 
     def inner() -> list[TidalArtist]:
-        return TidalFavorites(session, user_id).artists(limit=limit, offset=offset)
+        artists: list[TidalArtist] = TidalFavorites(session, user_id).artists(
+            limit=limit, offset=offset
+        )
+        return artists
 
     return await asyncio.to_thread(inner)
 
@@ -97,7 +100,9 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     return await asyncio.to_thread(inner)
 
 
-async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[TidalAlbum]:
+async def get_artist_albums(
+    session: TidalSession, prov_artist_id: str
+) -> list[TidalAlbum]:
     """Async wrapper around 3 tidalapi album functions."""
 
     def inner() -> list[TidalAlbum]:
@@ -127,7 +132,10 @@ async def get_artist_toptracks(
     """Async wrapper around the tidalapi Artist.get_top_tracks function."""
 
     def inner() -> list[TidalTrack]:
-        return TidalArtist(session, prov_artist_id).get_top_tracks(limit=limit, offset=offset)
+        top_tracks: list[TidalTrack] = TidalArtist(
+            session, prov_artist_id
+        ).get_top_tracks(limit=limit, offset=offset)
+        return top_tracks
 
     return await asyncio.to_thread(inner)
 
@@ -138,7 +146,10 @@ async def get_library_albums(
     """Async wrapper around the tidalapi Favorites.albums function."""
 
     def inner() -> list[TidalAlbum]:
-        return TidalFavorites(session, user_id).albums(limit=limit, offset=offset)
+        albums: list[TidalAlbum] = TidalFavorites(session, user_id).albums(
+            limit=limit, offset=offset
+        )
+        return albums
 
     return await asyncio.to_thread(inner)
 
@@ -178,7 +189,8 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
 
     def inner() -> dict[str, str]:
         try:
-            return TidalTrack(session, prov_track_id).get_url()
+            track_url: dict[str, str] = TidalTrack(session, prov_track_id).get_url()
+            return track_url
         except HTTPError as err:
             if err.response.status_code == 404:
                 msg = f"Track {prov_track_id} not found"
@@ -188,12 +200,17 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, 
     return await asyncio.to_thread(inner)
 
 
-async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[TidalTrack]:
+async def get_album_tracks(
+    session: TidalSession, prov_album_id: str
+) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Album.tracks function."""
 
     def inner() -> list[TidalTrack]:
         try:
-            return TidalAlbum(session, prov_album_id).tracks(limit=DEFAULT_LIMIT)
+            tracks: list[TidalTrack] = TidalAlbum(session, prov_album_id).tracks(
+                limit=DEFAULT_LIMIT
+            )
+            return tracks
         except HTTPError as err:
             if err.response.status_code == 404:
                 msg = f"Album {prov_album_id} not found"
@@ -209,7 +226,10 @@ async def get_library_tracks(
     """Async wrapper around the tidalapi Favorites.tracks function."""
 
     def inner() -> list[TidalTrack]:
-        return TidalFavorites(session, user_id).tracks(limit=limit, offset=offset)
+        tracks: list[TidalTrack] = TidalFavorites(session, user_id).tracks(
+            limit=limit, offset=offset
+        )
+        return tracks
 
     return await asyncio.to_thread(inner)
 
@@ -220,7 +240,10 @@ async def get_library_playlists(
     """Async wrapper around the tidalapi LoggedInUser.playlist_and_favorite_playlists function."""
 
     def inner() -> list[TidalPlaylist]:
-        return LoggedInUser(session, user_id).playlist_and_favorite_playlists(offset=offset)
+        playlists: list[TidalPlaylist] = LoggedInUser(
+            session, user_id
+        ).playlist_and_favorite_playlists(offset=offset)
+        return playlists
 
     return await asyncio.to_thread(inner)
 
@@ -250,7 +273,10 @@ async def get_playlist_tracks(
 
     def inner() -> list[TidalTrack]:
         try:
-            return TidalPlaylist(session, prov_playlist_id).tracks(limit=limit, offset=offset)
+            tracks: list[TidalTrack] = TidalPlaylist(session, prov_playlist_id).tracks(
+                limit=limit, offset=offset
+            )
+            return tracks
         except HTTPError as err:
             if err.response.status_code == 404:
                 msg = f"Playlist {prov_playlist_id} not found"
@@ -267,10 +293,9 @@ async def add_remove_playlist_tracks(
 
     def inner() -> None:
         if add:
-            return TidalUserPlaylist(session, prov_playlist_id).add(track_ids)
+            TidalUserPlaylist(session, prov_playlist_id).add(track_ids)
         for item in track_ids:
             TidalUserPlaylist(session, prov_playlist_id).remove_by_id(int(item))
-        return None
 
     return await asyncio.to_thread(inner)
 
@@ -281,7 +306,10 @@ async def create_playlist(
     """Async wrapper around the tidal LoggedInUser.create_playlist function."""
 
     def inner() -> TidalPlaylist:
-        return LoggedInUser(session, user_id).create_playlist(title, description)
+        playlist: TidalPlaylist = LoggedInUser(session, user_id).create_playlist(
+            title, description
+        )
+        return playlist
 
     return await asyncio.to_thread(inner)
 
@@ -293,8 +321,10 @@ async def get_similar_tracks(
 
     def inner() -> list[TidalTrack]:
         try:
-            # Re-add limit here after tidalapi supports it
-            return TidalTrack(session, prov_track_id).get_track_radio(limit=limit)
+            tracks: list[TidalTrack] = TidalTrack(
+                session, prov_track_id
+            ).get_track_radio(limit=limit)
+            return tracks
         except HTTPError as err:
             if err.response.status_code == 404:
                 msg = f"Track {prov_track_id} not found"
@@ -305,7 +335,11 @@ async def get_similar_tracks(
 
 
 async def search(
-    session: TidalSession, query: str, media_types=None, limit=50, offset=0
+    session: TidalSession,
+    query: str,
+    media_types: list[MediaType],
+    limit: int = 50,
+    offset: int = 0,
 ) -> dict[str, str]:
     """Async wrapper around the tidalapi Search function."""
 
@@ -321,6 +355,7 @@ async def search(
             search_types.append(TidalPlaylist)
 
         models = search_types if search_types else None
-        return session.search(query, models, limit, offset)
+        results: dict[str, str] = session.search(query, models, limit, offset)
+        return results
 
     return await asyncio.to_thread(inner)
