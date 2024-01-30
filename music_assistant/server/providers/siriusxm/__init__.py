@@ -1,18 +1,28 @@
 """SiriusXM music provider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
 from collections import defaultdict
-from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Generator, Final, Any, Awaitable, cast
+from collections.abc import AsyncGenerator, Awaitable, Generator
+from typing import TYPE_CHECKING, Any, Final, cast
 
 import sxm.http
 from sxm import SXMClientAsync
 from sxm.models import QualitySize, RegionChoice, XMCategory, XMChannel, XMLiveChannel
 
 from music_assistant.common.helpers.util import select_free_port
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType, ConfigValueOption
-from music_assistant.common.models.enums import LinkType, ProviderFeature, ConfigEntryType, ContentType
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ContentType,
+    LinkType,
+    ProviderFeature,
+)
 from music_assistant.common.models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -23,14 +33,15 @@ from music_assistant.common.models.media_items import (
     MediaType,
     ProviderMapping,
     Radio,
-    StreamDetails
+    StreamDetails,
 )
-from music_assistant.server.helpers.audio import get_radio_stream
-from music_assistant.server.helpers.playlists import parse_m3u
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.music_provider import MusicProvider
 
-SUPPORTED_FEATURES = (ProviderFeature.BROWSE, ProviderFeature.LIBRARY_RADIOS,)
+SUPPORTED_FEATURES = (
+    ProviderFeature.BROWSE,
+    ProviderFeature.LIBRARY_RADIOS,
+)
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -47,18 +58,18 @@ GENERATION_DECADES = 1
 GENERATION_ELSE = 2
 
 DECADE_CATEGORY_KEY_RANGES = {
-    '50s60s': (1950, 1970),
-    '70s': (1970, 1980),
-    '80s': (1980, 1990),
-    '90s': (1990, 2000),
-    '00s': (2000, 2010),
-    '10s': (2010, 2020),
-    '20s': (2020, 2030),
+    "50s60s": (1950, 1970),
+    "70s": (1970, 1980),
+    "80s": (1980, 1990),
+    "90s": (1990, 2000),
+    "00s": (2000, 2010),
+    "10s": (2010, 2020),
+    "20s": (2020, 2030),
 }
 
 
 async def setup(
-        mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = SiriusXMProvider(mass, manifest, config)
@@ -68,17 +79,12 @@ async def setup(
 
 
 async def get_config_entries(
-    mass: MusicAssistant,
-    instance_id: str | None = None,
-    action: str | None = None,
-    values: dict[str, ConfigValueType] | None = None,
+    mass: MusicAssistant,  # noqa: ARG001
+    instance_id: str | None = None,  # noqa: ARG001
+    action: str | None = None,  # noqa: ARG001
+    values: dict[str, ConfigValueType] | None = None,  # noqa: ARG001
 ) -> tuple[ConfigEntry, ...]:
-    """
-    Return Config entries to set up this provider.
-    instance_id: id of an existing provider instance (None if new instance setup).
-    action: [optional] action key called from config entries UI.
-    values: the (intermediate) raw values for config entries sent with the action.
-    """
+    """Return Config entries to set up this provider."""
     return (
         ConfigEntry(
             key=CONF_SXM_USERNAME,
@@ -96,7 +102,7 @@ async def get_config_entries(
             key=CONF_SXM_REGION,
             type=ConfigEntryType.STRING,
             default_value="US",
-            options=tuple(ConfigValueOption(x, x) for x in {"US", "CA"}),
+            options=tuple(ConfigValueOption(x, x) for x in ("US", "CA")),
             label="Region",
             required=False,
         ),
@@ -105,6 +111,7 @@ async def get_config_entries(
 
 class SiriusXMProvider(MusicProvider):
     """Provider implementation for SiriusXM."""
+
     _username: str = None
     _password: str = None
     _region: RegionChoice = None
@@ -131,6 +138,7 @@ class SiriusXMProvider(MusicProvider):
         return SUPPORTED_FEATURES
 
     def __init__(self, *args, **kwargs):
+        """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger)
 
@@ -140,7 +148,9 @@ class SiriusXMProvider(MusicProvider):
 
         self._username = self.config.get_value(CONF_SXM_USERNAME)
         self._password = self.config.get_value(CONF_SXM_PASSWORD)
-        self._region = RegionChoice.CA if self.config.get_value(CONF_SXM_REGION) == 'CA' else RegionChoice.US
+        self._region = (
+            RegionChoice.CA if self.config.get_value(CONF_SXM_REGION) == "CA" else RegionChoice.US
+        )
 
         self._client = SXMClientAsync(
             self._username,
@@ -150,11 +160,9 @@ class SiriusXMProvider(MusicProvider):
             update_handler=self._channel_updated,
         )
 
-        self.logger.info(f"Authenticating with SiriusXM...")
+        self.logger.info("Authenticating with SiriusXM...")
         if not await self._client.authenticate():
-            raise RuntimeError(
-                f"Authentication failed"
-            )
+            raise RuntimeError("Authentication failed")
         else:
             self.logger.info("Authenticated successfully")
 
@@ -173,8 +181,8 @@ class SiriusXMProvider(MusicProvider):
         if not success:
             raise RuntimeError("Unable to retrieve SiriusXM channels")
 
-        bind_ip="127.0.0.1"
-        bind_port = await select_free_port(8097, 9200)
+        bind_ip = "127.0.0.1"
+        bind_port = await select_free_port(8100, 9200)
         self._base_url = f"http://127.0.0.1:{bind_port}"
         http_handler = sxm.http.make_http_handler(self._client)
 
@@ -183,11 +191,7 @@ class SiriusXMProvider(MusicProvider):
             bind_port=bind_port,
             base_url=self._base_url,
             static_routes=[
-                (
-                    "*",
-                    "/{tail:.*}",
-                    cast(Awaitable, http_handler)
-                ),
+                ("*", "/{tail:.*}", cast(Awaitable, http_handler)),
             ],
         )
 
@@ -197,24 +201,36 @@ class SiriusXMProvider(MusicProvider):
 
     def _channel_updated(self, live_channel_raw: dict[str, Any]) -> None:
         live_channel = XMLiveChannel.from_dict(live_channel_raw)
-        channel = self._channels_by_id[live_channel.id] if live_channel.id in self._channels_by_id else None
+        channel = (
+            self._channels_by_id[live_channel.id]
+            if live_channel.id in self._channels_by_id
+            else None
+        )
 
         if channel is None:
             self.logger.warn(f"Ignoring update for unknown channel {live_channel.id}")
             return
         elif self._current_channel is None:
-            self.logger.warn(f"Ignoring update for channel {live_channel.id}. Not currently tuned to any channel")
+            self.logger.warn(
+                f"Ignoring update for channel {live_channel.id}. Not currently tuned to any channel"
+            )
             return
         elif channel.id != self._current_channel.id:
-            self.logger.warn(f"Ignoring update for channel {live_channel.id}. Tuned to {self._current_channel.id}")
+            self.logger.warn(
+                f"Ignoring update for channel {live_channel.id}. "
+                "Tuned to {self._current_channel.id}"
+            )
             return
 
         pad_data = self._parse_channel_update(channel, live_channel)
-        if len(pad_data) != len(self._pad_data) or any(x != y for x, y in zip(pad_data, self._pad_data)):
+        if len(pad_data) != len(self._pad_data) or any(
+            x != y for x, y in zip(pad_data, self._pad_data)
+        ):
             self._pad_data = pad_data
             self.logger.info(f"Channel {channel.name} updated: {pad_data[0]} - {pad_data[1]}")
 
     async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
+        """Browse items on the SiriusXM provider."""
         sub_path = path.split("://", 1)[1]
         sub_sub_path = "" if "/" not in sub_path else sub_path.split("/")[-1]
 
@@ -258,11 +274,13 @@ class SiriusXMProvider(MusicProvider):
                 yield self._parse_radio(channel)
 
         if sub_path == "decades":
-            for decade_range in self._channels_by_decade.keys():
+            for decade_range in self._channels_by_decade:
                 decade = str(decade_range[0])
                 decade_name = f"{decade[-2:]}'s"
                 decade_name = f"{decade_name} and 60's" if decade_name == "50's" else decade_name
-                decade_name = f"20{decade_name}" if decade_name in ["00's", "10's", "20's"] else decade_name
+                decade_name = (
+                    f"20{decade_name}" if decade_name in ["00's", "10's", "20's"] else decade_name
+                )
                 yield BrowseFolder(
                     item_id=decade,
                     provider=self.domain,
@@ -279,7 +297,7 @@ class SiriusXMProvider(MusicProvider):
 
         if sub_path == "categories":
             for category_key, category in self._categories.items():
-                if not category.name.endswith('Decade') and not category.name.endswith('Decades'):
+                if not category.name.endswith("Decade") and not category.name.endswith("Decades"):
                     yield BrowseFolder(
                         item_id=category_key,
                         provider=self.domain,
@@ -300,6 +318,7 @@ class SiriusXMProvider(MusicProvider):
             yield self._parse_radio(channel)
 
     async def get_radio(self, channel_id: str) -> Radio | None:
+        """Get radio."""
         channel = self._channels_by_id[channel_id] if channel_id in self._channels_by_id else None
         if channel is None:
             return None
@@ -320,8 +339,8 @@ class SiriusXMProvider(MusicProvider):
                 content_type=ContentType.M4A,
             ),
             data={
-                'channel': channel,
-                'playlist_url': playlist_url,
+                "channel": channel,
+                "playlist_url": playlist_url,
             },
             media_type=MediaType.RADIO,
             direct=playlist_url,
@@ -335,22 +354,6 @@ class SiriusXMProvider(MusicProvider):
     #     self.logger.info(f"Found {len(playlist_paths)} segments")
     #
     #     return playlist, playlist_paths
-
-    # async def get_audio_stream(self, stream_details: StreamDetails, seek_position: int = 0) -> AsyncGenerator[bytes, None]:
-    #     channel_id = stream_details.item_id
-    #
-    #     if not channel_id in self._channels_by_id:
-    #         self.logger.warn(f"Unknown channel {channel_id}")
-    #         return
-    #
-    #     self.logger.info(f"Fetching playlist for channel: {channel_id}")
-    #     _, playlist_paths = await self.get_playlist(channel_id)
-    #
-    #     for playlist_path in playlist_paths:
-    #         url = f"{self._base_url}/{playlist_path}"
-    #         self.logger.info(f"Requesting {url}")
-    #         async for segment in get_radio_stream(self.mass, url, stream_details):
-    #             yield segment
 
     def _parse_radio(self, channel: XMChannel) -> Radio:
         """Parse Radio object from json obj returned from api."""
@@ -370,13 +373,21 @@ class SiriusXMProvider(MusicProvider):
             },
         )
 
-        icon = next(map(lambda x: x.url,
-                        filter(lambda x: x.width == 300 and x.height == 300, channel.images)), None)
-        banner = next(map(lambda x: x.url, filter(lambda x: x.name == 'background', channel.images)),
-                      None)
+        icon = next(
+            map(
+                lambda x: x.url,
+                filter(lambda x: x.width == 300 and x.height == 300, channel.images),
+            ),
+            None,
+        )
+        banner = next(
+            map(lambda x: x.url, filter(lambda x: x.name == "background", channel.images)), None
+        )
 
-        radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=icon),
-                                 MediaItemImage(type=ImageType.BANNER, path=banner)]
+        radio.metadata.images = [
+            MediaItemImage(type=ImageType.THUMB, path=icon),
+            MediaItemImage(type=ImageType.BANNER, path=banner),
+        ]
         radio.metadata.links = [MediaItemLink(type=LinkType.WEBSITE, url=channel.url)]
         radio.metadata.description = channel.medium_description
         radio.metadata.explicit = bool(channel.is_mature)
@@ -386,7 +397,7 @@ class SiriusXMProvider(MusicProvider):
 
     async def _refresh_channels(self) -> bool:
         """Get a list of channels."""
-        self.logger.info(f"Refreshing channels...")
+        self.logger.info("Refreshing channels...")
         channels: list[XMChannel] = await self._client.channels
 
         if len(channels) == 0:
@@ -425,7 +436,9 @@ class SiriusXMProvider(MusicProvider):
             if category_key not in sort_order_by_category:
                 sort_order_by_category[category_key] = min_channel_number
             else:
-                sort_order_by_category[category_key] = min(sort_order_by_category[category_key], min_channel_number)
+                sort_order_by_category[category_key] = min(
+                    sort_order_by_category[category_key], min_channel_number
+                )
 
         channels_by_id = dict(sorted(channels_by_id.items(), key=lambda x: x[1].channel_number))
         channels_by_decade = dict(sorted(channels_by_decade.items(), key=lambda x: x[0][0]))
@@ -439,7 +452,9 @@ class SiriusXMProvider(MusicProvider):
         self._favorite_channels = favorite_channels
 
         self.logger.info(
-            f"Discovered {len(self._channels_by_id)} channels, {len(self._categories)} categories, {len(self._favorite_channels)} favorites")
+            f"Discovered {len(self._channels_by_id)} channels, "
+            f"{len(self._categories)} categories, {len(self._favorite_channels)} favorites"
+        )
 
         return True
 
@@ -484,7 +499,7 @@ class SiriusXMProvider(MusicProvider):
         latest_cut = live_channel.get_latest_cut()
         latest_episode = live_channel.get_latest_episode()
         if latest_cut is not None:
-            artists = ', '.join(map(lambda x: x.name, latest_cut.cut.artists))
+            artists = ", ".join(map(lambda x: x.name, latest_cut.cut.artists))
             title = latest_cut.cut.title
             if len(artists) > 0 and len(title) > 0:
                 return [f"{artists}", f"{latest_cut.cut.title}"]
