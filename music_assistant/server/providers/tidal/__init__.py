@@ -606,7 +606,7 @@ class TidalProvider(MusicProvider):
         extra_init_kwargs: dict[str, Any] | None = None,
     ) -> Track | AlbumTrack | PlaylistTrack:
         """Parse tidal track object to generic layout."""
-        version = track_obj.version if track_obj.version is not None else ""
+        version = track_obj.version or ""
         track_id = str(track_obj.id)
         if extra_init_kwargs is None:
             extra_init_kwargs = {}
