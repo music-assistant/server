@@ -193,7 +193,7 @@ class SnapCastProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         for client in self._snapserver.clients:
             await self.cmd_stop(client.identifier)
-        self._snapserver.stop()
+        await self._snapserver.stop()
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
