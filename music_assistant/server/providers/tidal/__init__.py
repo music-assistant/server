@@ -548,7 +548,7 @@ class TidalProvider(MusicProvider):
     async def _parse_album(self, album_obj: TidalAlbum, full_details: bool = False) -> Album:
         """Parse tidal album object to generic layout."""
         name = album_obj.name
-        version = album_obj.version if album_obj.version is not None else None
+        version = album_obj.version if album_obj.version is not None else ""
         album_id = album_obj.id
         album = Album(
             item_id=str(album_id),
@@ -606,7 +606,7 @@ class TidalProvider(MusicProvider):
         extra_init_kwargs: dict[str, Any] | None = None,
     ) -> Track | AlbumTrack | PlaylistTrack:
         """Parse tidal track object to generic layout."""
-        version = track_obj.version if track_obj.version is not None else None
+        version = track_obj.version if track_obj.version is not None else ""
         track_id = str(track_obj.id)
         if extra_init_kwargs is None:
             extra_init_kwargs = {}
