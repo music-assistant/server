@@ -670,7 +670,13 @@ class TidalProvider(MusicProvider):
         track_id = str(track_obj.id)
         if extra_init_kwargs is None:
             extra_init_kwargs = {}
-        track = Track(
+        if "position" in extra_init_kwargs:
+            track_class = PlaylistTrack
+        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
+            track_class = AlbumTrack
+        else:
+            track_class = Track
+        track = track_class(
             item_id=str(track_id),
             provider=self.instance_id,
             name=track_obj.name,
@@ -724,12 +730,8 @@ class TidalProvider(MusicProvider):
                     path=image_url,
                 )
             ]
-        if "position" in extra_init_kwargs:
-            return cast(PlaylistTrack, track)
-        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
-            return cast(AlbumTrack, track)
-        else:
-            return track
+
+        return track
 
     async def _parse_playlist(
         self, playlist_obj: TidalPlaylist, full_details: bool = False

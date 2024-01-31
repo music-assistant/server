@@ -53,31 +53,32 @@ async def library_items_add_remove(
 ) -> None:
     """Async wrapper around the tidalapi Favorites.items add/remove function."""
 
-    def inner() -> None:
+    def inner() -> bool:
+        tidal_favorites = TidalFavorites(session, user_id)
+        if MediaType.UNKNOWN:
+            return False
+        response: bool = False
         if add:
             match media_type:
                 case MediaType.ARTIST:
-                    return TidalFavorites(session, user_id).add_artist(item_id)
+                    response = tidal_favorites.add_artist(item_id)
                 case MediaType.ALBUM:
-                    return TidalFavorites(session, user_id).add_album(item_id)
+                    response = tidal_favorites.add_album(item_id)
                 case MediaType.TRACK:
-                    return TidalFavorites(session, user_id).add_track(item_id)
+                    response = tidal_favorites.add_track(item_id)
                 case MediaType.PLAYLIST:
-                    return TidalFavorites(session, user_id).add_playlist(item_id)
-                case MediaType.UNKNOWN:
-                    return None
+                    response = tidal_favorites.add_playlist(item_id)
         else:
             match media_type:
                 case MediaType.ARTIST:
-                    return TidalFavorites(session, user_id).remove_artist(item_id)
+                    response = tidal_favorites.remove_artist(item_id)
                 case MediaType.ALBUM:
-                    return TidalFavorites(session, user_id).remove_album(item_id)
+                    response = tidal_favorites.remove_album(item_id)
                 case MediaType.TRACK:
-                    return TidalFavorites(session, user_id).remove_track(item_id)
+                    response = tidal_favorites.remove_track(item_id)
                 case MediaType.PLAYLIST:
-                    return TidalFavorites(session, user_id).remove_playlist(item_id)
-                case MediaType.UNKNOWN:
-                    return None
+                    response = tidal_favorites.remove_playlist(item_id)
+        return response
 
     return await asyncio.to_thread(inner)
 
