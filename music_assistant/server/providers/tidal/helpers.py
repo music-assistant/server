@@ -54,33 +54,30 @@ async def library_items_add_remove(
     """Async wrapper around the tidalapi Favorites.items add/remove function."""
 
     def inner() -> None:
-        match media_type:
-            case MediaType.ARTIST:
-                (
-                    TidalFavorites(session, user_id).add_artist(item_id)
-                    if add
-                    else TidalFavorites(session, user_id).remove_artist(item_id)
-                )
-            case MediaType.ALBUM:
-                (
-                    TidalFavorites(session, user_id).add_album(item_id)
-                    if add
-                    else TidalFavorites(session, user_id).remove_album(item_id)
-                )
-            case MediaType.TRACK:
-                (
-                    TidalFavorites(session, user_id).add_track(item_id)
-                    if add
-                    else TidalFavorites(session, user_id).remove_track(item_id)
-                )
-            case MediaType.PLAYLIST:
-                (
-                    TidalFavorites(session, user_id).add_playlist(item_id)
-                    if add
-                    else TidalFavorites(session, user_id).remove_playlist(item_id)
-                )
-            case MediaType.UNKNOWN:
-                return
+        if add:
+            match media_type:
+                case MediaType.ARTIST:
+                    return TidalFavorites(session, user_id).add_artist(item_id)
+                case MediaType.ALBUM:
+                    return TidalFavorites(session, user_id).add_album(item_id)
+                case MediaType.TRACK:
+                    return TidalFavorites(session, user_id).add_track(item_id)
+                case MediaType.PLAYLIST:
+                    return TidalFavorites(session, user_id).add_playlist(item_id)
+                case MediaType.UNKNOWN:
+                    return None
+        else:
+            match media_type:
+                case MediaType.ARTIST:
+                    return TidalFavorites(session, user_id).remove_artist(item_id)
+                case MediaType.ALBUM:
+                    return TidalFavorites(session, user_id).remove_album(item_id)
+                case MediaType.TRACK:
+                    return TidalFavorites(session, user_id).remove_track(item_id)
+                case MediaType.PLAYLIST:
+                    return TidalFavorites(session, user_id).remove_playlist(item_id)
+                case MediaType.UNKNOWN:
+                    return None
 
     return await asyncio.to_thread(inner)
 
@@ -184,12 +181,12 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     return await asyncio.to_thread(inner)
 
 
-async def get_track_url(session: TidalSession, prov_track_id: str) -> dict[str, str]:
+async def get_track_url(session: TidalSession, prov_track_id: str) -> str:
     """Async wrapper around the tidalapi Track.get_url function."""
 
-    def inner() -> dict[str, str]:
+    def inner() -> str:
         try:
-            track_url: dict[str, str] = TidalTrack(session, prov_track_id).get_url()
+            track_url: str = TidalTrack(session, prov_track_id).get_url()
             return track_url
         except HTTPError as err:
             if err.response.status_code == 404:
@@ -337,7 +334,7 @@ async def get_similar_tracks(
 async def search(
     session: TidalSession,
     query: str,
-    media_types: list[MediaType],
+    media_types: list[MediaType] | None = None,
     limit: int = 50,
     offset: int = 0,
 ) -> dict[str, str]:
@@ -345,13 +342,13 @@ async def search(
 
     def inner() -> dict[str, str]:
         search_types = []
-        if MediaType.ARTIST in media_types:
+        if media_types and MediaType.ARTIST in media_types:
             search_types.append(TidalArtist)
-        if MediaType.ALBUM in media_types:
+        if media_types and MediaType.ALBUM in media_types:
             search_types.append(TidalAlbum)
-        if MediaType.TRACK in media_types:
+        if media_types and MediaType.TRACK in media_types:
             search_types.append(TidalTrack)
-        if MediaType.PLAYLIST in media_types:
+        if media_types and MediaType.PLAYLIST in media_types:
             search_types.append(TidalPlaylist)
 
         models = search_types if search_types else None
