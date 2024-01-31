@@ -100,6 +100,8 @@ class OpenSonicProvider(MusicProvider):
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SIMILAR_TRACKS,
         )
 
     @property
@@ -595,6 +597,19 @@ class OpenSonicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
         for index, sonic_song in enumerate(sonic_playlist.songs):
             yield self._parse_track(sonic_song, {"position": index + 1})
+
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get the top listed tracks for a specified artist."""
+        sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
+        songs: list[SonicSong] = await self._run_async(self._conn.getTopSongs, sonic_artist.name)
+        return [self._parse_track(entry) for entry in songs]
+
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get tracks similar to selected track."""
+        songs: list[SonicSong] = await self._run_async(
+            self._conn.getSimilarSongs2, iid=prov_track_id, count=limit
+        )
+        return [self._parse_track(entry) for entry in songs]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Get the details needed to process a specified track."""
