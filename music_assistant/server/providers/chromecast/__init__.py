@@ -426,7 +426,7 @@ class ChromecastProvider(PlayerProvider):
                 ),
                 player=Player(
                     player_id=player_id,
-                    provider=self.domain,
+                    provider=self.instance_id,
                     type=PlayerType.GROUP if cast_info.is_audio_group else PlayerType.PLAYER,
                     name=cast_info.friendly_name,
                     available=False,

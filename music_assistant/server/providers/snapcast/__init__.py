@@ -150,7 +150,7 @@ class SnapCastProvider(PlayerProvider):
             snap_client = cast(Snapclient, self._snapserver.client(player_id))
             player = Player(
                 player_id=player_id,
-                provider=self.domain,
+                provider=self.instance_id,
                 type=PlayerType.PLAYER,
                 name=snap_client.friendly_name,
                 available=True,

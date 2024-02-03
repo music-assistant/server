@@ -614,7 +614,7 @@ class SlimprotoProvider(PlayerProvider):
             # player does not yet exist, create it
             player = Player(
                 player_id=player_id,
-                provider=self.domain,
+                provider=self.instance_id,
                 type=PlayerType.PLAYER,
                 name=client.name,
                 available=True,

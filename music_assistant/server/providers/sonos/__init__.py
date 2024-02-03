@@ -505,7 +505,7 @@ class SonosPlayerProvider(PlayerProvider):
         if not (mass_player := self.mass.players.get(soco.uid)):
             mass_player = Player(
                 player_id=soco.uid,
-                provider=self.domain,
+                provider=self.instance_id,
                 type=PlayerType.PLAYER,
                 name=soco.player_name,
                 available=True,
