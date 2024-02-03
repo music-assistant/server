@@ -100,6 +100,8 @@ class OpenSonicProvider(MusicProvider):
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SIMILAR_TRACKS,
         )
 
     @property
@@ -213,12 +215,16 @@ class OpenSonicProvider(MusicProvider):
                 )
             },
         )
+
         if sonic_artist.cover_id:
             artist.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
                 )
             ]
+        else:
+            artist.metadata.images = []
+
         if sonic_info:
             if sonic_info.biography:
                 artist.metadata.description = sonic_info.biography
@@ -243,13 +249,25 @@ class OpenSonicProvider(MusicProvider):
             },
             year=sonic_album.year,
         )
+
         if sonic_album.cover_id:
             album.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
                 ),
             ]
-        if sonic_album.artist_id is None:
+        else:
+            album.metadata.images = []
+
+        if sonic_album.artist_id:
+            album.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    sonic_album.artist_id,
+                    sonic_album.artist if sonic_album.artist else UNKNOWN_ARTIST,
+                )
+            )
+        else:
             album.artists.append(
                 Artist(
                     item_id=UNKNOWN_ARTIST_ID,
@@ -262,14 +280,6 @@ class OpenSonicProvider(MusicProvider):
                             provider_instance=self.instance_id,
                         )
                     },
-                )
-            )
-        else:
-            album.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    sonic_album.artist_id,
-                    sonic_album.artist if sonic_album.artist else UNKNOWN_ARTIST,
                 )
             )
 
@@ -318,7 +328,26 @@ class OpenSonicProvider(MusicProvider):
         if not extra_init_kwargs:
             track.track_number = int(sonic_song.track) if sonic_song.track is not None else 1
 
-        if sonic_song.artist_id is None:
+        # We need to find an artist for this track but various implementations seem to disagree
+        # about where the artist with the valid ID needs to be found. We will add any artist with
+        # an ID and only use UNKNOWN if none are found.
+
+        if sonic_song.artist_id:
+            track.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    sonic_song.artist_id,
+                    sonic_song.artist if sonic_song.artist else UNKNOWN_ARTIST,
+                )
+            )
+
+        for entry in sonic_song.artists:
+            if entry.id == sonic_song.artist_id:
+                continue
+            if entry.id is not None and entry.name is not None:
+                track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
+
+        if not track.artists:
             track.artists.append(
                 Artist(
                     item_id=UNKNOWN_ARTIST_ID,
@@ -333,20 +362,6 @@ class OpenSonicProvider(MusicProvider):
                     },
                 )
             )
-        else:
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    sonic_song.artist_id,
-                    sonic_song.artist if sonic_song.artist else UNKNOWN_ARTIST,
-                )
-            )
-
-        for entry in sonic_song.artists:
-            if entry.id == sonic_song.artist_id:
-                continue
-            if entry.id is not None and entry.name is not None:
-                track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
         return track
 
     def _parse_playlist(self, sonic_playlist: SonicPlaylist) -> Playlist:
@@ -595,6 +610,19 @@ class OpenSonicProvider(MusicProvider):
             raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
         for index, sonic_song in enumerate(sonic_playlist.songs):
             yield self._parse_track(sonic_song, {"position": index + 1})
+
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get the top listed tracks for a specified artist."""
+        sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
+        songs: list[SonicSong] = await self._run_async(self._conn.getTopSongs, sonic_artist.name)
+        return [self._parse_track(entry) for entry in songs]
+
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get tracks similar to selected track."""
+        songs: list[SonicSong] = await self._run_async(
+            self._conn.getSimilarSongs2, iid=prov_track_id, count=limit
+        )
+        return [self._parse_track(entry) for entry in songs]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails | None:
         """Get the details needed to process a specified track."""
