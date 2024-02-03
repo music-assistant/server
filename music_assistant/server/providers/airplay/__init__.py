@@ -284,7 +284,7 @@ class AirplayProvider(PlayerProvider):
     async def _handle_player_register_callback(self, player: Player) -> None:
         """Handle player register callback from slimproto source player."""
         # TODO: Can we get better device info from mDNS ?
-        player.provider = self.domain
+        player.provider = self.instance_id
         player.device_info = DeviceInfo(
             model="Airplay device",
             address=player.device_info.address,

@@ -71,15 +71,6 @@ class ConfigController:
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
-        #### temp fix issue introduced in b89 ##########
-        # TODO: remove after b92
-        final_player_configs = {}
-        for player_id, player_conf in self.get(CONF_PLAYERS, {}).items():
-            if "provider" in player_conf:
-                final_player_configs[player_id] = player_conf
-        self.set(CONF_PLAYERS, final_player_configs)
-        #### end of temp fix ############################
-
         # create default server ID if needed (also used for encrypting passwords)
         self.set_default(CONF_SERVER_ID, uuid4().hex)
         server_id: str = self.get(CONF_SERVER_ID)
@@ -88,7 +79,6 @@ class ConfigController:
         self._fernet = Fernet(fernet_key)
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
-
         LOGGER.debug("Started.")
 
     async def close(self) -> None:
@@ -322,11 +312,13 @@ class ConfigController:
     async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
         available_providers = {x.instance_id for x in self.mass.providers}
+        # add both domain and instance id
+        available_providers.update({x.domain for x in self.mass.providers})
         return [
-            await self.get_player_config(player_id)
-            for player_id, raw_conf in self.get(CONF_PLAYERS, {}).items()
+            await self.get_player_config(raw_conf["player_id"])
+            for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
             # filter out unavailable providers
-            if raw_conf["provider"] in available_providers
+            if self.mass.get_provider(raw_conf["provider"])
             # optional provider filter
             and (provider in (None, raw_conf["provider"]))
         ]

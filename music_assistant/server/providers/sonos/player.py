@@ -115,7 +115,7 @@ class SonosPlayer:
         self.mass = sonos_prov.mass
         self.player_id = soco.uid
         self.soco = soco
-        self.logger = sonos_prov.logger.getChild(soco.uid)
+        self.logger = sonos_prov.logger
         self.household_id: str = soco.household_id
         self.subscriptions: list[SubscriptionBase] = []
         self.websocket: SonosWebsocket | None = None

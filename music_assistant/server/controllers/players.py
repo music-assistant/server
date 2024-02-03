@@ -719,7 +719,7 @@ class PlayerController(CoreController):
             return await player_prov.create_group(name, members=members)
         if ProviderFeature.SYNC_PLAYERS in player_prov.supported_features:
             # default syncgroup implementation
-            return await self._create_syncgroup(provider, name, members)
+            return await self._create_syncgroup(player_prov.instance_id, name, members)
         raise UnsupportedFeaturedException(
             f"Provider {player_prov.name} does not support creating groups"
         )
