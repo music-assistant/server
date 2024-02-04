@@ -221,7 +221,7 @@ class TidalProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
-        self._tidal_user_id = str(self.config.get_value(CONF_USER_ID))
+        self._tidal_user_id: str = self.config.get_value(CONF_USER_ID)
         self._tidal_session = await self._get_tidal_session()
         self._throttler = Throttler(rate_limit=1, period=0.1)
 
