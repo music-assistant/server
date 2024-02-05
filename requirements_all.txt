@@ -23,7 +23,7 @@ orjson==3.9.12
 pillow==10.2.0
 plexapi==4.15.7
 py-opensonic>=5.0.5
-PyChromecast==13.0.8
+PyChromecast==13.1.0
 pycryptodome==3.20.0
 python-fullykiosk==0.0.12
 python-slugify==8.0.1
