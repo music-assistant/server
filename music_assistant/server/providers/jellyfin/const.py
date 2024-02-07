@@ -1,4 +1,5 @@
 """Constants for the Jellyfin integration."""
+
 from typing import Final
 
 DOMAIN: Final = "jellyfin"
@@ -51,12 +52,10 @@ MEDIA_SOURCE_KEY_PATH: Final = "Path"
 MEDIA_TYPE_AUDIO: Final = "Audio"
 MEDIA_TYPE_NONE: Final = ""
 
-SUPPORTED_COLLECTION_TYPES: Final = [
-    COLLECTION_TYPE_MUSIC
-]
+SUPPORTED_COLLECTION_TYPES: Final = [COLLECTION_TYPE_MUSIC]
 
 PLAYABLE_ITEM_TYPES: Final = [ITEM_TYPE_AUDIO]
 
 
 USER_APP_NAME: Final = "Music Assistant"
-USER_AGENT: Final = f"Music-Assistant-1.0"
+USER_AGENT: Final = "Music-Assistant-1.0"
