@@ -52,6 +52,7 @@ from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
+from music_assistant.constants import VARIOUS_ARTISTS_NAME
 
 from .const import (
     ITEM_KEY_ID,
@@ -61,6 +62,22 @@ from .const import (
     ITEM_KEY_MEDIA_CHANNELS,
     ITEM_KEY_MEDIA_CODEC,
     ITEM_KEY_NAME,
+    ITEM_KEY_PROVIDER_IDS,
+    ITEM_KEY_INDEX_NUMBER,
+    ITEM_KEY_COLLECTION_TYPE,
+    ITEM_KEY_PRODUCTION_YEAR,
+    ITEM_KEY_OVERVIEW,
+    ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP,
+    ITEM_KEY_MUSICBRAINZ_ARTIST,
+    ITEM_KEY_MUSICBRAINZ_TRACK,
+    ITEM_KEY_ALBUM_ARTIST,
+    ITEM_KEY_ALBUM,
+    ITEM_KEY_SORT_NAME,
+    ITEM_KEY_PARENT_ID,
+    ITEM_KEY_ARTIST_ITEMS,
+    ITEM_KEY_CAN_DOWNLOAD,
+    ITEM_KEY_PARENT_INDEX_NUM,
+    ITEM_KEY_RUNTIME_TICKS,
     ITEM_TYPE_ALBUM,
     ITEM_TYPE_ARTIST,
     ITEM_TYPE_AUDIO,
@@ -261,35 +278,36 @@ class JellyfinProvider(MusicProvider):
             }
         )
         current_jellyfin_album = API.get_item(self._jellyfin_server.jellyfin, album_id)
-        if "ProductionYear" in current_jellyfin_album:
-            album.year = current_jellyfin_album["ProductionYear"]
+        if ITEM_KEY_PRODUCTION_YEAR in current_jellyfin_album:
+            album.year = current_jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_album):
             album.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)]
-        if "Overview" in current_jellyfin_album:
-            album.metadata.description = current_jellyfin_album["Overview"]
-        if "MusicBrainzReleaseGroup" in current_jellyfin_album["ProviderIds"]:
-            musicbrainzid = current_jellyfin_album["ProviderIds"]["MusicBrainzReleaseGroup"]
+        if ITEM_KEY_OVERVIEW in current_jellyfin_album:
+            album.metadata.description = current_jellyfin_album[ITEM_KEY_OVERVIEW]
+        if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in current_jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
+            musicbrainzid = current_jellyfin_album[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP]
             if len(musicbrainzid.split("-")) == 5:
                 album.mbid = musicbrainzid
-        if "SortName" in current_jellyfin_album:
-            album.sort_name = current_jellyfin_album["SortName"]
-        if "AlbumArtist" in current_jellyfin_album:
+        if ITEM_KEY_SORT_NAME in current_jellyfin_album:
+            album.sort_name = current_jellyfin_album[ITEM_KEY_SORT_NAME]
+        if ITEM_KEY_ALBUM_ARTIST in current_jellyfin_album:
             album.artists.append(
             self._get_item_mapping(
                     MediaType.ARTIST,
-                    current_jellyfin_album["ParentId"],
-                    current_jellyfin_album["AlbumArtist"],
+                    current_jellyfin_album[ITEM_KEY_PARENT_ID],
+                    current_jellyfin_album[ITEM_KEY_ALBUM_ARTIST],
                 )
             )
-        elif len(current_jellyfin_album["ArtistItems"]) >= 1:
-            num_artists = len(current_jellyfin_album["ArtistItems"])
+        elif len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]) >= 1:
+            num_artists = len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS])
             for i in range(num_artists):
                 album.artists.append (
                     self._get_item_mapping(
-                        MediaType.ARTIST, current_jellyfin_album["ArtistItems"][i][ITEM_KEY_ID], current_jellyfin_album["ArtistItems"][i][ITEM_KEY_NAME]
+                        MediaType.ARTIST, current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_ID], current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_NAME]
                     )
                 )
         return album
+
     async def _parse_artist(self, jellyfin_artist: dict[str, Any]) -> Artist:
         """Parse a Jellyfin Artist response to Artist model object."""
         artist_id = jellyfin_artist[ITEM_KEY_ID]
@@ -308,12 +326,12 @@ class JellyfinProvider(MusicProvider):
                 )
             }
         )
-        if "Overview" in current_artist:
-            artist.metadata.description = current_artist["Overview"]
-        if "MusicBrainzArtist" in current_artist["ProviderIds"]:
-            artist.mbid = current_artist["ProviderIds"]["MusicBrainzArtist"]
-        if "SortName" in current_artist:
-            artist.sort_name = current_artist["SortName"]
+        if ITEM_KEY_OVERVIEW in current_artist:
+            artist.metadata.description = current_artist[ITEM_KEY_OVERVIEW]
+        if ITEM_KEY_MUSICBRAINZ_ARTIST in current_artist[ITEM_KEY_PROVIDER_IDS]:
+            artist.mbid = current_artist[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ARTIST]
+        if ITEM_KEY_SORT_NAME in current_artist:
+            artist.sort_name = current_artist[ITEM_KEY_SORT_NAME]
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_artist):
             artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)]
         return artist
@@ -333,7 +351,7 @@ class JellyfinProvider(MusicProvider):
         current_jellyfin_track = API.get_item(self._jellyfin_server.jellyfin, jellyfin_track[ITEM_KEY_ID])
         available = False
         content = None
-        available = current_jellyfin_track["CanDownload"]
+        available = current_jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
         content = current_jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0][ITEM_KEY_MEDIA_CODEC]
         track = track_class(
             item_id=jellyfin_track[ITEM_KEY_ID], 
@@ -358,48 +376,50 @@ class JellyfinProvider(MusicProvider):
 
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_track):
             track.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)]
-        if len(current_jellyfin_track["ArtistItems"]) >= 1:
+        if len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]) >= 1:
             track.artists.append ( 
                 self._get_item_mapping(
-                    MediaType.ARTIST, current_jellyfin_track["ArtistItems"][0][ITEM_KEY_ID], current_jellyfin_track["ArtistItems"][0][ITEM_KEY_NAME]
+                    MediaType.ARTIST, current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][0][ITEM_KEY_ID], current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][0][ITEM_KEY_NAME]
                 )
             )
-            num_artists = len(current_jellyfin_track["ArtistItems"])
+            num_artists = len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS])
             for i in range(num_artists):
                 track.artists.append (
                     self._get_item_mapping(
-                        MediaType.ARTIST, current_jellyfin_track["ArtistItems"][i][ITEM_KEY_ID], current_jellyfin_track["ArtistItems"][i][ITEM_KEY_NAME]
+                        MediaType.ARTIST, current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_ID], current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_NAME]
                     )
                 )
-        elif "ParentId" in current_jellyfin_track:
-            parent_album = API.get_item(self._jellyfin_server.jellyfin, current_jellyfin_track["ParentId"])
+        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+            parent_album = API.get_item(self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID])
             track.artists.append (
                 self._get_item_mapping(
-                    MediaType.ARTIST, parent_album["ParentId"], parent_album["AlbumArtist"]
+                    MediaType.ARTIST, parent_album[ITEM_KEY_PARENT_ID], parent_album[ITEM_KEY_ALBUM_ARTIST]
                 )
             )
             track.artists.append ( 
                 self._get_item_mapping(
-                    MediaType.ARTIST, parent_album["ParentId"], parent_album["AlbumArtist"]
+                    MediaType.ARTIST, parent_album[ITEM_KEY_PARENT_ID], parent_album[ITEM_KEY_ALBUM_ARTIST]
                 )
             )
-        if "ParentId" in current_jellyfin_track:
-            track.album = self._get_item_mapping(
-                MediaType.ALBUM, current_jellyfin_track["ParentId"], current_jellyfin_track["Album"]
+        else:
+            track.artists.append (
+                await self._parse_artist(name=VARIOUS_ARTISTS_NAME)
             )
-        if "ParentIndexNumber" in current_jellyfin_track:
-            track.disc_number = current_jellyfin_track["ParentIndexNumber"]    
-        if "RunTimeTicks" in current_jellyfin_track:
-            track.duration = int(current_jellyfin_track["RunTimeTicks"] / 10000000) #10000000 ticks per millisecond
-        if "IndexNumber" in current_jellyfin_track:
-            if current_jellyfin_track["IndexNumber"] >= 1:
-                track.track_number = current_jellyfin_track["IndexNumber"]
-            else:
-                track.track_number = 99
+
+        if ITEM_KEY_PARENT_ID in current_jellyfin_track:
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM, current_jellyfin_track[ITEM_KEY_PARENT_ID], current_jellyfin_track[ITEM_KEY_ALBUM]
+            )
+        if ITEM_KEY_PARENT_INDEX_NUM in current_jellyfin_track:
+            track.disc_number = current_jellyfin_track[ITEM_KEY_PARENT_INDEX_NUM]    
+        if ITEM_KEY_RUNTIME_TICKS in current_jellyfin_track:
+            track.duration = int(current_jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000) #10000000 ticks per millisecond
+        if ITEM_KEY_INDEX_NUMBER in current_jellyfin_track:
+            track.track_number = current_jellyfin_track[ITEM_KEY_INDEX_NUMBER]
         else:
             track.track_number = 99
-        if "MusicBrainzTrack" in current_jellyfin_track["ProviderIds"]:
-            track.mbid = current_jellyfin_track["ProviderIds"]["MusicBrainzTrack"]
+        if ITEM_KEY_MUSICBRAINZ_TRACK in current_jellyfin_track[ITEM_KEY_PROVIDER_IDS]:
+            track.mbid = current_jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
         return track
 
     async def _parse_playlist(self, jellyfin_playlist: JellyfinPlaylist) -> Playlist:
@@ -417,8 +437,8 @@ class JellyfinProvider(MusicProvider):
                 )
             }   
         )
-        if "Overview" in jellyfin_playlist:
-            playlist.metadata.description = jellyfin_playlist["Overview"]
+        if ITEM_KEY_OVERVIEW in jellyfin_playlist:
+            playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_playlist):
             playlist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)]
         playlist.is_editable = False
@@ -533,8 +553,8 @@ class JellyfinProvider(MusicProvider):
         jellyfin_album_tracks = await self._get_children(self._jellyfin_server, prov_album_id, ITEM_TYPE_AUDIO)
         tracks = []      
         for jellyfin_album_track in jellyfin_album_tracks:
-            if 'ParentIndexNumber' in jellyfin_album_track:
-                discnum = jellyfin_album_track['ParentIndexNumber']
+            if ITEM_KEY_PARENT_INDEX_NUM in jellyfin_album_track:
+                discnum = jellyfin_album_track[ITEM_KEY_PARENT_INDEX_NUM]
             else:
                 discnum = 1;
             if 'IndexNumber' in jellyfin_album_track:
@@ -625,7 +645,7 @@ class JellyfinProvider(MusicProvider):
                 content_type=media_type,
                 channels=jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0][ITEM_KEY_MEDIA_CHANNELS],
             ),
-            duration=int(jellyfin_track["RunTimeTicks"] / 10000000), #10000000 ticks per millisecond)
+            duration=int(jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000), #10000000 ticks per millisecond)
             data=jellyfin_track,
         )
         return stream_details
@@ -650,11 +670,11 @@ class JellyfinProvider(MusicProvider):
         """Return all children for the parent_id whose item type is item_type."""
         params = {
             "Recursive": "true",
-            "ParentId": parent_id,
+            ITEM_KEY_PARENT_ID: parent_id,
             "IncludeItemTypes": item_type,
         }
-        if item_type in "Audio":
-            params["Fields"] = "MediaSources"
+        if item_type in ITEM_TYPE_AUDIO:
+            params["Fields"] = ITEM_KEY_MEDIA_SOURCES
 
         result = client.jellyfin.user_items("", params)
         return result["Items"]
@@ -665,8 +685,8 @@ class JellyfinProvider(MusicProvider):
         libraries = response["Items"]
         result = []
         for library in libraries:
-            if "CollectionType" in library:
-                if library["CollectionType"] in "music":
+            if ITEM_KEY_COLLECTION_TYPE in library:
+                if library[ITEM_KEY_COLLECTION_TYPE] in "music":
                     result.append(library)
         return result
     
@@ -676,8 +696,8 @@ class JellyfinProvider(MusicProvider):
         libraries = response["Items"]
         result = []
         for library in libraries:
-            if "CollectionType" in library:
-                if library["CollectionType"] in "playlists":
+            if ITEM_KEY_COLLECTION_TYPE in library:
+                if library[ITEM_KEY_COLLECTION_TYPE] in "playlists":
                     result.append(library)
         return result
 
