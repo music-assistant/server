@@ -51,53 +51,22 @@ server = [
 test = [
   "black==24.1.1",
   "codespell==2.2.6",
+  "isort==5.13.2",
   "mypy==1.8.0",
-  "ruff==0.1.14",
+  "pre-commit==3.6.0",
+  "pre-commit-hooks==4.5.0",
+  "pylint==3.0.3",
   "pytest==7.4.4",
-  "pytest-asyncio==0.23.3",
   "pytest-aiohttp==1.0.5",
-  "pytest-cov==4.1.0",
-  "pre-commit==3.6.0"
+  "ruff==0.2.1",
+  "safety==3.0.1"
 ]
 
 [project.scripts]
 mass = "music_assistant.__main__:main"
 
-[tool.black]
-target-version = ['py311']
-line-length = 100
-
 [tool.codespell]
 ignore-words-list = "provid,hass,followings"
-
-[tool.mypy]
-python_version = "3.11"
-check_untyped_defs = true
-#disallow_any_generics = true
-disallow_incomplete_defs = true
-disallow_untyped_calls = false
-disallow_untyped_defs = true
-mypy_path = "music_assistant/"
-no_implicit_optional = true
-show_error_codes = true
-warn_incomplete_stub = true
-warn_redundant_casts = true
-warn_return_any = true
-warn_unreachable = true
-warn_unused_configs = true
-warn_unused_ignores = true
-
-[[tool.mypy.overrides]]
-ignore_missing_imports = true
-module = [
-  "aiorun",
-]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-pythonpath = [
-  "."
-]
 
 [tool.setuptools]
 platforms = ["any"]
@@ -112,28 +81,116 @@ music_assistant = ["py.typed"]
 fix = true
 show-fixes = true
 
-# enable later: "C90", "PTH", "TCH", "RET", "ANN"
-select = ["E", "F", "W", "I", "N", "D", "UP", "PL", "Q", "SIM", "TID", "ARG"]
-ignore = ["PLR2004", "N818"]
-extend-exclude = ["app_vars.py"]
-unfixable = ["F841"]
 line-length = 100
 target-version = "py311"
 
-[tool.ruff.flake8-annotations]
-allow-star-arg-any = true
-suppress-dummy-args = true
 
-[tool.ruff.flake8-builtins]
-builtins-ignorelist = ["id"]
-
-[tool.ruff.pydocstyle]
+[tool.ruff.lint.pydocstyle]
 # Use Google-style docstrings.
 convention = "pep257"
 
-[tool.ruff.pylint]
+[tool.ruff.lint.pylint]
 
 max-branches=25
 max-returns=15
 max-args=10
 max-statements=50
+
+
+[tool.mypy]
+platform = "linux"
+python_version = "3.11"
+
+# show error messages from unrelated files
+follow_imports = "normal"
+
+# suppress errors about unsatisfied imports
+ignore_missing_imports = true
+
+# be strict
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+no_implicit_reexport = true
+strict_optional = true
+warn_incomplete_stub = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pylint.MASTER]
+extension-pkg-whitelist = [
+  "orjson",
+]
+ignore = [
+  "tests",
+]
+
+[tool.pylint.BASIC]
+good-names = [
+  "_",
+  "id",
+  "on",
+  "Run",
+  "T",
+]
+
+[tool.pylint.DESIGN]
+max-attributes = 8
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+  "duplicate-code",
+  "format",
+  "unsubscriptable-object",
+  "unused-argument", # handled by ruff
+  "unspecified-encoding", # handled by ruff
+  "fixme", # we're still developing
+]
+
+[tool.pylint.SIMILARITIES]
+ignore-imports = true
+
+[tool.pylint.FORMAT]
+max-line-length = 100
+
+[tool.pytest.ini_options]
+addopts = "--cov"
+asyncio_mode = "auto"
+
+[tool.ruff.lint]
+ignore = [
+  "ANN101", # Self... explanatory
+  "ANN401", # Opinioated warning on disallowing dynamically typed expressions
+  "D203", # Conflicts with other rules
+  "D213", # Conflicts with other rules
+  "D417", # False positives in some occasions
+  "FIX002", # Just annoying, not really useful
+  "PLR2004", # Just annoying, not really useful
+  "S101", # assert is often used to satisfy type checking
+  "TD002", # Just annoying, not really useful
+  "TD003", # Just annoying, not really useful
+
+  # Conflicts with the Ruff formatter
+  "COM812",
+  "ISC001",
+]
+
+select = ["ALL"]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.isort]
+known-first-party = ["music_assistant"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25
