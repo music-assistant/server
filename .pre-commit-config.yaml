@@ -15,76 +15,71 @@ repos:
         entry: scripts/run-in-env.sh ruff format
         require_serial: true
         stages: [commit, push, manual]
-      # - id: check-ast
-      #   name: 🐍 Check Python AST
-      #   language: system
-      #   types: [python]
-      #   entry: scripts/run-in-env.sh check-ast
-      # - id: check-case-conflict
-      #   name: 🔠 Check for case conflicts
-      #   language: system
-      #   entry: scripts/run-in-env.sh check-case-conflict
-      # - id: check-docstring-first
-      #   name: ℹ️  Check docstring is first
-      #   language: system
-      #   types: [python]
-      #   entry: scripts/run-in-env.sh check-docstring-first
-      # - id: check-executables-have-shebangs
-      #   name: 🧐 Check that executables have shebangs
-      #   language: system
-      #   types: [text, executable]
-      #   entry: scripts/run-in-env.sh check-executables-have-shebangs
-      #   stages: [commit, push, manual]
-      # - id: check-json
-      #   name: ｛ Check JSON files
-      #   language: system
-      #   types: [json]
-      #   entry: scripts/run-in-env.sh check-json
-      # - id: check-merge-conflict
-      #   name: 💥 Check for merge conflicts
-      #   language: system
-      #   types: [text]
-      #   entry: scripts/run-in-env.sh check-merge-conflict
-      # - id: check-symlinks
-      #   name: 🔗 Check for broken symlinks
-      #   language: system
-      #   types: [symlink]
-      #   entry: scripts/run-in-env.sh check-symlinks
-      # - id: check-toml
-      #   name: ✅ Check TOML files
-      #   language: system
-      #   types: [toml]
-      #   entry: scripts/run-in-env.sh check-toml
-      # - id: codespell
-      #   name: ✅ Check code for common misspellings
-      #   language: system
-      #   types: [text]
-      #   entry: scripts/run-in-env.sh codespell
-      # - id: detect-private-key
-      #   name: 🕵️  Detect Private Keys
-      #   language: system
-      #   types: [text]
-      #   entry: scripts/run-in-env.sh detect-private-key
-      # - id: end-of-file-fixer
-      #   name: ⮐  Fix End of Files
-      #   language: system
-      #   types: [text]
-      #   entry: scripts/run-in-env.sh end-of-file-fixer
-      #   stages: [commit, push, manual]
-      # - id: no-commit-to-branch
-      #   name: 🛑 Don't commit to main branch
-      #   language: system
-      #   entry: scripts/run-in-env.sh no-commit-to-branch
-      #   pass_filenames: false
-      #   always_run: true
-      #   args:
-      #     - --branch=main
-      # - id: prettier
-      #   name: 💄 Ensuring files are prettier
-      #   language: system
-      #   types: [yaml, json, markdown]
-      #   entry: npm run prettier
-      #   pass_filenames: false
+      - id: check-ast
+        name: 🐍 Check Python AST
+        language: system
+        types: [python]
+        entry: scripts/run-in-env.sh check-ast
+      - id: check-case-conflict
+        name: 🔠 Check for case conflicts
+        language: system
+        entry: scripts/run-in-env.sh check-case-conflict
+      - id: check-docstring-first
+        name: ℹ️  Check docstring is first
+        language: system
+        types: [python]
+        entry: scripts/run-in-env.sh check-docstring-first
+      - id: check-executables-have-shebangs
+        name: 🧐 Check that executables have shebangs
+        language: system
+        types: [text, executable]
+        entry: scripts/run-in-env.sh check-executables-have-shebangs
+        stages: [commit, push, manual]
+      - id: check-json
+        name: ｛ Check JSON files
+        language: system
+        types: [json]
+        entry: scripts/run-in-env.sh check-json
+        files: ^(music_assistant/.+/manifest\.json)$
+      - id: check-merge-conflict
+        name: 💥 Check for merge conflicts
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh check-merge-conflict
+      - id: check-symlinks
+        name: 🔗 Check for broken symlinks
+        language: system
+        types: [symlink]
+        entry: scripts/run-in-env.sh check-symlinks
+      - id: check-toml
+        name: ✅ Check TOML files
+        language: system
+        types: [toml]
+        entry: scripts/run-in-env.sh check-toml
+      - id: codespell
+        name: ✅ Check code for common misspellings
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh codespell
+      - id: detect-private-key
+        name: 🕵️  Detect Private Keys
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh detect-private-key
+      - id: end-of-file-fixer
+        name: ⮐  Fix End of Files
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh end-of-file-fixer
+        stages: [commit, push, manual]
+      - id: no-commit-to-branch
+        name: 🛑 Don't commit to main branch
+        language: system
+        entry: scripts/run-in-env.sh no-commit-to-branch
+        pass_filenames: false
+        always_run: true
+        args:
+          - --branch=main
       # - id: pylint
       #   name: 🌟 Starring code with pylint
       #   language: system
@@ -102,11 +97,11 @@ repos:
       #   language: script
       #   types: [python]
       #   require_serial: true
-      #   files: ^(matter_server|pylint)/.+\.py$
-      # - id: gen_requirements_all
-      #   name: gen_requirements_all
-      #   entry: scripts/run-in-env.sh python3 -m scripts.gen_requirements_all
-      #   pass_filenames: false
-      #   language: script
-      #   types: [text]
-      #   files: ^(music_assistant/.+/manifest\.json|pyproject\.toml|\.pre-commit-config\.yaml|scripts/gen_requirements_all\.py)$
+      #   files: ^(music_assistant|pylint)/.+\.py$
+      - id: gen_requirements_all
+        name: gen_requirements_all
+        entry: scripts/run-in-env.sh python3 -m scripts.gen_requirements_all
+        pass_filenames: false
+        language: script
+        types: [text]
+        files: ^(music_assistant/.+/manifest\.json|pyproject\.toml|\.pre-commit-config\.yaml|scripts/gen_requirements_all\.py)$
