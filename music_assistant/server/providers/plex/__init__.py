@@ -119,18 +119,14 @@ async def get_config_entries(
     if action == CONF_ACTION_GDM and (server_details := await discover_local_servers()):
         if server_details[0] is None and server_details[1] is None:
             values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
-            values[CONF_LOCAL_SERVER_PORT] = (
-                "Discovery failed, please add Port manually"
-            )
+            values[CONF_LOCAL_SERVER_PORT] = "Discovery failed, please add Port manually"
         else:
             values[CONF_LOCAL_SERVER_IP] = server_details[0]
             values[CONF_LOCAL_SERVER_PORT] = server_details[1]
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
-            plex_auth = MyPlexPinLogin(
-                headers={"X-Plex-Product": "Music Assistant"}, oauth=True
-            )
+            plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
             auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
             await auth_helper.authenticate(auth_url)
             if not plex_auth.checkLogin():
@@ -156,11 +152,7 @@ async def get_config_entries(
         token = mass.config.decrypt_string(values.get(CONF_AUTH_TOKEN))
         server_http_ip = values.get(CONF_LOCAL_SERVER_IP)
         server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
-        if not (
-            libraries := await get_libraries(
-                mass, token, server_http_ip, server_http_port
-            )
-        ):
+        if not (libraries := await get_libraries(mass, token, server_http_ip, server_http_port)):
             msg = "Unable to retrieve Servers and/or Music Libraries"
             raise LoginFailed(msg)
         conf_libraries.options = tuple(
@@ -229,9 +221,7 @@ class PlexProvider(MusicProvider):
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
                     # token invalid, invalidate the config
-                    self.mass.config.remove_provider_config_value(
-                        self.instance_id, CONF_AUTH_TOKEN
-                    )
+                    self.mass.config.remove_provider_config_value(self.instance_id, CONF_AUTH_TOKEN)
                     msg = "Authentication failed"
                     raise LoginFailed(msg)
                 raise LoginFailed from err
@@ -241,9 +231,7 @@ class PlexProvider(MusicProvider):
             self.config.get_value(CONF_AUTH_TOKEN)
         )
         self._plex_server = await self._run_async(connect)
-        self._plex_library = await self._run_async(
-            self._plex_server.library.section, library_name
-        )
+        self._plex_library = await self._run_async(self._plex_server.library.section, library_name)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -273,24 +261,18 @@ class PlexProvider(MusicProvider):
         """
         return False
 
-    async def resolve_image(
-        self, path: str
-    ) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
         """Return the full image URL including the auth token."""
         return self._plex_server.url(path, True)
 
     async def _run_async(self, call: Callable, *args, **kwargs):
-        await self.get_myplex_account_and_refresh_token(
-            self.config.get_value(CONF_AUTH_TOKEN)
-        )
+        await self.get_myplex_account_and_refresh_token(self.config.get_value(CONF_AUTH_TOKEN))
         return await self.mass.create_task(call, *args, **kwargs)
 
     async def _get_data(self, key, cls=None):
         return await self._run_async(self._plex_library.fetchItem, key, cls)
 
-    def _get_item_mapping(
-        self, media_type: MediaType, key: str, name: str
-    ) -> ItemMapping:
+    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
             media_type=media_type,
             item_id=key,
@@ -351,29 +333,19 @@ class PlexProvider(MusicProvider):
         )
 
     async def _search_playlist(self, search_query, limit) -> list[PlexPlaylist]:
-        return await self._run_async(
-            self._plex_library.playlists, title=search_query, limit=limit
-        )
+        return await self._run_async(self._plex_library.playlists, title=search_query, limit=limit)
 
     async def _search_track_advanced(self, limit, **kwargs) -> list[PlexTrack]:
-        return await self._run_async(
-            self._plex_library.searchTracks, filters=kwargs, limit=limit
-        )
+        return await self._run_async(self._plex_library.searchTracks, filters=kwargs, limit=limit)
 
     async def _search_album_advanced(self, limit, **kwargs) -> list[PlexAlbum]:
-        return await self._run_async(
-            self._plex_library.searchAlbums, filters=kwargs, limit=limit
-        )
+        return await self._run_async(self._plex_library.searchAlbums, filters=kwargs, limit=limit)
 
     async def _search_artist_advanced(self, limit, **kwargs) -> list[PlexArtist]:
-        return await self._run_async(
-            self._plex_library.searchArtists, filters=kwargs, limit=limit
-        )
+        return await self._run_async(self._plex_library.searchArtists, filters=kwargs, limit=limit)
 
     async def _search_playlist_advanced(self, limit, **kwargs) -> list[PlexPlaylist]:
-        return await self._run_async(
-            self._plex_library.playlists, filters=kwargs, limit=limit
-        )
+        return await self._run_async(self._plex_library.playlists, filters=kwargs, limit=limit)
 
     async def _search_and_parse(
         self, search_coro: Coroutine, parse_coro: Callable
@@ -409,9 +381,7 @@ class PlexProvider(MusicProvider):
             album.year = plex_album.year
         if thumb := plex_album.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             album.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB, path=thumb, provider=self.instance_id
-                )
+                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
             ]
         if plex_album.summary:
             album.metadata.description = plex_album.summary
@@ -448,9 +418,7 @@ class PlexProvider(MusicProvider):
             artist.metadata.description = plex_artist.summary
         if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             artist.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB, path=thumb, provider=self.instance_id
-                )
+                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
             ]
         return artist
 
@@ -473,9 +441,7 @@ class PlexProvider(MusicProvider):
             playlist.metadata.description = plex_playlist.summary
         if thumb := plex_playlist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             playlist.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB, path=thumb, provider=self.instance_id
-                )
+                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
             ]
         playlist.is_editable = True
         return playlist
@@ -513,9 +479,7 @@ class PlexProvider(MusicProvider):
                     available=available,
                     audio_format=AudioFormat(
                         content_type=(
-                            ContentType.try_parse(content)
-                            if content
-                            else ContentType.UNKNOWN
+                            ContentType.try_parse(content) if content else ContentType.UNKNOWN
                         ),
                     ),
                     url=plex_track.getWebURL(),
@@ -523,16 +487,11 @@ class PlexProvider(MusicProvider):
             },
         )
 
-        if (
-            plex_track.originalTitle
-            and plex_track.originalTitle != plex_track.grandparentTitle
-        ):
+        if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.
             # For this kind of artist, we just know the name, so we create a fake artist,
             # if it does not already exist.
-            track.artists.append(
-                await self._get_or_create_artist_by_name(plex_track.originalTitle)
-            )
+            track.artists.append(await self._get_or_create_artist_by_name(plex_track.originalTitle))
         elif plex_track.grandparentKey:
             track.artists.append(
                 self._get_item_mapping(
@@ -547,9 +506,7 @@ class PlexProvider(MusicProvider):
 
         if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             track.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB, path=thumb, provider=self.instance_id
-                )
+                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
             ]
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
@@ -718,9 +675,7 @@ class PlexProvider(MusicProvider):
         self, prov_playlist_id: str
     ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
-        plex_playlist: PlexPlaylist = await self._get_data(
-            prov_playlist_id, PlexPlaylist
-        )
+        plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
         playlist_items = await self._run_async(plex_playlist.items)
 
         for index, plex_track in enumerate(playlist_items or []):
@@ -749,9 +704,7 @@ class PlexProvider(MusicProvider):
         media: PlexMedia = plex_track.media[0]
 
         media_type = (
-            ContentType.try_parse(media.container)
-            if media.container
-            else ContentType.UNKNOWN
+            ContentType.try_parse(media.container) if media.container else ContentType.UNKNOWN
         )
         media_part: PlexMediaPart = media.parts[0]
         audio_stream: PlexAudioStream = media_part.audioStreams()[0]
@@ -782,9 +735,7 @@ class PlexProvider(MusicProvider):
             media_info = await parse_tags(url)
 
             stream_details.audio_format.channels = media_info.channels
-            stream_details.audio_format.content_type = ContentType.try_parse(
-                media_info.format
-            )
+            stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
             stream_details.audio_format.sample_rate = media_info.sample_rate
             stream_details.audio_format.bit_depth = media_info.bits_per_sample
 
@@ -801,9 +752,7 @@ class PlexProvider(MusicProvider):
             async for chunk in resp.content.iter_any():
                 yield chunk
 
-    async def get_myplex_account_and_refresh_token(
-        self, auth_token: str
-    ) -> MyPlexAccount:
+    async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""
 
         def _refresh_plex_token():

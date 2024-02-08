@@ -18,8 +18,6 @@ class MassEvent(DataClassORJSONMixin):
     data: Any = field(
         default=None,
         metadata={
-            "serialize": lambda v: get_serializable_value(
-                v
-            )  # pylint: disable=unnecessary-lambda
+            "serialize": lambda v: get_serializable_value(v)  # pylint: disable=unnecessary-lambda
         },
     )

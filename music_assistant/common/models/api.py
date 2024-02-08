@@ -33,18 +33,14 @@ class ResultMessageBase(DataClassORJSONMixin):
 class SuccessResultMessage(ResultMessageBase):
     """Message sent when a Command has been successfully executed."""
 
-    result: Any = field(
-        default=None, metadata={"serialize": lambda v: get_serializable_value(v)}
-    )
+    result: Any = field(default=None, metadata={"serialize": lambda v: get_serializable_value(v)})
 
 
 @dataclass
 class ChunkedResultMessage(ResultMessageBase):
     """Message sent when the result of a command is sent in multiple chunks."""
 
-    result: Any = field(
-        default=None, metadata={"serialize": lambda v: get_serializable_value(v)}
-    )
+    result: Any = field(default=None, metadata={"serialize": lambda v: get_serializable_value(v)})
     is_last_chunk: bool = False
 
 
@@ -73,11 +69,7 @@ class ServerInfoMessage(DataClassORJSONMixin):
 
 
 MessageType = (
-    CommandMessage
-    | EventMessage
-    | SuccessResultMessage
-    | ErrorResultMessage
-    | ServerInfoMessage
+    CommandMessage | EventMessage | SuccessResultMessage | ErrorResultMessage | ServerInfoMessage
 )
 
 

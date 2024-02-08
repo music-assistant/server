@@ -454,9 +454,7 @@ class SlimprotoProvider(PlayerProvider):
                 auto_play=True,
             )
 
-    async def play_stream(
-        self, player_id: str, stream_job: MultiClientStreamJob
-    ) -> None:
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle PLAY STREAM on given player.
 
         This is a special feature from the Universal Group provider.
@@ -477,9 +475,7 @@ class SlimprotoProvider(PlayerProvider):
                     )
                 )
 
-    async def enqueue_next_queue_item(
-        self, player_id: str, queue_item: QueueItem
-    ) -> None:
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         # we don't have to do anything,
         # enqueuing the next item is handled in the buffer ready callback
@@ -494,9 +490,7 @@ class SlimprotoProvider(PlayerProvider):
     ) -> None:
         """Handle playback of an url on slimproto player(s)."""
         player_id = client.player_id
-        if crossfade := await self.mass.config.get_player_config_value(
-            player_id, CONF_CROSSFADE
-        ):
+        if crossfade := await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE):
             transition_duration = await self.mass.config.get_player_config_value(
                 player_id, CONF_CROSSFADE_DURATION
             )
@@ -662,9 +656,7 @@ class SlimprotoProvider(PlayerProvider):
         player.volume_level = client.volume_level
         # set all existing player ids in `can_sync_with` field
         player.can_sync_with = tuple(
-            x.player_id
-            for x in self._socket_clients.values()
-            if x.player_id != player_id
+            x.player_id for x in self._socket_clients.values() if x.player_id != player_id
         )
         if virtual_provider_info:
             # if this player is part of a virtual provider run the callback
@@ -764,9 +756,7 @@ class SlimprotoProvider(PlayerProvider):
         else:
             # handle player is drifting too far ahead, use pause_for to adjust
             self.logger.debug("%s resync: pauseFor %sms", player.display_name, delta)
-            self._do_not_resync_before[client.player_id] = (
-                time.time() + (delta / 1000) + 2
-            )
+            self._do_not_resync_before[client.player_id] = time.time() + (delta / 1000) + 2
             self.mass.create_task(self._pause_for(client.player_id, delta))
 
     async def _handle_decoder_ready(self, client: SlimClient) -> None:
@@ -782,9 +772,7 @@ class SlimprotoProvider(PlayerProvider):
         if player.active_source != player.player_id:
             return
         with suppress(QueueEmpty):
-            next_item = await self.mass.player_queues.preload_next_item(
-                client.player_id
-            )
+            next_item = await self.mass.player_queues.preload_next_item(client.player_id)
             url = await self.mass.streams.resolve_stream_url(
                 queue_item=next_item,
                 output_codec=ContentType.FLAC,
@@ -853,9 +841,7 @@ class SlimprotoProvider(PlayerProvider):
                 continue
             await self._handle_player_update(item)
         # restore volume and power state
-        if last_state := await self.mass.cache.get(
-            f"{CACHE_KEY_PREV_STATE}.{player_id}"
-        ):
+        if last_state := await self.mass.cache.get(f"{CACHE_KEY_PREV_STATE}.{player_id}"):
             init_power = last_state[0]
             init_volume = last_state[1]
         else:

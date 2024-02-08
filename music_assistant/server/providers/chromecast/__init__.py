@@ -193,9 +193,7 @@ class ChromecastProvider(PlayerProvider):
         for castplayer in list(self.castplayers.values()):
             await self._disconnect_chromecast(castplayer)
 
-    async def get_player_config_entries(
-        self, player_id: str
-    ) -> tuple[ConfigEntry, ...]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
         return base_entries + PLAYER_CONFIG_ENTRIES
@@ -301,9 +299,7 @@ class ChromecastProvider(PlayerProvider):
         media_controller = castplayer.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, queuedata, True)
 
-    async def play_stream(
-        self, player_id: str, stream_job: MultiClientStreamJob
-    ) -> None:
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle PLAY STREAM on given player.
 
         This is a special feature from the Universal Group provider.
@@ -318,9 +314,7 @@ class ChromecastProvider(PlayerProvider):
             thumb=MASS_LOGO_ONLINE,
         )
 
-    async def enqueue_next_queue_item(
-        self, player_id: str, queue_item: QueueItem
-    ) -> None:
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         castplayer = self.castplayers[player_id]
         url = await self.mass.streams.resolve_stream_url(
@@ -353,9 +347,7 @@ class ChromecastProvider(PlayerProvider):
         }
         media_controller = castplayer.cc.media_controller
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
-        self.mass.create_task(
-            media_controller.send_message, queuedata, inc_session_id=True
-        )
+        self.mass.create_task(media_controller.send_message, queuedata, inc_session_id=True)
         self.logger.debug(
             "Enqued next track (%s) to player %s",
             queue_item.name if queue_item else url,
@@ -421,9 +413,7 @@ class ChromecastProvider(PlayerProvider):
             cast_info = ChromecastInfo.from_cast_info(disc_info)
             cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
             if cast_info.is_dynamic_group:
-                self.logger.debug(
-                    "Discovered a dynamic cast group which will be ignored."
-                )
+                self.logger.debug("Discovered a dynamic cast group which will be ignored.")
                 return
             if cast_info.is_multichannel_child:
                 self.logger.debug(
@@ -449,11 +439,7 @@ class ChromecastProvider(PlayerProvider):
                 player=Player(
                     player_id=player_id,
                     provider=self.instance_id,
-                    type=(
-                        PlayerType.GROUP
-                        if cast_info.is_audio_group
-                        else PlayerType.PLAYER
-                    ),
+                    type=(PlayerType.GROUP if cast_info.is_audio_group else PlayerType.PLAYER),
                     name=cast_info.friendly_name,
                     available=False,
                     powered=False,
@@ -477,9 +463,7 @@ class ChromecastProvider(PlayerProvider):
             )
             self.castplayers[player_id] = castplayer
 
-            castplayer.status_listener = CastStatusListener(
-                self, castplayer, self.mz_mgr
-            )
+            castplayer.status_listener = CastStatusListener(self, castplayer, self.mz_mgr)
             if cast_info.is_audio_group and not cast_info.is_multichannel_group:
                 mz_controller = MultizoneController(cast_info.uuid)
                 castplayer.cc.register_handler(mz_controller)
@@ -512,18 +496,14 @@ class ChromecastProvider(PlayerProvider):
         castplayer.player.volume_level = int(status.volume_level * 100)
         castplayer.player.volume_muted = status.volume_muted
         castplayer.player.powered = (
-            castplayer.cc.app_id is not None
-            and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
+            castplayer.cc.app_id is not None and castplayer.cc.app_id != pychromecast.IDLE_APP_ID
         )
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.PLAYER
             castplayer.player.group_childs = set()
         # handle cast groups
-        if (
-            castplayer.cast_info.is_audio_group
-            and not castplayer.cast_info.is_multichannel_group
-        ):
+        if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
             castplayer.player.type = PlayerType.GROUP
             castplayer.player.group_childs = {
                 str(UUID(x)) for x in castplayer.mz_controller.members
@@ -536,9 +516,7 @@ class ChromecastProvider(PlayerProvider):
             )
 
         # send update to player manager
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.players.update, castplayer.player_id
-        )
+        self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
@@ -566,31 +544,21 @@ class ChromecastProvider(PlayerProvider):
         # active source
         if (
             status.content_id and castplayer.player_id in status.content_id
-        ):  # noqa: SIM114
-            castplayer.player.active_source = castplayer.player_id
-        elif castplayer.cc.app_id == pychromecast.config.APP_MEDIA_RECEIVER:
+        ) or castplayer.cc.app_id == pychromecast.config.APP_MEDIA_RECEIVER:
             castplayer.player.active_source = castplayer.player_id
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
 
         # current media
-        self.mass.loop.call_soon_threadsafe(
-            self.mass.players.update, castplayer.player_id
-        )
+        self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
-    def on_new_connection_status(
-        self, castplayer: CastPlayer, status: ConnectionStatus
-    ) -> None:
+    def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
-        castplayer.logger.debug(
-            "Received connection status update - status: %s", status.status
-        )
+        castplayer.logger.debug("Received connection status update - status: %s", status.status)
 
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             castplayer.player.available = False
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.players.update, castplayer.player_id
-            )
+            self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
             return
 
         new_available = status.status == CONNECTION_STATUS_CONNECTED
@@ -606,17 +574,11 @@ class ChromecastProvider(PlayerProvider):
                 address=f"{castplayer.cast_info.host}:{castplayer.cast_info.port}",
                 manufacturer=castplayer.cast_info.manufacturer,
             )
-            self.mass.loop.call_soon_threadsafe(
-                self.mass.players.update, castplayer.player_id
-            )
+            self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
             if new_available and not castplayer.cast_info.is_audio_group:
                 # Poll current group status
-                for group_uuid in self.mz_mgr.get_multizone_memberships(
-                    castplayer.cast_info.uuid
-                ):
-                    group_media_controller = self.mz_mgr.get_multizone_mediacontroller(
-                        group_uuid
-                    )
+                for group_uuid in self.mz_mgr.get_multizone_memberships(castplayer.cast_info.uuid):
+                    group_media_controller = self.mz_mgr.get_multizone_mediacontroller(group_uuid)
                     if not group_media_controller:
                         continue
 
@@ -637,9 +599,7 @@ class ChromecastProvider(PlayerProvider):
             # Quit the previous app before starting splash screen or media player
             if castplayer.cc.app_id is not None:
                 castplayer.cc.quit_app()
-            castplayer.logger.debug(
-                "Launching Default Media Receiver (%s) as active app.", app_id
-            )
+            castplayer.logger.debug("Launching Default Media Receiver (%s) as active app.", app_id)
             castplayer.cc.media_controller.launch(launched_callback)
 
         await self.mass.loop.run_in_executor(None, launch)
@@ -680,25 +640,17 @@ class ChromecastProvider(PlayerProvider):
                 },
             }
         duration = int(queue_item.duration) if queue_item.duration else None
-        image_url = (
-            self.mass.metadata.get_image_url(queue_item.image)
-            if queue_item.image
-            else ""
-        )
+        image_url = self.mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
         if queue_item.media_type == MediaType.TRACK and queue_item.media_item:
             stream_type = STREAM_TYPE_BUFFERED
             metadata = {
                 "metadataType": 3,
                 "albumName": (
-                    queue_item.media_item.album.name
-                    if queue_item.media_item.album
-                    else ""
+                    queue_item.media_item.album.name if queue_item.media_item.album else ""
                 ),
                 "songName": queue_item.media_item.name,
                 "artist": (
-                    queue_item.media_item.artists[0].name
-                    if queue_item.media_item.artists
-                    else ""
+                    queue_item.media_item.artists[0].name if queue_item.media_item.artists else ""
                 ),
                 "title": queue_item.media_item.name,
                 "images": [{"url": image_url}] if image_url else None,

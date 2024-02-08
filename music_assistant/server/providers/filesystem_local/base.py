@@ -189,9 +189,7 @@ class FileSystemProviderBase(MusicProvider):
         """Return bool is this FileSystem musicprovider has given file/dir."""
 
     @abstractmethod
-    async def read_file_content(
-        self, file_path: str, seek: int = 0
-    ) -> AsyncGenerator[bytes, None]:
+    async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
 
     @abstractmethod
@@ -233,34 +231,30 @@ class FileSystemProviderBase(MusicProvider):
         }
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            query = "WHERE tracks.name LIKE :name AND tracks.provider_mappings LIKE :provider_instance"
+            query = (
+                "WHERE tracks.name LIKE :name AND tracks.provider_mappings LIKE :provider_instance"
+            )
             result.tracks = (
                 await self.mass.music.tracks.library_items(
                     extra_query=query, extra_query_params=params
                 )
             ).items
         if media_types is None or MediaType.ALBUM in media_types:
-            query = (
-                "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            )
+            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             result.albums = (
                 await self.mass.music.albums.library_items(
                     extra_query=query, extra_query_params=params
                 )
             ).items
         if media_types is None or MediaType.ARTIST in media_types:
-            query = (
-                "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            )
+            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             result.artists = (
                 await self.mass.music.artists.library_items(
                     extra_query=query, extra_query_params=params
                 )
             ).items
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = (
-                "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
-            )
+            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
             result.playlists = (
                 await self.mass.music.playlists.library_items(
                     extra_query=query, extra_query_params=params
@@ -353,9 +347,7 @@ class FileSystemProviderBase(MusicProvider):
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)
-                    await self.mass.music.tracks.add_item_to_library(
-                        track, metadata_lookup=False
-                    )
+                    await self.mass.music.tracks.add_item_to_library(track, metadata_lookup=False)
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
@@ -479,15 +471,11 @@ class FileSystemProviderBase(MusicProvider):
         if db_album is None:
             msg = f"Album not found: {prov_album_id}"
             raise MediaNotFoundError(msg)
-        album_tracks = await self.mass.music.albums.tracks(
-            db_album.item_id, db_album.provider
-        )
+        album_tracks = await self.mass.music.albums.tracks(db_album.item_id, db_album.provider)
         return [
             track
             for track in album_tracks
-            if any(
-                x.provider_instance == self.instance_id for x in track.provider_mappings
-            )
+            if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
 
     async def get_playlist_tracks(
@@ -505,9 +493,7 @@ class FileSystemProviderBase(MusicProvider):
             async for chunk in self.read_file_content(prov_playlist_id):
                 playlist_data += chunk
             encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-            playlist_data = playlist_data.decode(
-                encoding_details["encoding"] or "utf-8"
-            )
+            playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = await parse_m3u(playlist_data)
@@ -521,9 +507,7 @@ class FileSystemProviderBase(MusicProvider):
                     yield media_item
 
         except Exception as err:  # pylint: disable=broad-except
-            self.logger.warning(
-                "Error while parsing playlist %s", prov_playlist_id, exc_info=err
-            )
+            self.logger.warning("Error while parsing playlist %s", prov_playlist_id, exc_info=err)
 
     async def _parse_playlist_line(
         self, line: str, playlist_path: str, position: int
@@ -534,9 +518,7 @@ class FileSystemProviderBase(MusicProvider):
                 # handle as generic uri
                 media_item = await self.mass.music.get_item_by_uri(line)
                 if isinstance(media_item, Track):
-                    return PlaylistTrack.from_dict(
-                        {**media_item.to_dict(), "position": position}
-                    )
+                    return PlaylistTrack.from_dict({**media_item.to_dict(), "position": position})
 
             # if a relative path was given in an upper level from the playlist,
             # try to resolve it
@@ -554,14 +536,10 @@ class FileSystemProviderBase(MusicProvider):
                     return await self._parse_track(item, playlist_position=position)
 
         except MusicAssistantError as err:
-            self.logger.warning(
-                "Could not parse uri/file %s to track: %s", line, str(err)
-            )
+            self.logger.warning("Could not parse uri/file %s to track: %s", line, str(err))
             return None
 
-    async def add_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: list[str]
-    ) -> None:
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
@@ -605,9 +583,7 @@ class FileSystemProviderBase(MusicProvider):
 
         new_playlist_data = "\n".join(cur_lines)
         # write playlist file (always in utf-8)
-        await self.write_file_content(
-            prov_playlist_id, new_playlist_data.encode("utf-8")
-        )
+        await self.write_file_content(prov_playlist_id, new_playlist_data.encode("utf-8"))
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -627,9 +603,7 @@ class FileSystemProviderBase(MusicProvider):
             msg = f"Item not found: {item_id}"
             raise MediaNotFoundError(msg)
 
-        prov_mapping = next(
-            x for x in library_item.provider_mappings if x.item_id == item_id
-        )
+        prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
         file_item = await self.resolve(item_id)
 
         return StreamDetails(
@@ -650,18 +624,14 @@ class FileSystemProviderBase(MusicProvider):
         if seek_position:
             assert streamdetails.duration, "Duration required for seek requests"
             assert streamdetails.size, "Filesize required for seek requests"
-            seek_bytes = int(
-                (streamdetails.size / streamdetails.duration) * seek_position
-            )
+            seek_bytes = int((streamdetails.size / streamdetails.duration) * seek_position)
         else:
             seek_bytes = 0
 
         async for chunk in self.read_file_content(streamdetails.item_id, seek_bytes):
             yield chunk
 
-    async def resolve_image(
-        self, path: str
-    ) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
         """
         Resolve an image from an image path.
 
@@ -678,9 +648,7 @@ class FileSystemProviderBase(MusicProvider):
         # ruff: noqa: PLR0915, PLR0912
 
         # parse tags
-        input_file = file_item.local_path or self.read_file_content(
-            file_item.absolute_path
-        )
+        input_file = file_item.local_path or self.read_file_content(file_item.absolute_path)
         tags = await parse_tags(input_file, file_item.file_size)
         name, version = parse_title_and_version(tags.title, tags.version)
         base_details = {
@@ -740,9 +708,7 @@ class FileSystemProviderBase(MusicProvider):
                 for index, album_artist_str in enumerate(tags.album_artists):
                     # work out if we have an artist folder
                     artist_dir = get_parentdir(album_dir, album_artist_str, 1)
-                    artist = await self._parse_artist(
-                        album_artist_str, artist_path=artist_dir
-                    )
+                    artist = await self._parse_artist(album_artist_str, artist_path=artist_dir)
                     if not artist.mbid:
                         with contextlib.suppress(IndexError):
                             artist.mbid = tags.musicbrainz_albumartistids[index]
@@ -752,9 +718,7 @@ class FileSystemProviderBase(MusicProvider):
                     album_artists.append(artist)
             else:
                 # album artist tag is missing, determine fallback
-                fallback_action = self.config.get_value(
-                    CONF_MISSING_ALBUM_ARTIST_ACTION
-                )
+                fallback_action = self.config.get_value(CONF_MISSING_ALBUM_ARTIST_ACTION)
                 musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
                 assert musicbrainz
                 # lookup track details on musicbrainz first
@@ -762,9 +726,7 @@ class FileSystemProviderBase(MusicProvider):
                     tags.artists[0], tags.album, tags.title, tags.version
                 ):
                     # get full releasegroup details and get the releasegroup artist(s)
-                    mb_details = await musicbrainz.get_releasegroup_details(
-                        mb_search_details[1].id
-                    )
+                    mb_details = await musicbrainz.get_releasegroup_details(mb_search_details[1].id)
                     for mb_artist in mb_details.artist_credit:
                         artist = await self._parse_artist(
                             mb_artist.artist.name, mb_artist.artist.sort_name
@@ -782,9 +744,7 @@ class FileSystemProviderBase(MusicProvider):
                         file_item.path,
                         VARIOUS_ARTISTS_NAME,
                     )
-                    album_artists = [
-                        await self._parse_artist(name=VARIOUS_ARTISTS_NAME)
-                    ]
+                    album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS_NAME)]
                 # fallback to track artists (if defined by user)
                 elif fallback_action == "track_artist":
                     self.logger.warning(
@@ -834,9 +794,7 @@ class FileSystemProviderBase(MusicProvider):
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB, path=file_item.path, provider=self.instance_id
-                )
+                MediaItemImage(type=ImageType.THUMB, path=file_item.path, provider=self.instance_id)
             ]
 
         if track.album and not track.album.metadata.images:

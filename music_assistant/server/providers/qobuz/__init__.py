@@ -126,9 +126,7 @@ class QobuzProvider(MusicProvider):
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=4, period=1)
 
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(
-            CONF_PASSWORD
-        ):
+        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
         # try to get a token, raise if that fails
@@ -221,9 +219,7 @@ class QobuzProvider(MusicProvider):
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         params = {"artist_id": prov_artist_id}
-        if (artist_obj := await self._get_data("artist/get", **params)) and artist_obj[
-            "id"
-        ]:
+        if (artist_obj := await self._get_data("artist/get", **params)) and artist_obj["id"]:
             return await self._parse_artist(artist_obj)
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
@@ -231,9 +227,7 @@ class QobuzProvider(MusicProvider):
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         params = {"album_id": prov_album_id}
-        if (album_obj := await self._get_data("album/get", **params)) and album_obj[
-            "id"
-        ]:
+        if (album_obj := await self._get_data("album/get", **params)) and album_obj["id"]:
             return await self._parse_album(album_obj)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
@@ -241,9 +235,7 @@ class QobuzProvider(MusicProvider):
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         params = {"track_id": prov_track_id}
-        if (track_obj := await self._get_data("track/get", **params)) and track_obj[
-            "id"
-        ]:
+        if (track_obj := await self._get_data("track/get", **params)) and track_obj["id"]:
             return await self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
@@ -251,9 +243,7 @@ class QobuzProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
-        if (
-            playlist_obj := await self._get_data("playlist/get", **params)
-        ) and playlist_obj["id"]:
+        if (playlist_obj := await self._get_data("playlist/get", **params)) and playlist_obj["id"]:
             return await self._parse_playlist(playlist_obj)
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
@@ -267,9 +257,7 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
         for track_obj in await self._get_all_items(
@@ -345,9 +333,7 @@ class QobuzProvider(MusicProvider):
         elif media_type == MediaType.TRACK:
             result = await self._get_data("favorite/create", track_ids=prov_item_id)
         elif media_type == MediaType.PLAYLIST:
-            result = await self._get_data(
-                "playlist/subscribe", playlist_id=prov_item_id
-            )
+            result = await self._get_data("playlist/subscribe", playlist_id=prov_item_id)
         return result
 
     async def library_remove(self, prov_item_id, media_type: MediaType):
@@ -362,18 +348,12 @@ class QobuzProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             playlist = await self.get_playlist(prov_item_id)
             if playlist.is_editable:
-                result = await self._get_data(
-                    "playlist/delete", playlist_id=prov_item_id
-                )
+                result = await self._get_data("playlist/delete", playlist_id=prov_item_id)
             else:
-                result = await self._get_data(
-                    "playlist/unsubscribe", playlist_id=prov_item_id
-                )
+                result = await self._get_data("playlist/unsubscribe", playlist_id=prov_item_id)
         return result
 
-    async def add_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: list[str]
-    ) -> None:
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         return await self._get_data(
             "playlist/addTracks",
@@ -508,9 +488,7 @@ class QobuzProvider(MusicProvider):
         if not artist_obj and "artist" not in album_obj:
             # artist missing in album info, return full abum instead
             return await self.get_album(album_obj["id"])
-        name, version = parse_title_and_version(
-            album_obj["title"], album_obj.get("version")
-        )
+        name, version = parse_title_and_version(album_obj["title"], album_obj.get("version"))
         album = Album(
             item_id=str(album_obj["id"]),
             provider=self.domain,
@@ -532,17 +510,14 @@ class QobuzProvider(MusicProvider):
             },
         )
         album.external_ids.add((ExternalID.BARCODE, album_obj["upc"]))
-        album.artists.append(
-            await self._parse_artist(artist_obj or album_obj["artist"])
-        )
+        album.artists.append(await self._parse_artist(artist_obj or album_obj["artist"]))
         if (
             album_obj.get("product_type", "") == "single"
             or album_obj.get("release_type", "") == "single"
         ):
             album.album_type = AlbumType.SINGLE
         elif (
-            album_obj.get("product_type", "") == "compilation"
-            or "Various" in album.artists[0].name
+            album_obj.get("product_type", "") == "compilation" or "Various" in album.artists[0].name
         ):
             album.album_type = AlbumType.COMPILATION
         elif (
@@ -569,9 +544,7 @@ class QobuzProvider(MusicProvider):
     async def _parse_track(self, track_obj: dict) -> Track | AlbumTrack | PlaylistTrack:
         """Parse qobuz track object to generic layout."""
         # pylint: disable=too-many-branches
-        name, version = parse_title_and_version(
-            track_obj["title"], track_obj.get("version")
-        )
+        name, version = parse_title_and_version(track_obj["title"], track_obj.get("version"))
         if "position" in track_obj:
             track_class = PlaylistTrack
             extra_init_kwargs = {"position": track_obj["position"]}
@@ -647,9 +620,7 @@ class QobuzProvider(MusicProvider):
             if album:
                 track.album = album
         if track_obj.get("performers"):
-            track.metadata.performers = {
-                x.strip() for x in track_obj["performers"].split("-")
-            }
+            track.metadata.performers = {x.strip() for x in track_obj["performers"].split("-")}
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
         if track_obj.get("parental_warning"):
@@ -749,9 +720,7 @@ class QobuzProvider(MusicProvider):
             kwargs["user_auth_token"] = await self._auth_token()
         async with (
             self._throttler,
-            self.mass.http_session.get(
-                url, headers=headers, params=kwargs, ssl=False
-            ) as response,
+            self.mass.http_session.get(url, headers=headers, params=kwargs, ssl=False) as response,
         ):
             try:
                 result = await response.json()
@@ -767,9 +736,7 @@ class QobuzProvider(MusicProvider):
                 ValueError,
             ) as err:
                 text = await response.text()
-                self.logger.exception(
-                    "Error while processing %s: %s", endpoint, text, exc_info=err
-                )
+                self.logger.exception("Error while processing %s: %s", endpoint, text, exc_info=err)
                 return None
             return result
 
@@ -799,9 +766,7 @@ class QobuzProvider(MusicProvider):
                 ValueError,
             ) as err:
                 text = await response.text()
-                self.logger.exception(
-                    "Error while processing %s: %s", endpoint, text, exc_info=err
-                )
+                self.logger.exception("Error while processing %s: %s", endpoint, text, exc_info=err)
                 return None
             return result
 

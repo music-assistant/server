@@ -116,9 +116,7 @@ class TuneInProvider(MusicProvider):
                     if "- Not Supported" in item.get("text", ""):
                         continue
                     # each radio station can have multiple streams add each one as different quality
-                    stream_info = await self.__get_data(
-                        "Tune.ashx", id=item["preset_id"]
-                    )
+                    stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
                     for stream in stream_info["body"]:
                         yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link" and item.get("item") == "url":
@@ -131,9 +129,7 @@ class TuneInProvider(MusicProvider):
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
-                        async for subitem in parse_items(
-                            sublevel["body"], item["text"]
-                        ):
+                        async for subitem in parse_items(sublevel["body"], item["text"]):
                             yield subitem
                 elif item.get("children"):
                     # stations are in sublevel (old style ?)
@@ -243,9 +239,7 @@ class TuneInProvider(MusicProvider):
             if stream["media_type"] != media_type:
                 continue
             # check if the radio stream is not a playlist
-            url_resolved, supports_icy = await resolve_radio_stream(
-                self.mass, stream["url"]
-            )
+            url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream["url"])
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -266,9 +260,7 @@ class TuneInProvider(MusicProvider):
         seek_position: int = 0,
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        async for chunk in get_radio_stream(
-            self.mass, streamdetails.data, streamdetails
-        ):
+        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
             yield chunk
 
     async def __get_data(self, endpoint: str, **kwargs):

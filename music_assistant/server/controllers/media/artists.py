@@ -49,9 +49,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
         # register api handlers
-        self.mass.register_api_command(
-            "music/artists/library_items", self.library_items
-        )
+        self.mass.register_api_command("music/artists/library_items", self.library_items)
         self.mass.register_api_command(
             "music/artists/update_item_in_library", self.update_item_in_library
         )
@@ -76,9 +74,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             await self.mass.metadata.get_artist_metadata(item)
         # check for existing item first
         library_item = None
-        if cur_item := await self.get_library_item_by_prov_id(
-            item.item_id, item.provider
-        ):
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
             library_item = await self.update_item_in_library(cur_item.item_id, item)
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
@@ -92,9 +88,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     # NOTE: if we matched an artist by name this could theoretically lead to
                     # collisions but the chance is so small it is not worth the additional
                     # overhead of grabbing the musicbrainz id upfront
-                    library_item = await self.update_item_in_library(
-                        db_item.item_id, item
-                    )
+                    library_item = await self.update_item_in_library(db_item.item_id, item)
                     break
         if not library_item:
             # actually add (or update) the item in the library db
@@ -119,9 +113,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = cur_item.metadata.update(
-            getattr(update, "metadata", None), overwrite
-        )
+        metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
         provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
@@ -171,12 +163,8 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> PagedItems:
         """Get in-database (album) artists."""
         if album_artists_only:
-            artist_query = (
-                "artists.sort_name in (select albums.sort_artist from albums)"
-            )
-            extra_query = (
-                f"{extra_query} AND {artist_query}" if extra_query else artist_query
-            )
+            artist_query = "artists.sort_name in (select albums.sort_artist from albums)"
+            extra_query = f"{extra_query} AND {artist_query}" if extra_query else artist_query
         return await super().library_items(
             favorite=favorite,
             search=search,
@@ -244,9 +232,7 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         This is used to link objects of different providers together.
         """
-        assert (
-            db_artist.provider == "library"
-        ), "Matching only supported for database items!"
+        assert db_artist.provider == "library", "Matching only supported for database items!"
         cur_provider_domains = {x.provider_domain for x in db_artist.provider_mappings}
         for provider in self.mass.music.providers:
             if provider.domain in cur_provider_domains:
@@ -275,9 +261,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return top tracks for an artist on given provider."""
         items = []
         assert provider_instance_id_or_domain != "library"
-        artist = await self.get(
-            item_id, provider_instance_id_or_domain, add_to_library=False
-        )
+        artist = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
         cache_checksum = artist.metadata.checksum
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
@@ -297,16 +281,14 @@ class ArtistsController(MediaControllerBase[Artist]):
             ):
                 # TODO: adjust to json query instead of text search?
                 query = f"WHERE tracks.artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += f" AND tracks.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
-                paged_list = await self.mass.music.tracks.library_items(
-                    extra_query=query
+                query += (
+                    f" AND tracks.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
                 )
+                paged_list = await self.mass.music.tracks.library_items(extra_query=query)
                 return paged_list.items
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
 
@@ -349,16 +331,14 @@ class ArtistsController(MediaControllerBase[Artist]):
             ):
                 # TODO: adjust to json query instead of text search?
                 query = f"WHERE albums.artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += f" AND albums.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
-                paged_list = await self.mass.music.albums.library_items(
-                    extra_query=query
+                query += (
+                    f" AND albums.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
                 )
+                paged_list = await self.mass.music.albums.library_items(extra_query=query)
                 return paged_list.items
         # store (serializable items) in cache
         self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in items], checksum=cache_checksum
-            )
+            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
         )
         return items
 
@@ -448,13 +428,9 @@ class ArtistsController(MediaControllerBase[Artist]):
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
-        self.logger.debug(
-            "Trying to match artist %s on provider %s", db_artist.name, provider.name
-        )
+        self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
         # try to get a match with some reference tracks of this artist
-        ref_tracks = await self.mass.music.artists.tracks(
-            db_artist.item_id, db_artist.provider
-        )
+        ref_tracks = await self.mass.music.artists.tracks(db_artist.item_id, db_artist.provider)
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
@@ -476,9 +452,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"{db_artist.sort_name} {ref_track.sort_name}",
                 ref_track.name,
             ):
-                search_results = await self.mass.music.tracks.search(
-                    search_str, provider.domain
-                )
+                search_results = await self.mass.music.tracks.search(search_str, provider.domain)
                 for search_result_item in search_results:
                     if search_result_item.sort_name != ref_track.sort_name:
                         continue
@@ -495,14 +469,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                         )
                         # 100% match, we update the db with the additional provider mapping(s)
                         for provider_mapping in prov_artist.provider_mappings:
-                            await self.add_provider_mapping(
-                                db_artist.item_id, provider_mapping
-                            )
+                            await self.add_provider_mapping(db_artist.item_id, provider_mapping)
                         return True
         # try to get a match with some reference albums of this artist
-        ref_albums = await self.mass.music.artists.albums(
-            db_artist.item_id, db_artist.provider
-        )
+        ref_albums = await self.mass.music.artists.albums(db_artist.item_id, db_artist.provider)
         if len(ref_albums) < 10:
             # fetch reference albums from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
@@ -520,9 +490,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 f"{db_artist.name} {ref_album.name}",
                 f"{db_artist.sort_name} {ref_album.sort_name}",
             ):
-                search_result = await self.mass.music.albums.search(
-                    search_str, provider.domain
-                )
+                search_result = await self.mass.music.albums.search(search_str, provider.domain)
                 for search_result_item in search_result:
                     if not search_result_item.artists:
                         continue

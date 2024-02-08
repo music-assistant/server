@@ -296,9 +296,7 @@ class Music:
             )
         ]
 
-    async def add_playlist_tracks(
-        self, db_playlist_id: str | int, uris: list[str]
-    ) -> None:
+    async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
         await self.client.send_command(
             "music/playlists/add_playlist_tracks",
@@ -387,18 +385,14 @@ class Music:
         uri: str,
     ) -> MediaItemType:
         """Get single music item providing a mediaitem uri."""
-        return media_from_dict(
-            await self.client.send_command("music/item_by_uri", uri=uri)
-        )
+        return media_from_dict(await self.client.send_command("music/item_by_uri", uri=uri))
 
     async def refresh_item(
         self,
         media_item: MediaItemType,
     ) -> MediaItemType | None:
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
-        if result := await self.client.send_command(
-            "music/refresh_item", media_item=media_item
-        ):
+        if result := await self.client.send_command("music/refresh_item", media_item=media_item):
             return media_from_dict(result)
         return None
 
@@ -490,7 +484,4 @@ class Music:
 
     async def get_sync_tasks(self) -> list[SyncTask]:
         """Return any/all sync tasks that are in progress on the server."""
-        return [
-            SyncTask(**item)
-            for item in await self.client.send_command("music/synctasks")
-        ]
+        return [SyncTask(**item) for item in await self.client.send_command("music/synctasks")]
