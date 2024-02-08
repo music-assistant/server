@@ -111,11 +111,10 @@ class ConfigController:
                     # replace None with default
                     return default
                 return value
-            elif subkey not in parent:
+            if subkey not in parent:
                 # requesting subkey from a non existing parent
                 return default
-            else:
-                parent = parent[subkey]
+            parent = parent[subkey]
         return default
 
     def set(self, key: str, value: Any) -> None:
@@ -201,7 +200,9 @@ class ConfigController:
         raise KeyError(msg)
 
     @api_command("config/providers/get_value")
-    async def get_provider_config_value(self, instance_id: str, key: str) -> ConfigValueType:
+    async def get_provider_config_value(
+        self, instance_id: str, key: str
+    ) -> ConfigValueType:
         """Return single configentry value for a provider."""
         cache_key = f"prov_conf_value_{instance_id}.{key}"
         if cached_value := self._value_cache.get(cache_key) is not None:
@@ -241,7 +242,11 @@ class ConfigController:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
         if values is None:
-            values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
+            values = (
+                self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {})
+                if instance_id
+                else {}
+            )
         return (
             await prov_mod.get_config_entries(
                 self.mass, instance_id=instance_id, action=action, values=values
@@ -325,7 +330,9 @@ class ConfigController:
         await self._load_provider_config(config)
 
     @api_command("config/players")
-    async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
+    async def get_player_configs(
+        self, provider: str | None = None
+    ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
         available_providers = {x.instance_id for x in self.mass.providers}
         # add both domain and instance id
@@ -351,7 +358,9 @@ class ConfigController:
                 conf_entries = ()
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
-                raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
+                raw_conf["default_name"] = (
+                    raw_conf.get("default_name") or raw_conf["player_id"]
+                )
             return PlayerConfig.parse(conf_entries, raw_conf)
         msg = f"No config found for player id {player_id}"
         raise KeyError(msg)
@@ -617,7 +626,9 @@ class ConfigController:
             raise KeyError(msg)
         self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
 
-    def set_raw_player_config_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
+    def set_raw_player_config_value(
+        self, player_id: str, key: str, value: ConfigValueType
+    ) -> None:
         """
         Set (raw) single config(entry) value for a player.
 
@@ -677,7 +688,9 @@ class ConfigController:
             except FileNotFoundError:
                 pass
             except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
-                LOGGER.exception("Error while reading persistent storage file %s", filename)
+                LOGGER.exception(
+                    "Error while reading persistent storage file %s", filename
+                )
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
     async def _async_save(self) -> None:
@@ -701,7 +714,9 @@ class ConfigController:
         changed_keys = config.update(values)
         # validate the new config
         config.validate()
-        available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
+        available = (
+            prov.available if (prov := self.mass.get_provider(instance_id)) else False
+        )
         if not changed_keys and (config.enabled == available):
             # no changes
             return config
@@ -721,7 +736,9 @@ class ConfigController:
             await self.mass.unload_provider(config.instance_id)
             if config.type == ProviderType.PLAYER:
                 # cleanup entries in player manager
-                for player in self.mass.players.all(return_unavailable=True, return_disabled=True):
+                for player in self.mass.players.all(
+                    return_unavailable=True, return_disabled=True
+                ):
                     if player.provider != instance_id:
                         continue
                     self.mass.players.remove(player.player_id, cleanup_config=False)
@@ -755,7 +772,8 @@ class ConfigController:
             raise KeyError(msg)
         # create new provider config with given values
         existing = {
-            x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
+            x.instance_id
+            for x in await self.get_provider_configs(provider_domain=provider_domain)
         }
         # determine instance id based on previous configs
         if existing and not manifest.multi_instance:

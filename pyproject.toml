@@ -6,22 +6,18 @@ build-backend = "setuptools.build_meta"
 name = "music_assistant"
 # The version is set by GH action on release
 version = "0.0.0"
-license     = {text = "Apache-2.0"}
+license = { text = "Apache-2.0" }
 description = "Music Assistant"
 readme = "README.md"
 requires-python = ">=3.11"
-authors     = [
-    {name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
+authors = [
+  { name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com" },
 ]
 classifiers = [
   "Environment :: Console",
   "Programming Language :: Python :: 3.11",
 ]
-dependencies = [
-  "aiohttp",
-  "orjson",
-  "mashumaro"
-]
+dependencies = ["aiohttp", "orjson", "mashumaro"]
 
 [project.optional-dependencies]
 server = [
@@ -46,7 +42,7 @@ server = [
   "zeroconf==0.131.0",
   "cryptography==41.0.7",
   "ifaddr==0.2.0",
-  "uvloop==0.19.0"
+  "uvloop==0.19.0",
 ]
 test = [
   "black==24.1.1",
@@ -59,7 +55,7 @@ test = [
   "pytest==7.4.4",
   "pytest-aiohttp==1.0.5",
   "ruff==0.2.1",
-  "safety==3.0.1"
+  "safety==3.0.1",
 ]
 
 [project.scripts]
@@ -70,7 +66,7 @@ ignore-words-list = "provid,hass,followings,childs"
 
 [tool.setuptools]
 platforms = ["any"]
-zip-safe  = false
+zip-safe = false
 packages = ["music_assistant"]
 include-package-data = true
 
@@ -91,10 +87,10 @@ convention = "pep257"
 
 [tool.ruff.lint.pylint]
 
-max-branches=25
-max-returns=15
-max-args=10
-max-statements=50
+max-branches = 25
+max-returns = 15
+max-args = 10
+max-statements = 50
 
 
 [tool.mypy]
@@ -126,21 +122,11 @@ warn_unused_configs = true
 warn_unused_ignores = true
 
 [tool.pylint.MASTER]
-extension-pkg-whitelist = [
-  "orjson",
-]
-ignore = [
-  "tests",
-]
+extension-pkg-whitelist = ["orjson"]
+ignore = ["tests"]
 
 [tool.pylint.BASIC]
-good-names = [
-  "_",
-  "id",
-  "on",
-  "Run",
-  "T",
-]
+good-names = ["_", "id", "on", "Run", "T"]
 
 [tool.pylint.DESIGN]
 max-attributes = 8
@@ -150,9 +136,43 @@ disable = [
   "duplicate-code",
   "format",
   "unsubscriptable-object",
-  "unused-argument", # handled by ruff
-  "unspecified-encoding", # handled by ruff
-  "fixme", # we're still developing
+  "unused-argument",                           # handled by ruff
+  "unspecified-encoding",                      # handled by ruff
+  "isinstance-second-argument-not-valid-type", # conflict with ruff
+  "fixme",                                     # we're still developing
+
+  # TEMPORARY DISABLED rules
+  # The below rules must be enabled later one-by-one !
+  "too-many-return-statements",
+  "unsupported-assignment-operation",
+  "invalid-name",
+  "redefined-outer-name",
+  "too-many-statements",
+  "deprecated-method",
+  "logging-fstring-interpolation",
+  "attribute-defined-outside-init",
+  "broad-exception-caught",
+  "expression-not-assigned",
+  "consider-using-f-string",
+  "consider-using-with",
+  "arguments-renamed",
+  "protected-access",
+  "too-many-boolean-expressions",
+  "raise-missing-from",
+  "too-many-locals",
+  "abstract-method",
+  "unnecessary-lambda",
+  "stop-iteration-return",
+  "no-else-return",
+  "no-else-raise",
+  "undefined-loop-variable",
+  "too-many-nested-blocks",
+  "too-many-public-methods",          # unavoidable?
+  "too-many-arguments",               # unavoidable?
+  "too-many-branches",                # unavoidable?
+  "too-many-instance-attributes",     # unavoidable?
+
+
 ]
 
 [tool.pylint.SIMILARITIES]
@@ -167,20 +187,20 @@ asyncio_mode = "auto"
 
 [tool.ruff.lint]
 ignore = [
-  "ANN002", # Just annoying, not really useful
-  "ANN003", # Just annoying, not really useful
-  "ANN101", # Self... explanatory
-  "ANN401", # Opinioated warning on disallowing dynamically typed expressions
-  "D203", # Conflicts with other rules
-  "D213", # Conflicts with other rules
-  "D417", # False positives in some occasions
-  "FIX002", # Just annoying, not really useful
+  "ANN002",  # Just annoying, not really useful
+  "ANN003",  # Just annoying, not really useful
+  "ANN101",  # Self... explanatory
+  "ANN401",  # Opinioated warning on disallowing dynamically typed expressions
+  "D203",    # Conflicts with other rules
+  "D213",    # Conflicts with other rules
+  "D417",    # False positives in some occasions
+  "FIX002",  # Just annoying, not really useful
   "PLR2004", # Just annoying, not really useful
-  "PD011", # Just annoying, not really useful
-  "S101", # assert is often used to satisfy type checking
-  "TD002", # Just annoying, not really useful
-  "TD003", # Just annoying, not really useful
-  "TD004", # Just annoying, not really useful
+  "PD011",   # Just annoying, not really useful
+  "S101",    # assert is often used to satisfy type checking
+  "TD002",   # Just annoying, not really useful
+  "TD003",   # Just annoying, not really useful
+  "TD004",   # Just annoying, not really useful
 
   # Conflicts with the Ruff formatter
   "COM812",

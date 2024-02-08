@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.audio")
 
-# pylint:disable=consider-using-f-string
+# pylint:disable=consider-using-f-string,too-many-locals,too-many-statements
 
 
 async def crossfade_pcm_parts(
@@ -224,7 +224,10 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         _, stderr = await ffmpeg_proc.communicate()
         try:
             loudness_str = (
-                stderr.decode().split("Integrated loudness")[1].split("I:")[1].split("LUFS")[0]
+                stderr.decode()
+                .split("Integrated loudness")[1]
+                .split("I:")[1]
+                .split("LUFS")[0]
             )
             loudness = float(loudness_str.strip())
         except (IndexError, ValueError, AttributeError):
@@ -323,7 +326,9 @@ async def get_gain_correct(
     )
     if track_loudness is None:
         # fallback to provider average
-        fallback_track_loudness = await mass.music.get_provider_loudness(streamdetails.provider)
+        fallback_track_loudness = await mass.music.get_provider_loudness(
+            streamdetails.provider
+        )
         if fallback_track_loudness is None:
             # fallback to some (hopefully sane) average value for now
             fallback_track_loudness = -8.5
@@ -416,7 +421,9 @@ async def get_media_stream(  # noqa: PLR0915
         strip_silence_end = False
 
     # collect all arguments for ffmpeg
-    seek_pos = seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
+    seek_pos = (
+        seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
+    )
     args = await _get_ffmpeg_args(
         streamdetails=streamdetails,
         pcm_output_format=pcm_format,
@@ -425,7 +432,9 @@ async def get_media_stream(  # noqa: PLR0915
         fade_in=fade_in,
     )
 
-    async with AsyncProcess(args, enable_stdin=streamdetails.direct is None) as ffmpeg_proc:
+    async with AsyncProcess(
+        args, enable_stdin=streamdetails.direct is None
+    ) as ffmpeg_proc:
         LOGGER.debug("start media stream for: %s", streamdetails.uri)
 
         async def writer() -> None:
@@ -433,7 +442,9 @@ async def get_media_stream(  # noqa: PLR0915
             LOGGER.debug("writer started for %s", streamdetails.uri)
             music_prov = mass.get_provider(streamdetails.provider)
             seek_pos = seek_position if streamdetails.can_seek else 0
-            async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
+            async for audio_chunk in music_prov.get_audio_stream(
+                streamdetails, seek_pos
+            ):
                 await ffmpeg_proc.write(audio_chunk)
             # write eof when last packet is received
             ffmpeg_proc.write_eof()
@@ -654,7 +665,9 @@ async def get_file_stream(
     chunk_size = get_chunksize(streamdetails.audio_format.content_type)
     async with aiofiles.open(streamdetails.data, "rb") as _file:
         if seek_position:
-            seek_pos = int((streamdetails.size / streamdetails.duration) * seek_position)
+            seek_pos = int(
+                (streamdetails.size / streamdetails.duration) * seek_position
+            )
             await _file.seek(seek_pos)
         # yield chunks of data from file
         while True:
@@ -735,7 +748,9 @@ async def get_silence(
     if output_format.content_type.is_pcm():
         # pcm = just zeros
         for _ in range(duration):
-            yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
+            yield b"\0" * int(
+                output_format.sample_rate * (output_format.bit_depth / 8) * 2
+            )
         return
     if output_format.content_type == ContentType.WAV:
         # wav silence = wave header + zero's
@@ -746,7 +761,9 @@ async def get_silence(
             duration=duration,
         )
         for _ in range(duration):
-            yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
+            yield b"\0" * int(
+                output_format.sample_rate * (output_format.bit_depth / 8) * 2
+            )
         return
     # use ffmpeg for all other encodings
     args = [
@@ -806,7 +823,9 @@ async def _get_ffmpeg_args(
             msg,
         )
 
-    major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
+    major_version = int(
+        "".join(char for char in version.split(".")[0] if not char.isalpha())
+    )
 
     # generic args
     generic_args = [

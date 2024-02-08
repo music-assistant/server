@@ -20,7 +20,9 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
     if getattr(obj, "do_not_serialize", None):
         return None
     if (
-        isinstance(obj, list | set | filter | tuple | dict_values | dict_keys | dict_values)
+        isinstance(
+            obj, list | set | filter | tuple | dict_values | dict_keys | dict_values
+        )
         or obj.__class__ == "dict_valueiterator"
     ):
         return [get_serializable_value(x) for x in obj]

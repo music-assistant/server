@@ -95,7 +95,7 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
             for subvalue in value
             if subvalue is not None
         )
-    elif origin is dict:
+    if origin is dict:
         subkey_type = get_args(value_type)[0]
         subvalue_type = get_args(value_type)[1]
         return {
@@ -104,7 +104,7 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
             )
             for subkey, subvalue in value.items()
         }
-    elif origin is Union or origin is UnionType:
+    if origin is Union or origin is UnionType:
         # try all possible types
         sub_value_types = get_args(value_type)
         for sub_arg_type in sub_value_types:
@@ -127,8 +127,8 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
         # failed to parse the (sub) value but None allowed, log only
         logging.getLogger(__name__).warn(err)
         return None
-    elif origin is type:
-        return eval(value)
+    if origin is type:
+        return eval(value)  # pylint: disable=eval-used
     if value_type is Any:
         return value
     if value is None and value_type is not NoneType:

@@ -29,7 +29,9 @@ class Webserver:
         self._webapp: web.Application | None = None
         self._tcp_site: web.TCPSite | None = None
         self._static_routes: list[tuple[str, str, Awaitable]] | None = None
-        self._dynamic_routes: dict[str, Callable] | None = {} if enable_dynamic_routes else None
+        self._dynamic_routes: dict[str, Callable] | None = (
+            {} if enable_dynamic_routes else None
+        )
         self._bind_port: int | None = None
 
     async def setup(
@@ -52,7 +54,9 @@ class Webserver:
                 "max_field_size": MAX_LINE_SIZE,
             },
         )
-        self.logger.info("Starting server on  %s:%s - base url: %s", bind_ip, bind_port, base_url)
+        self.logger.info(
+            "Starting server on  %s:%s - base url: %s", bind_ip, bind_port, base_url
+        )
         self._apprunner = web.AppRunner(self._webapp, access_log=None)
         # add static routes
         if self._static_routes:
@@ -91,13 +95,15 @@ class Webserver:
         """Return the port of this webserver."""
         return self._bind_port
 
-    def register_dynamic_route(self, path: str, handler: Awaitable, method: str = "*") -> Callable:
+    def register_dynamic_route(
+        self, path: str, handler: Awaitable, method: str = "*"
+    ) -> Callable:
         """Register a dynamic route on the webserver, returns handler to unregister."""
         if self._dynamic_routes is None:
             msg = "Dynamic routes are not enabled"
             raise RuntimeError(msg)
         key = f"{method}.{path}"
-        if key in self._dynamic_routes:
+        if key in self._dynamic_routes:  # pylint: disable=unsupported-membership-test
             msg = f"Route {path} already registered."
             raise RuntimeError(msg)
         self._dynamic_routes[key] = handler
@@ -115,7 +121,9 @@ class Webserver:
         key = f"{method}.{path}"
         self._dynamic_routes.pop(key)
 
-    async def serve_static(self, file_path: str, _request: web.Request) -> web.FileResponse:
+    async def serve_static(
+        self, file_path: str, _request: web.Request
+    ) -> web.FileResponse:
         """Serve file response."""
         headers = {"Cache-Control": "no-cache"}
         return web.FileResponse(file_path, headers=headers)

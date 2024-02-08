@@ -86,6 +86,7 @@ async def is_hass_supervisor() -> bool:
             return getattr(err, "code", 999) == 401
         except Exception:
             return False
+        return False
 
     return await asyncio.to_thread(_check)
 
@@ -103,7 +104,9 @@ async def get_provider_module(domain: str) -> ProviderModuleType:
 def create_tempfile():
     """Return a (named) temporary file."""
     if platform.system() == "Linux":
-        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
+        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(
+            buffering=0
+        )
     return tempfile.NamedTemporaryFile(buffering=0)
 
 

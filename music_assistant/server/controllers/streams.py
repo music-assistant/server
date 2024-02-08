@@ -71,6 +71,8 @@ DEFAULT_STREAM_HEADERS = {
 FLOW_MAX_SAMPLE_RATE = 192000
 FLOW_MAX_BIT_DEPTH = 24
 
+# pylint:disable=too-many-locals
+
 
 class MultiClientStreamJob:
     """Representation of a (multiclient) Audio Queue stream job/task.
@@ -138,17 +140,23 @@ class MultiClientStreamJob:
             with suppress(asyncio.QueueFull):
                 sub_queue.put_nowait(b"")
 
-    def resolve_stream_url(self, child_player_id: str, output_codec: ContentType) -> str:
+    def resolve_stream_url(
+        self, child_player_id: str, output_codec: ContentType
+    ) -> str:
         """Resolve the childplayer specific stream URL to this streamjob."""
         fmt = output_codec.value
         # handle raw pcm
         if output_codec.is_pcm():
             player = self.stream_controller.mass.players.get(child_player_id)
             player_max_bit_depth = 24 if player.supports_24bit else 16
-            output_sample_rate = min(self.pcm_format.sample_rate, player.max_sample_rate)
+            output_sample_rate = min(
+                self.pcm_format.sample_rate, player.max_sample_rate
+            )
             output_bit_depth = min(self.pcm_format.bit_depth, player_max_bit_depth)
-            output_channels = self.stream_controller.mass.config.get_raw_player_config_value(
-                child_player_id, CONF_OUTPUT_CHANNELS, "stereo"
+            output_channels = (
+                self.stream_controller.mass.config.get_raw_player_config_value(
+                    child_player_id, CONF_OUTPUT_CHANNELS, "stereo"
+                )
             )
             channels = 1 if output_channels != "stereo" else 2
             fmt += (
@@ -174,7 +182,9 @@ class MultiClientStreamJob:
 
             if self._all_clients_connected.is_set():
                 # client subscribes while we're already started - we dont support that (for now?)
-                msg = f"Client {player_id} is joining while the stream is already started"
+                msg = (
+                    f"Client {player_id} is joining while the stream is already started"
+                )
                 raise RuntimeError(msg)
             self.logger.debug("Subscribed client %s", player_id)
 
@@ -195,7 +205,11 @@ class MultiClientStreamJob:
             self.logger.debug("Unsubscribed client %s", player_id)
             # check if this was the last subscriber and we should cancel
             await asyncio.sleep(2)
-            if len(self.subscribed_players) == 0 and self._audio_task and not self.finished:
+            if (
+                len(self.subscribed_players) == 0
+                and self._audio_task
+                and not self.finished
+            ):
                 self.logger.debug("Cleaning up, all clients disappeared...")
                 self._audio_task.cancel()
 
@@ -211,7 +225,11 @@ class MultiClientStreamJob:
         """Feed audio chunks to StreamJob subscribers."""
         chunk_num = 0
         async for chunk in self.stream_controller.get_flow_stream(
-            self.queue, self.start_queue_item, self.pcm_format, self.seek_position, self.fade_in
+            self.queue,
+            self.start_queue_item,
+            self.pcm_format,
+            self.seek_position,
+            self.fade_in,
         ):
             chunk_num += 1
             if chunk_num == 1:
@@ -248,7 +266,9 @@ class MultiClientStreamJob:
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
     """Parse PCM info from a codec/content_type string."""
     params = (
-        dict(urllib.parse.parse_qsl(content_type.replace(";", "&"))) if ";" in content_type else {}
+        dict(urllib.parse.parse_qsl(content_type.replace(";", "&")))
+        if ";" in content_type
+        else {}
     )
     sample_rate = int(params.get("rate", 44100))
     sample_size = int(params.get("bitrate", 16))
@@ -332,7 +352,9 @@ class StreamsController(CoreController):
         """Async initialize of module."""
         ffmpeg_present, libsoxr_support, version = await check_audio_support()
         if not ffmpeg_present:
-            self.logger.error("FFmpeg binary not found on your system, playback will NOT work!.")
+            self.logger.error(
+                "FFmpeg binary not found on your system, playback will NOT work!."
+            )
         elif not libsoxr_support:
             self.logger.warning(
                 "FFmpeg version found without libsoxr support, "
@@ -423,7 +445,9 @@ class StreamsController(CoreController):
         if existing_job := self.multi_client_jobs.pop(queue_id, None):
             # cleanup existing job first
             if not existing_job.finished:
-                self.logger.warning("Detected existing (running) stream job for queue %s", queue_id)
+                self.logger.warning(
+                    "Detected existing (running) stream job for queue %s", queue_id
+                )
                 existing_job.stop()
         self.multi_client_jobs[queue_id] = stream_job = MultiClientStreamJob(
             self,
@@ -487,9 +511,13 @@ class StreamsController(CoreController):
 
         # all checks passed, start streaming!
         self.logger.debug(
-            "Start serving audio stream for QueueItem %s to %s", queue_item.uri, queue.display_name
+            "Start serving audio stream for QueueItem %s to %s",
+            queue_item.uri,
+            queue.display_name,
         )
-        queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
+        queue.index_in_buffer = self.mass.player_queues.index_by_id(
+            queue_id, queue_item_id
+        )
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
             content_type=ContentType.from_bit_depth(
@@ -542,7 +570,9 @@ class StreamsController(CoreController):
         if not queue:
             raise web.HTTPNotFound(reason=f"Unknown Queue: {queue_id}")
         start_queue_item_id = request.match_info["queue_item_id"]
-        start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
+        start_queue_item = self.mass.player_queues.get_item(
+            queue_id, start_queue_item_id
+        )
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
         seek_position = int(request.query.get("seek_position", 0))
@@ -557,7 +587,9 @@ class StreamsController(CoreController):
         )
         # prepare request, add some DLNA/UPNP compatible headers
         enable_icy = request.headers.get("Icy-MetaData", "") == "1"
-        icy_meta_interval = 16384 * 4 if output_format.content_type.is_lossless() else 16384
+        icy_meta_interval = (
+            16384 * 4 if output_format.content_type.is_lossless() else 16384
+        )
         headers = {
             **DEFAULT_STREAM_HEADERS,
             "Content-Type": f"audio/{output_format.output_format_str}",
@@ -577,7 +609,9 @@ class StreamsController(CoreController):
             return resp
 
         # all checks passed, start streaming!
-        self.logger.debug("Start serving Queue flow audio stream for %s", queue_player.name)
+        self.logger.debug(
+            "Start serving Queue flow audio stream for %s", queue_player.name
+        )
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
@@ -661,7 +695,9 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown StreamJob for queue: {queue_id}")
         job_id = request.match_info["job_id"]
         if job_id != streamjob.job_id:
-            raise web.HTTPNotFound(reason=f"StreamJob ID {job_id} mismatch for queue: {queue_id}")
+            raise web.HTTPNotFound(
+                reason=f"StreamJob ID {job_id} mismatch for queue: {queue_id}"
+            )
         child_player_id = request.match_info["player_id"]
         child_player = self.mass.players.get(child_player_id)
         if not child_player:
@@ -786,7 +822,9 @@ class StreamsController(CoreController):
                 seek_position = 0
                 fade_in = False
                 try:
-                    queue_track = await self.mass.player_queues.preload_next_item(queue.queue_id)
+                    queue_track = await self.mass.player_queues.preload_next_item(
+                        queue.queue_id
+                    )
                 except QueueEmpty:
                     break
 
@@ -801,7 +839,9 @@ class StreamsController(CoreController):
             )
 
             # set some basic vars
-            pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
+            pcm_sample_size = int(
+                pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2
+            )
             crossfade_duration = self.mass.config.get_raw_player_config_value(
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
@@ -825,7 +865,9 @@ class StreamsController(CoreController):
                 chunk_num += 1
 
                 # throttle buffer, do not allow more than 30 seconds in buffer
-                seconds_buffered = (total_bytes_written + bytes_written) / pcm_sample_size
+                seconds_buffered = (
+                    total_bytes_written + bytes_written
+                ) / pcm_sample_size
                 player = self.mass.players.get(queue.queue_id)
                 if seconds_buffered > 60 and player.corrected_elapsed_time > 30:
                     while (seconds_buffered - player.corrected_elapsed_time) > 30:
@@ -959,11 +1001,17 @@ class StreamsController(CoreController):
                 player.player_id, CONF_EQ_BASS, 0
             )
         ) != 0:
-            filter_params.append(f"equalizer=frequency=100:width=200:width_type=h:gain={eq_bass}")
+            filter_params.append(
+                f"equalizer=frequency=100:width=200:width_type=h:gain={eq_bass}"
+            )
         if (
-            eq_mid := self.mass.config.get_raw_player_config_value(player.player_id, CONF_EQ_MID, 0)
+            eq_mid := self.mass.config.get_raw_player_config_value(
+                player.player_id, CONF_EQ_MID, 0
+            )
         ) != 0:
-            filter_params.append(f"equalizer=frequency=900:width=1800:width_type=h:gain={eq_mid}")
+            filter_params.append(
+                f"equalizer=frequency=900:width=1800:width_type=h:gain={eq_mid}"
+            )
         if (
             eq_treble := self.mass.config.get_raw_player_config_value(
                 player.player_id, CONF_EQ_TREBLE, 0

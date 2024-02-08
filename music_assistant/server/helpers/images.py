@@ -18,7 +18,9 @@ if TYPE_CHECKING:
     from music_assistant.server.models.music_provider import MusicProvider
 
 
-async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str = "url") -> bytes:
+async def get_image_data(
+    mass: MusicAssistant, path_or_url: str, provider: str = "url"
+) -> bytes:
     """Create thumbnail from image url."""
     if provider != "url" and (prov := mass.get_provider(provider)):
         prov: MusicProvider
@@ -44,7 +46,7 @@ async def get_image_thumb(
         data = BytesIO()
         img = Image.open(BytesIO(img_data))
         if size:
-            img.thumbnail((size, size), Image.LANCZOS)
+            img.thumbnail((size, size), Image.LANCZOS)  # pylint: disable=no-member
         img.convert("RGB").save(data, "PNG", optimize=True)
         return data.getvalue()
 

@@ -109,7 +109,9 @@ class SoundcloudMusicProvider(MusicProvider):
         """Set up the Soundcloud provider."""
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
-        self._soundcloud = SoundcloudAsyncAPI(auth_token, client_id, self.mass.http_session)
+        self._soundcloud = SoundcloudAsyncAPI(
+            auth_token, client_id, self.mass.http_session
+        )
         await self._soundcloud.login()
         self._me = await self._soundcloud.get_account_details()
         self._user_id = self._me["id"]
@@ -231,7 +233,9 @@ class SoundcloudMusicProvider(MusicProvider):
         """Get full artist details by id."""
         artist_obj = await self._soundcloud.get_user_details(user_id=prov_artist_id)
         try:
-            artist = await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+            artist = (
+                await self._parse_artist(artist_obj=artist_obj) if artist_obj else None
+            )
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Parse artist failed: %s", artist_obj, exc_info=error)
         return artist
@@ -247,16 +251,22 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
+        playlist_obj = await self._soundcloud.get_playlist_details(
+            playlist_id=prov_playlist_id
+        )
         try:
             playlist = await self._parse_playlist(playlist_obj)
         except (KeyError, TypeError, InvalidDataError, IndexError) as error:
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
-        playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
+        playlist_obj = await self._soundcloud.get_playlist_details(
+            playlist_id=prov_playlist_id
+        )
         if "tracks" not in playlist_obj:
             return
         for index, item in enumerate(playlist_obj["tracks"]):
@@ -286,7 +296,9 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        tracks_obj = await self._soundcloud.get_recommended(track_id=prov_track_id, limit=limit)
+        tracks_obj = await self._soundcloud.get_recommended(
+            track_id=prov_track_id, limit=limit
+        )
         tracks = []
         for item in tracks_obj["collection"]:
             song = await self._soundcloud.get_track_details(item["id"])
@@ -302,7 +314,9 @@ class SoundcloudMusicProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         track_details = await self._soundcloud.get_track_details(track_id=item_id)
-        stream_format = track_details[0]["media"]["transcodings"][0]["format"]["mime_type"]
+        stream_format = track_details[0]["media"]["transcodings"][0]["format"][
+            "mime_type"
+        ]
         url = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
             provider=self.instance_id,
@@ -339,7 +353,9 @@ class SoundcloudMusicProvider(MusicProvider):
             artist.metadata.description = artist_obj["description"]
         if artist_obj.get("avatar_url"):
             img_url = artist_obj["avatar_url"]
-            artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img_url)]
+            artist.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=img_url)
+            ]
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
@@ -375,7 +391,7 @@ class SoundcloudMusicProvider(MusicProvider):
         """Parse a Soundcloud Track response to a Track model object."""
         name, version = parse_title_and_version(track_obj["title"])
         track_class = PlaylistTrack if playlist_position is not None else Track
-        track = track_class(
+        track = track_class(  # pylint: disable=missing-kwoa
             item_id=track_obj["id"],
             provider=self.domain,
             name=name,

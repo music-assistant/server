@@ -66,6 +66,7 @@ if TYPE_CHECKING:
 
 
 # ruff: noqa: ARG002, E501, ERA001
+# pylint: disable=keyword-arg-before-vararg
 
 ArgsType = list[int | str]
 KwargsType = dict[str, Any]
@@ -155,7 +156,9 @@ class LmsCli:
         """Handle async initialization of the plugin."""
         if self.enable_json:
             self.logger.info("Registering jsonrpc endpoints on the webserver")
-            self.mass.streams.register_dynamic_route("/jsonrpc.js", self._handle_jsonrpc)
+            self.mass.streams.register_dynamic_route(
+                "/jsonrpc.js", self._handle_jsonrpc
+            )
             self.mass.streams.register_dynamic_route("/cometd", self._handle_cometd)
             self._unsub_callback = self.mass.subscribe(
                 self._on_mass_event,
@@ -165,7 +168,9 @@ class LmsCli:
         if self.enable_telnet:
             self.cli_port = await select_free_port(9090, 9190)
             self.logger.info("Starting (telnet) CLI on port %s", self.cli_port)
-            await asyncio.start_server(self._handle_cli_client, "0.0.0.0", self.cli_port)
+            await asyncio.start_server(
+                self._handle_cli_client, "0.0.0.0", self.cli_port
+            )
 
     async def unload(self) -> None:
         """
@@ -230,7 +235,9 @@ class LmsCli:
 
                     if isinstance(cmd_result, dict):
                         result_parts = dict_to_strings(cmd_result)
-                        result_str = " ".join(urllib.parse.quote(x) for x in result_parts)
+                        result_str = " ".join(
+                            urllib.parse.quote(x) for x in result_parts
+                        )
                     elif not cmd_result:
                         result_str = ""
                     else:
@@ -304,7 +311,9 @@ class LmsCli:
                 # pull clientId out of unsubscribe
                 clientid = cometd_msg["data"]["unsubscribe"].split("/")[1]
             assert clientid, "No clientID provided"
-            logger.debug("Incoming message for channel '%s' - clientid: %s", channel, clientid)
+            logger.debug(
+                "Incoming message for channel '%s' - clientid: %s", channel, clientid
+            )
 
             # messageid is optional but if provided we must pass it along
             msgid = cometd_msg.get("id", "")
@@ -319,7 +328,9 @@ class LmsCli:
                             "channel": channel,
                             "clientId": None,
                             "successful": False,
-                            "timestamp": time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()),
+                            "timestamp": time.strftime(
+                                "%a, %d %b %Y %H:%M:%S %Z", time.gmtime()
+                            ),
                             "error": "invalid clientId",
                             "advice": {
                                 "reconnect": "handshake",
@@ -369,7 +380,9 @@ class LmsCli:
                         "channel": channel,
                         "clientId": clientid,
                         "successful": True,
-                        "timestamp": time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()),
+                        "timestamp": time.strftime(
+                            "%a, %d %b %Y %H:%M:%S %Z", time.gmtime()
+                        ),
                         "advice": {
                             # update interval for streaming mode
                             "interval": 5000 if streaming else 0
@@ -390,7 +403,9 @@ class LmsCli:
                             "channel": channel,
                             "clientId": clientid,
                             "successful": True,
-                            "timestamp": time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()),
+                            "timestamp": time.strftime(
+                                "%a, %d %b %Y %H:%M:%S %Z", time.gmtime()
+                            ),
                         }
                     ]
                 )
@@ -438,7 +453,9 @@ class LmsCli:
                         "successful": True,
                     }
                 )
-                cometd_client.slim_subscriptions[cometd_msg["data"]["response"]] = cometd_msg
+                cometd_client.slim_subscriptions[cometd_msg["data"]["response"]] = (
+                    cometd_msg
+                )
                 # Return one-off result now, rest is handled by the subscription logic
                 self._handle_cometd_request(cometd_client, cometd_msg)
 
@@ -458,7 +475,9 @@ class LmsCli:
                         "successful": True,
                     }
                 )
-                cometd_client.slim_subscriptions.pop(cometd_msg["data"]["unsubscribe"], None)
+                cometd_client.slim_subscriptions.pop(
+                    cometd_msg["data"]["unsubscribe"], None
+                )
 
             elif channel == "/slim/request":
                 # A request to execute a one-time Logitech Media Server event
@@ -473,7 +492,9 @@ class LmsCli:
                 #   }
                 if not msgid:
                     # If the caller does not want the response, id will be undef
-                    logger.debug("Not sending response to request, caller does not want it")
+                    logger.debug(
+                        "Not sending response to request, caller does not want it"
+                    )
                 else:
                     # This response is optional, but we do it anyway
                     response.append(
@@ -545,7 +566,9 @@ class LmsCli:
                 return resp
         return resp
 
-    def _handle_cometd_request(self, client: CometDClient, cometd_request: dict[str, Any]) -> None:
+    def _handle_cometd_request(
+        self, client: CometDClient, cometd_request: dict[str, Any]
+    ) -> None:
         """Handle request for CometD client (and put result on client queue)."""
 
         async def _handle() -> None:
@@ -572,7 +595,11 @@ class LmsCli:
         player_id = params[0]
         command = str(params[1][0])
         args, kwargs = parse_args(params[1][1:])
-        if player_id and "seq_no" in kwargs and (player := self.mass.players.get(player_id)):
+        if (
+            player_id
+            and "seq_no" in kwargs
+            and (player := self.mass.players.get(player_id))
+        ):
             player.extra_data["seq_no"] = int(kwargs["seq_no"])
         if handler := getattr(self, f"_handle_{command}", None):
             # run handler for command
@@ -656,7 +683,9 @@ class LmsCli:
                 "sleep": 0,
                 "will_sleep_in": 0,
                 "sync_master": player.synced_to,
-                "sync_slaves": ",".join(x for x in player.group_childs if x != player_id),
+                "sync_slaves": ",".join(
+                    x for x in player.group_childs if x != player_id
+                ),
                 "mixer volume": player.volume_level,
                 "playlist repeat": REPEATMODE_MAP[queue.repeat_mode],
                 "playlist shuffle": int(queue.shuffle_enabled),
@@ -822,16 +851,22 @@ class LmsCli:
             return player.volume_level
         if subcommand == "volume" and "+" in arg:
             volume_level = min(100, player.volume_level + int(arg.split("+")[1]))
-            self.mass.create_task(self.mass.players.cmd_volume_set, player_id, volume_level)
+            self.mass.create_task(
+                self.mass.players.cmd_volume_set, player_id, volume_level
+            )
             return None
         if subcommand == "volume" and "-" in arg:
             volume_level = max(0, player.volume_level - int(arg.split("-")[1]))
-            self.mass.create_task(self.mass.players.cmd_volume_set, player_id, volume_level)
+            self.mass.create_task(
+                self.mass.players.cmd_volume_set, player_id, volume_level
+            )
             return None
 
         # <playerid> mixer muting <0|1|toggle|?|>
         if subcommand == "muting" and isinstance(arg, int):
-            self.mass.create_task(self.mass.players.cmd_volume_mute, player_id, int(arg))
+            self.mass.create_task(
+                self.mass.players.cmd_volume_mute, player_id, int(arg)
+            )
             return None
         if subcommand == "muting" and arg == "toggle":
             self.mass.create_task(
@@ -865,13 +900,19 @@ class LmsCli:
 
         if isinstance(number, str) and ("+" in number or "-" in number):
             jump = int(number.split("+")[1])
-            self.mass.create_task(self.mass.player_queues.skip, player_queue.queue_id, jump)
+            self.mass.create_task(
+                self.mass.player_queues.skip, player_queue.queue_id, jump
+            )
             return None
         else:
-            self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, int(number))
+            self.mass.create_task(
+                self.mass.player_queues.seek, player_queue.queue_id, int(number)
+            )
             return None
 
-    def _handle_power(self, player_id: str, value: str | int, *args, **kwargs) -> int | None:
+    def _handle_power(
+        self, player_id: str, value: str | int, *args, **kwargs
+    ) -> int | None:
         """Handle player `time` command."""
         # <playerid> power <0|1|?|>
         # The "power" command turns the player on or off.
@@ -912,11 +953,15 @@ class LmsCli:
             return queue.current_index
         if subcommand == "index" and "+" in arg:
             next_index = (queue.current_index or 0) + int(arg.split("+")[1])
-            self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
+            self.mass.create_task(
+                self.mass.player_queues.play_index, player_id, next_index
+            )
             return None
         if subcommand == "index" and "-" in arg:
             next_index = (queue.current_index or 0) - int(arg.split("-")[1])
-            self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
+            self.mass.create_task(
+                self.mass.player_queues.play_index, player_id, next_index
+            )
             return None
         if subcommand == "shuffle" and arg == "?":
             return queue.shuffle_enabled
@@ -946,12 +991,16 @@ class LmsCli:
         queue = self.mass.player_queues.get_active_queue(player_id)
         if cmd == "play":
             self.mass.create_task(
-                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.PLAY)
+                self.mass.player_queues.play_media(
+                    queue.queue_id, uri, QueueOption.PLAY
+                )
             )
             return
         if cmd == "load":
             self.mass.create_task(
-                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.REPLACE)
+                self.mass.player_queues.play_media(
+                    queue.queue_id, uri, QueueOption.REPLACE
+                )
             )
             return
         if cmd == "add":
@@ -961,7 +1010,9 @@ class LmsCli:
             return
         if cmd == "insert":
             self.mass.create_task(
-                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.IN)
+                self.mass.player_queues.play_media(
+                    queue.queue_id, uri, QueueOption.NEXT
+                )
             )
             return
         self.logger.warning("Unhandled command: playlistcontrol/%s", cmd)
@@ -1046,7 +1097,9 @@ class LmsCli:
             self.mass.create_task(self.mass.players.cmd_volume_down, player_id)
             return
         if subcommand == "power":
-            self.mass.create_task(self.mass.players.cmd_power, player_id, not player.powered)
+            self.mass.create_task(
+                self.mass.players.cmd_power, player_id, not player.powered
+            )
             return
         # queue related button commands
         queue = self.mass.player_queues.get_active_queue(player_id)
@@ -1063,7 +1116,9 @@ class LmsCli:
             self.mass.create_task(self.mass.player_queues.skip, queue.queue_id, -10)
             return
         if subcommand == "shuffle":
-            self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
+            self.mass.player_queues.set_shuffle(
+                queue.queue_id, not queue.shuffle_enabled
+            )
             return
         if subcommand == "repeat":
             if queue.repeat_mode == RepeatMode.ALL:
@@ -1079,7 +1134,11 @@ class LmsCli:
             if preset_uri := self.mass.config.get_raw_player_config_value(
                 player_id, f"preset_{preset_index}"
             ):
-                option = QueueOption.REPLACE if "playlist" in preset_uri else QueueOption.PLAY
+                option = (
+                    QueueOption.REPLACE
+                    if "playlist" in preset_uri
+                    else QueueOption.PLAY
+                )
                 self.mass.create_task(
                     self.mass.player_queues.play_media,
                     queue.queue_id,
@@ -1197,35 +1256,49 @@ class LmsCli:
         """Handle menustatus request from CLI."""
         if mode == "albumartists":
             items = (
-                await self.mass.music.artists.album_artists(True, limit=limit, offset=offset)
+                await self.mass.music.artists.album_artists(
+                    True, limit=limit, offset=offset
+                )
             ).items
         elif mode == "artists":
             items = (
-                await self.mass.music.artists.library_items(True, limit=limit, offset=offset)
+                await self.mass.music.artists.library_items(
+                    True, limit=limit, offset=offset
+                )
             ).items
         elif mode == "artist" and "uri" in kwargs:
             artist = await self.mass.music.get_item_by_uri(kwargs["uri"])
-            items = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
+            items = await self.mass.music.artists.tracks(
+                artist.item_id, artist.provider
+            )
         elif mode == "albums":
             items = (
-                await self.mass.music.albums.library_items(True, limit=limit, offset=offset)
+                await self.mass.music.albums.library_items(
+                    True, limit=limit, offset=offset
+                )
             ).items
         elif mode == "album" and "uri" in kwargs:
             album = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = await self.mass.music.albums.tracks(album.item_id, album.provider)
         elif mode == "playlists":
             items = (
-                await self.mass.music.playlists.library_items(True, limit=limit, offset=offset)
+                await self.mass.music.playlists.library_items(
+                    True, limit=limit, offset=offset
+                )
             ).items
         elif mode == "radios":
             items = (
-                await self.mass.music.radio.library_items(True, limit=limit, offset=offset)
+                await self.mass.music.radio.library_items(
+                    True, limit=limit, offset=offset
+                )
             ).items
         elif mode == "playlist" and "uri" in kwargs:
             playlist = await self.mass.music.get_item_by_uri(kwargs["uri"])
             items = [
                 x
-                async for x in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider)
+                async for x in self.mass.music.playlists.tracks(
+                    playlist.item_id, playlist.provider
+                )
             ]
         else:
             items = []
@@ -1281,7 +1354,9 @@ class LmsCli:
                         "favorites_url": item.uri,
                         "favorites_type": item.media_type.value,
                         "icon": (
-                            self.mass.metadata.get_image_url(item.image, 256) if item.image else ""
+                            self.mass.metadata.get_image_url(item.image, 256)
+                            if item.image
+                            else ""
                         ),
                     },
                     "textkey": item.name[0].upper(),
@@ -1364,7 +1439,9 @@ class LmsCli:
             ):
                 with contextlib.suppress(MusicAssistantError):
                     media_item = await self.mass.music.get_item_by_uri(preset_conf)
-                    slim_media_item = menu_item_from_media_item(self.mass, media_item, True)
+                    slim_media_item = menu_item_from_media_item(
+                        self.mass, media_item, True
+                    )
                     preset_items.append((preset_index, slim_media_item))
             else:
                 break

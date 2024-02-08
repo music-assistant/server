@@ -161,6 +161,7 @@ async def select_free_port(range_start: int, range_end: int) -> int:
                 _sock.bind(("127.0.0.1", port))
             except OSError:
                 return True
+        return False
 
     def _select_free_port():
         for port in range(range_start, range_end):
