@@ -7,7 +7,6 @@ import logging
 import os
 import re
 import struct
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from io import BytesIO
 from time import time
@@ -39,6 +38,8 @@ from .process import AsyncProcess, check_output
 from .util import create_tempfile
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.player_queue import QueueItem
     from music_assistant.server import MusicAssistant
 
@@ -203,7 +204,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         enable_stderr=True,
     ) as ffmpeg_proc:
 
-        async def writer():
+        async def writer() -> None:
             """Task that grabs the source audio and feeds it to ffmpeg."""
             music_prov = mass.get_provider(streamdetails.provider)
             chunk_count = 0
@@ -284,7 +285,8 @@ async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Non
                 break
 
     if not streamdetails:
-        raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
+        msg = f"Unable to retrieve streamdetails for {queue_item}"
+        raise MediaNotFoundError(msg)
 
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
@@ -426,7 +428,7 @@ async def get_media_stream(  # noqa: PLR0915
     async with AsyncProcess(args, enable_stdin=streamdetails.direct is None) as ffmpeg_proc:
         LOGGER.debug("start media stream for: %s", streamdetails.uri)
 
-        async def writer():
+        async def writer() -> None:
             """Task that grabs the source audio and feeds it to ffmpeg."""
             LOGGER.debug("writer started for %s", streamdetails.uri)
             music_prov = mass.get_provider(streamdetails.provider)
@@ -495,9 +497,9 @@ async def get_media_stream(  # noqa: PLR0915
             streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
             streamdetails.duration = seek_position + streamdetails.seconds_streamed
 
-        except (asyncio.CancelledError, GeneratorExit) as err:
+        except (asyncio.CancelledError, GeneratorExit):
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
-            raise err
+            raise
         else:
             LOGGER.debug("finished media stream for: %s", streamdetails.uri)
         finally:
@@ -709,7 +711,7 @@ async def get_preview_stream(
     args = input_args + output_args
     async with AsyncProcess(args, True) as ffmpeg_proc:
 
-        async def writer():
+        async def writer() -> None:
             """Task that grabs the source audio and feeds it to ffmpeg."""
             music_prov = mass.get_provider(streamdetails.provider)
             async for audio_chunk in music_prov.get_audio_stream(streamdetails, 30):
@@ -796,9 +798,12 @@ async def _get_ffmpeg_args(
     ffmpeg_present, libsoxr_support, version = await check_audio_support()
 
     if not ffmpeg_present:
-        raise AudioError(
+        msg = (
             "FFmpeg binary is missing from system."
-            "Please install ffmpeg on your OS to enable playback.",
+            "Please install ffmpeg on your OS to enable playback."
+        )
+        raise AudioError(
+            msg,
         )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))

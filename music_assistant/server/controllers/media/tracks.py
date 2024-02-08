@@ -32,7 +32,7 @@ class TracksController(MediaControllerBase[Track]):
     media_type = MediaType.TRACK
     item_cls = Track
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self.base_query = (
@@ -123,11 +123,14 @@ class TracksController(MediaControllerBase[Track]):
     async def add_item_to_library(self, item: Track, metadata_lookup: bool = True) -> Track:
         """Add track to library and return the new database item."""
         if not isinstance(item, Track):
-            raise InvalidDataError("Not a valid Track object (ItemMapping can not be added to db)")
+            msg = "Not a valid Track object (ItemMapping can not be added to db)"
+            raise InvalidDataError(msg)
         if not item.artists:
-            raise InvalidDataError("Track is missing artist(s)")
+            msg = "Track is missing artist(s)"
+            raise InvalidDataError(msg)
         if not item.provider_mappings:
-            raise InvalidDataError("Track is missing provider mapping(s)")
+            msg = "Track is missing provider mapping(s)"
+            raise InvalidDataError(msg)
         # grab additional metadata
         if metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
@@ -363,19 +366,17 @@ class TracksController(MediaControllerBase[Track]):
         if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
             return []
         # Grab similar tracks from the music provider
-        similar_tracks = await prov.get_similar_tracks(prov_track_id=item_id, limit=limit)
-        return similar_tracks
+        return await prov.get_similar_tracks(prov_track_id=item_id, limit=limit)
 
     async def _get_dynamic_tracks(
         self,
         media_item: Track,
-        limit: int = 25,  # noqa: ARG002
+        limit: int = 25,
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
-        raise UnsupportedFeaturedException(
-            "No Music Provider found that supports requesting similar tracks."
-        )
+        msg = "No Music Provider found that supports requesting similar tracks."
+        raise UnsupportedFeaturedException(msg)
 
     async def _add_library_item(self, item: Track) -> Track:
         """Add a new item record to the database."""
@@ -413,7 +414,9 @@ class TracksController(MediaControllerBase[Track]):
         # return the full item we just added
         return await self.get_library_item(db_id)
 
-    async def _set_track_album(self, db_id: int, album: Album, disc_number: int, track_number: int):
+    async def _set_track_album(
+        self, db_id: int, album: Album, disc_number: int, track_number: int
+    ) -> None:
         """Store AlbumTrack info."""
         db_album = None
         if album.provider == "library":

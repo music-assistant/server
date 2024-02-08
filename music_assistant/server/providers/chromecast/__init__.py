@@ -16,7 +16,6 @@ import pychromecast
 from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE, MediaController
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
-from pychromecast.models import CastInfo
 from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.common.models.config_entries import (
@@ -35,7 +34,6 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
     CONF_CROSSFADE,
     CONF_FLOW_MODE,
@@ -50,10 +48,12 @@ from .helpers import CastStatusListener, ChromecastInfo
 if TYPE_CHECKING:
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.receiver import CastStatus
+    from pychromecast.models import CastInfo
     from pychromecast.socket_client import ConnectionStatus
 
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
@@ -80,7 +80,7 @@ PLAYER_CONFIG_ENTRIES = (
 _patched_process_media_status_org = MediaController._process_media_status
 
 
-def _patched_process_media_status(self, data):
+def _patched_process_media_status(self, data) -> None:
     """Process STATUS message(s) of the media controller."""
     _patched_process_media_status_org(self, data)
     for status_msg in data.get("status", []):
@@ -115,7 +115,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 @dataclass
@@ -169,7 +169,7 @@ class ChromecastProvider(PlayerProvider):
             return
 
         # stop discovery
-        def stop_discovery():
+        def stop_discovery() -> None:
             """Stop the chromecast discovery threads."""
             if self.browser._zc_browser:
                 with contextlib.suppress(RuntimeError):
@@ -304,7 +304,7 @@ class ChromecastProvider(PlayerProvider):
             thumb=MASS_LOGO_ONLINE,
         )
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         castplayer = self.castplayers[player_id]
         url = await self.mass.streams.resolve_stream_url(
@@ -372,7 +372,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Discovery callbacks
 
-    def _on_chromecast_discovered(self, uuid, _):
+    def _on_chromecast_discovered(self, uuid, _) -> None:
         """Handle Chromecast discovered callback."""
         if self.mass.closing:
             return
@@ -464,7 +464,7 @@ class ChromecastProvider(PlayerProvider):
                 self.mass.players.register_or_update, castplayer.player
             )
 
-    def _on_chromecast_removed(self, uuid, service, cast_info):  # noqa: ARG002
+    def _on_chromecast_removed(self, uuid, service, cast_info) -> None:
         """Handle zeroconf discovery of a removed Chromecast."""
         player_id = str(service[1])
         friendly_name = service[3]
@@ -508,7 +508,7 @@ class ChromecastProvider(PlayerProvider):
         # send update to player manager
         self.mass.loop.call_soon_threadsafe(self.mass.players.update, castplayer.player_id)
 
-    def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus):
+    def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
         castplayer.logger.debug("Received media status update: %s", status.player_state)
         # player state
@@ -582,10 +582,10 @@ class ChromecastProvider(PlayerProvider):
         if castplayer.cc.app_id == app_id:
             return  # already active
 
-        def launched_callback():
+        def launched_callback() -> None:
             self.mass.loop.call_soon_threadsafe(event.set)
 
-        def launch():
+        def launch() -> None:
             # Quit the previous app before starting splash screen or media player
             if castplayer.cc.app_id is not None:
                 castplayer.cc.quit_app()

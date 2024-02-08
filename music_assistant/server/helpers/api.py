@@ -80,7 +80,8 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
     """Try to parse a value from raw (json) data and type annotations."""
     if isinstance(value, dict) and hasattr(value_type, "from_dict"):
         if "media_type" in value and value["media_type"] != value_type.media_type:
-            raise ValueError("Invalid MediaType")
+            msg = "Invalid MediaType"
+            raise ValueError(msg)
         return value_type.from_dict(value)
 
     if value is None and not isinstance(default, type(MISSING)):
@@ -131,7 +132,8 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
     if value_type is Any:
         return value
     if value is None and value_type is not NoneType:
-        raise KeyError(f"`{name}` of type `{value_type}` is required.")
+        msg = f"`{name}` of type `{value_type}` is required."
+        raise KeyError(msg)
 
     try:
         if issubclass(value_type, Enum):  # type: ignore[arg-type]
@@ -147,8 +149,9 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
     if value_type is int and isinstance(value, str) and value.isnumeric():
         return int(value)
     if not isinstance(value, value_type):  # type: ignore[arg-type]
-        raise TypeError(
+        msg = (
             f"Value {value} of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
+        raise TypeError(msg)
     return value

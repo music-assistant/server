@@ -35,11 +35,11 @@ from music_assistant.constants import (
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
 from music_assistant.server.models.core_controller import CoreController
-from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.metadata_provider import MetadataProvider
+    from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
 
@@ -61,7 +61,7 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "book-information-variant"
 
-    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
 
@@ -94,7 +94,7 @@ class MetaDataController(CoreController):
     def start_scan(self) -> None:
         """Start background scan for missing metadata."""
 
-        async def scan_artist_metadata():
+        async def scan_artist_metadata() -> None:
             """Background task that scans for artists missing metadata on filesystem providers."""
             if self.scan_busy:
                 return

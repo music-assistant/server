@@ -105,12 +105,14 @@ async def update_access_token(
         ssl=False,
     )
     if response.status != 200:
-        raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
+        msg = f"HTTP Error {response.status}: {response.reason}"
+        raise ConnectionError(msg)
     response_text = await response.text()
     try:
         return response_text.split("=")[1].split("&")[0]
     except Exception as error:
-        raise LoginFailed("Invalid auth code") from error
+        msg = "Invalid auth code"
+        raise LoginFailed(msg) from error
 
 
 async def setup(
@@ -387,7 +389,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         )
         return [browser_folder]
 
-    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add tra ck(s) to playlist."""
         playlist = await self.client.get_playlist(int(prov_playlist_id))
         await playlist.add_tracks(tracks=[int(i) for i in prov_track_ids])
@@ -468,7 +470,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     del buffer[:2048]
         yield bytes(buffer)
 
-    async def log_listen_cb(self, stream_details):
+    async def log_listen_cb(self, stream_details) -> None:
         """Log the end of a track playback."""
         await self.gw_client.log_listen(last_track=stream_details)
 
@@ -711,7 +713,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         if song_data["results"]["FILESIZE_MP3_320"] or song_data["results"]["FILESIZE_MP3_128"]:
             return ContentType.MP3
 
-        raise NotImplementedError("Unsupported contenttype")
+        msg = "Unsupported contenttype"
+        raise NotImplementedError(msg)
 
     def track_available(self, track: deezer.Track, user_country: str) -> bool:
         """Check if a given track is available in the users country."""

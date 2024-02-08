@@ -10,10 +10,10 @@ from typing import TYPE_CHECKING
 import aiofiles
 from PIL import Image
 
-from music_assistant.common.models.media_items import MediaItemImage
 from music_assistant.server.helpers.tags import get_embedded_image
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.media_items import MediaItemImage
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models.music_provider import MusicProvider
 
@@ -30,7 +30,8 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str =
     # both online and offline image files as well as embedded images in media files
     if img_data := await get_embedded_image(path_or_url):
         return img_data
-    raise FileNotFoundError(f"Image not found: {path_or_url}")
+    msg = f"Image not found: {path_or_url}"
+    raise FileNotFoundError(msg)
 
 
 async def get_image_thumb(
@@ -58,7 +59,7 @@ async def create_collage(mass: MusicAssistant, images: list[MediaItemImage]) -> 
 
     collage = await asyncio.to_thread(_new_collage)
 
-    def _add_to_collage(img_data: bytes, coord_x: int, coord_y: int):
+    def _add_to_collage(img_data: bytes, coord_x: int, coord_y: int) -> None:
         data = BytesIO(img_data)
         photo = Image.open(data).convert("RGBA")
         photo = photo.resize((500, 500))
@@ -84,5 +85,4 @@ async def get_icon_string(icon_path: str) -> str:
     assert ext == "svg"
     async with aiofiles.open(icon_path, "r") as _file:
         xml_data = await _file.read()
-        xml_data = xml_data.replace("\n", "").strip()
-        return xml_data
+        return xml_data.replace("\n", "").strip()

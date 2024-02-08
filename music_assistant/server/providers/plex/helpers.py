@@ -62,5 +62,4 @@ async def discover_local_servers():
         else:
             return None, None
 
-    result = await asyncio.to_thread(_discover_local_servers)
-    return result
+    return await asyncio.to_thread(_discover_local_servers)

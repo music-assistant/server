@@ -12,7 +12,6 @@ import asyncio
 import logging
 import time
 import urllib.parse
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
@@ -28,8 +27,6 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import ConfigEntryType, ContentType
 from music_assistant.common.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
-from music_assistant.common.models.player_queue import PlayerQueue
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
     CONF_BIND_IP,
     CONF_BIND_PORT,
@@ -54,8 +51,12 @@ from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.common.models.player import Player
+    from music_assistant.common.models.player_queue import PlayerQueue
+    from music_assistant.common.models.queue_item import QueueItem
 
 
 DEFAULT_STREAM_HEADERS = {
@@ -173,9 +174,8 @@ class MultiClientStreamJob:
 
             if self._all_clients_connected.is_set():
                 # client subscribes while we're already started - we dont support that (for now?)
-                raise RuntimeError(
-                    f"Client {player_id} is joining while the stream is already started"
-                )
+                msg = f"Client {player_id} is joining while the stream is already started"
+                raise RuntimeError(msg)
             self.logger.debug("Subscribed client %s", player_id)
 
             if len(self.subscribed_players) == len(self.expected_players):
@@ -221,7 +221,7 @@ class MultiClientStreamJob:
                         await self._all_clients_connected.wait()
                 except TimeoutError:
                     if len(self.subscribed_players) == 0:
-                        self.stream_controller.logger.error(
+                        self.stream_controller.logger.exception(
                             "Abort multi client stream job for queue %s: "
                             "clients did not connect within timeout",
                             self.queue.display_name,
@@ -261,7 +261,7 @@ class StreamsController(CoreController):
 
     domain: str = "streams"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger, enable_dynamic_routes=True)
@@ -284,8 +284,8 @@ class StreamsController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
-        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         default_ip = await get_ip()
@@ -390,7 +390,8 @@ class StreamsController(CoreController):
         fmt = output_codec.value
         # handle raw pcm
         if output_codec.is_pcm():
-            raise RuntimeError("PCM is not possible as output format")
+            msg = "PCM is not possible as output format"
+            raise RuntimeError(msg)
         query_params = {}
         base_path = "flow" if flow_mode else "single"
         url = f"{self._server.base_url}/{queue_item.queue_id}/{base_path}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
@@ -419,7 +420,7 @@ class StreamsController(CoreController):
         This is called by player/sync group implementations to start streaming
         the queue audio to multiple players at once.
         """
-        if existing_job := self.multi_client_jobs.pop(queue_id, None):  # noqa: SIM102
+        if existing_job := self.multi_client_jobs.pop(queue_id, None):
             # cleanup existing job first
             if not existing_job.finished:
                 self.logger.warning("Detected existing (running) stream job for queue %s", queue_id)
@@ -505,7 +506,7 @@ class StreamsController(CoreController):
 
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
             # feed stdin with pcm audio chunks from origin
-            async def read_audio():
+            async def read_audio() -> None:
                 try:
                     async for chunk in get_media_stream(
                         self.mass,
@@ -593,7 +594,7 @@ class StreamsController(CoreController):
 
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
             # feed stdin with pcm audio chunks from origin
-            async def read_audio():
+            async def read_audio() -> None:
                 try:
                     async for chunk in self.get_flow_stream(
                         queue=queue,
@@ -716,7 +717,7 @@ class StreamsController(CoreController):
 
         async with AsyncProcess(ffmpeg_args, True) as ffmpeg_proc:
             # feed stdin with pcm audio chunks from origin
-            async def read_audio():
+            async def read_audio() -> None:
                 try:
                     async for chunk in streamjob.subscribe(child_player_id):
                         try:

@@ -10,8 +10,6 @@ from typing import TYPE_CHECKING, cast
 
 from snapcast.control import create_server
 from snapcast.control.client import Snapclient
-from snapcast.control.group import Snapgroup
-from snapcast.control.stream import Snapstream
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
@@ -30,14 +28,16 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from snapcast.control.group import Snapgroup
     from snapcast.control.server import Snapserver
+    from snapcast.control.stream import Snapstream
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
@@ -125,7 +125,8 @@ class SnapCastProvider(PlayerProvider):
                 f"{self.snapcast_server_host}:{self.snapcast_server_control_port}"
             )
         except OSError as err:
-            raise SetupFailedError("Unable to start the Snapserver connection ?") from err
+            msg = "Unable to start the Snapserver connection ?"
+            raise SetupFailedError(msg) from err
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -137,7 +138,7 @@ class SnapCastProvider(PlayerProvider):
         for snap_group in self._snapserver.groups:
             snap_group.set_callback(self._handle_group_update)
 
-    def _handle_group_update(self, snap_group: Snapgroup) -> None:  # noqa: ARG002
+    def _handle_group_update(self, snap_group: Snapgroup) -> None:
         """Process Snapcast group callback."""
         for snap_client in self._snapserver.clients:
             self._handle_player_update(snap_client)
@@ -198,10 +199,7 @@ class SnapCastProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + (
-            CONF_ENTRY_CROSSFADE,
-            CONF_ENTRY_CROSSFADE_DURATION,
-        )
+        return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -212,7 +210,7 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         player = self.mass.players.get(player_id, raise_unavailable=False)
-        if stream_task := self._stream_tasks.pop(player_id, None):  # noqa: SIM102
+        if stream_task := self._stream_tasks.pop(player_id, None):
             if not stream_task.done():
                 stream_task.cancel()
         player.state = PlayerState.IDLE
@@ -257,7 +255,8 @@ class SnapCastProvider(PlayerProvider):
         """
         player = self.mass.players.get(player_id)
         if player.synced_to:
-            raise RuntimeError("A synced player cannot receive play commands directly")
+            msg = "A synced player cannot receive play commands directly"
+            raise RuntimeError(msg)
         # stop any existing streams first
         await self.cmd_stop(player_id)
         queue = self.mass.player_queues.get(queue_item.queue_id)
@@ -265,7 +264,7 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
-        async def _streamer():
+        async def _streamer() -> None:
             host = self.snapcast_server_host
             _, writer = await asyncio.open_connection(host, port)
             self.logger.debug("Opened connection to %s:%s", host, port)
@@ -311,7 +310,8 @@ class SnapCastProvider(PlayerProvider):
         """
         player = self.mass.players.get(player_id)
         if player.synced_to:
-            raise RuntimeError("A synced player cannot receive play commands directly")
+            msg = "A synced player cannot receive play commands directly"
+            raise RuntimeError(msg)
         # stop any existing streams first
         await self.cmd_stop(player_id)
         # TEMP - TODO - WARNING - ACHTUNG - HACK
@@ -326,7 +326,7 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
-        async def _streamer():
+        async def _streamer() -> None:
             host = self.snapcast_server_host
             _, writer = await asyncio.open_connection(host, port)
             self.logger.debug("Opened connection to %s:%s", host, port)
@@ -368,6 +368,7 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         if player_id != snap_group.clients[0]:
             return snap_group.clients[0]
+        return None
 
     def _group_childs(self, player_id: str) -> set[str]:
         """Return player_ids of the players synced to this player."""
@@ -393,7 +394,8 @@ class SnapCastProvider(PlayerProvider):
                 continue
             stream = self._snapserver.stream(result["id"])
             return (stream, port)
-        raise RuntimeError("Unable to create stream - No free port found?")
+        msg = "Unable to create stream - No free port found?"
+        raise RuntimeError(msg)
 
     def _get_player_state(self, player_id: str) -> PlayerState:
         """Return the state of the player."""

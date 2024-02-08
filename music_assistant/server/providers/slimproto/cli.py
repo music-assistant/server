@@ -15,7 +15,6 @@ import asyncio
 import contextlib
 import time
 import urllib.parse
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -24,12 +23,13 @@ from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.util import empty_queue, select_free_port
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import EventType, PlayerState, QueueOption, RepeatMode
+from music_assistant.common.models.enums import (
+    EventType,
+    PlayerState,
+    QueueOption,
+    RepeatMode,
+)
 from music_assistant.common.models.errors import MusicAssistantError
-from music_assistant.common.models.event import MassEvent
-from music_assistant.common.models.media_items import MediaItemType
-from music_assistant.common.models.queue_item import QueueItem
 
 from .models import (
     PLAYMODE_MAP,
@@ -51,12 +51,21 @@ from .models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+    )
+    from music_assistant.common.models.event import MassEvent
+    from music_assistant.common.models.media_items import MediaItemType
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
 
     from . import SlimprotoProvider
 
 
-# ruff: noqa: ARG002, E501
+# ruff: noqa: ARG002, E501, ERA001
 
 ArgsType = list[int | str]
 KwargsType = dict[str, Any]
@@ -89,7 +98,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 def parse_value(raw_value: int | str) -> int | str | tuple[str, int | str]:
@@ -264,7 +273,7 @@ class LmsCli:
         # return the response to the client
         return web.json_response(result, dumps=json_dumps)
 
-    async def _handle_cometd(self, request: web.Request) -> web.Response:  # noqa: PLR0912
+    async def _handle_cometd(self, request: web.Request) -> web.Response:
         """
         Handle CometD request on the json CLI.
 
@@ -539,7 +548,7 @@ class LmsCli:
     def _handle_cometd_request(self, client: CometDClient, cometd_request: dict[str, Any]) -> None:
         """Handle request for CometD client (and put result on client queue)."""
 
-        async def _handle():
+        async def _handle() -> None:
             result = await self._handle_request(cometd_request["data"]["request"])
             await client.queue.put(
                 {
@@ -772,7 +781,10 @@ class LmsCli:
         **kwargs,
     ) -> ServerStatusResponse:
         """Handle firmwareupgrade command."""
-        return {"firmwareUpgrade": 0, "relativeFirmwareUrl": "/firmware/baby_7.7.3_r16676.bin"}
+        return {
+            "firmwareUpgrade": 0,
+            "relativeFirmwareUrl": "/firmware/baby_7.7.3_r16676.bin",
+        }
 
     async def _handle_artworkspec(
         self,
@@ -835,6 +847,7 @@ class LmsCli:
             str(args),
             str(kwargs),
         )
+        return None
 
     def _handle_time(self, player_id: str, number: str | int) -> int | None:
         """Handle player `time` command."""
@@ -853,8 +866,10 @@ class LmsCli:
         if isinstance(number, str) and ("+" in number or "-" in number):
             jump = int(number.split("+")[1])
             self.mass.create_task(self.mass.player_queues.skip, player_queue.queue_id, jump)
+            return None
         else:
             self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, int(number))
+            return None
 
     def _handle_power(self, player_id: str, value: str | int, *args, **kwargs) -> int | None:
         """Handle player `time` command."""
@@ -875,6 +890,7 @@ class LmsCli:
             return None
 
         self.mass.create_task(self.mass.players.cmd_power, player_id, bool(value))
+        return None
 
     def _handle_playlist(
         self,
@@ -916,6 +932,7 @@ class LmsCli:
             return None
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
+        return None
 
     def _handle_playlistcontrol(
         self,
@@ -1009,6 +1026,7 @@ class LmsCli:
             str(args),
             str(kwargs),
         )
+        return None
 
     def _handle_button(
         self,
@@ -1063,7 +1081,10 @@ class LmsCli:
             ):
                 option = QueueOption.REPLACE if "playlist" in preset_uri else QueueOption.PLAY
                 self.mass.create_task(
-                    self.mass.player_queues.play_media, queue.queue_id, preset_uri, option
+                    self.mass.player_queues.play_media,
+                    queue.queue_id,
+                    preset_uri,
+                    option,
                 )
             return
 

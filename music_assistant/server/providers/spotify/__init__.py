@@ -8,7 +8,6 @@ import json
 import os
 import platform
 import time
-from collections.abc import AsyncGenerator
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any
@@ -18,7 +17,11 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    ProviderFeature,
+)
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -43,6 +46,8 @@ from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -93,10 +98,16 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
         ConfigEntry(
-            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=True,
         ),
     )
 
@@ -234,19 +245,22 @@ class SpotifyProvider(MusicProvider):
         """Get full album details by id."""
         if album_obj := await self._get_data(f"albums/{prov_album_id}"):
             return await self._parse_album(album_obj)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         if track_obj := await self._get_data(f"tracks/{prov_track_id}"):
             return await self._parse_track(track_obj)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        msg = f"Item {prov_track_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         if playlist_obj := await self._get_data(f"playlists/{prov_playlist_id}"):
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        msg = f"Item {prov_playlist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
@@ -323,9 +337,7 @@ class SpotifyProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
-        track_uris = []
-        for track_id in prov_track_ids:
-            track_uris.append(f"spotify:track:{track_id}")
+        track_uris = [f"spotify:track:{track_id}" for track_id in prov_track_ids]
         data = {"uris": track_uris}
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
@@ -353,7 +365,8 @@ class SpotifyProvider(MusicProvider):
         # make sure a valid track is requested.
         track = await self.get_track(item_id)
         if not track:
-            raise MediaNotFoundError(f"track {item_id} not found")
+            msg = f"track {item_id} not found"
+            raise MediaNotFoundError(msg)
         # make sure that the token is still valid by just requesting it
         await self.login()
         return StreamDetails(
@@ -531,7 +544,8 @@ class SpotifyProvider(MusicProvider):
             if track_obj["album"].get("images"):
                 track.metadata.images = [
                     MediaItemImage(
-                        type=ImageType.THUMB, path=track_obj["album"]["images"][0]["url"]
+                        type=ImageType.THUMB,
+                        path=track_obj["album"]["images"][0]["url"],
                     )
                 ]
         if track_obj.get("copyright"):
@@ -579,7 +593,8 @@ class SpotifyProvider(MusicProvider):
             return self._auth_token
         tokeninfo, userinfo = None, self._sp_user
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
-            raise LoginFailed("Invalid login credentials")
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         # retrieve token with librespot
         retries = 0
         while retries < 20:
@@ -607,15 +622,19 @@ class SpotifyProvider(MusicProvider):
             self._auth_token = tokeninfo
             return tokeninfo
         if tokeninfo and not userinfo:
-            raise LoginFailed(
-                "Unable to retrieve userdetails from Spotify API - probably just a temporary error"
+            msg = (
+                "Unable to retrieve userdetails from Spotify API - "
+                "probably just a temporary error"
             )
+            raise LoginFailed(msg)
         if self.config.get_value(CONF_USERNAME).isnumeric():
             # a spotify free/basic account can be recognized when
             # the username consists of numbers only - check that here
             # an integer can be parsed of the username, this is a free account
-            raise LoginFailed("Only Spotify Premium accounts are supported")
-        raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
+            msg = "Only Spotify Premium accounts are supported"
+            raise LoginFailed(msg)
+        msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+        raise LoginFailed(msg)
 
     async def _get_token(self):
         """Get spotify auth token with librespot bin."""
@@ -729,8 +748,8 @@ class SpotifyProvider(MusicProvider):
             except (
                 aiohttp.ContentTypeError,
                 JSONDecodeError,
-            ) as err:
-                self.logger.error("%s - %s", endpoint, str(err))
+            ):
+                self.logger.exception("%s", endpoint)
                 return None
             finally:
                 self.logger.debug(
@@ -807,4 +826,5 @@ class SpotifyProvider(MusicProvider):
         ):
             return bridge_binary
 
-        raise RuntimeError(f"Unable to locate Librespot for {system}/{architecture}")
+        msg = f"Unable to locate Librespot for {system}/{architecture}"
+        raise RuntimeError(msg)

@@ -167,6 +167,8 @@ asyncio_mode = "auto"
 
 [tool.ruff.lint]
 ignore = [
+  "ANN002", # Just annoying, not really useful
+  "ANN003", # Just annoying, not really useful
   "ANN101", # Self... explanatory
   "ANN401", # Opinioated warning on disallowing dynamically typed expressions
   "D203", # Conflicts with other rules
@@ -174,13 +176,78 @@ ignore = [
   "D417", # False positives in some occasions
   "FIX002", # Just annoying, not really useful
   "PLR2004", # Just annoying, not really useful
+  "PD011", # Just annoying, not really useful
   "S101", # assert is often used to satisfy type checking
   "TD002", # Just annoying, not really useful
   "TD003", # Just annoying, not really useful
+  "TD004", # Just annoying, not really useful
 
   # Conflicts with the Ruff formatter
   "COM812",
   "ISC001",
+
+  # TEMPORARY DISABLED rules
+  # The below rules must be enabled later one-by-one !
+  "BLE001",
+  "FBT001",
+  "FBT002",
+  "FBT003",
+  "ANN001",
+  "ANN102",
+  "ANN201",
+  "ANN202",
+  "TRY002",
+  "PTH103",
+  "PTH100",
+  "PTH110",
+  "PTH111",
+  "PTH112",
+  "PTH113",
+  "PTH118",
+  "PTH120",
+  "PTH123",
+  "PYI034",
+  "PYI036",
+  "G004",
+  "PGH003",
+  "DTZ005",
+  "S104",
+  "S105",
+  "S106",
+  "SLF001",
+  "SIM113",
+  "SIM102",
+  "PERF401",
+  "PERF402",
+  "ARG002",
+  "S311",
+  "TRY301",
+  "RET505",
+  "PLR0912",
+  "B904",
+  "TRY401",
+  "S324",
+  "DTZ006",
+  "ERA001",
+  "PTH206",
+  "C901",
+  "PTH119",
+  "PTH116",
+  "DTZ003",
+  "RUF012",
+  "S304",
+  "DTZ003",
+  "RET507",
+  "RUF006",
+  "TRY300",
+  "PTH107",
+  "S608",
+  "N818",
+  "S307",
+  "B007",
+  "RUF009",
+  "ANN204",
+  "PTH202",
 ]
 
 select = ["ALL"]

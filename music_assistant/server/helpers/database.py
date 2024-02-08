@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Mapping
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import aiosqlite
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Mapping
 
 
 class DatabaseConnection:
@@ -13,7 +15,7 @@ class DatabaseConnection:
 
     _db: aiosqlite.Connection
 
-    def __init__(self, db_path: str):
+    def __init__(self, db_path: str) -> None:
         """Initialize class."""
         self.db_path = db_path
 
@@ -29,8 +31,8 @@ class DatabaseConnection:
     async def get_rows(
         self,
         table: str,
-        match: dict = None,
-        order_by: str = None,
+        match: dict | None = None,
+        order_by: str | None = None,
         limit: int = 500,
         offset: int = 0,
     ) -> list[Mapping]:
@@ -147,14 +149,14 @@ class DatabaseConnection:
         await self.execute(sql_query)
         await self._db.commit()
 
-    async def execute(self, query: str, values: dict = None) -> Any:
+    async def execute(self, query: str, values: dict | None = None) -> Any:
         """Execute command on the database."""
         return await self._db.execute(query, values)
 
     async def iter_items(
         self,
         table: str,
-        match: dict = None,
+        match: dict | None = None,
     ) -> AsyncGenerator[Mapping, None]:
         """Iterate all items within a table."""
         limit: int = 500

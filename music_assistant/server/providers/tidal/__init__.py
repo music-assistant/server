@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Awaitable, Callable
 from datetime import datetime, timedelta
 from typing import TYPE_CHECKING, Any
 
@@ -15,7 +14,6 @@ from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Quality as TidalQuality
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
-from tidalapi.media import Lyrics as TidalLyrics
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -73,6 +71,10 @@ from .helpers import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Awaitable, Callable
+
+    from tidalapi.media import Lyrics as TidalLyrics
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -128,7 +130,8 @@ async def get_config_entries(
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
             tidal_session = await tidal_code_login(auth_helper, values.get(CONF_QUALITY))
             if not tidal_session.check_login():
-                raise LoginFailed("Authentication to Tidal failed")
+                msg = "Authentication to Tidal failed"
+                raise LoginFailed(msg)
             # set the retrieved token on the values object to pass along
             values[CONF_AUTH_TOKEN] = tidal_session.access_token
             values[CONF_REFRESH_TOKEN] = tidal_session.refresh_token
@@ -155,7 +158,8 @@ async def get_config_entries(
                     title=TidalQuality.low_320k.value, value=TidalQuality.low_320k.name
                 ),
                 ConfigValueOption(
-                    title=TidalQuality.high_lossless.value, value=TidalQuality.high_lossless.name
+                    title=TidalQuality.high_lossless.value,
+                    value=TidalQuality.high_lossless.name,
                 ),
                 ConfigValueOption(title=TidalQuality.hi_res.value, value=TidalQuality.hi_res.name),
             ],
@@ -339,7 +343,8 @@ class TidalProvider(MusicProvider):
         ):
             total_playlist_tracks += 1
             track = await self._parse_track(
-                track_obj=track_obj, extra_init_kwargs={"position": total_playlist_tracks}
+                track_obj=track_obj,
+                extra_init_kwargs={"position": total_playlist_tracks},
             )
             yield track
 
@@ -410,7 +415,8 @@ class TidalProvider(MusicProvider):
         url = await get_track_url(tidal_session, item_id)
         media_info = await self._get_media_info(item_id=item_id, url=url)
         if not track:
-            raise MediaNotFoundError(f"track {item_id} not found")
+            msg = f"track {item_id} not found"
+            raise MediaNotFoundError(msg)
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
@@ -438,7 +444,8 @@ class TidalProvider(MusicProvider):
         tidal_session = await self._get_tidal_session()
         async with self._throttler:
             return await self._parse_album(
-                album_obj=await get_album(tidal_session, prov_album_id), full_details=True
+                album_obj=await get_album(tidal_session, prov_album_id),
+                full_details=True,
             )
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -446,7 +453,8 @@ class TidalProvider(MusicProvider):
         tidal_session = await self._get_tidal_session()
         async with self._throttler:
             return await self._parse_track(
-                track_obj=await get_track(tidal_session, prov_track_id), full_details=True
+                track_obj=await get_track(tidal_session, prov_track_id),
+                full_details=True,
             )
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -454,7 +462,8 @@ class TidalProvider(MusicProvider):
         tidal_session = await self._get_tidal_session()
         async with self._throttler:
             return await self._parse_playlist(
-                playlist_obj=await get_playlist(tidal_session, prov_playlist_id), full_details=True
+                playlist_obj=await get_playlist(tidal_session, prov_playlist_id),
+                full_details=True,
             )
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
@@ -500,7 +509,12 @@ class TidalProvider(MusicProvider):
         return self._tidal_session
 
     async def _load_tidal_session(
-        self, token_type, quality: TidalQuality, access_token, refresh_token=None, expiry_time=None
+        self,
+        token_type,
+        quality: TidalQuality,
+        access_token,
+        refresh_token=None,
+        expiry_time=None,
     ) -> TidalSession:
         """Load the tidalapi Session."""
 

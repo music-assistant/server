@@ -40,7 +40,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     media_type = MediaType.ARTIST
     item_cls = Artist
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
@@ -223,7 +223,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         # delete the artist itself from db
         await super().remove_item_from_library(db_id)
 
-    async def match_artist(self, db_artist: Artist):
+    async def match_artist(self, db_artist: Artist) -> None:
         """Try to find matching artists on all providers for the provided (database) item_id.
 
         This is used to link objects of different providers together.
@@ -415,13 +415,12 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def _get_dynamic_tracks(
         self,
         media_item: Artist,
-        limit: int = 25,  # noqa: ARG002
+        limit: int = 25,
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
-        raise UnsupportedFeaturedException(
-            "No Music Provider found that supports requesting similar tracks."
-        )
+        msg = "No Music Provider found that supports requesting similar tracks."
+        raise UnsupportedFeaturedException(msg)
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""

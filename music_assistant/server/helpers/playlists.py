@@ -56,18 +56,22 @@ async def fetch_playlist(mass: MusicAssistant, url: str) -> list[str]:
             try:
                 playlist_data = (await resp.content.read(64 * 1024)).decode(charset)
             except ValueError as err:
-                raise InvalidDataError(f"Could not decode playlist {url}") from err
+                msg = f"Could not decode playlist {url}"
+                raise InvalidDataError(msg) from err
     except TimeoutError as err:
-        raise InvalidDataError(f"Timeout while fetching playlist {url}") from err
+        msg = f"Timeout while fetching playlist {url}"
+        raise InvalidDataError(msg) from err
     except aiohttp.client_exceptions.ClientError as err:
-        raise InvalidDataError(f"Error while fetching playlist {url}") from err
+        msg = f"Error while fetching playlist {url}"
+        raise InvalidDataError(msg) from err
 
-    if url.endswith(".m3u") or url.endswith(".m3u8"):
+    if url.endswith((".m3u", ".m3u8")):
         playlist = await parse_m3u(playlist_data)
     else:
         playlist = await parse_pls(playlist_data)
 
     if not playlist:
-        raise InvalidDataError(f"Empty playlist {url}")
+        msg = f"Empty playlist {url}"
+        raise InvalidDataError(msg)
 
     return playlist

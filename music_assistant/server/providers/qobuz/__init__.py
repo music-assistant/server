@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import time
-from collections.abc import AsyncGenerator
 from json import JSONDecodeError
 from typing import TYPE_CHECKING
 
@@ -14,7 +13,11 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    ProviderFeature,
+)
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -39,10 +42,16 @@ from music_assistant.constants import (
     VARIOUS_ARTISTS_ID_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import (
+    app_var,
+)
+
+# pylint: disable=no-name-in-module
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -93,10 +102,16 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
         ConfigEntry(
-            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=True,
         ),
     )
 
@@ -112,11 +127,13 @@ class QobuzProvider(MusicProvider):
         self._throttler = Throttler(rate_limit=4, period=1)
 
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
-            raise LoginFailed("Invalid login credentials")
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
-            raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
+            msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+            raise LoginFailed(msg)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -204,28 +221,32 @@ class QobuzProvider(MusicProvider):
         params = {"artist_id": prov_artist_id}
         if (artist_obj := await self._get_data("artist/get", **params)) and artist_obj["id"]:
             return await self._parse_artist(artist_obj)
-        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
+        msg = f"Item {prov_artist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         params = {"album_id": prov_album_id}
         if (album_obj := await self._get_data("album/get", **params)) and album_obj["id"]:
             return await self._parse_album(album_obj)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         params = {"track_id": prov_track_id}
         if (track_obj := await self._get_data("track/get", **params)) and track_obj["id"]:
             return await self._parse_track(track_obj)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        msg = f"Item {prov_track_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
         if (playlist_obj := await self._get_data("playlist/get", **params)) and playlist_obj["id"]:
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        msg = f"Item {prov_playlist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
@@ -298,7 +319,7 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
-    async def get_similar_artists(self, prov_artist_id):
+    async def get_similar_artists(self, prov_artist_id) -> None:
         """Get similar artists for given artist."""
         # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
 
@@ -374,13 +395,15 @@ class QobuzProvider(MusicProvider):
                 streamdata = result
                 break
         if not streamdata:
-            raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
+            msg = f"Unable to retrieve stream details for {item_id}"
+            raise MediaNotFoundError(msg)
         if streamdata["mime_type"] == "audio/mpeg":
             content_type = ContentType.MPEG
         elif streamdata["mime_type"] == "audio/flac":
             content_type = ContentType.FLAC
         else:
-            raise MediaNotFoundError(f"Unsupported mime type for {item_id}")
+            msg = f"Unsupported mime type for {item_id}"
+            raise MediaNotFoundError(msg)
         # report playback started as soon as the streamdetails are requested
         self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
@@ -460,7 +483,7 @@ class QobuzProvider(MusicProvider):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
 
-    async def _parse_album(self, album_obj: dict, artist_obj: dict = None):
+    async def _parse_album(self, album_obj: dict, artist_obj: dict | None = None):
         """Parse qobuz album object to generic layout."""
         if not artist_obj and "artist" not in album_obj:
             # artist missing in album info, return full abum instead

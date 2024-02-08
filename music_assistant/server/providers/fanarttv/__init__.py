@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.media_items import ImageType, MediaItemImage, MediaItemMetadata
 from music_assistant.server.controllers.cache import use_cache
@@ -16,7 +15,11 @@ from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=n
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.media_items import Album, Artist
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -61,7 +64,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 class FanartTvMetadataProvider(MetadataProvider):
@@ -101,7 +104,7 @@ class FanartTvMetadataProvider(MetadataProvider):
         if not album.mbid:
             return None
         self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
-        if data := await self._get_data(f"music/albums/{album.mbid}"):  # noqa: SIM102
+        if data := await self._get_data(f"music/albums/{album.mbid}"):
             if data and data.get("albums"):
                 data = data["albums"][album.mbid]
                 metadata = MediaItemMetadata()
@@ -130,7 +133,7 @@ class FanartTvMetadataProvider(MetadataProvider):
                 aiohttp.client_exceptions.ContentTypeError,
                 JSONDecodeError,
             ):
-                self.logger.error("Failed to retrieve %s", endpoint)
+                self.logger.exception("Failed to retrieve %s", endpoint)
                 text_result = await response.text()
                 self.logger.debug(text_result)
                 return None

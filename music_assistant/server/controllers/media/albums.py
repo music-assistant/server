@@ -42,7 +42,7 @@ class AlbumsController(MediaControllerBase[Album]):
     media_type = MediaType.ALBUM
     item_cls = Album
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
@@ -97,9 +97,11 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> Album:
         """Add album to library and return the database item."""
         if not isinstance(item, Album):
-            raise InvalidDataError("Not a valid Album object (ItemMapping can not be added to db)")
+            msg = "Not a valid Album object (ItemMapping can not be added to db)"
+            raise InvalidDataError(msg)
         if not item.provider_mappings:
-            raise InvalidDataError("Album is missing provider mapping(s)")
+            msg = "Album is missing provider mapping(s)"
+            raise InvalidDataError(msg)
         # grab additional metadata
         if metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
@@ -342,13 +344,12 @@ class AlbumsController(MediaControllerBase[Album]):
     async def _get_dynamic_tracks(
         self,
         media_item: Album,
-        limit: int = 25,  # noqa: ARG002
+        limit: int = 25,
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
-        raise UnsupportedFeaturedException(
-            "No Music Provider found that supports requesting similar tracks."
-        )
+        msg = "No Music Provider found that supports requesting similar tracks."
+        raise UnsupportedFeaturedException(msg)
 
     async def _get_db_album_tracks(
         self,

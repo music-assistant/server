@@ -67,7 +67,8 @@ def soco_error(
                     return None
 
                 if (target := _find_target_identifier(self, args_soco)) is None:
-                    raise RuntimeError("Unexpected use of soco_error") from err
+                    msg = "Unexpected use of soco_error"
+                    raise RuntimeError(msg) from err
 
                 message = f"Error calling {function} on {target}: {err}"
                 raise SonosUpdateError(message) from err
@@ -98,7 +99,8 @@ def hostname_to_uid(hostname: str) -> str:
     elif hostname.startswith("sonos"):
         baseuid = hostname.removeprefix("sonos").replace(".local.", "")
     else:
-        raise ValueError(f"{hostname} is not a sonos device.")
+        msg = f"{hostname} is not a sonos device."
+        raise ValueError(msg)
     return f"{UID_PREFIX}{baseuid}{UID_POSTFIX}"
 
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
@@ -21,6 +21,9 @@ from music_assistant.common.models.media_items import (
 )
 
 from .provider import Provider
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 # ruff: noqa: ARG001, ARG002
 
@@ -301,7 +304,8 @@ class MusicProvider(Provider):
             return
         if subpath:
             # unknown path
-            raise KeyError("Invalid subpath")
+            msg = "Invalid subpath"
+            raise KeyError(msg)
         # no subpath: return main listing
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             yield BrowseFolder(

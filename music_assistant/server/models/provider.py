@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.config_entries import ProviderConfig
-from music_assistant.common.models.enums import ProviderFeature, ProviderType
-from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
 from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.enums import ProviderFeature, ProviderType
+    from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
     from music_assistant.server import MusicAssistant
 
 
@@ -49,7 +49,7 @@ class Provider:
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return tuple()
+        return ()
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -87,7 +87,7 @@ class Provider:
             return f"{self.manifest.name}.{postfix}"
         return self.manifest.name
 
-    def to_dict(self, *args, **kwargs) -> ProviderInstance:  # noqa: ARG002
+    def to_dict(self, *args, **kwargs) -> ProviderInstance:
         """Return Provider(instance) as serializable dict."""
         return {
             "type": self.type.value,

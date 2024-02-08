@@ -5,7 +5,6 @@ from __future__ import annotations
 import logging
 import random
 import time
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -39,7 +38,7 @@ from music_assistant.server.helpers.audio import set_stream_details
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from collections.abc import Iterator
+    from collections.abc import AsyncGenerator, Iterator
 
     from music_assistant.common.models.media_items import Album, Artist, Track
     from music_assistant.common.models.player import Player
@@ -86,8 +85,8 @@ class PlayerQueuesController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
-        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         enqueue_options = tuple(ConfigValueOption(x.name, x.value) for x in QueueOption)
@@ -289,7 +288,8 @@ class PlayerQueuesController(CoreController):
                     media_item = await self.mass.music.get_item_by_uri(item)
                 except MusicAssistantError as err:
                     # invalid MA uri or item not found error
-                    raise MediaNotFoundError(f"Invalid uri: {item}") from err
+                    msg = f"Invalid uri: {item}"
+                    raise MediaNotFoundError(msg) from err
             elif isinstance(item, dict):
                 media_item = media_from_dict(item)
             else:
@@ -442,7 +442,8 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index <= queue.index_in_buffer:
-            raise IndexError(f"{item_index} is already played/buffered")
+            msg = f"{item_index} is already played/buffered"
+            raise IndexError(msg)
 
         queue_items = self._queue_items[queue_id]
         queue_items = queue_items.copy()
@@ -628,7 +629,8 @@ class PlayerQueuesController(CoreController):
                 resume_pos = 0
             await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
-            raise QueueEmpty(f"Resume queue requested but queue {queue_id} is empty")
+            msg = f"Resume queue requested but queue {queue_id} is empty"
+            raise QueueEmpty(msg)
 
     @api_command("players/queue/play_index")
     async def play_index(
@@ -647,7 +649,8 @@ class PlayerQueuesController(CoreController):
             index = self.index_by_id(queue_id, index)
         queue_item = self.get_item(queue_id, index)
         if queue_item is None:
-            raise FileNotFoundError(f"Unknown index/id: {index}")
+            msg = f"Unknown index/id: {index}"
+            raise FileNotFoundError(msg)
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
@@ -693,7 +696,7 @@ class PlayerQueuesController(CoreController):
     def on_player_update(
         self,
         player: Player,
-        changed_values: dict[str, tuple[Any, Any]],  # noqa: ARG002
+        changed_values: dict[str, tuple[Any, Any]],
     ) -> None:
         """
         Call when a PlayerQueue needs to be updated (e.g. when player updates).
@@ -802,7 +805,8 @@ class PlayerQueuesController(CoreController):
         """
         queue = self.get(queue_id)
         if not queue:
-            raise PlayerUnavailableError(f"PlayerQueue {queue_id} is not available")
+            msg = f"PlayerQueue {queue_id} is not available"
+            raise PlayerUnavailableError(msg)
         if current_item_id_or_index is None:
             cur_index = queue.index_in_buffer
         elif isinstance(current_item_id_or_index, str):
@@ -813,7 +817,8 @@ class PlayerQueuesController(CoreController):
         while True:
             next_index = self._get_next_index(queue_id, cur_index + idx)
             if next_index is None:
-                raise QueueEmpty("No more tracks left in the queue.")
+                msg = "No more tracks left in the queue."
+                raise QueueEmpty(msg)
             next_item = self.get_item(queue_id, next_index)
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
@@ -828,7 +833,8 @@ class PlayerQueuesController(CoreController):
                 next_item = None
                 idx += 1
         if next_item is None:
-            raise QueueEmpty("No more (playable) tracks left in the queue.")
+            msg = "No more (playable) tracks left in the queue."
+            raise QueueEmpty(msg)
         return next_item
 
     # Main queue manipulation methods
@@ -977,7 +983,7 @@ class PlayerQueuesController(CoreController):
             duration = current_item.duration
         seconds_remaining = int(duration - player.corrected_elapsed_time)
 
-        async def _enqueue_next(index: int, supports_enqueue: bool = False):
+        async def _enqueue_next(index: int, supports_enqueue: bool = False) -> None:
             with suppress(QueueEmpty):
                 next_item = await self.preload_next_item(queue.queue_id, index)
                 if supports_enqueue:

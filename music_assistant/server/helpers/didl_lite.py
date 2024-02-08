@@ -81,5 +81,4 @@ def escape_string(data: str) -> str:
     data = data.replace("&", "&amp;")
     # data = data.replace("?", "&#63;")
     data = data.replace(">", "&gt;")
-    data = data.replace("<", "&lt;")
-    return data
+    return data.replace("<", "&lt;")

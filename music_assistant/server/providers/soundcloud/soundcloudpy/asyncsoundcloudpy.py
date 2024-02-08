@@ -3,16 +3,17 @@ Async helpers for connecting to the Soundcloud API.
 
 This file is based on soundcloudpy from Naím Rodríguez https://github.com/naim-prog
 Original package https://github.com/naim-prog/soundcloud-py
-"""
+"""  # noqa: INP001
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 BASE_URL = "https://api-v2.soundcloud.com"
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from aiohttp.client import ClientSession
 
 # TODO: Fix docstring
@@ -39,10 +40,11 @@ class SoundcloudAsyncAPI:
         async with self.http_session.get(url=url, params=params, headers=headers) as response:
             return await response.json()
 
-    async def login(self):
+    async def login(self) -> None:
         """Login to soundcloud."""
         if len(self.client_id) != 32:
-            raise ValueError("Not valid client id")
+            msg = "Not valid client id"
+            raise ValueError(msg)
 
         # To get the last version of Firefox to prevent some type of deprecated version
         json_versions = await self.get(
@@ -235,7 +237,7 @@ class SoundcloudAsyncAPI:
 
     # ---------------- MISCELLANEOUS ----------------
 
-    async def get_recommended(self, track_id: str, limit: int = 10):  # noqa: ARG002
+    async def get_recommended(self, track_id: str, limit: int = 10):
         """:param track_id: track id to get recommended tracks from this"""
         return await self.get(
             f"{BASE_URL}/tracks/{track_id}/related?client_id={self.client_id}",
@@ -346,7 +348,8 @@ class SoundcloudAsyncAPI:
 
             # Sanity check.
             if "collection" not in response:
-                raise RuntimeError("Unexpected Soundcloud API response")
+                msg = "Unexpected Soundcloud API response"
+                raise RuntimeError(msg)
 
             for item in response["collection"]:
                 yield item

@@ -15,12 +15,12 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
 )
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.common.models.player import Player
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.player import Player
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server.controllers.streams import MultiClientStreamJob
 
@@ -44,7 +44,8 @@ class PlayerProvider(Provider):
         )
         if player_id.startswith(SYNCGROUP_PREFIX):
             # add default entries for syncgroups
-            return entries + (
+            return (
+                *entries,
                 ConfigEntry(
                     key=CONF_GROUP_MEMBERS,
                     type=ConfigEntryType.STRING,
@@ -129,7 +130,7 @@ class PlayerProvider(Provider):
         """
         raise NotImplementedError
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """
         Handle enqueuing of the next queue item on the player.
 

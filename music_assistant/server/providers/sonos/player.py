@@ -26,8 +26,6 @@ from soco.core import (
     SoCo,
 )
 from soco.data_structures import DidlAudioBroadcast, DidlPlaylistContainer
-from soco.events_base import Event as SonosEvent
-from soco.events_base import SubscriptionBase
 from sonos_websocket import SonosWebsocket
 
 from music_assistant.common.helpers.datetime import utc
@@ -38,6 +36,9 @@ from music_assistant.common.models.player import DeviceInfo, Player
 from .helpers import SonosUpdateError, soco_error
 
 if TYPE_CHECKING:
+    from soco.events_base import Event as SonosEvent
+    from soco.events_base import SubscriptionBase
+
     from . import SonosPlayerProvider
 
 CALLBACK_TYPE = Callable[[], None]
@@ -463,7 +464,7 @@ class SonosPlayer:
 
         self._set_basic_track_info(update_position=state_changed)
 
-        if (ct_md := evars["current_track_meta_data"]) and not self.image_url:  # noqa: SIM102
+        if (ct_md := evars["current_track_meta_data"]) and not self.image_url:
             if album_art_uri := getattr(ct_md, "album_art_uri", None):
                 # TODO: handle library mess here
                 self.image_url = album_art_uri
@@ -588,7 +589,7 @@ class SonosPlayer:
                         if p.uid != coordinator_uid and p.is_visible
                     ]
 
-            return [coordinator_uid] + joined_uids
+            return [coordinator_uid, *joined_uids]
 
         async def _extract_group(event: SonosEvent | None) -> list[str]:
             """Extract group layout from a topology event."""
@@ -682,7 +683,7 @@ class SonosPlayer:
         any_speaker = next(iter(self.sonos_prov.sonosplayers.values()))
         any_speaker.soco.zone_group_state.clear_cache()
 
-    def _update_attributes(self):
+    def _update_attributes(self) -> None:
         """Update attributes of the MA Player from SoCo state."""
         # generic attributes (player_info)
         self.mass_player.available = self.available
