@@ -431,12 +431,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         # Merge album content with similar tracks
         dynamic_playlist = [
-            *sorted(top_tracks, key=lambda n: random())[
-                :no_of_artist_tracks
-            ],  # noqa: ARG005
-            *sorted(similar_tracks, key=lambda n: random())[
-                :no_of_similar_tracks
-            ],  # noqa: ARG005
+            *sorted(top_tracks, key=lambda _: random())[:no_of_artist_tracks],
+            *sorted(similar_tracks, key=lambda _: random())[:no_of_similar_tracks],
         ]
         return sorted(dynamic_playlist, key=lambda n: random())  # noqa: ARG005
 
@@ -469,10 +465,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
                 try:
-                    ref_track = (
-                        await self.mass.music.tracks.get_provider_item(  # noqa: PLW2901
-                            ref_track.item_id, ref_track.provider
-                        )
+                    ref_track = await self.mass.music.tracks.get_provider_item(
+                        ref_track.item_id, ref_track.provider
                     )
                 except MediaNotFoundError:
                     continue
