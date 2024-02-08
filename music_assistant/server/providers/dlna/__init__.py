@@ -141,7 +141,7 @@ async def get_config_entries(
 
 
 def catch_request_errors(
-    func: Callable[Concatenate[_DLNAPlayerProviderT, _P], Awaitable[_R]]
+    func: Callable[Concatenate[_DLNAPlayerProviderT, _P], Awaitable[_R]],
 ) -> Callable[Concatenate[_DLNAPlayerProviderT, _P], Coroutine[Any, Any, _R | None]]:
     """Catch UpnpError errors."""
 
@@ -295,14 +295,17 @@ class DLNAPlayerProvider(PlayerProvider):
                 tg.create_task(self._device_disconnect(dlna_player))
 
     async def get_player_config_entries(
-        self, player_id: str  # noqa: ARG002
+        self,
+        player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
         return base_entries + PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(
-        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+        self,
+        config: PlayerConfig,
+        changed_keys: set[str],
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         super().on_player_config_changed(config, changed_keys)

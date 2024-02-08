@@ -313,9 +313,7 @@ class AudioTags:
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
             for key, value in stream.get("tags", {}).items():
-                alt_key = (
-                    key.lower().replace(" ", "").replace("_", "").replace("-", "")
-                )  # noqa: PLW2901
+                alt_key = key.lower().replace(" ", "").replace("_", "").replace("-", "")
                 tags[alt_key] = value
 
         return AudioTags(
@@ -407,7 +405,7 @@ async def parse_tags(
                 tags.duration = int((file_size * 8) / tags.bit_rate)
             return tags
         except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-            raise InvalidDataError(f"Unable to retrieve info for {file_path}: {str(err)}") from err
+            raise InvalidDataError(f"Unable to retrieve info for {file_path}: {err!s}") from err
 
 
 async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> bytes | None:

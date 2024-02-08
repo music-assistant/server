@@ -263,7 +263,7 @@ class WebsocketClientHandler:
         try:
             async with asyncio.timeout(10):
                 await wsock.prepare(request)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._logger.warning("Timeout preparing request from %s", request.remote)
             return wsock
 

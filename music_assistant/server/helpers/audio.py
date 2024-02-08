@@ -732,7 +732,7 @@ async def get_silence(
     """Create stream of silence, encoded to format of choice."""
     if output_format.content_type.is_pcm():
         # pcm = just zeros
-        for _ in range(0, duration):
+        for _ in range(duration):
             yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
         return
     if output_format.content_type == ContentType.WAV:
@@ -743,7 +743,7 @@ async def get_silence(
             bitspersample=output_format.bit_depth,
             duration=duration,
         )
-        for _ in range(0, duration):
+        for _ in range(duration):
             yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
         return
     # use ffmpeg for all other encodings

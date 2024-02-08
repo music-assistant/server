@@ -377,7 +377,7 @@ class ConfigController:
 
         if not changed_keys:
             # no changes
-            return
+            return None
 
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())

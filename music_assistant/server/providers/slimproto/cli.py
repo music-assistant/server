@@ -410,7 +410,7 @@ class LmsCli:
                         "subscription": cometd_msg["subscription"],
                     }
                 )
-            elif channel == "/slim/subscribe":  # noqa: SIM114
+            elif channel == "/slim/subscribe":
                 # A request to execute & subscribe to some Logitech Media Server event
                 # A valid /slim/subscribe message looks like this:
                 # {
@@ -805,27 +805,27 @@ class LmsCli:
                 # self.mass.players.update(player_id)
             else:
                 self.mass.create_task(self.mass.players.cmd_volume_set, player_id, arg)
-            return
+            return None
         if subcommand == "volume" and arg == "?":
             return player.volume_level
         if subcommand == "volume" and "+" in arg:
             volume_level = min(100, player.volume_level + int(arg.split("+")[1]))
             self.mass.create_task(self.mass.players.cmd_volume_set, player_id, volume_level)
-            return
+            return None
         if subcommand == "volume" and "-" in arg:
             volume_level = max(0, player.volume_level - int(arg.split("-")[1]))
             self.mass.create_task(self.mass.players.cmd_volume_set, player_id, volume_level)
-            return
+            return None
 
         # <playerid> mixer muting <0|1|toggle|?|>
         if subcommand == "muting" and isinstance(arg, int):
             self.mass.create_task(self.mass.players.cmd_volume_mute, player_id, int(arg))
-            return
+            return None
         if subcommand == "muting" and arg == "toggle":
             self.mass.create_task(
                 self.mass.players.cmd_volume_mute, player_id, not player.volume_muted
             )
-            return
+            return None
         if subcommand == "muting":
             return int(player.volume_muted)
         self.logger.warning(
@@ -872,7 +872,7 @@ class LmsCli:
             # itself and just reports the new state
             player.powered = bool(value)
             # self.mass.players.update(player_id)
-            return
+            return None
 
         self.mass.create_task(self.mass.players.cmd_power, player_id, bool(value))
 
@@ -891,29 +891,29 @@ class LmsCli:
         # <playerid> playlist index <index|+index|-index|?> <fadeInSecs>
         if subcommand == "index" and isinstance(arg, int):
             self.mass.create_task(self.mass.player_queues.play_index, player_id, arg)
-            return
+            return None
         if subcommand == "index" and arg == "?":
             return queue.current_index
         if subcommand == "index" and "+" in arg:
             next_index = (queue.current_index or 0) + int(arg.split("+")[1])
             self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
-            return
+            return None
         if subcommand == "index" and "-" in arg:
             next_index = (queue.current_index or 0) - int(arg.split("-")[1])
             self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
-            return
+            return None
         if subcommand == "shuffle" and arg == "?":
             return queue.shuffle_enabled
         if subcommand == "shuffle":
             self.mass.player_queues.set_shuffle(queue.queue_id, bool(arg))
-            return
+            return None
         if subcommand == "repeat" and arg == "?":
             return str(REPEATMODE_MAP[queue.repeat_mode])
         if subcommand == "repeat":
             repeat_map = {val: key for key, val in REPEATMODE_MAP.items()}
             new_repeat_mode = repeat_map.get(int(arg))
             self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
-            return
+            return None
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
 
@@ -1366,5 +1366,5 @@ def dict_to_strings(source: dict) -> list[str]:
         elif isinstance(value, dict):
             result += dict_to_strings(value)
         else:
-            result.append(f"{key}:{str(value)}")
+            result.append(f"{key}:{value!s}")
     return result

@@ -322,8 +322,8 @@ class MusicAssistant:
             # assume normal callable (non coroutine or awaitable)
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
-        def task_done_callback(_task: asyncio.Future | asyncio.Task):  # noqa: ARG001
-            _task_id = getattr(task, "task_id")
+        def task_done_callback(_task: asyncio.Future | asyncio.Task):
+            _task_id = task.task_id
             self._tracked_tasks.pop(_task_id)
             # print unhandled exceptions
             if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
@@ -337,7 +337,7 @@ class MusicAssistant:
 
         if task_id is None:
             task_id = uuid4().hex
-        setattr(task, "task_id", task_id)
+        task.task_id = task_id
         self._tracked_tasks[task_id] = task
         task.add_done_callback(task_done_callback)
         return task
@@ -374,7 +374,7 @@ class MusicAssistant:
             raise RuntimeError(f"Command {command} is already registered")
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
-    async def load_provider(self, conf: ProviderConfig) -> None:  # noqa: C901
+    async def load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
@@ -560,7 +560,7 @@ class MusicAssistant:
                 await self.zeroconf.async_update_service(info)
             else:
                 await self.zeroconf.async_register_service(info)
-            setattr(self, "mass_zc_service_set", True)
+            self.mass_zc_service_set = True
         except NonUniqueNameException:
             LOGGER.error(
                 "Music Assistant instance with identical name present in the local network!"

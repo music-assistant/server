@@ -101,7 +101,7 @@ class PlayerProvider(Provider):
         - player_id: player_id of the player to handle the command.
         """
         # will only be called for players with Pause feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def play_media(
         self,
@@ -120,14 +120,14 @@ class PlayerProvider(Provider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle PLAY STREAM on given player.
 
         This is a special feature from the Universal Group provider.
         """
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
         """
@@ -151,7 +151,7 @@ class PlayerProvider(Provider):
         - powered: bool if player should be powered on or off.
         """
         # will only be called for players with Power feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
@@ -160,7 +160,7 @@ class PlayerProvider(Provider):
         - volume_level: volume level (0..100) to set on the player.
         """
         # will only be called for players with Volume feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player.
@@ -169,7 +169,7 @@ class PlayerProvider(Provider):
         - muted: bool if player should be muted.
         """
         # will only be called for players with Mute feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def cmd_seek(self, player_id: str, position: int) -> None:
         """Handle SEEK command for given queue.
@@ -178,7 +178,7 @@ class PlayerProvider(Provider):
         - position: position in seconds to seek to in the current playing item.
         """
         # will only be called for players with Seek feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -189,7 +189,7 @@ class PlayerProvider(Provider):
             - target_player: player_id of the syncgroup master or group player.
         """
         # will only be called for players with SYNC feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -199,7 +199,7 @@ class PlayerProvider(Provider):
             - player_id: player_id of the player to handle the command.
         """
         # will only be called for players with SYNC feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def create_group(self, name: str, members: list[str]) -> Player:
         """Create new PlayerGroup on this provider.
@@ -210,7 +210,7 @@ class PlayerProvider(Provider):
             - members: A list of player_id's that should be part of this group.
         """
         # will only be called for players with PLAYER_GROUP_CREATE feature set.
-        raise NotImplementedError()
+        raise NotImplementedError
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.

@@ -217,7 +217,7 @@ class SlimMenuItem(TypedDict):
     style: str
     track: str
     album: str
-    trackType: str  # noqa: N815
+    trackType: str
     icon: str
     artist: str
     text: str

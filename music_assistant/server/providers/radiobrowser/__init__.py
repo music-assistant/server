@@ -293,7 +293,9 @@ class RadioBrowserProvider(MusicProvider):
         )
 
     async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0  # noqa: ARG002
+        self,
+        streamdetails: StreamDetails,
+        seek_position: int = 0,  # noqa: ARG002
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):

@@ -499,7 +499,7 @@ class YoutubeMusicProvider(MusicProvider):
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):
             if retry > 4:
-                self.logger.warn(
+                self.logger.warning(
                     f"Could not resolve a valid URL for item '{item_id}'. "
                     "Are you playing music on another device using the same account?"
                 )
@@ -640,7 +640,7 @@ class YoutubeMusicProvider(MusicProvider):
         artist_id = None
         if "channelId" in artist_obj:
             artist_id = artist_obj["channelId"]
-        elif "id" in artist_obj and artist_obj["id"]:
+        elif artist_obj.get("id"):
             artist_id = artist_obj["id"]
         elif artist_obj["name"] == "Various Artists":
             artist_id = VARIOUS_ARTISTS_YTM_ID
@@ -661,7 +661,7 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
-        if "thumbnails" in artist_obj and artist_obj["thumbnails"]:
+        if artist_obj.get("thumbnails"):
             artist.metadata.images = await self._parse_thumbnails(artist_obj["thumbnails"])
         return artist
 
@@ -688,7 +688,7 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
-        if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
+        if playlist_obj.get("thumbnails"):
             playlist.metadata.images = await self._parse_thumbnails(playlist_obj["thumbnails"])
         is_editable = False
         if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
@@ -741,7 +741,7 @@ class YoutubeMusicProvider(MusicProvider):
             **extra_init_kwargs,
         )
 
-        if "artists" in track_obj and track_obj["artists"]:
+        if track_obj.get("artists"):
             track.artists = [
                 self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
@@ -752,7 +752,7 @@ class YoutubeMusicProvider(MusicProvider):
         # guard that track has valid artists
         if not track.artists:
             raise InvalidDataError("Track is missing artists")
-        if "thumbnails" in track_obj and track_obj["thumbnails"]:
+        if track_obj.get("thumbnails"):
             track.metadata.images = await self._parse_thumbnails(track_obj["thumbnails"])
         if (
             track_obj.get("album")

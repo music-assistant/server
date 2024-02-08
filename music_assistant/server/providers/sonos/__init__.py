@@ -172,7 +172,8 @@ class SonosPlayerProvider(PlayerProvider):
         self.sonosplayers = None
 
     async def get_player_config_entries(
-        self, player_id: str  # noqa: ARG002
+        self,
+        player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
@@ -212,7 +213,9 @@ class SonosPlayerProvider(PlayerProvider):
         )
 
     def on_player_config_changed(
-        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+        self,
+        config: PlayerConfig,
+        changed_keys: set[str],
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         super().on_player_config_changed(config, changed_keys)

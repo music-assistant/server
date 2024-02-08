@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
 from typing import TYPE_CHECKING
 
@@ -58,7 +57,7 @@ async def fetch_playlist(mass: MusicAssistant, url: str) -> list[str]:
                 playlist_data = (await resp.content.read(64 * 1024)).decode(charset)
             except ValueError as err:
                 raise InvalidDataError(f"Could not decode playlist {url}") from err
-    except asyncio.TimeoutError as err:
+    except TimeoutError as err:
         raise InvalidDataError(f"Timeout while fetching playlist {url}") from err
     except aiohttp.client_exceptions.ClientError as err:
         raise InvalidDataError(f"Error while fetching playlist {url}") from err

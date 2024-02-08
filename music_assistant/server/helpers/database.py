@@ -147,7 +147,7 @@ class DatabaseConnection:
         await self.execute(sql_query)
         await self._db.commit()
 
-    async def execute(self, query: str | str, values: dict = None) -> Any:
+    async def execute(self, query: str, values: dict = None) -> Any:
         """Execute command on the database."""
         return await self._db.execute(query, values)
 

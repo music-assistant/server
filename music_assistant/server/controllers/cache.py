@@ -48,7 +48,7 @@ class CacheController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
+        action: str | None = None,
         values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""

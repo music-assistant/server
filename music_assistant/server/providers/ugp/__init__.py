@@ -84,7 +84,7 @@ class UniversalGroupProvider(PlayerProvider):
         self.prev_sync_leaders = {}
         self.mass.loop.create_task(self._register_all_players())
 
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
         return base_entries + (
@@ -271,7 +271,7 @@ class UniversalGroupProvider(PlayerProvider):
 
         if not group_player.powered:
             # guard, this should be caught in the player controller but just in case...
-            return
+            return None
 
         powered_childs = [
             x

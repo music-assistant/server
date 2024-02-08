@@ -184,11 +184,11 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set) and isinstance(new_val, list):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):  # noqa: SIM114
+            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
-            elif cur_val is None or (allow_overwrite and new_val):  # noqa: SIM114
+            elif cur_val is None or (allow_overwrite and new_val):
                 setattr(self, fld.name, new_val)
         return self
 

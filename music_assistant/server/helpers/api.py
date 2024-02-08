@@ -9,11 +9,7 @@ from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
 from types import NoneType, UnionType
-from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get_type_hints
-
-if TYPE_CHECKING:
-    pass
-
+from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 LOGGER = logging.getLogger(__name__)
 

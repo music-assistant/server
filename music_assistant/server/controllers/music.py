@@ -520,7 +520,7 @@ class MusicController(CoreController):
         | TracksController
         | RadioController
         | PlaylistController
-    ):  # noqa: E501
+    ):
         """Return controller for MediaType."""
         if media_type == MediaType.ARTIST:
             return self.artists
@@ -583,7 +583,7 @@ class MusicController(CoreController):
 
         self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
 
-        def on_sync_task_done(task: asyncio.Task):  # noqa: ARG001
+        def on_sync_task_done(task: asyncio.Task):
             self.in_progress_syncs.remove(sync_spec)
             if task_err := task.exception():
                 self.logger.warning(

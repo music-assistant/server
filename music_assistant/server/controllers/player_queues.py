@@ -199,7 +199,7 @@ class PlayerQueuesController(CoreController):
     @api_command("players/queue/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
-        if player := self.mass.players.get(player_id):  # noqa: SIM102
+        if player := self.mass.players.get(player_id):
             # account for player that is synced (sync child)
             if player.synced_to:
                 return self.get_active_queue(player.synced_to)
@@ -691,7 +691,9 @@ class PlayerQueuesController(CoreController):
         self.on_player_update(player, {})
 
     def on_player_update(
-        self, player: Player, changed_values: dict[str, tuple[Any, Any]]  # noqa: ARG002
+        self,
+        player: Player,
+        changed_values: dict[str, tuple[Any, Any]],  # noqa: ARG002
     ) -> None:
         """
         Call when a PlayerQueue needs to be updated (e.g. when player updates).

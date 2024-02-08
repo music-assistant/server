@@ -136,7 +136,9 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 yield item
 
     async def resolve(
-        self, file_path: str, require_local: bool = False  # noqa: ARG002
+        self,
+        file_path: str,
+        require_local: bool = False,  # noqa: ARG002
     ) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem.
 

@@ -310,7 +310,7 @@ class SoundcloudMusicProvider(MusicProvider):
         """Parse a Soundcloud user response to Artist model object."""
         artist_id = None
         permalink = artist_obj["permalink"]
-        if "id" in artist_obj and artist_obj["id"]:
+        if artist_obj.get("id"):
             artist_id = artist_obj["id"]
         if not artist_id:
             raise InvalidDataError("Artist does not have a valid ID")

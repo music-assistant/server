@@ -31,7 +31,7 @@ async def get_libraries(
             f"http://{local_server_ip}:{local_server_port}", auth_token
         )
         for media_section in plex_server.library.sections():
-            media_section: PlexLibrarySection  # noqa: PLW2901
+            media_section: PlexLibrarySection
             if media_section.type != PlexMusicSection.TYPE:
                 continue
             # TODO: figure out what plex uses as stable id and use that instead of names

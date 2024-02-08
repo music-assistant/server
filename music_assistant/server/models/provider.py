@@ -13,8 +13,6 @@ from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 
-# noqa: ARG001
-
 
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""

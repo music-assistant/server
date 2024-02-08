@@ -104,9 +104,7 @@ class FullyKioskProvider(PlayerProvider):
                 self._handle_player_init()
                 self._handle_player_update()
         except Exception as err:
-            raise SetupFailedError(
-                f"Unable to start the FullyKiosk connection ({str(err)}"
-            ) from err
+            raise SetupFailedError(f"Unable to start the FullyKiosk connection ({err!s}") from err
 
     def _handle_player_init(self) -> None:
         """Process FullyKiosk add to Player controller."""
@@ -249,5 +247,5 @@ class FullyKioskProvider(PlayerProvider):
                 self._handle_player_update()
         except Exception as err:
             raise PlayerUnavailableError(
-                f"Unable to start the FullyKiosk connection ({str(err)}"
+                f"Unable to start the FullyKiosk connection ({err!s}"
             ) from err

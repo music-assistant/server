@@ -70,7 +70,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             library_item = await self.update_item_in_library(cur_item.item_id, item)
@@ -373,7 +373,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return random.sample(list(radio_items), len(radio_items))
 
     async def _get_dynamic_tracks(
-        self, media_item: Playlist, limit: int = 25  # noqa: ARG002
+        self,
+        media_item: Playlist,
+        limit: int = 25,  # noqa: ARG002
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)

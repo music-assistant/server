@@ -109,7 +109,8 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
 
     sys.excepthook = lambda *args: logging.getLogger(None).exception(
-        "Uncaught exception", exc_info=args  # type: ignore[arg-type]
+        "Uncaught exception",
+        exc_info=args,  # type: ignore[arg-type]
     )
     threading.excepthook = lambda args: logging.getLogger(None).exception(
         "Uncaught thread exception",

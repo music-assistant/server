@@ -264,7 +264,9 @@ class SlimprotoProvider(PlayerProvider):
         self.logger.debug("Socket client connected: %s", addr)
 
         def client_callback(
-            event_type: SlimEventType, client: SlimClient, data: Any = None  # noqa: ARG001
+            event_type: SlimEventType,
+            client: SlimClient,
+            data: Any = None,
         ):
             if event_type == SlimEventType.PLAYER_DISCONNECTED:
                 self.mass.create_task(self._handle_disconnected(client))

@@ -189,7 +189,9 @@ class ChromecastProvider(PlayerProvider):
         return base_entries + PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(
-        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+        self,
+        config: PlayerConfig,
+        changed_keys: set[str],
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         super().on_player_config_changed(config, changed_keys)
@@ -464,7 +466,6 @@ class ChromecastProvider(PlayerProvider):
 
     def _on_chromecast_removed(self, uuid, service, cast_info):  # noqa: ARG002
         """Handle zeroconf discovery of a removed Chromecast."""
-        # noqa: ARG001
         player_id = str(service[1])
         friendly_name = service[3]
         self.logger.debug("Chromecast removed: %s - %s", friendly_name, player_id)

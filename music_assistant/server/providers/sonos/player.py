@@ -676,7 +676,7 @@ class SonosPlayer:
             async with asyncio.timeout(5):
                 while not _test_groups(groups):
                     await self.sonos_prov.topology_condition.wait()
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self.logger.warning("Timeout waiting for target groups %s", groups)
 
         any_speaker = next(iter(self.sonos_prov.sonosplayers.values()))

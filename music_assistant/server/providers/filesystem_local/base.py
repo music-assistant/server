@@ -197,7 +197,10 @@ class FileSystemProviderBase(MusicProvider):
         return False
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5  # noqa: ARG002
+        self,
+        search_query: str,
+        media_types=list[MediaType] | None,
+        limit: int = 5,  # noqa: ARG002
     ) -> SearchResults:
         """Perform search on this file based musicprovider."""
         result = SearchResults()

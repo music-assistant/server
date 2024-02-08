@@ -129,7 +129,8 @@ class MusicProvider(Provider):
             raise NotImplementedError
 
     async def get_album_tracks(
-        self, prov_album_id: str  # type: ignore[return]
+        self,
+        prov_album_id: str,  # type: ignore[return]
     ) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:

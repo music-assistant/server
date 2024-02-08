@@ -50,7 +50,7 @@ _P = ParamSpec("_P")
 
 
 def log_player_command(
-    func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]]
+    func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]],
 ) -> Callable[Concatenate[_PlayerControllerT, _P], Coroutine[Any, Any, _R | None]]:
     """Check and log commands to players."""
 
@@ -941,7 +941,7 @@ class PlayerController(CoreController):
                 break
         else:
             # edge case: no child player is (yet) available; postpone register
-            return
+            return None
         player = Player(
             player_id=group_player_id,
             provider=provider,
