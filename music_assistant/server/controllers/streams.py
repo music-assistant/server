@@ -12,6 +12,7 @@ import asyncio
 import logging
 import time
 import urllib.parse
+from collections.abc import AsyncGenerator  # noqa: TCH003
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
@@ -51,8 +52,6 @@ from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.common.models.player import Player
     from music_assistant.common.models.player_queue import PlayerQueue

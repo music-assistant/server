@@ -6,6 +6,7 @@ import asyncio
 import os
 import shutil
 import statistics
+from collections.abc import AsyncGenerator  # noqa: TCH003
 from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
@@ -23,7 +24,11 @@ from music_assistant.common.models.enums import (
     ProviderType,
 )
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    MediaItemType,
+    SearchResults,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     DB_SCHEMA_VERSION,
@@ -49,8 +54,6 @@ from .media.radio import RadioController
 from .media.tracks import TracksController
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.music_provider import MusicProvider
 
@@ -452,7 +455,11 @@ class MusicController(CoreController):
         for item in result:
             if item.available:
                 return await self.get_item(
-                    item.media_type, item.item_id, item.provider, lazy=False, add_to_library=True
+                    item.media_type,
+                    item.item_id,
+                    item.provider,
+                    lazy=False,
+                    add_to_library=True,
                 )
         return None
 
@@ -462,7 +469,11 @@ class MusicController(CoreController):
         """List integrated loudness for a track in db."""
         await self.database.insert(
             DB_TABLE_TRACK_LOUDNESS,
-            {"item_id": item_id, "provider": provider_instance_id_or_domain, "loudness": loudness},
+            {
+                "item_id": item_id,
+                "provider": provider_instance_id_or_domain,
+                "loudness": loudness,
+            },
             allow_replace=True,
         )
 
@@ -590,7 +601,9 @@ class MusicController(CoreController):
             self.in_progress_syncs.remove(sync_spec)
             if task_err := task.exception():
                 self.logger.warning(
-                    "Sync task for %s completed with errors", provider.name, exc_info=task_err
+                    "Sync task for %s completed with errors",
+                    provider.name,
+                    exc_info=task_err,
                 )
             else:
                 self.logger.info("Sync task for %s completed", provider.name)

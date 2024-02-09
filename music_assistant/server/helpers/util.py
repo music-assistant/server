@@ -32,13 +32,13 @@ async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     cmd = f"python3 -m pip install --find-links {HA_WHEELS} {package}"
     proc = await asyncio.create_subprocess_shell(
-        cmd, stderr=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL
+        cmd, stderr=asyncio.subprocess.STDOUT, stdout=asyncio.subprocess.PIPE
     )
 
-    _, stderr = await proc.communicate()
+    stdout, _ = await proc.communicate()
 
     if proc.returncode != 0:
-        msg = f"Failed to install package {package}\n{stderr.decode()}"
+        msg = f"Failed to install package {package}\n{stdout.decode()}"
         raise RuntimeError(msg)
 
 

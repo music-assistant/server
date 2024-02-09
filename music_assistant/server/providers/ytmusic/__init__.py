@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import re
+from collections.abc import AsyncGenerator  # noqa: TCH003
 from operator import itemgetter
 from time import time
-from typing import TYPE_CHECKING, AsyncGenerator  # noqa: UP035
+from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 import pytube
