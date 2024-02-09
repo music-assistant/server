@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Artist,
@@ -29,7 +27,13 @@ from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from collections.abc import AsyncGenerator
+
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -58,7 +62,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 class URLProvider(MusicProvider):
@@ -70,7 +74,6 @@ class URLProvider(MusicProvider):
         Called when provider is registered.
         """
         self._full_url = {}
-        # self.mass.register_api_command("music/tracks", self.library_items)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -111,7 +114,10 @@ class URLProvider(MusicProvider):
         raise NotImplementedError
 
     async def parse_item(
-        self, item_id_or_url: str, force_refresh: bool = False, force_radio: bool = False
+        self,
+        item_id_or_url: str,
+        force_refresh: bool = False,
+        force_radio: bool = False,
     ) -> Track | Radio:
         """Parse plain URL to MediaItem of type Radio or Track."""
         item_id, url, media_info = await self._get_media_info(item_id_or_url, force_refresh)
@@ -158,11 +164,7 @@ class URLProvider(MusicProvider):
     ) -> tuple[str, str, AudioTags]:
         """Retrieve (cached) mediainfo for url."""
         # check if the radio stream is not a playlist
-        if (
-            item_id_or_url.endswith("m3u8")
-            or item_id_or_url.endswith("m3u")
-            or item_id_or_url.endswith("pls")
-        ):
+        if item_id_or_url.endswith(("m3u8", "m3u", "pls")):
             playlist = await fetch_playlist(self.mass, item_id_or_url)
             url = playlist[0]
             item_id = item_id_or_url

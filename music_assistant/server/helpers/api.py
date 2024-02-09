@@ -9,11 +9,7 @@ from dataclasses import MISSING, dataclass
 from datetime import datetime
 from enum import Enum
 from types import NoneType, UnionType
-from typing import TYPE_CHECKING, Any, TypeVar, Union, get_args, get_origin, get_type_hints
-
-if TYPE_CHECKING:
-    pass
-
+from typing import Any, TypeVar, Union, get_args, get_origin, get_type_hints
 
 LOGGER = logging.getLogger(__name__)
 
@@ -84,7 +80,8 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
     """Try to parse a value from raw (json) data and type annotations."""
     if isinstance(value, dict) and hasattr(value_type, "from_dict"):
         if "media_type" in value and value["media_type"] != value_type.media_type:
-            raise ValueError("Invalid MediaType")
+            msg = "Invalid MediaType"
+            raise ValueError(msg)
         return value_type.from_dict(value)
 
     if value is None and not isinstance(default, type(MISSING)):
@@ -98,7 +95,7 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
             for subvalue in value
             if subvalue is not None
         )
-    elif origin is dict:
+    if origin is dict:
         subkey_type = get_args(value_type)[0]
         subvalue_type = get_args(value_type)[1]
         return {
@@ -107,7 +104,7 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
             )
             for subkey, subvalue in value.items()
         }
-    elif origin is Union or origin is UnionType:
+    if origin is Union or origin is UnionType:
         # try all possible types
         sub_value_types = get_args(value_type)
         for sub_arg_type in sub_value_types:
@@ -130,12 +127,13 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
         # failed to parse the (sub) value but None allowed, log only
         logging.getLogger(__name__).warn(err)
         return None
-    elif origin is type:
-        return eval(value)
+    if origin is type:
+        return eval(value)  # pylint: disable=eval-used
     if value_type is Any:
         return value
     if value is None and value_type is not NoneType:
-        raise KeyError(f"`{name}` of type `{value_type}` is required.")
+        msg = f"`{name}` of type `{value_type}` is required."
+        raise KeyError(msg)
 
     try:
         if issubclass(value_type, Enum):  # type: ignore[arg-type]
@@ -151,8 +149,9 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
     if value_type is int and isinstance(value, str) and value.isnumeric():
         return int(value)
     if not isinstance(value, value_type):  # type: ignore[arg-type]
-        raise TypeError(
+        msg = (
             f"Value {value} of type {type(value)} is invalid for {name}, "
             f"expected value of type {value_type}"
         )
+        raise TypeError(msg)
     return value

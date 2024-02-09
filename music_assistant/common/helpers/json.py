@@ -31,7 +31,7 @@ def get_serializable_value(obj: Any, raise_unhandled: bool = False) -> Any:
     if isinstance(obj, DO_NOT_SERIALIZE_TYPES):
         return None
     if raise_unhandled:
-        raise TypeError()
+        raise TypeError
     return obj
 
 

@@ -5,10 +5,9 @@ from __future__ import annotations
 import json
 import logging
 import os
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
@@ -16,6 +15,9 @@ from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import MediaItemChapter
 from music_assistant.constants import ROOT_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 LOGGER = logging.getLogger(ROOT_LOGGER_NAME).getChild("tags")
 
@@ -29,7 +31,7 @@ TAG_SPLITTER = ";"
 def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if org_str is None:
-        return tuple()
+        return ()
     if isinstance(org_str, list):
         return (x.strip() for x in org_str)
     org_str = org_str.strip()
@@ -132,7 +134,7 @@ class AudioTags:
             if TAG_SPLITTER in tag:
                 return split_items(tag)
             return split_artists(tag)
-        return tuple()
+        return ()
 
     @property
     def genres(self) -> tuple[str, ...]:
@@ -262,7 +264,7 @@ class AudioTags:
             if tag := self.tags.get(tag_name):
                 # sometimes the field contains multiple values
                 return split_items(tag, True)
-        return tuple()
+        return ()
 
     @property
     def barcode(self) -> str | None:
@@ -307,15 +309,14 @@ class AudioTags:
         """Parse instance from raw ffmpeg info output."""
         audio_stream = next((x for x in raw["streams"] if x["codec_type"] == "audio"), None)
         if audio_stream is None:
-            raise InvalidDataError("No audio stream found")
+            msg = "No audio stream found"
+            raise InvalidDataError(msg)
         has_cover_image = any(x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png"))
         # convert all tag-keys (gathered from all streams) to lowercase without spaces
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
             for key, value in stream.get("tags", {}).items():
-                alt_key = (
-                    key.lower().replace(" ", "").replace("_", "").replace("-", "")
-                )  # noqa: PLW2901
+                alt_key = key.lower().replace(" ", "").replace("_", "").replace("-", "")
                 tags[alt_key] = value
 
         return AudioTags(
@@ -371,7 +372,7 @@ async def parse_tags(
         if file_path == "-":
             # feed the file contents to the process
 
-            async def chunk_feeder():
+            async def chunk_feeder() -> None:
                 bytes_read = 0
                 try:
                     async for chunk in input_file:
@@ -398,7 +399,8 @@ async def parse_tags(
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
             if not data.get("streams"):
-                raise InvalidDataError("Not an audio file")
+                msg = "Not an audio file"
+                raise InvalidDataError(msg)
             tags = AudioTags.parse(data)
             del res
             del data
@@ -407,7 +409,8 @@ async def parse_tags(
                 tags.duration = int((file_size * 8) / tags.bit_rate)
             return tags
         except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-            raise InvalidDataError(f"Unable to retrieve info for {file_path}: {str(err)}") from err
+            msg = f"Unable to retrieve info for {file_path}: {err!s}"
+            raise InvalidDataError(msg) from err
 
 
 async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> bytes | None:
@@ -438,7 +441,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
     ) as proc:
         if file_path == "-":
             # feed the file contents to the process
-            async def chunk_feeder():
+            async def chunk_feeder() -> None:
                 try:
                     async for chunk in input_file:
                         if proc.closed:

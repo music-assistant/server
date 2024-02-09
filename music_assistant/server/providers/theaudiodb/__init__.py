@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, Any
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
@@ -27,7 +26,11 @@ from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -95,7 +98,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 class AudioDbMetadataProvider(MetadataProvider):
@@ -118,7 +121,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         if not artist.mbid:
             # for 100% accuracy we require the musicbrainz id for all lookups
             return None
-        if data := await self._get_data("artist-mb.php", i=artist.mbid):  # noqa: SIM102
+        if data := await self._get_data("artist-mb.php", i=artist.mbid):
             if data.get("artists"):
                 return self.__parse_artist(data["artists"][0])
         return None
@@ -276,7 +279,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                 aiohttp.client_exceptions.ContentTypeError,
                 JSONDecodeError,
             ):
-                self.logger.error("Failed to retrieve %s", endpoint)
+                self.logger.exception("Failed to retrieve %s", endpoint)
                 text_result = await response.text()
                 self.logger.debug(text_result)
                 return None

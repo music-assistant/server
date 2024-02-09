@@ -4,23 +4,20 @@ import argparse
 import asyncio
 import logging
 import os
-from os.path import abspath, dirname
 from pathlib import Path
-from sys import path
 
 from aiorun import run
 
-path.insert(1, dirname(dirname(abspath(__file__))))
+from music_assistant.client.client import MusicAssistantClient
+from music_assistant.server.server import MusicAssistant
 
-from music_assistant.client.client import MusicAssistantClient  # noqa: E402
-from music_assistant.server.server import MusicAssistant  # noqa: E402
-
-logging.basicConfig(level=logging.DEBUG)
+# ruff: noqa: ANN201,PTH102,PTH112,PTH113,PTH118,PTH123,T201
 
 DEFAULT_PORT = 8095
 DEFAULT_URL = f"http://127.0.0.1:{DEFAULT_PORT}"
 DEFAULT_STORAGE_PATH = os.path.join(Path.home(), ".musicassistant")
 
+logging.basicConfig(level=logging.DEBUG)
 
 # Get parsed passed in arguments.
 parser = argparse.ArgumentParser(description="MusicAssistant Server Example.")
@@ -59,7 +56,7 @@ if __name__ == "__main__":
         await server.start()
 
         # run the client
-        async with MusicAssistantClient(DEFAULT_URL) as client:
+        async with MusicAssistantClient(DEFAULT_URL, None) as client:
             # start listening
             await client.start_listening()
 

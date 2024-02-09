@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
 from dataclasses import dataclass
 from types import NoneType
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.models.enums import ProviderType
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_CROSSFADE,
@@ -28,6 +26,11 @@ from music_assistant.constants import (
 )
 
 from .enums import ConfigEntryType
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
+
+    from music_assistant.common.models.enums import ProviderType
 
 LOGGER = logging.getLogger(__name__)
 
@@ -138,7 +141,8 @@ class ConfigEntry(DataClassDictMixin):
                 )
                 self.value = self.default_value
                 return self.value
-            raise ValueError(f"{self.key} has unexpected type: {type(value)}")
+            msg = f"{self.key} has unexpected type: {type(value)}"
+            raise ValueError(msg)
         self.value = value
         return self.value
 

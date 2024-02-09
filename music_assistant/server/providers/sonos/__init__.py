@@ -17,7 +17,6 @@ from typing import TYPE_CHECKING
 import soco.config as soco_config
 from requests.exceptions import RequestException
 from soco import events_asyncio, zonegroupstate
-from soco.core import SoCo
 from soco.discovery import discover
 
 from music_assistant.common.models.config_entries import (
@@ -34,7 +33,6 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_CROSSFADE
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -42,8 +40,11 @@ from music_assistant.server.models.player_provider import PlayerProvider
 from .player import SonosPlayer
 
 if TYPE_CHECKING:
+    from soco.core import SoCo
+
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
@@ -172,13 +173,15 @@ class SonosPlayerProvider(PlayerProvider):
         self.sonosplayers = None
 
     async def get_player_config_entries(
-        self, player_id: str  # noqa: ARG002
+        self,
+        player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
         if not (sonos_player := self.sonosplayers.get(player_id)):
             return base_entries
-        return base_entries + (
+        return (
+            *base_entries,
             CONF_ENTRY_CROSSFADE,
             ConfigEntry(
                 key="sonos_bass",
@@ -212,7 +215,9 @@ class SonosPlayerProvider(PlayerProvider):
         )
 
     def on_player_config_changed(
-        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+        self,
+        config: PlayerConfig,
+        changed_keys: set[str],
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         super().on_player_config_changed(config, changed_keys)
@@ -350,10 +355,11 @@ class SonosPlayerProvider(PlayerProvider):
         mass_player = self.mass.players.get(player_id)
         if sonos_player.sync_coordinator:
             # this should be already handled by the player manager, but just in case...
-            raise PlayerCommandFailed(
+            msg = (
                 f"Player {mass_player.display_name} can not "
                 "accept play_media command, it is synced to another player."
             )
+            raise PlayerCommandFailed(msg)
         metadata = create_didl_metadata(self.mass, url, queue_item)
         await self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
 
@@ -367,10 +373,11 @@ class SonosPlayerProvider(PlayerProvider):
         mass_player = self.mass.players.get(player_id)
         if sonos_player.sync_coordinator:
             # this should be already handled by the player manager, but just in case...
-            raise PlayerCommandFailed(
+            msg = (
                 f"Player {mass_player.display_name} can not "
                 "accept play_stream command, it is synced to another player."
             )
+            raise PlayerCommandFailed(msg)
         metadata = create_didl_metadata(self.mass, url, None)
         # sonos players do not like our multi client stream
         # add to the workaround players list
@@ -380,7 +387,7 @@ class SonosPlayerProvider(PlayerProvider):
         mass_player.elapsed_time = 0
         mass_player.elapsed_time_last_updated = time.time()
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """
         Handle enqueuing of the next queue item on the player.
 
@@ -404,7 +411,7 @@ class SonosPlayerProvider(PlayerProvider):
         crossfade = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
         if sonos_player.crossfade != crossfade:
 
-            def set_crossfade():
+            def set_crossfade() -> None:
                 try:
                     sonos_player.soco.cross_fade = crossfade
                     sonos_player.crossfade = crossfade
@@ -451,7 +458,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
 
-        def do_discover():
+        def do_discover() -> None:
             """Run discovery and add players in executor thread."""
             self._discovery_running = True
             try:
@@ -475,7 +482,7 @@ class SonosPlayerProvider(PlayerProvider):
 
         await self.mass.create_task(do_discover)
 
-        def reschedule():
+        def reschedule() -> None:
             self._discovery_reschedule_timer = None
             self.mass.create_task(self._run_discovery())
 

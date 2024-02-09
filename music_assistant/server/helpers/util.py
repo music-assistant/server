@@ -10,7 +10,6 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterator
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
@@ -20,6 +19,8 @@ import ifaddr
 import memory_tempfile
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from music_assistant.server.models import ProviderModuleType
 
 LOGGER = logging.getLogger(__name__)
@@ -85,6 +86,7 @@ async def is_hass_supervisor() -> bool:
             return getattr(err, "code", 999) == 401
         except Exception:
             return False
+        return False
 
     return await asyncio.to_thread(_check)
 

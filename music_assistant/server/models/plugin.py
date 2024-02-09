@@ -2,12 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
-
 from .provider import Provider
-
-if TYPE_CHECKING:
-    pass
 
 # ruff: noqa: ARG001, ARG002
 

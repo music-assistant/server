@@ -99,7 +99,8 @@ def compare_track(
     """Compare two track items and return True if they match."""
     if base_item is None or compare_item is None:
         return False
-    assert isinstance(base_item, Track) and isinstance(compare_item, Track)
+    assert isinstance(base_item, Track)
+    assert isinstance(compare_item, Track)
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True

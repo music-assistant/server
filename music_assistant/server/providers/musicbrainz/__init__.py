@@ -6,7 +6,6 @@ At this time only used for retrieval of ID's but to be expanded to fetch metadat
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable
 from contextlib import suppress
 from dataclasses import dataclass, field
 from json import JSONDecodeError
@@ -18,7 +17,6 @@ from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
 
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.server.controllers.cache import use_cache
@@ -26,7 +24,13 @@ from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from collections.abc import Iterable
+
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.media_items import Album, Artist, Track
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -35,7 +39,7 @@ if TYPE_CHECKING:
 
 LUCENE_SPECIAL = r'([+\-&|!(){}\[\]\^"~*?:\\\/])'
 
-SUPPORTED_FEATURES = tuple()
+SUPPORTED_FEATURES = ()
 
 
 async def setup(
@@ -61,7 +65,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 def replace_hyphens(data: dict[str, Any]) -> dict[str, Any]:
@@ -320,7 +324,8 @@ class MusicbrainzProvider(MetadataProvider):
                 return MusicBrainzArtist.from_dict(replace_hyphens(result))
             except MissingField as err:
                 raise InvalidDataError from err
-        raise InvalidDataError("Invalid MusicBrainz Artist ID provided")
+        msg = "Invalid MusicBrainz Artist ID provided"
+        raise InvalidDataError(msg)
 
     async def get_recording_details(
         self, recording_id: str | None = None, isrsc: str | None = None
@@ -332,7 +337,8 @@ class MusicbrainzProvider(MetadataProvider):
             if (result := await self.get_data(f"isrc/{isrsc}")) and result.get("recordings"):
                 recording_id = result["recordings"][0]["id"]
             else:
-                raise InvalidDataError("Invalid ISRC provided")
+                msg = "Invalid ISRC provided"
+                raise InvalidDataError(msg)
         if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
             if "id" not in result:
                 result["id"] = recording_id
@@ -340,7 +346,8 @@ class MusicbrainzProvider(MetadataProvider):
                 return MusicBrainzRecording.from_dict(replace_hyphens(result))
             except MissingField as err:
                 raise InvalidDataError from err
-        raise InvalidDataError("Invalid ISRC provided")
+        msg = "Invalid ISRC provided"
+        raise InvalidDataError(msg)
 
     async def get_releasegroup_details(
         self, releasegroup_id: str | None = None, barcode: str | None = None
@@ -353,7 +360,8 @@ class MusicbrainzProvider(MetadataProvider):
             if (result := await self.get_data(endpoint)) and result.get("releases"):
                 releasegroup_id = result["releases"][0]["release-group"]["id"]
             else:
-                raise InvalidDataError("Invalid barcode provided")
+                msg = "Invalid barcode provided"
+                raise InvalidDataError(msg)
         endpoint = f"release-group/{releasegroup_id}?inc=artists+aliases"
         if result := await self.get_data(endpoint):
             if "id" not in result:
@@ -362,7 +370,8 @@ class MusicbrainzProvider(MetadataProvider):
                 return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
             except MissingField as err:
                 raise InvalidDataError from err
-        raise InvalidDataError("Invalid MusicBrainz ReleaseGroup ID or barcode provided")
+        msg = "Invalid MusicBrainz ReleaseGroup ID or barcode provided"
+        raise InvalidDataError(msg)
 
     async def get_artist_details_by_album(
         self, artistname: str, ref_album: Album

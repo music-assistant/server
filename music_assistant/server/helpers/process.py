@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Coroutine
 from contextlib import suppress
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Coroutine
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +30,7 @@ class AsyncProcess:
         enable_stdin: bool = False,
         enable_stdout: bool = True,
         enable_stderr: bool = False,
-    ):
+    ) -> None:
         """Initialize."""
         self._proc = None
         self._args = args
