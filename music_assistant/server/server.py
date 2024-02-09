@@ -41,8 +41,11 @@ from music_assistant.server.helpers.images import get_icon_string
 from music_assistant.server.helpers.util import (
     get_package_version,
     get_provider_module,
+    install_package,
     is_hass_supervisor,
 )
+
+from .models import ProviderInstanceType  # noqa: TCH001
 
 if TYPE_CHECKING:
     from types import TracebackType
@@ -50,7 +53,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.server.models.core_controller import CoreController
 
-    from .models import ProviderInstanceType
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = tuple[
@@ -514,13 +516,12 @@ class MusicAssistant:
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""
-        for dir_str in os.listdir(PROVIDERS_PATH):
-            dir_path = os.path.join(PROVIDERS_PATH, dir_str)
-            if not os.path.isdir(dir_path):
-                continue
+
+        async def load_provider_manifest(provider_domain: str, provider_path: str) -> None:
+            """Preload all available provider manifest files."""
             # get files in subdirectory
-            for file_str in os.listdir(dir_path):
-                file_path = os.path.join(dir_path, file_str)
+            for file_str in os.listdir(provider_path):
+                file_path = os.path.join(provider_path, file_str)
                 if not os.path.isfile(file_path):
                     continue
                 if file_str != "manifest.json":
@@ -529,22 +530,32 @@ class MusicAssistant:
                     provider_manifest = await ProviderManifest.parse(file_path)
                     # check for icon.svg file
                     if not provider_manifest.icon_svg:
-                        icon_path = os.path.join(dir_path, "icon.svg")
+                        icon_path = os.path.join(provider_path, "icon.svg")
                         if os.path.isfile(icon_path):
                             provider_manifest.icon_svg = await get_icon_string(icon_path)
                     # check for dark_icon file
                     if not provider_manifest.icon_svg_dark:
-                        icon_path = os.path.join(dir_path, "icon_dark.svg")
+                        icon_path = os.path.join(provider_path, "icon_dark.svg")
                         if os.path.isfile(icon_path):
                             provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
+                    # install requirements
+                    for requirement in provider_manifest.requirements:
+                        await install_package(requirement)
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
-                    LOGGER.debug("Loaded manifest for provider %s", dir_str)
+                    LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
                 except Exception as exc:  # pylint: disable=broad-except
                     LOGGER.exception(
                         "Error while loading manifest for provider %s",
-                        dir_str,
+                        provider_domain,
                         exc_info=exc,
                     )
+
+        async with asyncio.TaskGroup() as tg:
+            for dir_str in os.listdir(PROVIDERS_PATH):
+                dir_path = os.path.join(PROVIDERS_PATH, dir_str)
+                if not os.path.isdir(dir_path):
+                    continue
+                tg.create_task(load_provider_manifest(dir_str, dir_path))
 
     async def _setup_discovery(self) -> None:
         """Make this Music Assistant instance discoverable on the network."""

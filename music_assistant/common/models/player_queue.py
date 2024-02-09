@@ -4,16 +4,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING
 
 from mashumaro import DataClassDictMixin
 
+from music_assistant.common.models.media_items import MediaItemType  # noqa: TCH001
+
 from .enums import PlayerState, RepeatMode
-
-if TYPE_CHECKING:
-    from music_assistant.common.models.media_items import MediaItemType
-
-    from .queue_item import QueueItem
+from .queue_item import QueueItem  # noqa: TCH001
 
 
 @dataclass

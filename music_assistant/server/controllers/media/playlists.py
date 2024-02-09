@@ -5,7 +5,8 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from typing import TYPE_CHECKING, Any
+from collections.abc import AsyncGenerator  # noqa: TCH003
+from typing import Any
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -17,14 +18,16 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import ItemMapping, Playlist, PlaylistTrack, Track
+from music_assistant.common.models.media_items import (
+    ItemMapping,
+    Playlist,
+    PlaylistTrack,
+    Track,
+)
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.server.helpers.compare import compare_strings
 
 from .base import MediaControllerBase
-
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
 
 
 class PlaylistController(MediaControllerBase[Playlist]):
@@ -142,7 +145,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return library_item
 
     async def tracks(
-        self, item_id: str, provider_instance_id_or_domain: str, force_refresh: bool = False
+        self,
+        item_id: str,
+        provider_instance_id_or_domain: str,
+        force_refresh: bool = False,
     ) -> AsyncGenerator[PlaylistTrack, None]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(
@@ -152,7 +158,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async for track in self._get_provider_playlist_tracks(
             prov.item_id,
             prov.provider_instance,
-            cache_checksum=str(time.time()) if force_refresh else playlist.metadata.checksum,
+            cache_checksum=(str(time.time()) if force_refresh else playlist.metadata.checksum),
         ):
             yield track
 

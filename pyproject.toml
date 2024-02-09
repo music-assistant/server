@@ -1,7 +1,3 @@
-[build-system]
-requires = ["setuptools~=62.3", "wheel~=0.37.1"]
-build-backend = "setuptools.build_meta"
-
 [project]
 name = "music_assistant"
 # The version is set by GH action on release
@@ -16,6 +12,7 @@ authors = [
 classifiers = [
   "Environment :: Console",
   "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
 ]
 dependencies = ["aiohttp", "orjson", "mashumaro"]
 

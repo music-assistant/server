@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import random
 import time
+from collections.abc import AsyncGenerator  # noqa: TCH003
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
@@ -38,7 +39,7 @@ from music_assistant.server.helpers.audio import set_stream_details
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Iterator
+    from collections.abc import Iterator
 
     from music_assistant.common.models.media_items import Album, Artist, Track
     from music_assistant.common.models.player import Player
@@ -299,7 +300,8 @@ class PlayerQueuesController(CoreController):
             if option is None:
                 option = QueueOption(
                     await self.mass.config.get_core_config_value(
-                        self.domain, f"default_enqueue_action_{media_item.media_type.value}"
+                        self.domain,
+                        f"default_enqueue_action_{media_item.media_type.value}",
                     )
                 )
             if option == QueueOption.REPLACE_NEXT and queue.state not in (
@@ -676,7 +678,9 @@ class PlayerQueuesController(CoreController):
                 queue_items = [QueueItem.from_dict(x) for x in prev_items]
             except Exception as err:
                 self.logger.warning(
-                    "Failed to restore the queue(items) for %s - %s", player.display_name, str(err)
+                    "Failed to restore the queue(items) for %s - %s",
+                    player.display_name,
+                    str(err),
                 )
         if queue is None:
             queue = PlayerQueue(
@@ -1035,7 +1039,9 @@ class PlayerQueuesController(CoreController):
     async def _get_artist_tracks(self, artist: Artist) -> list[Track]:
         """Return tracks for given artist, based on user preference."""
         artist_items_conf = self.mass.config.get_raw_core_config_value(
-            self.domain, CONF_DEFAULT_ENQUEUE_SELECT_ARTIST, ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE
+            self.domain,
+            CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
+            ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
         )
         if artist_items_conf == "library_tracks":
             # make sure we have an in-library artist
@@ -1105,7 +1111,9 @@ class PlayerQueuesController(CoreController):
     async def _get_album_tracks(self, album: Album) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
-            self.domain, CONF_DEFAULT_ENQUEUE_SELECT_ALBUM, ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE
+            self.domain,
+            CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
+            ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
         if album_items_conf == "library_tracks":
             # make sure we have an in-library album
