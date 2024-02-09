@@ -6,7 +6,6 @@ import asyncio
 import statistics
 import time
 from collections import deque
-from collections.abc import Callable, Coroutine
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -37,15 +36,17 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import QueueEmpty, SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_CROSSFADE, CONF_CROSSFADE_DURATION, CONF_PORT
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .cli import LmsCli
 
 if TYPE_CHECKING:
+    from collections.abc import Callable, Coroutine
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
@@ -213,9 +214,8 @@ class SlimprotoProvider(PlayerProvider):
             ]
             self.logger.info("Started SLIMProto server on port %s", self.port)
         except OSError:
-            raise SetupFailedError(
-                f"Unable to start the Slimproto server - is port {self.port} already taken ?"
-            )
+            msg = f"Unable to start the Slimproto server - is port {self.port} already taken ?"
+            raise SetupFailedError(msg)
 
         # start CLI interface(s)
         enable_telnet = self.config.get_value(CONF_CLI_TELNET)
@@ -240,7 +240,8 @@ class SlimprotoProvider(PlayerProvider):
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         if getattr(self, "_virtual_providers", None):
-            raise RuntimeError("Virtual providers loaded")
+            msg = "Virtual providers loaded"
+            raise RuntimeError(msg)
         if hasattr(self, "_socket_clients"):
             for client in list(self._socket_clients.values()):
                 with suppress(RuntimeError):
@@ -264,8 +265,10 @@ class SlimprotoProvider(PlayerProvider):
         self.logger.debug("Socket client connected: %s", addr)
 
         def client_callback(
-            event_type: SlimEventType, client: SlimClient, data: Any = None  # noqa: ARG001
-        ):
+            event_type: SlimEventType,
+            client: SlimClient,
+            data: Any = None,
+        ) -> None:
             if event_type == SlimEventType.PLAYER_DISCONNECTED:
                 self.mass.create_task(self._handle_disconnected(client))
                 return
@@ -304,7 +307,7 @@ class SlimprotoProvider(PlayerProvider):
             return base_entries
 
         # create preset entries (for players that support it)
-        preset_entries = tuple()
+        preset_entries = ()
         if client.device_model not in self._virtual_providers:
             presets = []
             async for playlist in self.mass.music.playlists.iter_library_items(True):
@@ -404,7 +407,8 @@ class SlimprotoProvider(PlayerProvider):
             self._resync_handle = None
         player = self.mass.players.get(player_id)
         if player.synced_to:
-            raise RuntimeError("A synced player cannot receive play commands directly")
+            msg = "A synced player cannot receive play commands directly"
+            raise RuntimeError(msg)
         # stop any existing streams first
         await self.cmd_stop(player_id)
         if player.group_childs:
@@ -471,7 +475,7 @@ class SlimprotoProvider(PlayerProvider):
                     )
                 )
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         # we don't have to do anything,
         # enqueuing the next item is handled in the buffer ready callback
@@ -555,7 +559,7 @@ class SlimprotoProvider(PlayerProvider):
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if parent_player.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
-            def resync():
+            def resync() -> None:
                 self._resync_handle = None
                 self.mass.create_task(
                     self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
@@ -699,7 +703,7 @@ class SlimprotoProvider(PlayerProvider):
         if client.state != SlimPlayerState.PLAYING:
             return
 
-        if backoff_time := self._do_not_resync_before.get(client.player_id):  # noqa: SIM102
+        if backoff_time := self._do_not_resync_before.get(client.player_id):
             # player has set a timestamp we should backoff from syncing it
             if time.time() < backoff_time:
                 return
@@ -748,12 +752,12 @@ class SlimprotoProvider(PlayerProvider):
             # handle player lagging behind, fix with skip_ahead
             self.logger.debug("%s resync: skipAhead %sms", player.display_name, delta)
             self._do_not_resync_before[client.player_id] = time.time() + 2
-            asyncio.create_task(self._skip_over(client.player_id, delta))
+            self.mass.create_task(self._skip_over(client.player_id, delta))
         else:
             # handle player is drifting too far ahead, use pause_for to adjust
             self.logger.debug("%s resync: pauseFor %sms", player.display_name, delta)
             self._do_not_resync_before[client.player_id] = time.time() + (delta / 1000) + 2
-            asyncio.create_task(self._pause_for(client.player_id, delta))
+            self.mass.create_task(self._pause_for(client.player_id, delta))
 
     async def _handle_decoder_ready(self, client: SlimClient) -> None:
         """Handle decoder ready event, player is ready for the next track."""
@@ -805,13 +809,13 @@ class SlimprotoProvider(PlayerProvider):
             await asyncio.sleep(0.1)
         # all child's ready (or timeout) - start play
         async with asyncio.TaskGroup() as tg:
-            for client in self._get_sync_clients(player.player_id):
-                timestamp = client.jiffies + 20
+            for _client in self._get_sync_clients(player.player_id):
+                timestamp = _client.jiffies + 20
                 sync_delay = self.mass.config.get_raw_player_config_value(
-                    client.player_id, CONF_SYNC_ADJUST, 0
+                    _client.player_id, CONF_SYNC_ADJUST, 0
                 )
                 timestamp -= sync_delay
-                self._do_not_resync_before[client.player_id] = time.time() + 1
+                self._do_not_resync_before[_client.player_id] = time.time() + 1
                 tg.create_task(client.send_strm(b"u", replay_gain=int(timestamp)))
 
     async def _handle_connected(self, client: SlimClient) -> None:
@@ -854,7 +858,8 @@ class SlimprotoProvider(PlayerProvider):
         if client := self._socket_clients.pop(player_id, None):
             # store last state in cache
             await self.mass.cache.set(
-                f"{CACHE_KEY_PREV_STATE}.{player_id}", (client.powered, client.volume_level)
+                f"{CACHE_KEY_PREV_STATE}.{player_id}",
+                (client.powered, client.volume_level),
             )
             self.logger.info(
                 "Player %s disconnected",

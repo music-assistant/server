@@ -7,7 +7,8 @@ https://www.red-gate.com/simple-talk/development/python/memory-profiling-in-pyth
 import asyncio
 import tracemalloc
 
-# ruff: noqa: D103,E501,E741
+# ruff: noqa: D103,E501,E741,FBT003,T201,ANN201,ANN202
+# pylint: disable=missing-function-docstring
 
 # list to store memory snapshots
 snaps = []
@@ -55,7 +56,8 @@ def print_trace():
     largest = snapshot.statistics("traceback")[0]
 
     print(
-        f"\n*** Trace for largest memory block - ({largest.count} blocks, {largest.size/1024} Kb) ***"
+        "\n*** Trace for largest memory block - "
+        f"({largest.count} blocks, {largest.size/1024} Kb) ***"
     )
     for l in largest.traceback.format():
         print(l)

@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING
 
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
 from music_assistant.common.models.media_items import (
     AudioFormat,
@@ -30,7 +28,13 @@ from music_assistant.server.models.music_provider import MusicProvider
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from collections.abc import AsyncGenerator
+
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -59,7 +63,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001 D205
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 class RadioBrowserProvider(MusicProvider):
@@ -79,7 +83,7 @@ class RadioBrowserProvider(MusicProvider):
             # Try to get some stats to check connection to RadioBrowser API
             await self.radios.stats()
         except RadioBrowserError as err:
-            self.logger.error("%s", err)
+            self.logger.exception("%s", err)
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
@@ -293,7 +297,9 @@ class RadioBrowserProvider(MusicProvider):
         )
 
     async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0  # noqa: ARG002
+        self,
+        streamdetails: StreamDetails,
+        seek_position: int = 0,
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):

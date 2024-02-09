@@ -118,7 +118,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 class AirplayProvider(PlayerProvider):
@@ -138,7 +138,7 @@ class AirplayProvider(PlayerProvider):
         # for now do not allow creation of airplay groups
         # in preparation of new airplay provider coming up soon
         # return (ProviderFeature.SYNC_PLAYERS,)
-        return tuple()
+        return ()
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
@@ -179,7 +179,7 @@ class AirplayProvider(PlayerProvider):
         slimproto_prov = self.mass.get_provider("slimproto")
         slimproto_prov.on_player_config_changed(config, changed_keys)
 
-        async def update_config():
+        async def update_config() -> None:
             # stop bridge (it will be auto restarted)
             if changed_keys.intersection(NEED_BRIDGE_RESTART):
                 self.restart_bridge()
@@ -239,7 +239,7 @@ class AirplayProvider(PlayerProvider):
         slimproto_prov = self.mass.get_provider("slimproto")
         await slimproto_prov.play_stream(player_id, stream_job)
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         # simply forward to underlying slimproto player
         slimproto_prov = self.mass.get_provider("slimproto")
@@ -345,7 +345,8 @@ class AirplayProvider(PlayerProvider):
         ):
             return bridge_binary
 
-        raise RuntimeError(f"Unable to locate RaopBridge for {system}/{architecture}")
+        msg = f"Unable to locate RaopBridge for {system}/{architecture}"
+        raise RuntimeError(msg)
 
     async def _bridge_process_runner(self, slimproto_prov: SlimprotoProvider) -> None:
         """Run the bridge binary in the background."""
@@ -381,7 +382,7 @@ class AirplayProvider(PlayerProvider):
                 await self._bridge_proc.wait()
             except Exception as err:
                 if not start_success:
-                    raise err
+                    raise
                 self.logger.exception("Error in Airplay bridge", exc_info=err)
             if self._closing:
                 break
@@ -426,9 +427,9 @@ class AirplayProvider(PlayerProvider):
 
         try:
             xml_root = ET.XML(xml_data)
-        except ET.ParseError as err:
+        except ET.ParseError:
             if recreate:
-                raise err
+                raise
             await self._check_config_xml(True)
             return
 
@@ -510,7 +511,7 @@ class AirplayProvider(PlayerProvider):
             self._timer_handle.cancel()
             self._timer_handle = None
 
-        async def restart_bridge():
+        async def restart_bridge() -> None:
             self.logger.info("Restarting Airplay bridge (due to config changes)")
             await self._stop_bridge()
             await self._check_config_xml()

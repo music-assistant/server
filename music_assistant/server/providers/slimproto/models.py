@@ -5,9 +5,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from music_assistant.common.models.enums import MediaType, PlayerState, RepeatMode
-from music_assistant.common.models.media_items import MediaItemType
 
 if TYPE_CHECKING:
+    from music_assistant.common.models.media_items import MediaItemType
     from music_assistant.common.models.player import Player
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
@@ -217,7 +217,7 @@ class SlimMenuItem(TypedDict):
     style: str
     track: str
     album: str
-    trackType: str  # noqa: N815
+    trackType: str
     icon: str
     artist: str
     text: str

@@ -1,5 +1,5 @@
-#!/usr/bin/env python3
 """Generate updated constraint and requirements files."""
+
 from __future__ import annotations
 
 import json
@@ -11,6 +11,8 @@ from pathlib import Path
 
 PACKAGE_REGEX = re.compile(r"^(?:--.+\s)?([-_\.\w\d]+).*==.+$")
 GIT_REPO_REGEX = re.compile(r"^(git\+https:\/\/[-_\.\w\d\/]+[@-_\.\w\d\/]*)$")
+
+# ruff: noqa: PTH112,PTH113,PTH118,PTH123,T201
 
 
 def gather_core_requirements() -> list[str]:
@@ -68,7 +70,7 @@ def main() -> int:
             # duplicate package without version is safe to ignore
             continue
         else:
-            print("Found requirement without (exact) version specifier: %s" % req_str)
+            print(f"Found requirement without (exact) version specifier: {req_str}")
             package_name = req_str
 
         existing = final_requirements.get(package_name)

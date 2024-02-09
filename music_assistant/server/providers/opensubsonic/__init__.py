@@ -2,18 +2,22 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueType,
     ProviderConfig,
 )
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_PORT, CONF_USERNAME
-from music_assistant.server import MusicAssistant
-from music_assistant.server.models import ProviderInstanceType
 
 from .sonic_provider import CONF_BASE_URL, CONF_ENABLE_PODCASTS, OpenSonicProvider
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 
 async def setup(

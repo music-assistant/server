@@ -9,7 +9,11 @@ from typing import Any, Self
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
+from music_assistant.common.helpers.util import (
+    create_sort_name,
+    is_valid_uuid,
+    merge_lists,
+)
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
@@ -184,11 +188,11 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set) and isinstance(new_val, list):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):  # noqa: SIM114
+            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
-            elif cur_val is None or (allow_overwrite and new_val):  # noqa: SIM114
+            elif cur_val is None or (allow_overwrite and new_val):
                 setattr(self, fld.name, new_val)
         return self
 
@@ -225,7 +229,8 @@ class _MediaItemBase(DataClassDictMixin):
         if not value:
             return
         if not is_valid_uuid(value):
-            raise InvalidDataError(f"Invalid MusicBrainz identifier: {value}")
+            msg = f"Invalid MusicBrainz identifier: {value}"
+            raise InvalidDataError(msg)
         if existing := next((x for x in self.external_ids if x[0] == ExternalID.MUSICBRAINZ), None):
             # Musicbrainz ID is unique so remove existing entry
             self.external_ids.remove(existing)
@@ -296,7 +301,7 @@ class ItemMapping(_MediaItemBase):
     available: bool = True
 
     @classmethod
-    def from_item(cls, item: MediaItem):
+    def from_item(cls, item: MediaItem) -> ItemMapping:
         """Create ItemMapping object from regular item."""
         return cls.from_dict(item.to_dict())
 
@@ -514,7 +519,7 @@ class StreamDetails(DataClassDictMixin):
         d.pop("callback")
         return d
 
-    def __str__(self):
+    def __str__(self) -> str:
         """Return pretty printable string of object."""
         return self.uri
 

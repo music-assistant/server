@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
-from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 import shortuuid
@@ -26,7 +25,6 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_GROUP_MEMBERS,
@@ -40,7 +38,10 @@ from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Coroutine, Iterable, Iterator
+
     from music_assistant.common.models.config_entries import CoreConfig
+    from music_assistant.common.models.queue_item import QueueItem
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
@@ -50,7 +51,7 @@ _P = ParamSpec("_P")
 
 
 def log_player_command(
-    func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]]
+    func: Callable[Concatenate[_PlayerControllerT, _P], Awaitable[_R]],
 ) -> Callable[Concatenate[_PlayerControllerT, _P], Coroutine[Any, Any, _R | None]]:
     """Check and log commands to players."""
 
@@ -93,7 +94,7 @@ class PlayerController(CoreController):
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task | None = None
 
-    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self._poll_task = self.mass.create_task(self._poll_players())
 
@@ -133,10 +134,12 @@ class PlayerController(CoreController):
         """Return Player by player_id."""
         if player := self._players.get(player_id):
             if (not player.available or not player.enabled) and raise_unavailable:
-                raise PlayerUnavailableError(f"Player {player_id} is not available")
+                msg = f"Player {player_id} is not available"
+                raise PlayerUnavailableError(msg)
             return player
         if raise_unavailable:
-            raise PlayerUnavailableError(f"Player {player_id} is not available")
+            msg = f"Player {player_id} is not available"
+            raise PlayerUnavailableError(msg)
         return None
 
     @api_command("players/get_by_name")
@@ -162,7 +165,8 @@ class PlayerController(CoreController):
         player_id = player.player_id
 
         if player_id in self._players:
-            raise AlreadyRegisteredError(f"Player {player_id} is already registered")
+            msg = f"Player {player_id} is already registered"
+            raise AlreadyRegisteredError(msg)
 
         # make sure a default config exists
         self.mass.config.create_default_player_config(
@@ -456,9 +460,8 @@ class PlayerController(CoreController):
             await self.cmd_group_volume(player_id, volume_level)
             return
         if PlayerFeature.VOLUME_SET not in player.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support volume_set"
-            )
+            msg = f"Player {player.display_name} does not support volume_set"
+            raise UnsupportedFeaturedException(msg)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_volume_set(player_id, volume_level)
 
@@ -546,9 +549,8 @@ class PlayerController(CoreController):
         player = self.get(player_id, True)
         assert player
         if PlayerFeature.VOLUME_MUTE not in player.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support muting"
-            )
+            msg = f"Player {player.display_name} does not support muting"
+            raise UnsupportedFeaturedException(msg)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_volume_mute(player_id, muted)
 
@@ -563,9 +565,8 @@ class PlayerController(CoreController):
 
         player = self.get(player_id, True)
         if PlayerFeature.SEEK not in player.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {player.display_name} does not support seeking"
-            )
+            msg = f"Player {player.display_name} does not support seeking"
+            raise UnsupportedFeaturedException(msg)
         player_prov = self.mass.players.get_player_provider(player_id)
         await player_prov.cmd_seek(player_id, position)
 
@@ -607,7 +608,7 @@ class PlayerController(CoreController):
             fade_in=fade_in,
         )
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """
         Handle enqueuing of the next queue item on the player.
 
@@ -651,13 +652,11 @@ class PlayerController(CoreController):
         assert child_player
         assert parent_player
         if PlayerFeature.SYNC not in child_player.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {child_player.name} does not support (un)sync commands"
-            )
+            msg = f"Player {child_player.name} does not support (un)sync commands"
+            raise UnsupportedFeaturedException(msg)
         if PlayerFeature.SYNC not in parent_player.supported_features:
-            raise UnsupportedFeaturedException(
-                f"Player {parent_player.name} does not support (un)sync commands"
-            )
+            msg = f"Player {parent_player.name} does not support (un)sync commands"
+            raise UnsupportedFeaturedException(msg)
         if child_player.synced_to:
             if child_player.synced_to == parent_player.player_id:
                 # nothing to do: already synced to this parent
@@ -684,7 +683,8 @@ class PlayerController(CoreController):
         """
         player = self.get(player_id, True)
         if PlayerFeature.SYNC not in player.supported_features:
-            raise UnsupportedFeaturedException(f"Player {player.name} does not support syncing")
+            msg = f"Player {player.name} does not support syncing"
+            raise UnsupportedFeaturedException(msg)
         if not player.synced_to:
             LOGGER.info(
                 "Ignoring command to unsync player %s "
@@ -711,7 +711,8 @@ class PlayerController(CoreController):
         """
         # perform basic checks
         if (player_prov := self.mass.get_provider(provider)) is None:
-            raise ProviderUnavailableError(f"Provider {provider} is not available!")
+            msg = f"Provider {provider} is not available!"
+            raise ProviderUnavailableError(msg)
         if ProviderFeature.PLAYER_GROUP_CREATE in player_prov.supported_features:
             # provider supports group create feature: forward request to provider
             # the provider is itself responsible for
@@ -720,9 +721,8 @@ class PlayerController(CoreController):
         if ProviderFeature.SYNC_PLAYERS in player_prov.supported_features:
             # default syncgroup implementation
             return await self._create_syncgroup(player_prov.instance_id, name, members)
-        raise UnsupportedFeaturedException(
-            f"Provider {player_prov.name} does not support creating groups"
-        )
+        msg = f"Provider {player_prov.name} does not support creating groups"
+        raise UnsupportedFeaturedException(msg)
 
     def _check_redirect(self, player_id: str) -> str:
         """Check if playback related command should be redirected."""
@@ -880,10 +880,9 @@ class PlayerController(CoreController):
             enabled=True,
             values={CONF_GROUP_MEMBERS: members},
         )
-        player = self._register_syncgroup(
+        return self._register_syncgroup(
             group_player_id=new_group_id, provider=provider, name=name, members=members
         )
-        return player
 
     def get_sync_leader(self, group_player: Player) -> Player | None:
         """Get the active sync leader player for a syncgroup or synced player."""
@@ -941,7 +940,7 @@ class PlayerController(CoreController):
                 break
         else:
             # edge case: no child player is (yet) available; postpone register
-            return
+            return None
         player = Player(
             player_id=group_player_id,
             provider=provider,
@@ -972,7 +971,7 @@ class PlayerController(CoreController):
             # guard, this should be caught in the player controller but just in case...
             return
 
-        powered_childs = [x for x in self.iter_group_members(group_player, True)]
+        powered_childs = list(self.iter_group_members(group_player, True))
         if not new_power and child_player in powered_childs:
             powered_childs.remove(child_player)
         if new_power and child_player not in powered_childs:
@@ -1002,7 +1001,7 @@ class PlayerController(CoreController):
                 group_player.display_name,
             )
 
-            async def forced_resync():
+            async def forced_resync() -> None:
                 # we need to wait a bit here to not run into massive race conditions
                 await asyncio.sleep(5)
                 await self._sync_syncgroup(group_player.player_id)

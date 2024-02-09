@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -24,6 +23,9 @@ from music_assistant.server.helpers.compare import compare_strings
 
 from .base import MediaControllerBase
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
 
 class PlaylistController(MediaControllerBase[Playlist]):
     """Controller managing MediaItems of type Playlist."""
@@ -32,7 +34,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     media_type = MediaType.PLAYLIST
     item_cls = Playlist
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
@@ -61,16 +63,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
             metadata_lookup = False
             item = Playlist.from_item_mapping(item)
         if not isinstance(item, Playlist):
-            raise InvalidDataError(
-                "Not a valid Playlist object (ItemMapping can not be added to db)"
-            )
+            msg = "Not a valid Playlist object (ItemMapping can not be added to db)"
+            raise InvalidDataError(msg)
         if not item.provider_mappings:
-            raise InvalidDataError("Playlist is missing provider mapping(s)")
+            msg = "Playlist is missing provider mapping(s)"
+            raise InvalidDataError(msg)
         # check for existing item first
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             library_item = await self.update_item_in_library(cur_item.item_id, item)
@@ -171,7 +173,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 None,
             )
         if provider is None:
-            raise ProviderUnavailableError("No provider available which allows playlists creation.")
+            msg = "No provider available which allows playlists creation."
+            raise ProviderUnavailableError(msg)
 
         # create playlist on the provider
         playlist = await provider.create_playlist(name)
@@ -183,9 +186,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         db_id = int(db_playlist_id)  # ensure integer
         playlist = await self.get_library_item(db_id)
         if not playlist:
-            raise MediaNotFoundError(f"Playlist with id {db_id} not found")
+            msg = f"Playlist with id {db_id} not found"
+            raise MediaNotFoundError(msg)
         if not playlist.is_editable:
-            raise InvalidDataError(f"Playlist {playlist.name} is not editable")
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
         for uri in uris:
             self.mass.create_task(self.add_playlist_track(db_id, uri))
 
@@ -195,9 +200,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # we can only edit playlists that are in the database (marked as editable)
         playlist = await self.get_library_item(db_id)
         if not playlist:
-            raise MediaNotFoundError(f"Playlist with id {db_id} not found")
+            msg = f"Playlist with id {db_id} not found"
+            raise MediaNotFoundError(msg)
         if not playlist.is_editable:
-            raise InvalidDataError(f"Playlist {playlist.name} is not editable")
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
         # make sure we have recent full track details
         track = await self.mass.music.get_item_by_uri(track_uri)
         assert track.media_type == MediaType.TRACK
@@ -221,7 +228,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 track_prov.provider_domain == playlist_prov.provider_domain
                 and track_prov.item_id in cur_playlist_track_ids
             ):
-                raise InvalidDataError("Track already exists in playlist {playlist.name}")
+                msg = "Track already exists in playlist {playlist.name}"
+                raise InvalidDataError(msg)
         # add track to playlist
         # we can only add a track to a provider playlist if track is available on that provider
         # a track can contain multiple versions on the same provider
@@ -242,9 +250,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 track_id_to_add = track_version.item_id
                 break
         if not track_id_to_add:
-            raise MediaNotFoundError(
-                f"Track is not available on provider {playlist_prov.provider_domain}"
-            )
+            msg = f"Track is not available on provider {playlist_prov.provider_domain}"
+            raise MediaNotFoundError(msg)
         # actually add the tracks to the playlist on the provider
         provider = self.mass.get_provider(playlist_prov.provider_instance)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
@@ -258,9 +265,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         db_id = int(db_playlist_id)  # ensure integer
         playlist = await self.get_library_item(db_id)
         if not playlist:
-            raise MediaNotFoundError(f"Playlist with id {db_id} not found")
+            msg = f"Playlist with id {db_id} not found"
+            raise MediaNotFoundError(msg)
         if not playlist.is_editable:
-            raise InvalidDataError(f"Playlist {playlist.name} is not editable")
+            msg = f"Playlist {playlist.name} is not editable"
+            raise InvalidDataError(msg)
         for prov_mapping in playlist.provider_mappings:
             provider = self.mass.get_provider(prov_mapping.provider_instance)
             if ProviderFeature.PLAYLIST_TRACKS_EDIT not in provider.supported_features:
@@ -373,10 +382,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         return random.sample(list(radio_items), len(radio_items))
 
     async def _get_dynamic_tracks(
-        self, media_item: Playlist, limit: int = 25  # noqa: ARG002
+        self,
+        media_item: Playlist,
+        limit: int = 25,
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
-        raise UnsupportedFeaturedException(
-            "No Music Provider found that supports requesting similar tracks."
-        )
+        msg = "No Music Provider found that supports requesting similar tracks."
+        raise UnsupportedFeaturedException(msg)

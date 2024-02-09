@@ -6,29 +6,25 @@ build-backend = "setuptools.build_meta"
 name = "music_assistant"
 # The version is set by GH action on release
 version = "0.0.0"
-license     = {text = "Apache-2.0"}
+license = { text = "Apache-2.0" }
 description = "Music Assistant"
 readme = "README.md"
 requires-python = ">=3.11"
-authors     = [
-    {name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com"}
+authors = [
+  { name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com" },
 ]
 classifiers = [
   "Environment :: Console",
   "Programming Language :: Python :: 3.11",
 ]
-dependencies = [
-  "aiohttp",
-  "orjson",
-  "mashumaro"
-]
+dependencies = ["aiohttp", "orjson", "mashumaro"]
 
 [project.optional-dependencies]
 server = [
   "faust-cchardet>=2.1.18",
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
-  "aiohttp==3.9.2",
+  "aiohttp==3.9.3",
   "asyncio-throttle==1.0.2",
   "aiofiles==23.2.1",
   "aiorun==2023.7.2",
@@ -44,64 +40,34 @@ server = [
   "orjson==3.9.12",
   "shortuuid==1.0.11",
   "zeroconf==0.131.0",
-  "cryptography==41.0.7",
+  "cryptography==42.0.2",
   "ifaddr==0.2.0",
-  "uvloop==0.19.0"
+  "uvloop==0.19.0",
 ]
 test = [
   "black==24.1.1",
   "codespell==2.2.6",
+  "isort==5.13.2",
   "mypy==1.8.0",
-  "ruff==0.1.14",
+  "pre-commit==3.6.0",
+  "pre-commit-hooks==4.5.0",
+  "pylint==3.0.3",
   "pytest==7.4.4",
-  "pytest-asyncio==0.23.3",
   "pytest-aiohttp==1.0.5",
   "pytest-cov==4.1.0",
-  "pre-commit==3.6.0"
+  "ruff==0.2.1",
+  "safety==3.0.1",
 ]
 
 [project.scripts]
 mass = "music_assistant.__main__:main"
 
-[tool.black]
-target-version = ['py311']
-line-length = 100
-
 [tool.codespell]
-ignore-words-list = "provid,hass,followings"
-
-[tool.mypy]
-python_version = "3.11"
-check_untyped_defs = true
-#disallow_any_generics = true
-disallow_incomplete_defs = true
-disallow_untyped_calls = false
-disallow_untyped_defs = true
-mypy_path = "music_assistant/"
-no_implicit_optional = true
-show_error_codes = true
-warn_incomplete_stub = true
-warn_redundant_casts = true
-warn_return_any = true
-warn_unreachable = true
-warn_unused_configs = true
-warn_unused_ignores = true
-
-[[tool.mypy.overrides]]
-ignore_missing_imports = true
-module = [
-  "aiorun",
-]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-pythonpath = [
-  "."
-]
+ignore-words-list = "provid,hass,followings,childs"
 
 [tool.setuptools]
 platforms = ["any"]
-zip-safe  = false
+zip-safe = false
 packages = ["music_assistant"]
 include-package-data = true
 
@@ -112,28 +78,207 @@ music_assistant = ["py.typed"]
 fix = true
 show-fixes = true
 
-# enable later: "C90", "PTH", "TCH", "RET", "ANN"
-select = ["E", "F", "W", "I", "N", "D", "UP", "PL", "Q", "SIM", "TID", "ARG"]
-ignore = ["PLR2004", "N818"]
-extend-exclude = ["app_vars.py"]
-unfixable = ["F841"]
 line-length = 100
 target-version = "py311"
 
-[tool.ruff.flake8-annotations]
-allow-star-arg-any = true
-suppress-dummy-args = true
 
-[tool.ruff.flake8-builtins]
-builtins-ignorelist = ["id"]
-
-[tool.ruff.pydocstyle]
+[tool.ruff.lint.pydocstyle]
 # Use Google-style docstrings.
 convention = "pep257"
 
-[tool.ruff.pylint]
+[tool.ruff.lint.pylint]
 
-max-branches=25
-max-returns=15
-max-args=10
-max-statements=50
+max-branches = 25
+max-returns = 15
+max-args = 10
+max-statements = 50
+
+
+[tool.mypy]
+platform = "linux"
+python_version = "3.11"
+
+# show error messages from unrelated files
+follow_imports = "normal"
+
+# suppress errors about unsatisfied imports
+ignore_missing_imports = true
+
+# be strict
+check_untyped_defs = true
+disallow_any_generics = true
+disallow_incomplete_defs = true
+disallow_subclassing_any = true
+disallow_untyped_calls = true
+disallow_untyped_decorators = true
+disallow_untyped_defs = true
+no_implicit_optional = true
+no_implicit_reexport = true
+strict_optional = true
+warn_incomplete_stub = true
+warn_no_return = true
+warn_redundant_casts = true
+warn_return_any = true
+warn_unused_configs = true
+warn_unused_ignores = true
+
+[tool.pylint.MASTER]
+extension-pkg-whitelist = ["orjson"]
+ignore = ["tests"]
+
+[tool.pylint.BASIC]
+good-names = ["_", "id", "on", "Run", "T"]
+
+[tool.pylint.DESIGN]
+max-attributes = 8
+
+[tool.pylint."MESSAGES CONTROL"]
+disable = [
+  "duplicate-code",
+  "format",
+  "unsubscriptable-object",
+  "unused-argument",                           # handled by ruff
+  "unspecified-encoding",                      # handled by ruff
+  "isinstance-second-argument-not-valid-type", # conflict with ruff
+  "fixme",                                     # we're still developing
+
+  # TEMPORARY DISABLED rules
+  # The below rules must be enabled later one-by-one !
+  "too-many-return-statements",
+  "unsupported-assignment-operation",
+  "invalid-name",
+  "redefined-outer-name",
+  "too-many-statements",
+  "deprecated-method",
+  "logging-fstring-interpolation",
+  "attribute-defined-outside-init",
+  "broad-exception-caught",
+  "expression-not-assigned",
+  "consider-using-f-string",
+  "consider-using-with",
+  "arguments-renamed",
+  "protected-access",
+  "too-many-boolean-expressions",
+  "raise-missing-from",
+  "too-many-locals",
+  "abstract-method",
+  "unnecessary-lambda",
+  "stop-iteration-return",
+  "no-else-return",
+  "no-else-raise",
+  "undefined-loop-variable",
+  "too-many-nested-blocks",
+  "too-many-public-methods",          # unavoidable?
+  "too-many-arguments",               # unavoidable?
+  "too-many-branches",                # unavoidable?
+  "too-many-instance-attributes",     # unavoidable?
+
+
+]
+
+[tool.pylint.SIMILARITIES]
+ignore-imports = true
+
+[tool.pylint.FORMAT]
+max-line-length = 100
+
+[tool.pytest.ini_options]
+addopts = "--cov"
+asyncio_mode = "auto"
+
+[tool.ruff.lint]
+ignore = [
+  "ANN002",  # Just annoying, not really useful
+  "ANN003",  # Just annoying, not really useful
+  "ANN101",  # Self... explanatory
+  "ANN401",  # Opinioated warning on disallowing dynamically typed expressions
+  "D203",    # Conflicts with other rules
+  "D213",    # Conflicts with other rules
+  "D417",    # False positives in some occasions
+  "FIX002",  # Just annoying, not really useful
+  "PLR2004", # Just annoying, not really useful
+  "PD011",   # Just annoying, not really useful
+  "S101",    # assert is often used to satisfy type checking
+  "TD002",   # Just annoying, not really useful
+  "TD003",   # Just annoying, not really useful
+  "TD004",   # Just annoying, not really useful
+
+  # Conflicts with the Ruff formatter
+  "COM812",
+  "ISC001",
+
+  # TEMPORARY DISABLED rules
+  # The below rules must be enabled later one-by-one !
+  "BLE001",
+  "FBT001",
+  "FBT002",
+  "FBT003",
+  "ANN001",
+  "ANN102",
+  "ANN201",
+  "ANN202",
+  "TRY002",
+  "PTH103",
+  "PTH100",
+  "PTH110",
+  "PTH111",
+  "PTH112",
+  "PTH113",
+  "PTH118",
+  "PTH120",
+  "PTH123",
+  "PYI034",
+  "PYI036",
+  "G004",
+  "PGH003",
+  "DTZ005",
+  "S104",
+  "S105",
+  "S106",
+  "SLF001",
+  "SIM113",
+  "SIM102",
+  "PERF401",
+  "PERF402",
+  "ARG002",
+  "S311",
+  "TRY301",
+  "RET505",
+  "PLR0912",
+  "B904",
+  "TRY401",
+  "S324",
+  "DTZ006",
+  "ERA001",
+  "PTH206",
+  "C901",
+  "PTH119",
+  "PTH116",
+  "DTZ003",
+  "RUF012",
+  "S304",
+  "DTZ003",
+  "RET507",
+  "RUF006",
+  "TRY300",
+  "PTH107",
+  "S608",
+  "N818",
+  "S307",
+  "B007",
+  "RUF009",
+  "ANN204",
+  "PTH202",
+]
+
+select = ["ALL"]
+
+[tool.ruff.lint.flake8-pytest-style]
+fixture-parentheses = false
+mark-parentheses = false
+
+[tool.ruff.lint.isort]
+known-first-party = ["music_assistant"]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 25

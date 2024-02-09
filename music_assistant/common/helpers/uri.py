@@ -19,7 +19,7 @@ def parse_uri(uri: str) -> tuple[MediaType, str, str]:
             media_type_str = uri.split("/")[3]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[4].split("?")[0]
-        elif uri.startswith("http://") or uri.startswith("https://"):
+        elif uri.startswith(("http://", "https://")):
             # Translate a plain URL to the URL provider
             provider_instance_id_or_domain = "url"
             media_type = MediaType.UNKNOWN
@@ -43,7 +43,8 @@ def parse_uri(uri: str) -> tuple[MediaType, str, str]:
         else:
             raise KeyError
     except (TypeError, AttributeError, ValueError, KeyError) as err:
-        raise MusicAssistantError(f"Not a valid Music Assistant uri: {uri}") from err
+        msg = f"Not a valid Music Assistant uri: {uri}"
+        raise MusicAssistantError(msg) from err
     return (media_type, provider_instance_id_or_domain, item_id)
 
 
