@@ -12,7 +12,12 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.constants import CONF_PASSWORD, CONF_PATH, CONF_PORT, CONF_USERNAME
 
-from .sonic_provider import CONF_BASE_URL, CONF_ENABLE_PODCASTS, OpenSonicProvider
+from .sonic_provider import (
+    CONF_BASE_URL,
+    CONF_ENABLE_LEGACY_AUTH,
+    CONF_ENABLE_PODCASTS,
+    OpenSonicProvider,
+)
 
 if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
@@ -80,5 +85,13 @@ async def get_config_entries(
             required=True,
             description="Should the provider query for podcasts as well as music?",
             default_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_LEGACY_AUTH,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable legacy auth",
+            required=True,
+            description='Enable OpenSubsonic "legacy" auth support',
+            default_value=False,
         ),
     )

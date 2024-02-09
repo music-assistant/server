@@ -54,6 +54,7 @@ if TYPE_CHECKING:
 
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
+CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
 
@@ -76,6 +77,7 @@ class OpenSonicProvider(MusicProvider):
             self.config.get_value(CONF_BASE_URL),
             username=self.config.get_value(CONF_USERNAME),
             password=self.config.get_value(CONF_PASSWORD),
+            legacyAuth=self.config.get_value(CONF_ENABLE_LEGACY_AUTH),
             port=port,
             serverPath=path,
             appName="Music Assistant",
