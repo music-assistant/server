@@ -15,7 +15,6 @@ import asyncio
 import contextlib
 import time
 import urllib.parse
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
@@ -24,12 +23,13 @@ from aiohttp import web
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.util import empty_queue, select_free_port
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import EventType, PlayerState, QueueOption, RepeatMode
+from music_assistant.common.models.enums import (
+    EventType,
+    PlayerState,
+    QueueOption,
+    RepeatMode,
+)
 from music_assistant.common.models.errors import MusicAssistantError
-from music_assistant.common.models.event import MassEvent
-from music_assistant.common.models.media_items import MediaItemType
-from music_assistant.common.models.queue_item import QueueItem
 
 from .models import (
     PLAYMODE_MAP,
@@ -51,12 +51,22 @@ from .models import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+    )
+    from music_assistant.common.models.event import MassEvent
+    from music_assistant.common.models.media_items import MediaItemType
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
 
     from . import SlimprotoProvider
 
 
-# ruff: noqa: ARG002, E501
+# ruff: noqa: ARG002, E501, ERA001
+# pylint: disable=keyword-arg-before-vararg
 
 ArgsType = list[int | str]
 KwargsType = dict[str, Any]
@@ -89,7 +99,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 def parse_value(raw_value: int | str) -> int | str | tuple[str, int | str]:
@@ -264,7 +274,7 @@ class LmsCli:
         # return the response to the client
         return web.json_response(result, dumps=json_dumps)
 
-    async def _handle_cometd(self, request: web.Request) -> web.Response:  # noqa: PLR0912
+    async def _handle_cometd(self, request: web.Request) -> web.Response:
         """
         Handle CometD request on the json CLI.
 
@@ -410,7 +420,7 @@ class LmsCli:
                         "subscription": cometd_msg["subscription"],
                     }
                 )
-            elif channel == "/slim/subscribe":  # noqa: SIM114
+            elif channel == "/slim/subscribe":
                 # A request to execute & subscribe to some Logitech Media Server event
                 # A valid /slim/subscribe message looks like this:
                 # {
@@ -539,7 +549,7 @@ class LmsCli:
     def _handle_cometd_request(self, client: CometDClient, cometd_request: dict[str, Any]) -> None:
         """Handle request for CometD client (and put result on client queue)."""
 
-        async def _handle():
+        async def _handle() -> None:
             result = await self._handle_request(cometd_request["data"]["request"])
             await client.queue.put(
                 {
@@ -772,7 +782,10 @@ class LmsCli:
         **kwargs,
     ) -> ServerStatusResponse:
         """Handle firmwareupgrade command."""
-        return {"firmwareUpgrade": 0, "relativeFirmwareUrl": "/firmware/baby_7.7.3_r16676.bin"}
+        return {
+            "firmwareUpgrade": 0,
+            "relativeFirmwareUrl": "/firmware/baby_7.7.3_r16676.bin",
+        }
 
     async def _handle_artworkspec(
         self,
@@ -805,27 +818,27 @@ class LmsCli:
                 # self.mass.players.update(player_id)
             else:
                 self.mass.create_task(self.mass.players.cmd_volume_set, player_id, arg)
-            return
+            return None
         if subcommand == "volume" and arg == "?":
             return player.volume_level
         if subcommand == "volume" and "+" in arg:
             volume_level = min(100, player.volume_level + int(arg.split("+")[1]))
             self.mass.create_task(self.mass.players.cmd_volume_set, player_id, volume_level)
-            return
+            return None
         if subcommand == "volume" and "-" in arg:
             volume_level = max(0, player.volume_level - int(arg.split("-")[1]))
             self.mass.create_task(self.mass.players.cmd_volume_set, player_id, volume_level)
-            return
+            return None
 
         # <playerid> mixer muting <0|1|toggle|?|>
         if subcommand == "muting" and isinstance(arg, int):
             self.mass.create_task(self.mass.players.cmd_volume_mute, player_id, int(arg))
-            return
+            return None
         if subcommand == "muting" and arg == "toggle":
             self.mass.create_task(
                 self.mass.players.cmd_volume_mute, player_id, not player.volume_muted
             )
-            return
+            return None
         if subcommand == "muting":
             return int(player.volume_muted)
         self.logger.warning(
@@ -835,6 +848,7 @@ class LmsCli:
             str(args),
             str(kwargs),
         )
+        return None
 
     def _handle_time(self, player_id: str, number: str | int) -> int | None:
         """Handle player `time` command."""
@@ -853,8 +867,10 @@ class LmsCli:
         if isinstance(number, str) and ("+" in number or "-" in number):
             jump = int(number.split("+")[1])
             self.mass.create_task(self.mass.player_queues.skip, player_queue.queue_id, jump)
+            return None
         else:
             self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, int(number))
+            return None
 
     def _handle_power(self, player_id: str, value: str | int, *args, **kwargs) -> int | None:
         """Handle player `time` command."""
@@ -872,9 +888,10 @@ class LmsCli:
             # itself and just reports the new state
             player.powered = bool(value)
             # self.mass.players.update(player_id)
-            return
+            return None
 
         self.mass.create_task(self.mass.players.cmd_power, player_id, bool(value))
+        return None
 
     def _handle_playlist(
         self,
@@ -891,31 +908,32 @@ class LmsCli:
         # <playerid> playlist index <index|+index|-index|?> <fadeInSecs>
         if subcommand == "index" and isinstance(arg, int):
             self.mass.create_task(self.mass.player_queues.play_index, player_id, arg)
-            return
+            return None
         if subcommand == "index" and arg == "?":
             return queue.current_index
         if subcommand == "index" and "+" in arg:
             next_index = (queue.current_index or 0) + int(arg.split("+")[1])
             self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
-            return
+            return None
         if subcommand == "index" and "-" in arg:
             next_index = (queue.current_index or 0) - int(arg.split("-")[1])
             self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
-            return
+            return None
         if subcommand == "shuffle" and arg == "?":
             return queue.shuffle_enabled
         if subcommand == "shuffle":
             self.mass.player_queues.set_shuffle(queue.queue_id, bool(arg))
-            return
+            return None
         if subcommand == "repeat" and arg == "?":
             return str(REPEATMODE_MAP[queue.repeat_mode])
         if subcommand == "repeat":
             repeat_map = {val: key for key, val in REPEATMODE_MAP.items()}
             new_repeat_mode = repeat_map.get(int(arg))
             self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
-            return
+            return None
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
+        return None
 
     def _handle_playlistcontrol(
         self,
@@ -944,7 +962,7 @@ class LmsCli:
             return
         if cmd == "insert":
             self.mass.create_task(
-                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.IN)
+                self.mass.player_queues.play_media(queue.queue_id, uri, QueueOption.NEXT)
             )
             return
         self.logger.warning("Unhandled command: playlistcontrol/%s", cmd)
@@ -1009,6 +1027,7 @@ class LmsCli:
             str(args),
             str(kwargs),
         )
+        return None
 
     def _handle_button(
         self,
@@ -1063,7 +1082,10 @@ class LmsCli:
             ):
                 option = QueueOption.REPLACE if "playlist" in preset_uri else QueueOption.PLAY
                 self.mass.create_task(
-                    self.mass.player_queues.play_media, queue.queue_id, preset_uri, option
+                    self.mass.player_queues.play_media,
+                    queue.queue_id,
+                    preset_uri,
+                    option,
                 )
             return
 
@@ -1366,5 +1388,5 @@ def dict_to_strings(source: dict) -> list[str]:
         elif isinstance(value, dict):
             result += dict_to_strings(value)
         else:
-            result.append(f"{key}:{str(value)}")
+            result.append(f"{key}:{value!s}")
     return result

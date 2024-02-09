@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING
 
@@ -11,7 +10,11 @@ from asyncio_throttle import Throttler
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant.common.models.media_items import (
     AudioFormat,
     ContentType,
@@ -33,6 +36,8 @@ SUPPORTED_FEATURES = (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -44,7 +49,8 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     if not config.get_value(CONF_USERNAME):
-        raise LoginFailed("Username is invalid")
+        msg = "Username is invalid"
+        raise LoginFailed(msg)
 
     prov = TuneInProvider(mass, manifest, config)
     if "@" in config.get_value(CONF_USERNAME):
@@ -72,7 +78,10 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
     )
 
@@ -94,7 +103,9 @@ class TuneInProvider(MusicProvider):
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_items(items: list[dict], folder: str = None) -> AsyncGenerator[Radio, None]:
+        async def parse_items(
+            items: list[dict], folder: str | None = None
+        ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
                 if item_type == "audio":
@@ -147,7 +158,8 @@ class TuneInProvider(MusicProvider):
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
                 return radio
-        raise MediaNotFoundError(f"Item {prov_radio_id} not found")
+        msg = f"Item {prov_radio_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def _parse_radio(
         self, details: dict, stream: dict | None = None, folder: str | None = None
@@ -215,7 +227,6 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.instance_id,
                 item_id=item_id,
-                content_type=ContentType.UNKNOWN,
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
                 ),
@@ -240,10 +251,13 @@ class TuneInProvider(MusicProvider):
                 expires=time() + 24 * 3600,
                 direct=url_resolved if not supports_icy else None,
             )
-        raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
+        msg = f"Unable to retrieve stream details for {item_id}"
+        raise MediaNotFoundError(msg)
 
     async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0  # noqa: ARG002
+        self,
+        streamdetails: StreamDetails,
+        seek_position: int = 0,
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):

@@ -12,7 +12,6 @@ import inspect
 import logging
 import os
 import urllib.parse
-from collections.abc import Awaitable
 from concurrent import futures
 from contextlib import suppress
 from functools import partial
@@ -32,7 +31,6 @@ from music_assistant.common.models.api import (
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import InvalidCommand
-from music_assistant.common.models.event import MassEvent
 from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
 from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.server.helpers.audio import get_preview_stream
@@ -41,7 +39,10 @@ from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from music_assistant.common.models.config_entries import ConfigValueType, CoreConfig
+    from music_assistant.common.models.event import MassEvent
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
@@ -56,7 +57,7 @@ class WebserverController(CoreController):
 
     domain: str = "webserver"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger, enable_dynamic_routes=False)
@@ -74,8 +75,8 @@ class WebserverController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
-        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         default_publish_ip = await get_ip()
@@ -210,7 +211,7 @@ class WebserverController(CoreController):
             await resp.write(chunk)
         return resp
 
-    async def _handle_server_info(self, request: web.Request) -> web.Response:  # noqa: ARG002
+    async def _handle_server_info(self, request: web.Request) -> web.Response:
         """Handle request for server info."""
         return web.json_response(self.mass.get_server_info().to_dict())
 
@@ -222,7 +223,7 @@ class WebserverController(CoreController):
         finally:
             self.clients.remove(connection)
 
-    async def _handle_application_log(self, request: web.Request) -> web.Response:  # noqa: ARG002
+    async def _handle_application_log(self, request: web.Request) -> web.Response:
         """Handle request to get the application log."""
         log_data = await self.mass.get_application_log()
         return web.Response(text=log_data, content_type="text/text")
@@ -263,7 +264,7 @@ class WebsocketClientHandler:
         try:
             async with asyncio.timeout(10):
                 await wsock.prepare(request)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._logger.warning("Timeout preparing request from %s", request.remote)
             return wsock
 
@@ -406,7 +407,7 @@ class WebsocketClientHandler:
         try:
             self._to_write.put_nowait(_message)
         except asyncio.QueueFull:
-            self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
+            self._logger.exception("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
             self._cancel()
 

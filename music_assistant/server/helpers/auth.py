@@ -16,7 +16,7 @@ if TYPE_CHECKING:
 class AuthenticationHelper:
     """Context manager helper class for authentication with a forward and redirect URL."""
 
-    def __init__(self, mass: MusicAssistant, session_id: str):
+    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
         """
         Initialize the Authentication Helper.
 

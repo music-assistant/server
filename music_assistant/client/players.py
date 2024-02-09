@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import EventType, QueueOption, RepeatMode
-from music_assistant.common.models.event import MassEvent
-from music_assistant.common.models.media_items import MediaItemType
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from music_assistant.common.models.event import MassEvent
+    from music_assistant.common.models.media_items import MediaItemType
+
     from .client import MusicAssistantClient
 
 

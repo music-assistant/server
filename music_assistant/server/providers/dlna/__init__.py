@@ -11,19 +11,16 @@ from __future__ import annotations
 import asyncio
 import functools
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
-from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
 from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
-from async_upnp_client.utils import CaseInsensitiveDict
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -40,7 +37,6 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE, CONF_PLAYERS
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -48,8 +44,14 @@ from music_assistant.server.models.player_provider import PlayerProvider
 from .helpers import DLNANotifyServer
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Coroutine, Sequence
+
+    from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
+    from async_upnp_client.utils import CaseInsensitiveDict
+
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
@@ -141,7 +143,7 @@ async def get_config_entries(
 
 
 def catch_request_errors(
-    func: Callable[Concatenate[_DLNAPlayerProviderT, _P], Awaitable[_R]]
+    func: Callable[Concatenate[_DLNAPlayerProviderT, _P], Awaitable[_R]],
 ) -> Callable[Concatenate[_DLNAPlayerProviderT, _P], Coroutine[Any, Any, _R | None]]:
     """Catch UpnpError errors."""
 
@@ -163,7 +165,7 @@ def catch_request_errors(
             return await func(self, *args, **kwargs)
         except UpnpError as err:
             dlna_player.force_poll = True
-            self.logger.error("Error during call %s: %r", func.__name__, err)
+            self.logger.exception("Error during call %s: %r", func.__name__, err)
         return None
 
     return wrapper
@@ -189,7 +191,7 @@ class DLNAPlayer:
     last_seen: float = field(default_factory=time.time)
     last_command: float = field(default_factory=time.time)
 
-    def update_attributes(self):
+    def update_attributes(self) -> None:
         """Update attributes of the MA Player from DLNA state."""
         # generic attributes
 
@@ -295,14 +297,17 @@ class DLNAPlayerProvider(PlayerProvider):
                 tg.create_task(self._device_disconnect(dlna_player))
 
     async def get_player_config_entries(
-        self, player_id: str  # noqa: ARG002
+        self,
+        player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
         return base_entries + PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(
-        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+        self,
+        config: PlayerConfig,
+        changed_keys: set[str],
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         super().on_player_config_changed(config, changed_keys)
@@ -409,7 +414,7 @@ class DLNAPlayerProvider(PlayerProvider):
             await self.poll_player(dlna_player.udn)
 
     @catch_request_errors
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         dlna_player = self.dlnaplayers[player_id]
         url = await self.mass.streams.resolve_stream_url(
@@ -500,7 +505,7 @@ class DLNAPlayerProvider(PlayerProvider):
             allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
             discovered_devices: set[str] = set()
 
-            async def on_response(discovery_info: CaseInsensitiveDict):
+            async def on_response(discovery_info: CaseInsensitiveDict) -> None:
                 """Process discovered device from ssdp search."""
                 ssdp_st: str = discovery_info.get("st", discovery_info.get("nt"))
                 if not ssdp_st:
@@ -535,7 +540,7 @@ class DLNAPlayerProvider(PlayerProvider):
         finally:
             self._discovery_running = False
 
-        def reschedule():
+        def reschedule() -> None:
             self.mass.create_task(self._run_discovery(use_multicast=not use_multicast))
 
         # reschedule self once finished
@@ -584,7 +589,7 @@ class DLNAPlayerProvider(PlayerProvider):
                     udn=udn,
                     player=Player(
                         player_id=udn,
-                        provider=self.domain,
+                        provider=self.instance_id,
                         type=PlayerType.PLAYER,
                         name=udn,
                         available=False,
@@ -701,6 +706,7 @@ class DLNAPlayerProvider(PlayerProvider):
         dlna_player.player.supported_features = BASE_PLAYER_FEATURES
         player_id = dlna_player.player.player_id
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENQUEUE_NEXT, False):
-            dlna_player.player.supported_features = dlna_player.player.supported_features + (
+            dlna_player.player.supported_features = (
+                *dlna_player.player.supported_features,
                 PlayerFeature.ENQUEUE_NEXT,
             )

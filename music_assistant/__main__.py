@@ -50,8 +50,7 @@ def get_arguments():
         "default=info, possible=(critical, error, warning, info, debug)",
     )
     parser.add_argument("-u", "--enable-uvloop", action="store_true")
-    arguments = parser.parse_args()
-    return arguments
+    return parser.parse_args()
 
 
 def setup_logger(data_path: str, level: str = "DEBUG"):
@@ -109,7 +108,8 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
 
     sys.excepthook = lambda *args: logging.getLogger(None).exception(
-        "Uncaught exception", exc_info=args  # type: ignore[arg-type]
+        "Uncaught exception",
+        exc_info=args,  # type: ignore[arg-type]
     )
     threading.excepthook = lambda args: logging.getLogger(None).exception(
         "Uncaught thread exception",
@@ -136,7 +136,7 @@ def _enable_posix_spawn() -> None:
     subprocess._USE_POSIX_SPAWN = os.path.exists(ALPINE_RELEASE_FILE)
 
 
-def main():
+def main() -> None:
     """Start MusicAssistant."""
     # parse arguments
     args = get_arguments()
@@ -163,11 +163,11 @@ def main():
     # enable alpine subprocess workaround
     _enable_posix_spawn()
 
-    def on_shutdown(loop):
+    def on_shutdown(loop) -> None:
         logger.info("shutdown requested!")
         loop.run_until_complete(mass.stop())
 
-    async def start_mass():
+    async def start_mass() -> None:
         loop = asyncio.get_running_loop()
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":

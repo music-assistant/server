@@ -3,14 +3,14 @@
 Brotli>=1.0.9
 aiodns>=3.0.0
 aiofiles==23.2.1
-aiohttp==3.9.2
+aiohttp==3.9.3
 aiorun==2023.7.2
 aioslimproto==2.3.3
 aiosqlite==0.19.0
 async-upnp-client==0.38.1
 asyncio-throttle==1.0.2
 colorlog==6.8.2
-cryptography==41.0.7
+cryptography==42.0.2
 defusedxml==0.7.1
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
@@ -22,7 +22,7 @@ music-assistant-frontend==2.1.2
 orjson==3.9.12
 pillow==10.2.0
 plexapi==4.15.7
-py-opensonic>=5.0.2
+py-opensonic>=5.0.5
 PyChromecast==13.0.8
 pycryptodome==3.20.0
 python-fullykiosk==0.0.12

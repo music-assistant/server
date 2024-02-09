@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import AsyncGenerator, Callable
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.util import parse_title_and_version
@@ -44,6 +43,8 @@ SUPPORTED_FEATURES = (
 
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -55,7 +56,8 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     if not config.get_value(CONF_CLIENT_ID) or not config.get_value(CONF_AUTHORIZATION):
-        raise LoginFailed("Invalid login credentials")
+        msg = "Invalid login credentials"
+        raise LoginFailed(msg)
     prov = SoundcloudMusicProvider(mass, manifest, config)
     await prov.handle_setup()
     return prov
@@ -77,7 +79,10 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_CLIENT_ID, type=ConfigEntryType.SECURE_STRING, label="Client ID", required=True
+            key=CONF_CLIENT_ID,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Client ID",
+            required=True,
         ),
         ConfigEntry(
             key=CONF_AUTHORIZATION,
@@ -115,7 +120,7 @@ class SoundcloudMusicProvider(MusicProvider):
         return SUPPORTED_FEATURES
 
     @classmethod
-    async def _run_async(cls, call: Callable, *args, **kwargs):
+    async def _run_async(cls, call: Callable, *args, **kwargs):  # noqa: ANN206
         return await asyncio.to_thread(call, *args, **kwargs)
 
     async def search(
@@ -193,7 +198,9 @@ class SoundcloudMusicProvider(MusicProvider):
                 yield await self._parse_playlist(playlist)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug(
-                    "Failed to obtain Soundcloud playlist details: %s", raw_playlist, exc_info=error
+                    "Failed to obtain Soundcloud playlist details: %s",
+                    raw_playlist,
+                    exc_info=error,
                 )
                 continue
 
@@ -310,10 +317,11 @@ class SoundcloudMusicProvider(MusicProvider):
         """Parse a Soundcloud user response to Artist model object."""
         artist_id = None
         permalink = artist_obj["permalink"]
-        if "id" in artist_obj and artist_obj["id"]:
+        if artist_obj.get("id"):
             artist_id = artist_obj["id"]
         if not artist_id:
-            raise InvalidDataError("Artist does not have a valid ID")
+            msg = "Artist does not have a valid ID"
+            raise InvalidDataError(msg)
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["username"],
@@ -367,7 +375,7 @@ class SoundcloudMusicProvider(MusicProvider):
         """Parse a Soundcloud Track response to a Track model object."""
         name, version = parse_title_and_version(track_obj["title"])
         track_class = PlaylistTrack if playlist_position is not None else Track
-        track = track_class(
+        track = track_class(  # pylint: disable=missing-kwoa
             item_id=track_obj["id"],
             provider=self.domain,
             name=name,
