@@ -1,9 +1,8 @@
 """Server specific/only models."""
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING, Protocol
-
-from music_assistant.common.models.config_entries import ConfigValueType
 
 from .metadata_provider import MetadataProvider
 from .music_provider import MusicProvider
@@ -11,7 +10,11 @@ from .player_provider import PlayerProvider
 from .plugin import PluginProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ConfigEntry, ProviderConfig
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
 

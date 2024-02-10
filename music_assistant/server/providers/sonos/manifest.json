@@ -3,9 +3,15 @@
   "domain": "sonos",
   "name": "SONOS",
   "description": "SONOS Playerprovider for Music Assistant.",
-  "codeowners": ["@music-assistant"],
-  "requirements": ["soco==0.29.1"],
-  "documentation": "",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "requirements": [
+    "soco==0.30.2",
+    "sonos-websocket==0.1.3",
+    "defusedxml==0.7.1"
+  ],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1171",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true

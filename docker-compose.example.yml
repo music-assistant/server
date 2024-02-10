@@ -1,9 +1,6 @@
 version: "3"
 services:
   music-assistant-server:
-    build:
-      context: .
-      dockerfile: Dockerfile
     image: ghcr.io/music-assistant/server:latest # <<< Desired release version here
     container_name: music-assistant-server
     restart: unless-stopped

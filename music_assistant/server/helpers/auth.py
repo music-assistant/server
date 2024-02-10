@@ -1,4 +1,5 @@
 """Helper(s) to deal with authentication for (music) providers."""
+
 from __future__ import annotations
 
 import asyncio
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 class AuthenticationHelper:
     """Context manager helper class for authentication with a forward and redirect URL."""
 
-    def __init__(self, mass: MusicAssistant, session_id: str):
+    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
         """
         Initialize the Authentication Helper.
 
@@ -30,18 +31,18 @@ class AuthenticationHelper:
     @property
     def callback_url(self) -> str:
         """Return the callback URL."""
-        return f"{self.mass.webserver.base_url}/callback/{self.session_id}"
+        return f"{self.mass.streams.base_url}/callback/{self.session_id}"
 
     async def __aenter__(self) -> AuthenticationHelper:
         """Enter context manager."""
-        self.mass.webserver.register_route(
+        self.mass.streams.register_dynamic_route(
             f"/callback/{self.session_id}", self._handle_callback, "GET"
         )
         return self
 
     async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
         """Exit context manager."""
-        self.mass.webserver.unregister_route(f"/callback/{self.session_id}", "GET")
+        self.mass.streams.unregister_dynamic_route(f"/callback/{self.session_id}", "GET")
 
     async def authenticate(self, auth_url: str, timeout: int = 60) -> dict[str, str]:
         """Start the auth process and return any query params if received on the callback."""

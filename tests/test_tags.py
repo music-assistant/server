@@ -22,7 +22,7 @@ async def test_parse_metadata_from_id3tags():
     assert _tags.musicbrainz_albumartistids == ("abcdefg",)
     assert _tags.musicbrainz_artistids == ("abcdefg",)
     assert _tags.musicbrainz_releasegroupid == "abcdefg"
-    assert _tags.musicbrainz_trackid == "abcdefg"
+    assert _tags.musicbrainz_recordingid == "abcdefg"
     # test parsing disc/track number
     _tags.tags["disc"] = "1"
     assert _tags.disc == 1
@@ -50,13 +50,13 @@ async def test_parse_metadata_from_filename():
     assert _tags.album is None
     assert _tags.title == "MyTitle without Tags"
     assert _tags.duration == 1
-    assert _tags.album_artists == tuple()
+    assert _tags.album_artists == ()
     assert _tags.artists == ("MyArtist",)
-    assert _tags.genres == tuple()
-    assert _tags.musicbrainz_albumartistids == tuple()
-    assert _tags.musicbrainz_artistids == tuple()
+    assert _tags.genres == ()
+    assert _tags.musicbrainz_albumartistids == ()
+    assert _tags.musicbrainz_artistids == ()
     assert _tags.musicbrainz_releasegroupid is None
-    assert _tags.musicbrainz_trackid is None
+    assert _tags.musicbrainz_recordingid is None
 
 
 async def test_parse_metadata_from_invalid_filename():
@@ -66,10 +66,10 @@ async def test_parse_metadata_from_invalid_filename():
     assert _tags.album is None
     assert _tags.title == "test"
     assert _tags.duration == 1
-    assert _tags.album_artists == tuple()
+    assert _tags.album_artists == ()
     assert _tags.artists == (tags.UNKNOWN_ARTIST,)
-    assert _tags.genres == tuple()
-    assert _tags.musicbrainz_albumartistids == tuple()
-    assert _tags.musicbrainz_artistids == tuple()
+    assert _tags.genres == ()
+    assert _tags.musicbrainz_albumartistids == ()
+    assert _tags.musicbrainz_artistids == ()
     assert _tags.musicbrainz_releasegroupid is None
-    assert _tags.musicbrainz_trackid is None
+    assert _tags.musicbrainz_recordingid is None

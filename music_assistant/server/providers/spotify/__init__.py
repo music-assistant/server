@@ -1,4 +1,5 @@
 """Spotify musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,38 +8,50 @@ import json
 import os
 import platform
 import time
-from collections.abc import AsyncGenerator
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    ProviderFeature,
+)
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     AlbumType,
     Artist,
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
     MediaType,
     Playlist,
+    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
     Track,
 )
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+
+# pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
+
+# pylint: enable=no-name-in-module
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -89,10 +102,16 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
         ConfigEntry(
-            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=True,
         ),
     )
 
@@ -230,21 +249,24 @@ class SpotifyProvider(MusicProvider):
         """Get full album details by id."""
         if album_obj := await self._get_data(f"albums/{prov_album_id}"):
             return await self._parse_album(album_obj)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         if track_obj := await self._get_data(f"tracks/{prov_track_id}"):
             return await self._parse_track(track_obj)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        msg = f"Item {prov_track_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         if playlist_obj := await self._get_data(f"playlists/{prov_playlist_id}"):
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        msg = f"Item {prov_playlist_id} not found"
+        raise MediaNotFoundError(msg)
 
-    async def get_album_tracks(self, prov_album_id) -> list[Track]:
+    async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
         return [
             await self._parse_track(item)
@@ -252,7 +274,7 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
         for item in await self._get_all_items(
@@ -260,9 +282,9 @@ class SpotifyProvider(MusicProvider):
         ):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
-            track = await self._parse_track(item["track"])
             # use count as position
-            track.position = count
+            item["track"]["position"] = count
+            track = await self._parse_track(item["track"])
             yield track
             count += 1
 
@@ -319,9 +341,7 @@ class SpotifyProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
-        track_uris = []
-        for track_id in prov_track_ids:
-            track_uris.append(f"spotify:track:{track_id}")
+        track_uris = [f"spotify:track:{track_id}" for track_id in prov_track_ids]
         data = {"uris": track_uris}
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
@@ -349,13 +369,16 @@ class SpotifyProvider(MusicProvider):
         # make sure a valid track is requested.
         track = await self.get_track(item_id)
         if not track:
-            raise MediaNotFoundError(f"track {item_id} not found")
+            msg = f"track {item_id} not found"
+            raise MediaNotFoundError(msg)
         # make sure that the token is still valid by just requesting it
         await self.login()
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
-            content_type=ContentType.OGG,
+            audio_format=AudioFormat(
+                content_type=ContentType.OGG,
+            ),
             duration=track.duration,
         )
 
@@ -398,14 +421,18 @@ class SpotifyProvider(MusicProvider):
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""
-        artist = Artist(item_id=artist_obj["id"], provider=self.domain, name=artist_obj["name"])
-        artist.add_provider_mapping(
-            ProviderMapping(
-                item_id=artist_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=artist_obj["external_urls"]["spotify"],
-            )
+        artist = Artist(
+            item_id=artist_obj["id"],
+            provider=self.domain,
+            name=artist_obj["name"],
+            provider_mappings={
+                ProviderMapping(
+                    item_id=artist_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=artist_obj["external_urls"]["spotify"],
+                )
+            },
         )
         if "genres" in artist_obj:
             artist.metadata.genres = set(artist_obj["genres"])
@@ -413,14 +440,33 @@ class SpotifyProvider(MusicProvider):
             for img in artist_obj["images"]:
                 img_url = img["url"]
                 if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
-                    artist.metadata.images = [MediaItemImage(ImageType.THUMB, img_url)]
+                    artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img_url)]
                     break
         return artist
 
     async def _parse_album(self, album_obj: dict):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
-        album = Album(item_id=album_obj["id"], provider=self.domain, name=name, version=version)
+        album = Album(
+            item_id=album_obj["id"],
+            provider=self.domain,
+            name=name,
+            version=version,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=album_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
+                    url=album_obj["external_urls"]["spotify"],
+                )
+            },
+        )
+        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
+            album.external_ids.add((ExternalID.BARCODE, "0" + album_obj["external_ids"]["upc"]))
+        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
+            album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
+
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
 
@@ -430,11 +476,9 @@ class SpotifyProvider(MusicProvider):
         if "genres" in album_obj:
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):
-            album.metadata.images = [MediaItemImage(ImageType.THUMB, album_obj["images"][0]["url"])]
-        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            album.barcode.add(album_obj["external_ids"]["upc"])
-        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
-            album.barcode.add(album_obj["external_ids"]["ean"])
+            album.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=album_obj["images"][0]["url"])
+            ]
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]
         if album_obj.get("release_date"):
@@ -443,31 +487,52 @@ class SpotifyProvider(MusicProvider):
             album.metadata.copyright = album_obj["copyrights"][0]["text"]
         if album_obj.get("explicit"):
             album.metadata.explicit = album_obj["explicit"]
-        album.add_provider_mapping(
-            ProviderMapping(
-                item_id=album_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
-                url=album_obj["external_urls"]["spotify"],
-            )
-        )
         return album
 
-    async def _parse_track(self, track_obj, artist=None):
+    async def _parse_track(
+        self,
+        track_obj: dict[str, Any],
+        artist=None,
+    ) -> Track | AlbumTrack | PlaylistTrack:
         """Parse spotify track object to generic layout."""
         name, version = parse_title_and_version(track_obj["name"])
-        track = Track(
+        if "position" in track_obj:
+            track_class = PlaylistTrack
+            extra_init_kwargs = {"position": track_obj["position"]}
+        elif "disc_number" in track_obj and "track_number" in track_obj:
+            track_class = AlbumTrack
+            extra_init_kwargs = {
+                "disc_number": track_obj["disc_number"],
+                "track_number": track_obj["track_number"],
+            }
+        else:
+            track_class = Track
+            extra_init_kwargs = {}
+
+        track = track_class(
             item_id=track_obj["id"],
             provider=self.domain,
             name=name,
             version=version,
             duration=track_obj["duration_ms"] / 1000,
-            disc_number=track_obj["disc_number"],
-            track_number=track_obj["track_number"],
-            position=track_obj.get("position"),
+            provider_mappings={
+                ProviderMapping(
+                    item_id=track_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=ContentType.OGG,
+                        bit_rate=320,
+                    ),
+                    url=track_obj["external_urls"]["spotify"],
+                    available=not track_obj["is_local"] and track_obj["is_playable"],
+                )
+            },
+            **extra_init_kwargs,
         )
+        if isrc := track_obj.get("external_ids", {}).get("isrc"):
+            track.external_ids.add((ExternalID.ISRC, isrc))
+
         if artist:
             track.artists.append(artist)
         for track_artist in track_obj.get("artists", []):
@@ -478,13 +543,14 @@ class SpotifyProvider(MusicProvider):
         track.metadata.explicit = track_obj["explicit"]
         if "preview_url" in track_obj:
             track.metadata.preview = track_obj["preview_url"]
-        if "external_ids" in track_obj and "isrc" in track_obj["external_ids"]:
-            track.isrc.add(track_obj["external_ids"]["isrc"])
         if "album" in track_obj:
             track.album = await self._parse_album(track_obj["album"])
             if track_obj["album"].get("images"):
                 track.metadata.images = [
-                    MediaItemImage(ImageType.THUMB, track_obj["album"]["images"][0]["url"])
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=track_obj["album"]["images"][0]["url"],
+                    )
                 ]
         if track_obj.get("copyright"):
             track.metadata.copyright = track_obj["copyright"]
@@ -492,17 +558,6 @@ class SpotifyProvider(MusicProvider):
             track.metadata.explicit = True
         if track_obj.get("popularity"):
             track.metadata.popularity = track_obj["popularity"]
-        track.add_provider_mapping(
-            ProviderMapping(
-                item_id=track_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.OGG,
-                bit_rate=320,
-                url=track_obj["external_urls"]["spotify"],
-                available=not track_obj["is_local"] and track_obj["is_playable"],
-            )
-        )
         return track
 
     async def _parse_playlist(self, playlist_obj):
@@ -512,21 +567,21 @@ class SpotifyProvider(MusicProvider):
             provider=self.domain,
             name=playlist_obj["name"],
             owner=playlist_obj["owner"]["display_name"],
-        )
-        playlist.add_provider_mapping(
-            ProviderMapping(
-                item_id=playlist_obj["id"],
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                url=playlist_obj["external_urls"]["spotify"],
-            )
+            provider_mappings={
+                ProviderMapping(
+                    item_id=playlist_obj["id"],
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url=playlist_obj["external_urls"]["spotify"],
+                )
+            },
         )
         playlist.is_editable = (
             playlist_obj["owner"]["id"] == self._sp_user["id"] or playlist_obj["collaborative"]
         )
         if playlist_obj.get("images"):
             playlist.metadata.images = [
-                MediaItemImage(ImageType.THUMB, playlist_obj["images"][0]["url"])
+                MediaItemImage(type=ImageType.THUMB, path=playlist_obj["images"][0]["url"])
             ]
         playlist.metadata.checksum = str(playlist_obj["snapshot_id"])
         return playlist
@@ -542,7 +597,8 @@ class SpotifyProvider(MusicProvider):
             return self._auth_token
         tokeninfo, userinfo = None, self._sp_user
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
-            raise LoginFailed("Invalid login credentials")
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         # retrieve token with librespot
         retries = 0
         while retries < 20:
@@ -570,15 +626,19 @@ class SpotifyProvider(MusicProvider):
             self._auth_token = tokeninfo
             return tokeninfo
         if tokeninfo and not userinfo:
-            raise LoginFailed(
-                "Unable to retrieve userdetails from Spotify API - probably just a temporary error"
+            msg = (
+                "Unable to retrieve userdetails from Spotify API - "
+                "probably just a temporary error"
             )
+            raise LoginFailed(msg)
         if self.config.get_value(CONF_USERNAME).isnumeric():
             # a spotify free/basic account can be recognized when
             # the username consists of numbers only - check that here
             # an integer can be parsed of the username, this is a free account
-            raise LoginFailed("Only Spotify Premium accounts are supported")
-        raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
+            msg = "Only Spotify Premium accounts are supported"
+            raise LoginFailed(msg)
+        msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+        raise LoginFailed(msg)
 
     async def _get_token(self):
         """Get spotify auth token with librespot bin."""
@@ -666,9 +726,7 @@ class SpotifyProvider(MusicProvider):
             offset += limit
             if not result or key not in result or not result[key]:
                 break
-            for item in result[key]:
-                item["position"] = len(all_items) + 1
-                all_items.append(item)
+            all_items += result[key]
             if len(result[key]) < limit:
                 break
         return all_items
@@ -694,8 +752,8 @@ class SpotifyProvider(MusicProvider):
             except (
                 aiohttp.ContentTypeError,
                 JSONDecodeError,
-            ) as err:
-                self.logger.error("%s - %s", endpoint, str(err))
+            ):
+                self.logger.exception("%s", endpoint)
                 return None
             finally:
                 self.logger.debug(
@@ -763,45 +821,14 @@ class SpotifyProvider(MusicProvider):
             except OSError:
                 return None
 
-        base_path = os.path.join(os.path.dirname(__file__), "librespot")
-        if platform.system() == "Windows" and (
-            librespot := await check_librespot(os.path.join(base_path, "windows", "librespot.exe"))
+        base_path = os.path.join(os.path.dirname(__file__), "bin")
+        system = platform.system().lower()
+        architecture = platform.machine().lower()
+
+        if bridge_binary := await check_librespot(
+            os.path.join(base_path, f"librespot-{system}-{architecture}")
         ):
-            return librespot
-        if platform.system() == "Darwin":
-            # macos binary is x86_64 intel
-            if librespot := await check_librespot(os.path.join(base_path, "osx", "librespot")):
-                return librespot
+            return bridge_binary
 
-        if platform.system() == "FreeBSD":
-            # FreeBSD binary is x86_64 intel
-            if librespot := await check_librespot(os.path.join(base_path, "freebsd", "librespot")):
-                return librespot
-
-        if platform.system() == "Linux":
-            architecture = platform.machine()
-            if architecture in ["AMD64", "x86_64"]:
-                # generic linux x86_64 binary
-                if librespot := await check_librespot(
-                    os.path.join(
-                        base_path,
-                        "linux",
-                        "librespot-x86_64",
-                    )
-                ):
-                    return librespot
-
-            # arm architecture... try all options one by one...
-            for arch in ["aarch64", "armv7", "armhf", "arm"]:
-                if librespot := await check_librespot(
-                    os.path.join(
-                        base_path,
-                        "linux",
-                        f"librespot-{arch}",
-                    )
-                ):
-                    return librespot
-
-        raise RuntimeError(
-            f"Unable to locate Libespot for {platform.system()} ({platform.machine()})"
-        )
+        msg = f"Unable to locate Librespot for {system}/{architecture}"
+        raise RuntimeError(msg)

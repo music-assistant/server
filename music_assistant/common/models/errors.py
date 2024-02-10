@@ -6,6 +6,15 @@ class MusicAssistantError(Exception):
 
     error_code = 0
 
+    def __init_subclass__(cls, *args, **kwargs) -> None:  # type: ignore[no-untyped-def]
+        """Register a subclass."""
+        super().__init_subclass__(*args, **kwargs)
+        ERROR_MAP[cls.error_code] = cls
+
+
+# mapping from error_code to Exception class
+ERROR_MAP: dict[int, type] = {0: MusicAssistantError, 999: MusicAssistantError}
+
 
 class ProviderUnavailableError(MusicAssistantError):
     """Error raised when trying to access mediaitem of unavailable provider."""
@@ -83,36 +92,3 @@ class UnplayableMediaError(MusicAssistantError):
     """Error thrown when a MediaItem cannot be played properly."""
 
     error_code = 13
-
-
-def error_code_to_exception(error_code: int) -> MusicAssistantError:
-    """Return MusicAssistant Error (exception) from error_code."""
-    match error_code:
-        case 1:
-            return ProviderUnavailableError
-        case 2:
-            return MediaNotFoundError
-        case 3:
-            return InvalidDataError
-        case 4:
-            return AlreadyRegisteredError
-        case 5:
-            return SetupFailedError
-        case 6:
-            return LoginFailed
-        case 7:
-            return AudioError
-        case 8:
-            return QueueEmpty
-        case 9:
-            return UnsupportedFeaturedException
-        case 10:
-            return PlayerUnavailableError
-        case 11:
-            return PlayerCommandFailed
-        case 12:
-            return InvalidCommand
-        case 13:
-            return UnplayableMediaError
-        case _:
-            return MusicAssistantError

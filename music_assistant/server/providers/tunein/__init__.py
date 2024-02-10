@@ -1,7 +1,7 @@
 """Tune-In musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING
 
@@ -10,8 +10,13 @@ from asyncio_throttle import Throttler
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant.common.models.media_items import (
+    AudioFormat,
     ContentType,
     ImageType,
     MediaItemImage,
@@ -21,8 +26,7 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
 )
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream
-from music_assistant.server.helpers.playlists import fetch_playlist
+from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -32,6 +36,8 @@ SUPPORTED_FEATURES = (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -43,12 +49,13 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     if not config.get_value(CONF_USERNAME):
-        raise LoginFailed("Username is invalid")
+        msg = "Username is invalid"
+        raise LoginFailed(msg)
 
     prov = TuneInProvider(mass, manifest, config)
     if "@" in config.get_value(CONF_USERNAME):
         prov.logger.warning(
-            "Emailadress detected instead of username, "
+            "Email address detected instead of username, "
             "it is advised to use the tunein username instead of email."
         )
     await prov.handle_setup()
@@ -71,7 +78,10 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
     )
 
@@ -93,11 +103,17 @@ class TuneInProvider(MusicProvider):
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_items(items: list[dict], folder: str = None) -> AsyncGenerator[Radio, None]:
+        async def parse_items(
+            items: list[dict], folder: str | None = None
+        ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
                 if item_type == "audio":
                     if "preset_id" not in item:
+                        continue
+                    if "- Not Supported" in item.get("name", ""):
+                        continue
+                    if "- Not Supported" in item.get("text", ""):
                         continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
@@ -105,7 +121,11 @@ class TuneInProvider(MusicProvider):
                         yield await self._parse_radio(item, stream, folder)
                 elif item_type == "link" and item.get("item") == "url":
                     # custom url
-                    yield await self._parse_radio(item)
+                    try:
+                        yield await self._parse_radio(item)
+                    except InvalidDataError as err:
+                        # there may be invalid custom urls, ignore those
+                        self.logger.warning(str(err))
                 elif item_type == "link":
                     # stations are in sublevel (new style)
                     if sublevel := await self.__get_data(item["URL"], render="json"):
@@ -138,7 +158,8 @@ class TuneInProvider(MusicProvider):
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
                 return radio
-        raise MediaNotFoundError(f"Item {prov_radio_id} not found")
+        msg = f"Item {prov_radio_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def _parse_radio(
         self, details: dict, stream: dict | None = None, folder: str | None = None
@@ -166,16 +187,22 @@ class TuneInProvider(MusicProvider):
             content_type = ContentType.try_parse(stream["media_type"])
             bit_rate = stream.get("bitrate", 128)  # TODO !
 
-        radio = Radio(item_id=item_id, provider=self.domain, name=name)
-        radio.add_provider_mapping(
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=content_type,
-                bit_rate=bit_rate,
-                details=url,
-            )
+        radio = Radio(
+            item_id=item_id,
+            provider=self.domain,
+            name=name,
+            provider_mappings={
+                ProviderMapping(
+                    item_id=item_id,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    audio_format=AudioFormat(
+                        content_type=content_type,
+                        bit_rate=bit_rate,
+                    ),
+                    details=url,
+                )
+            },
         )
         # preset number is used for sorting (not present at stream time)
         preset_number = details.get("preset_number")
@@ -188,9 +215,9 @@ class TuneInProvider(MusicProvider):
             radio.metadata.description = details["text"]
         # images
         if img := details.get("image"):
-            radio.metadata.images = [MediaItemImage(ImageType.THUMB, img)]
+            radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
         if img := details.get("logo"):
-            radio.metadata.images = [MediaItemImage(ImageType.LOGO, img)]
+            radio.metadata.images = [MediaItemImage(type=ImageType.LOGO, path=img)]
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -200,37 +227,37 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.instance_id,
                 item_id=item_id,
-                content_type=ContentType.UNKNOWN,
+                audio_format=AudioFormat(
+                    content_type=ContentType.UNKNOWN,
+                ),
                 media_type=MediaType.RADIO,
                 data=item_id,
             )
-        item_id, media_type = item_id.split("--", 1)
-        stream_info = await self.__get_data("Tune.ashx", id=item_id)
+        stream_item_id, media_type = item_id.split("--", 1)
+        stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] != media_type:
                 continue
             # check if the radio stream is not a playlist
-            url = stream["url"]
-            direct = None
-            if stream.get("playlist_type"):  # noqa: SIM102
-                if playlist := await fetch_playlist(self.mass, url):
-                    if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
-                        # this is most likely an mpeg-dash stream, let ffmpeg handle that
-                        direct = playlist[0]
-                    url = playlist[0]
+            url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream["url"])
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
-                content_type=ContentType(stream["media_type"]),
+                audio_format=AudioFormat(
+                    content_type=ContentType(stream["media_type"]),
+                ),
                 media_type=MediaType.RADIO,
-                data=url,
+                data=url_resolved,
                 expires=time() + 24 * 3600,
-                direct=direct,
+                direct=url_resolved if not supports_icy else None,
             )
-        raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
+        msg = f"Unable to retrieve stream details for {item_id}"
+        raise MediaNotFoundError(msg)
 
     async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0  # noqa: ARG002
+        self,
+        streamdetails: StreamDetails,
+        seek_position: int = 0,
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
@@ -246,11 +273,13 @@ class TuneInProvider(MusicProvider):
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
-        async with self._throttler:
-            async with self.mass.http_session.get(url, params=kwargs, ssl=False) as response:
-                result = await response.json()
-                if not result or "error" in result:
-                    self.logger.error(url)
-                    self.logger.error(kwargs)
-                    result = None
-                return result
+        async with (
+            self._throttler,
+            self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
+        ):
+            result = await response.json()
+            if not result or "error" in result:
+                self.logger.error(url)
+                self.logger.error(kwargs)
+                result = None
+            return result

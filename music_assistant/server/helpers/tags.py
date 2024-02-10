@@ -1,13 +1,13 @@
 """Helpers/utilities to parse ID3 tags from audio files with ffmpeg."""
+
 from __future__ import annotations
 
 import json
 import logging
 import os
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
@@ -16,11 +16,14 @@ from music_assistant.common.models.media_items import MediaItemChapter
 from music_assistant.constants import ROOT_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
 LOGGER = logging.getLogger(ROOT_LOGGER_NAME).getChild("tags")
 
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.
-# the slash is also a common splitter but causes colissions with
+# the slash is also a common splitter but causes collisions with
 # artists actually containing a slash in the name, such as ACDC
 TAG_SPLITTER = ";"
 
@@ -28,7 +31,7 @@ TAG_SPLITTER = ";"
 def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if org_str is None:
-        return tuple()
+        return ()
     if isinstance(org_str, list):
         return (x.strip() for x in org_str)
     org_str = org_str.strip()
@@ -131,7 +134,7 @@ class AudioTags:
             if TAG_SPLITTER in tag:
                 return split_items(tag)
             return split_artists(tag)
-        return tuple()
+        return ()
 
     @property
     def genres(self) -> tuple[str, ...]:
@@ -171,7 +174,9 @@ class AudioTags:
     @property
     def musicbrainz_albumartistids(self) -> tuple[str, ...]:
         """Return musicbrainz_albumartistid tag if present."""
-        return split_items(self.tags.get("musicbrainzalbumartistid"), True)
+        if tag := self.tags.get("musicbrainzalbumartistid"):
+            return split_items(tag, True)
+        return split_items(self.tags.get("musicbrainzreleaseartistid"), True)
 
     @property
     def musicbrainz_releasegroupid(self) -> str | None:
@@ -179,11 +184,46 @@ class AudioTags:
         return self.tags.get("musicbrainzreleasegroupid")
 
     @property
-    def musicbrainz_trackid(self) -> str | None:
-        """Return musicbrainz_trackid tag if present."""
-        if tag := self.tags.get("musicbrainztrackid"):
+    def musicbrainz_releaseid(self) -> str | None:
+        """Return musicbrainz_releaseid tag if present."""
+        return self.tags.get("musicbrainzreleaseid", self.tags.get("musicbrainzalbumid"))
+
+    @property
+    def musicbrainz_recordingid(self) -> str | None:
+        """Return musicbrainz_recordingid tag if present."""
+        if tag := self.tags.get("UFID:http://musicbrainz.org"):
             return tag
-        return self.tags.get("musicbrainzreleasetrackid")
+        if tag := self.tags.get("musicbrainz.org"):
+            return tag
+        if tag := self.tags.get("musicbrainzrecordingid"):
+            return tag
+        if tag := self.tags.get("musicbrainzreleasetrackid"):
+            return tag
+        return self.tags.get("musicbrainztrackid")
+
+    @property
+    def title_sort(self) -> str | None:
+        """Return sort title tag (if exists)."""
+        if tag := self.tags.get("titlesort"):
+            return tag
+        return None
+
+    @property
+    def album_sort(self) -> str | None:
+        """Return album sort title tag (if exists)."""
+        if tag := self.tags.get("albumsort"):
+            return tag
+        return None
+
+    @property
+    def artist_sort_names(self) -> tuple[str, ...]:
+        """Return artist sort name tag(s) if present."""
+        return split_items(self.tags.get("artistsort"), False)
+
+    @property
+    def album_artist_sort_names(self) -> tuple[str, ...]:
+        """Return artist sort name tag(s) if present."""
+        return split_items(self.tags.get("albumartistsort"), False)
 
     @property
     def album_type(self) -> AlbumType:
@@ -193,6 +233,8 @@ class AudioTags:
             return AlbumType.AUDIOBOOK
         if "podcast" in self.tags.get("genre", "").lower() and len(self.chapters) > 1:
             return AlbumType.PODCAST
+        if self.tags.get("compilation", "") == "1":
+            return AlbumType.COMPILATION
         tag = (
             self.tags.get("musicbrainzalbumtype")
             or self.tags.get("albumtype")
@@ -216,25 +258,27 @@ class AudioTags:
         return AlbumType.UNKNOWN
 
     @property
-    def isrc(self) -> tuple[str, ...]:
+    def isrc(self) -> tuple[str]:
         """Return isrc tag(s)."""
-        if tag := self.tags.get("isrc"):
-            return split_items(tag, True)
-        if tag := self.tags.get("tsrc"):
-            return split_items(tag, True)
-        return tuple()
+        for tag_name in ("isrc", "tsrc"):
+            if tag := self.tags.get(tag_name):
+                # sometimes the field contains multiple values
+                return split_items(tag, True)
+        return ()
 
     @property
-    def barcode(self) -> tuple[str, ...]:
+    def barcode(self) -> str | None:
         """Return barcode (upc/ean) tag(s)."""
-        # prefer multi-artist tag
-        if tag := self.tags.get("barcode"):
-            return split_items(tag, True)
-        if tag := self.tags.get("upc"):
-            return split_items(tag, True)
-        if tag := self.tags.get("ean"):
-            return split_items(tag, True)
-        return tuple()
+        for tag_name in ("barcode", "upc", "ean"):
+            if tag := self.tags.get(tag_name):
+                # sometimes the field contains multiple values
+                # we only need one
+                for item in split_items(tag, True):
+                    if len(item) == 12:
+                        # convert UPC barcode to EAN-13
+                        return f"0{item}"
+                    return item
+        return None
 
     @property
     def chapters(self) -> list[MediaItemChapter]:
@@ -252,17 +296,28 @@ class AudioTags:
                 )
         return chapters
 
+    @property
+    def lyrics(self) -> str | None:
+        """Return lyrics tag (if exists)."""
+        for key, value in self.tags.items():
+            if key.startswith("lyrics"):
+                return value
+        return None
+
     @classmethod
     def parse(cls, raw: dict) -> AudioTags:
         """Parse instance from raw ffmpeg info output."""
-        audio_stream = next(x for x in raw["streams"] if x["codec_type"] == "audio")
+        audio_stream = next((x for x in raw["streams"] if x["codec_type"] == "audio"), None)
+        if audio_stream is None:
+            msg = "No audio stream found"
+            raise InvalidDataError(msg)
         has_cover_image = any(x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png"))
         # convert all tag-keys (gathered from all streams) to lowercase without spaces
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
             for key, value in stream.get("tags", {}).items():
-                key = key.lower().replace(" ", "").replace("_", "")  # noqa: PLW2901
-                tags[key] = value
+                alt_key = key.lower().replace(" ", "").replace("_", "").replace("-", "")
+                tags[alt_key] = value
 
         return AudioTags(
             raw=raw,
@@ -317,7 +372,7 @@ async def parse_tags(
         if file_path == "-":
             # feed the file contents to the process
 
-            async def chunk_feeder():
+            async def chunk_feeder() -> None:
                 bytes_read = 0
                 try:
                     async for chunk in input_file:
@@ -344,7 +399,8 @@ async def parse_tags(
             if error := data.get("error"):
                 raise InvalidDataError(error["string"])
             if not data.get("streams"):
-                raise InvalidDataError("Not an audio file")
+                msg = "Not an audio file"
+                raise InvalidDataError(msg)
             tags = AudioTags.parse(data)
             del res
             del data
@@ -353,7 +409,8 @@ async def parse_tags(
                 tags.duration = int((file_size * 8) / tags.bit_rate)
             return tags
         except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-            raise InvalidDataError(f"Unable to retrieve info for {file_path}: {str(err)}") from err
+            msg = f"Unable to retrieve info for {file_path}: {err!s}"
+            raise InvalidDataError(msg) from err
 
 
 async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> bytes | None:
@@ -384,7 +441,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
     ) as proc:
         if file_path == "-":
             # feed the file contents to the process
-            async def chunk_feeder():
+            async def chunk_feeder() -> None:
                 try:
                     async for chunk in input_file:
                         if proc.closed:

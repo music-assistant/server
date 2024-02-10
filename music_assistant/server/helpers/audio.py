@@ -1,4 +1,5 @@
 """Various helpers for audio manipulation."""
+
 from __future__ import annotations
 
 import asyncio
@@ -6,31 +7,45 @@ import logging
 import os
 import re
 import struct
-from collections.abc import AsyncGenerator
+from contextlib import suppress
 from io import BytesIO
 from time import time
 from typing import TYPE_CHECKING
 
 import aiofiles
-from aiohttp import ClientTimeout
+from aiohttp import ClientResponseError, ClientTimeout
 
-from music_assistant.common.helpers.util import create_tempfile
-from music_assistant.common.models.errors import AudioError, MediaNotFoundError, MusicAssistantError
-from music_assistant.common.models.media_items import ContentType, MediaType, StreamDetails
+from music_assistant.common.models.errors import (
+    AudioError,
+    InvalidDataError,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
+from music_assistant.common.models.media_items import (
+    AudioFormat,
+    ContentType,
+    MediaType,
+    StreamDetails,
+)
 from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
 )
-from music_assistant.server.helpers.process import AsyncProcess, check_output
+from music_assistant.server.helpers.playlists import fetch_playlist
+
+from .process import AsyncProcess, check_output
+from .util import create_tempfile
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.player_queue import QueueItem
     from music_assistant.server import MusicAssistant
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.audio")
 
-# pylint:disable=consider-using-f-string
+# pylint:disable=consider-using-f-string,too-many-locals,too-many-statements
 
 
 async def crossfade_pcm_parts(
@@ -168,12 +183,14 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
     input_file = streamdetails.direct or "-"
     proc_args = [
         "ffmpeg",
+        "-protocol_whitelist",
+        "file,http,https,tcp,tls,crypto,pipe,fd",
         "-t",
         "300",  # limit to 5 minutes to prevent OOM
         "-i",
         input_file,
         "-f",
-        streamdetails.content_type,
+        streamdetails.audio_format.content_type,
         "-af",
         "ebur128=framelog=verbose",
         "-f",
@@ -187,7 +204,7 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
         enable_stderr=True,
     ) as ffmpeg_proc:
 
-        async def writer():
+        async def writer() -> None:
             """Task that grabs the source audio and feeds it to ffmpeg."""
             music_prov = mass.get_provider(streamdetails.provider)
             chunk_count = 0
@@ -228,8 +245,8 @@ async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> N
             )
 
 
-async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> StreamDetails:
-    """Get streamdetails for the given QueueItem.
+async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> None:
+    """Set streamdetails for the given QueueItem.
 
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
@@ -237,6 +254,7 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
     """
     streamdetails = None
     if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
+        LOGGER.debug(f"Using cached streamdetails for {queue_item.uri}")
         # we already have fresh streamdetails, use these
         queue_item.streamdetails.seconds_skipped = None
         queue_item.streamdetails.seconds_streamed = None
@@ -250,23 +268,25 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
             full_item.provider_mappings, key=lambda x: x.quality or 0, reverse=True
         ):
             if not prov_media.available:
+                LOGGER.debug(f"Skipping unavailable {prov_media}")
                 continue
             # get streamdetails from provider
             music_prov = mass.get_provider(prov_media.provider_instance)
             if not music_prov:
+                LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
                     prov_media.item_id
                 )
-                streamdetails.content_type = ContentType(streamdetails.content_type)
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
             else:
                 break
 
     if not streamdetails:
-        raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
+        msg = f"Unable to retrieve streamdetails for {queue_item}"
+        raise MediaNotFoundError(msg)
 
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
@@ -279,22 +299,20 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
         streamdetails.duration = queue_item.duration
     # make sure that ffmpeg handles mpeg dash streams directly
     if (
-        streamdetails.content_type == ContentType.MPEG_DASH
+        streamdetails.audio_format.content_type == ContentType.MPEG_DASH
         and streamdetails.data
         and streamdetails.data.startswith("http")
     ):
         streamdetails.direct = streamdetails.data
-    # set streamdetails as attribute on the media_item
-    # this way the app knows what content is playing
+    # set streamdetails as attribute on the queue_item
     queue_item.streamdetails = streamdetails
-    return streamdetails
 
 
 async def get_gain_correct(
     mass: MusicAssistant, streamdetails: StreamDetails
 ) -> tuple[float | None, float | None]:
     """Get gain correction for given queue / track combination."""
-    player_settings = mass.config.get_player_config(streamdetails.queue_id)
+    player_settings = await mass.config.get_player_config(streamdetails.queue_id)
     if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         return (None, None)
     if streamdetails.gain_correct is not None:
@@ -370,17 +388,17 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-async def get_media_stream(
+async def get_media_stream(  # noqa: PLR0915
     mass: MusicAssistant,
     streamdetails: StreamDetails,
+    pcm_format: AudioFormat,
     seek_position: int = 0,
     fade_in: bool = False,
-    sample_rate: int | None = None,
-    bit_depth: int | None = None,
     strip_silence_begin: bool = False,
     strip_silence_end: bool = True,
 ) -> AsyncGenerator[bytes, None]:
-    """Get the (PCM) audio stream for the given streamdetails.
+    """
+    Get the (raw PCM) audio stream for the given streamdetails.
 
     Other than stripping silence at end and beginning and optional
     volume normalization this is the pure, unaltered audio data as PCM chunks.
@@ -390,11 +408,8 @@ async def get_media_stream(
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     if is_radio or seek_position:
         strip_silence_begin = False
-
-    sample_rate = sample_rate or streamdetails.sample_rate
-    bit_depth = bit_depth or streamdetails.bit_depth
     # chunk size = 2 seconds of pcm audio
-    pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
+    pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
     chunk_size = pcm_sample_size * (1 if is_radio else 2)
     expected_chunks = int((streamdetails.duration or 0) / 2)
     if expected_chunks < 60:
@@ -404,8 +419,7 @@ async def get_media_stream(
     seek_pos = seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
     args = await _get_ffmpeg_args(
         streamdetails=streamdetails,
-        sample_rate=sample_rate,
-        bit_depth=bit_depth,
+        pcm_output_format=pcm_format,
         # only use ffmpeg seeking if the provider stream does not support seeking
         seek_position=seek_pos,
         fade_in=fade_in,
@@ -414,7 +428,7 @@ async def get_media_stream(
     async with AsyncProcess(args, enable_stdin=streamdetails.direct is None) as ffmpeg_proc:
         LOGGER.debug("start media stream for: %s", streamdetails.uri)
 
-        async def writer():
+        async def writer() -> None:
             """Task that grabs the source audio and feeds it to ffmpeg."""
             LOGGER.debug("writer started for %s", streamdetails.uri)
             music_prov = mass.get_provider(streamdetails.provider)
@@ -441,8 +455,8 @@ async def get_media_stream(
                     stripped_audio = await strip_silence(
                         mass,
                         prev_chunk + chunk,
-                        sample_rate=sample_rate,
-                        bit_depth=bit_depth,
+                        sample_rate=pcm_format.sample_rate,
+                        bit_depth=pcm_format.bit_depth,
                     )
                     yield stripped_audio
                     bytes_sent += len(stripped_audio)
@@ -466,8 +480,8 @@ async def get_media_stream(
                 stripped_audio = await strip_silence(
                     mass,
                     prev_chunk,
-                    sample_rate=sample_rate,
-                    bit_depth=bit_depth,
+                    sample_rate=pcm_format.sample_rate,
+                    bit_depth=pcm_format.bit_depth,
                     reverse=True,
                 )
                 yield stripped_audio
@@ -481,15 +495,18 @@ async def get_media_stream(
 
             # update duration details based on the actual pcm data we sent
             streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
+            streamdetails.duration = seek_position + streamdetails.seconds_streamed
 
-        except (asyncio.CancelledError, GeneratorExit) as err:
+        except (asyncio.CancelledError, GeneratorExit):
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
-            raise err
+            raise
         else:
             LOGGER.debug("finished media stream for: %s", streamdetails.uri)
-            await mass.music.mark_item_played(streamdetails.item_id, streamdetails.provider)
         finally:
             # report playback
+            await mass.music.mark_item_played(
+                streamdetails.media_type, streamdetails.item_id, streamdetails.provider
+            )
             if streamdetails.callback:
                 mass.create_task(streamdetails.callback, streamdetails)
             # send analyze job to background worker
@@ -497,11 +514,52 @@ async def get_media_stream(
                 mass.create_task(analyze_audio(mass, streamdetails))
 
 
+async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool]:
+    """
+    Resolve a streaming radio URL.
+
+    Unwraps any playlists if needed.
+    Determines if the stream supports ICY metadata.
+
+    Returns unfolded URL and a bool if the URL supports ICY metadata.
+    """
+    cache_key = f"resolved_radio_url_{url}"
+    if cache := await mass.cache.get(cache_key):
+        return cache
+    # handle playlisted radio urls
+    is_mpeg_dash = False
+    supports_icy = False
+    if ".m3u" in url or ".pls" in url:
+        # url is playlist, try to figure out how to handle it
+        with suppress(InvalidDataError, IndexError):
+            playlist = await fetch_playlist(mass, url)
+            if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
+                # if it is an mpeg-dash stream, let ffmpeg handle that
+                is_mpeg_dash = True
+            url = playlist[0]
+    if not is_mpeg_dash:
+        # determine ICY metadata support by looking at the http headers
+        headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
+        timeout = ClientTimeout(total=0, connect=10, sock_read=5)
+        try:
+            async with mass.http_session.head(
+                url, headers=headers, allow_redirects=True, timeout=timeout
+            ) as resp:
+                headers = resp.headers
+                supports_icy = int(headers.get("icy-metaint", "0")) > 0
+        except ClientResponseError as err:
+            LOGGER.debug("Error while parsing radio URL %s: %s", url, err)
+
+    result = (url, supports_icy)
+    await mass.cache.set(cache_key, result)
+    return result
+
+
 async def get_radio_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
-    headers = {"Icy-MetaData": "1"}
+    headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
     timeout = ClientTimeout(total=0, connect=30, sock_read=60)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         headers = resp.headers
@@ -593,7 +651,7 @@ async def get_file_stream(
     if not streamdetails.size:
         stat = await asyncio.to_thread(os.stat, filename)
         streamdetails.size = stat.st_size
-    chunk_size = get_chunksize(streamdetails.content_type)
+    chunk_size = get_chunksize(streamdetails.audio_format.content_type)
     async with aiofiles.open(streamdetails.data, "rb") as _file:
         if seek_position:
             seek_pos = int((streamdetails.size / streamdetails.duration) * seek_position)
@@ -645,15 +703,15 @@ async def get_preview_stream(
         input_args += ["-ss", "30", "-i", streamdetails.direct]
     else:
         # the input is received from pipe/stdin
-        if streamdetails.content_type != ContentType.UNKNOWN:
-            input_args += ["-f", streamdetails.content_type]
+        if streamdetails.audio_format.content_type != ContentType.UNKNOWN:
+            input_args += ["-f", streamdetails.audio_format.content_type]
         input_args += ["-i", "-"]
 
     output_args = ["-to", "30", "-f", "mp3", "-"]
     args = input_args + output_args
     async with AsyncProcess(args, True) as ffmpeg_proc:
 
-        async def writer():
+        async def writer() -> None:
             """Task that grabs the source audio and feeds it to ffmpeg."""
             music_prov = mass.get_provider(streamdetails.provider)
             async for audio_chunk in music_prov.get_audio_stream(streamdetails, 30):
@@ -671,23 +729,25 @@ async def get_preview_stream(
 
 async def get_silence(
     duration: int,
-    output_fmt: ContentType = ContentType.WAV,
-    sample_rate: int = 44100,
-    bit_depth: int = 16,
+    output_format: AudioFormat,
 ) -> AsyncGenerator[bytes, None]:
     """Create stream of silence, encoded to format of choice."""
-    # wav silence = just zero's
-    if output_fmt == ContentType.WAV:
+    if output_format.content_type.is_pcm():
+        # pcm = just zeros
+        for _ in range(duration):
+            yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
+        return
+    if output_format.content_type == ContentType.WAV:
+        # wav silence = wave header + zero's
         yield create_wave_header(
-            samplerate=sample_rate,
+            samplerate=output_format.sample_rate,
             channels=2,
-            bitspersample=bit_depth,
+            bitspersample=output_format.bit_depth,
             duration=duration,
         )
-        for _ in range(0, duration):
-            yield b"\0" * int(sample_rate * (bit_depth / 8) * 2)
+        for _ in range(duration):
+            yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
         return
-
     # use ffmpeg for all other encodings
     args = [
         "ffmpeg",
@@ -697,11 +757,11 @@ async def get_silence(
         "-f",
         "lavfi",
         "-i",
-        f"anullsrc=r={sample_rate}:cl={'stereo'}",
+        f"anullsrc=r={output_format.sample_rate}:cl={'stereo'}",
         "-t",
         str(duration),
         "-f",
-        output_fmt,
+        output_format.output_fmt.value,
         "-",
     ]
     async with AsyncProcess(args) as ffmpeg_proc:
@@ -710,40 +770,40 @@ async def get_silence(
 
 
 def get_chunksize(
-    content_type: ContentType,
-    sample_rate: int = 44100,
-    bit_depth: int = 16,
+    fmt: AudioFormat,
     seconds: int = 1,
 ) -> int:
     """Get a default chunksize for given contenttype."""
-    pcm_size = int(sample_rate * (bit_depth / 8) * 2 * seconds)
-    if content_type.is_pcm() or content_type == ContentType.WAV:
+    pcm_size = int(fmt.sample_rate * (fmt.bit_depth / 8) * 2 * seconds)
+    if fmt.content_type.is_pcm() or fmt.content_type == ContentType.WAV:
         return pcm_size
-    if content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
+    if fmt.content_type in (ContentType.WAV, ContentType.AIFF, ContentType.DSF):
         return pcm_size
-    if content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
-        return int(pcm_size * 0.6)
-    if content_type in (ContentType.MP3, ContentType.OGG, ContentType.M4A):
-        return int(640000 * seconds)
-    return 32000 * seconds
+    if fmt.content_type in (ContentType.FLAC, ContentType.WAVPACK, ContentType.ALAC):
+        return int(pcm_size * 0.5)
+    if fmt.content_type in (ContentType.MP3, ContentType.OGG):
+        return int((320000 / 8) * seconds)
+    if fmt.content_type in (ContentType.AAC, ContentType.M4A):
+        return int((256000 / 8) * seconds)
+    return int((320000 / 8) * seconds)
 
 
 async def _get_ffmpeg_args(
     streamdetails: StreamDetails,
-    sample_rate: int,
-    bit_depth: int,
+    pcm_output_format: AudioFormat,
     seek_position: int = 0,
     fade_in: bool = False,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
-    input_format = streamdetails.content_type
-
     ffmpeg_present, libsoxr_support, version = await check_audio_support()
 
     if not ffmpeg_present:
-        raise AudioError(
+        msg = (
             "FFmpeg binary is missing from system."
-            "Please install ffmpeg on your OS to enable playback.",
+            "Please install ffmpeg on your OS to enable playback."
+        )
+        raise AudioError(
+            msg,
         )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
@@ -756,10 +816,15 @@ async def _get_ffmpeg_args(
         "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
         "-ignore_unknown",
         "-protocol_whitelist",
-        "file,http,https,tcp,tls,crypto,pipe",  # support nested protocols (e.g. within playlist)
+        "file,http,https,tcp,tls,crypto,pipe,data,fd",
     ]
     # collect input args
-    input_args = []
+    input_args = [
+        "-ac",
+        str(streamdetails.audio_format.channels),
+        "-channel_layout",
+        "mono" if streamdetails.audio_format.channels == 1 else "stereo",
+    ]
     if seek_position:
         input_args += ["-ss", str(seek_position)]
     if streamdetails.direct:
@@ -786,21 +851,23 @@ async def _get_ffmpeg_args(
         input_args += ["-i", streamdetails.direct]
     else:
         # the input is received from pipe/stdin
-        if streamdetails.content_type != ContentType.UNKNOWN:
-            input_args += ["-f", input_format]
-        input_args += ["-i", "-"]
+        if streamdetails.audio_format.content_type != ContentType.UNKNOWN:
+            input_args += ["-f", streamdetails.audio_format.content_type.value]
+        input_args += [
+            "-i",
+            "-",
+        ]
 
-    pcm_output_format = ContentType.from_bit_depth(bit_depth)
     # collect output args
     output_args = [
         "-acodec",
-        pcm_output_format.name.lower(),
+        pcm_output_format.content_type.name.lower(),
         "-f",
-        pcm_output_format,
+        pcm_output_format.content_type.value,
         "-ac",
-        "2",  # to simplify things, we always output 2 channels
+        str(pcm_output_format.channels),
         "-ar",
-        str(sample_rate),
+        str(pcm_output_format.sample_rate),
         "-",
     ]
     # collect extra and filter args
@@ -809,7 +876,7 @@ async def _get_ffmpeg_args(
     if streamdetails.gain_correct is not None:
         filter_params.append(f"volume={streamdetails.gain_correct}dB")
     if (
-        streamdetails.sample_rate != sample_rate
+        streamdetails.audio_format.sample_rate != pcm_output_format.sample_rate
         and libsoxr_support
         and streamdetails.media_type == MediaType.TRACK
     ):

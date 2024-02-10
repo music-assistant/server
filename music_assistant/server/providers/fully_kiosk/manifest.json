@@ -1,0 +1,12 @@
+{
+  "type": "player",
+  "domain": "fully_kiosk",
+  "name": "Fully Kiosk Browser",
+  "description": "Support for media players from the Fully Kiosk app.",
+  "codeowners": ["@music-assistant"],
+  "requirements": ["python-fullykiosk==0.0.12"],
+  "documentation": "",
+  "multi_instance": true,
+  "builtin": false,
+  "load_by_default": false
+}

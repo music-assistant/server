@@ -3,11 +3,14 @@
 Credits go out to RemixDev (https://gitlab.com/RemixDev) for figuring out, how to get the arl
 cookie based on the api_token.
 """
+
 import datetime
 from http.cookies import BaseCookie, Morsel
 
 from aiohttp import ClientSession
 from yarl import URL
+
+from music_assistant.common.models.media_items import StreamDetails
 
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -19,8 +22,6 @@ GW_LIGHT_URL = "https://www.deezer.com/ajax/gw-light.php"
 
 class DeezerGWError(BaseException):
     """Exception type for GWClient related exceptions."""
-
-    pass
 
 
 class GWClient:
@@ -36,12 +37,12 @@ class GWClient:
     ]
     user_country: str
 
-    def __init__(self, session: ClientSession, api_token: str):
+    def __init__(self, session: ClientSession, api_token: str) -> None:
         """Provide an aiohttp ClientSession and the deezer api_token."""
         self._api_token = api_token
         self.session = session
 
-    async def _get_cookie(self):
+    async def _get_cookie(self) -> None:
         await self.session.get(
             "https://api.deezer.com/platform/generic/track/3135556",
             headers={"Authorization": f"Bearer {self._api_token}", "User-Agent": USER_AGENT_HEADER},
@@ -58,14 +59,15 @@ class GWClient:
 
         self.session.cookie_jar.update_cookies(BaseCookie({"arl": cookie}), URL(GW_LIGHT_URL))
 
-    async def _update_user_data(self):
+    async def _update_user_data(self) -> None:
         user_data = await self._gw_api_call("deezer.getUserData", False)
         if not user_data["results"]["USER"]["USER_ID"]:
             await self._get_cookie()
             user_data = await self._gw_api_call("deezer.getUserData", False)
 
         if not user_data["results"]["OFFER_ID"]:
-            raise DeezerGWError("Free subscriptions cannot be used in MA.")
+            msg = "Free subscriptions cannot be used in MA."
+            raise DeezerGWError(msg)
 
         self._gw_csrf_token = user_data["results"]["checkForm"]
         self._license = user_data["results"]["USER"]["OPTIONS"]["license_token"]
@@ -81,7 +83,7 @@ class GWClient:
 
         self.user_country = user_data["results"]["COUNTRY"]
 
-    async def setup(self):
+    async def setup(self) -> None:
         """Call this to let the client get its cookies, license and tokens."""
         await self._get_cookie()
         await self._update_user_data()
@@ -100,17 +102,18 @@ class GWClient:
         csrf_token = self._gw_csrf_token if use_csrf_token else "null"
         if params is None:
             params = {}
-        p = {"api_version": "1.0", "api_token": csrf_token, "input": "3", "method": method}
-        p.update(params)
+        parameters = {"api_version": "1.0", "api_token": csrf_token, "input": "3", "method": method}
+        parameters |= params
         result = await self.session.request(
             http_method,
             GW_LIGHT_URL,
-            params=p,
+            params=parameters,
             timeout=30,
             json=args,
             headers={"User-Agent": USER_AGENT_HEADER},
         )
         result_json = await result.json()
+
         if result_json["error"]:
             if retry:
                 await self._update_user_data()
@@ -118,7 +121,8 @@ class GWClient:
                     method, use_csrf_token, args, params, http_method, False
                 )
             else:
-                raise DeezerGWError("Failed to call GW-API", result_json["error"])
+                msg = "Failed to call GW-API"
+                raise DeezerGWError(msg, result_json["error"])
         return result_json
 
     async def get_song_data(self, track_id):
@@ -148,6 +152,50 @@ class GWClient:
         result_json = await url_response.json()
 
         if error := result_json["data"][0].get("errors"):
-            raise DeezerGWError("Received an error from API", error)
+            msg = "Received an error from API"
+            raise DeezerGWError(msg, error)
 
         return result_json["data"][0]["media"][0], song_data["results"]
+
+    async def log_listen(
+        self, next_track: str | None = None, last_track: StreamDetails | None = None
+    ) -> None:
+        """Log the next and/or previous track of the current playback queue."""
+        if not (next_track or last_track):
+            msg = "last or current track information must be provided."
+            raise DeezerGWError(msg)
+
+        payload = {}
+
+        if next_track:
+            payload["next_media"] = {"media": {"id": next_track, "type": "song"}}
+
+        if last_track:
+            seconds_streamed = min(
+                datetime.datetime.utcnow().timestamp() - last_track.data["start_ts"],
+                last_track.seconds_streamed,
+            )
+
+            payload["params"] = {
+                "media": {
+                    "id": last_track.item_id,
+                    "type": "song",
+                    "format": last_track.data["format"],
+                },
+                "type": 1,
+                "stat": {
+                    "seek": 1 if last_track.seconds_skipped else 0,
+                    "pause": 0,
+                    "sync": 0,
+                    "next": bool(next_track),
+                },
+                "lt": int(seconds_streamed),
+                "ctxt": {"t": "search_page", "id": last_track.item_id},
+                "dev": {"v": "10020230525142740", "t": 0},
+                "ls": [],
+                "ts_listen": int(last_track.data["start_ts"]),
+                "is_shuffle": False,
+                "stream_id": str(last_track.data["stream_id"]),
+            }
+
+        await self._gw_api_call("log.listen", args=payload)

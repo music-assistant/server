@@ -1,14 +1,14 @@
 """Basic provider allowing for external URL's to be streamed."""
+
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Artist,
+    AudioFormat,
     MediaItemImage,
     MediaItemType,
     ProviderMapping,
@@ -16,13 +16,24 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.server.helpers.audio import get_file_stream, get_http_stream, get_radio_stream
+from music_assistant.server.helpers.audio import (
+    get_file_stream,
+    get_http_stream,
+    get_radio_stream,
+    resolve_radio_stream,
+)
 from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from collections.abc import AsyncGenerator
+
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -51,7 +62,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 class URLProvider(MusicProvider):
@@ -63,7 +74,6 @@ class URLProvider(MusicProvider):
         Called when provider is registered.
         """
         self._full_url = {}
-        # self.mass.register_api_command("music/tracks", self.db_items)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
@@ -78,11 +88,16 @@ class URLProvider(MusicProvider):
         artist = prov_artist_id
         # this is here for compatibility reasons only
         return Artist(
-            artist,
-            self.domain,
-            artist,
+            item_id=artist,
+            provider=self.domain,
+            name=artist,
             provider_mappings={
-                ProviderMapping(artist, self.domain, self.instance_id, available=False)
+                ProviderMapping(
+                    item_id=artist,
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    available=False,
+                )
             },
         )
 
@@ -99,17 +114,34 @@ class URLProvider(MusicProvider):
         raise NotImplementedError
 
     async def parse_item(
-        self, item_id_or_url: str, force_refresh: bool = False, force_radio: bool = False
+        self,
+        item_id_or_url: str,
+        force_refresh: bool = False,
+        force_radio: bool = False,
     ) -> Track | Radio:
         """Parse plain URL to MediaItem of type Radio or Track."""
         item_id, url, media_info = await self._get_media_info(item_id_or_url, force_refresh)
         is_radio = media_info.get("icy-name") or not media_info.duration
+        provider_mappings = {
+            ProviderMapping(
+                item_id=item_id,
+                provider_domain=self.domain,
+                provider_instance=self.instance_id,
+                audio_format=AudioFormat(
+                    content_type=ContentType.try_parse(media_info.format),
+                    sample_rate=media_info.sample_rate,
+                    bit_depth=media_info.bits_per_sample,
+                    bit_rate=media_info.bit_rate,
+                ),
+            )
+        }
         if is_radio or force_radio:
             # treat as radio
             media_item = Radio(
                 item_id=item_id,
                 provider=self.domain,
                 name=media_info.get("icy-name") or media_info.title,
+                provider_mappings=provider_mappings,
             )
         else:
             media_item = Track(
@@ -118,21 +150,13 @@ class URLProvider(MusicProvider):
                 name=media_info.title,
                 duration=int(media_info.duration or 0),
                 artists=[await self.get_artist(artist) for artist in media_info.artists],
+                provider_mappings=provider_mappings,
             )
 
-        media_item.provider_mappings = {
-            ProviderMapping(
-                item_id=item_id,
-                provider_domain=self.domain,
-                provider_instance=self.instance_id,
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                bit_rate=media_info.bit_rate,
-            )
-        }
         if media_info.has_cover_image:
-            media_item.metadata.images = [MediaItemImage(ImageType.THUMB, url, True)]
+            media_item.metadata.images = [
+                MediaItemImage(type=ImageType.THUMB, path=url, provider="file")
+            ]
         return media_item
 
     async def _get_media_info(
@@ -140,21 +164,10 @@ class URLProvider(MusicProvider):
     ) -> tuple[str, str, AudioTags]:
         """Retrieve (cached) mediainfo for url."""
         # check if the radio stream is not a playlist
-        if (
-            item_id_or_url.endswith("m3u8")
-            or item_id_or_url.endswith("m3u")
-            or item_id_or_url.endswith("pls")
-        ):
+        if item_id_or_url.endswith(("m3u8", "m3u", "pls")):
             playlist = await fetch_playlist(self.mass, item_id_or_url)
             url = playlist[0]
             item_id = item_id_or_url
-            self._full_url[item_id] = url
-        elif "?" in item_id_or_url or "&" in item_id_or_url:
-            # store the 'real' full url to be picked up later
-            # this makes sure that we're not storing any temporary data like auth keys etc
-            # a request for an url mediaitem always passes here first before streamdetails
-            url = item_id_or_url
-            item_id = item_id_or_url.split("?")[0].split("&")[0]
             self._full_url[item_id] = url
         else:
             url = self._full_url.get(item_id_or_url, item_id_or_url)
@@ -176,16 +189,18 @@ class URLProvider(MusicProvider):
         """Get streamdetails for a track/radio."""
         item_id, url, media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration
-        # we let ffmpeg handle with mpeg dash streams
-        mpeg_dash_stream = ".m3u" in url or ".pls" in url
+        if is_radio:
+            url, supports_icy = await resolve_radio_stream(self.mass, url)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
-            content_type=ContentType.try_parse(media_info.format),
+            audio_format=AudioFormat(
+                content_type=ContentType.try_parse(media_info.format),
+                sample_rate=media_info.sample_rate,
+                bit_depth=media_info.bits_per_sample,
+            ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            sample_rate=media_info.sample_rate,
-            bit_depth=media_info.bits_per_sample,
-            direct=None if is_radio and not mpeg_dash_stream else url,
+            direct=None if is_radio and supports_icy else url,
             data=url,
         )
 

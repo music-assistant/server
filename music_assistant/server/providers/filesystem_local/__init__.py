@@ -1,10 +1,10 @@
 """Filesystem musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
 import os
 import os.path
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -24,6 +24,8 @@ from .base import (
 from .helpers import get_absolute_path, get_relative_path
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -43,7 +45,8 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     conf_path = config.get_value(CONF_PATH)
     if not await isdir(conf_path):
-        raise SetupFailedError(f"Music Directory {conf_path} does not exist")
+        msg = f"Music Directory {conf_path} does not exist"
+        raise SetupFailedError(msg)
     prov = LocalFileSystemProvider(mass, manifest, config)
     await prov.handle_setup()
     return prov
@@ -135,7 +138,9 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 yield item
 
     async def resolve(
-        self, file_path: str, require_local: bool = False  # noqa: ARG002
+        self,
+        file_path: str,
+        require_local: bool = False,
     ) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem.
 

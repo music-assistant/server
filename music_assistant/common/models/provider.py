@@ -33,19 +33,20 @@ class ProviderManifest(DataClassORJSONMixin):
     builtin: bool = False
     # hidden: hide entry in the UI
     hidden: bool = False
-    # load_by_default: load this provider by default (mostly used together with `builtin`)
+    # load_by_default: load this provider by default (may be used together with `builtin`)
     load_by_default: bool = False
     # depends_on: depends on another provider to function
     depends_on: str | None = None
-    # icon: icon url (svg or transparent png) max 256 pixels
-    # may also be a direct base64 encoded image string
-    # if this attribute is omitted and an icon.svg or icon.png is found in the provider
-    # folder, it will be read instead.
+    # icon: name of the material design icon (https://pictogrammers.com/library/mdi)
     icon: str | None = None
-    # icon_dark: optional separate dark icon
-    # if this attribute is omitted and an icon_dark.svg or icon_dark.png is found in the provider
-    # folder, it will be read instead.
-    icon_dark: str | None = None
+    # icon_svg: svg icon (full xml string)
+    # if this attribute is omitted and an icon.svg is found in the provider
+    # folder, the file contents will be read instead.
+    icon_svg: str | None = None
+    # icon_svg_dark: optional separate dark svg icon (full xml string)
+    # if this attribute is omitted and an icon_dark.svg is found in the provider
+    # folder, the file contents will be read instead.
+    icon_svg_dark: str | None = None
 
     @classmethod
     async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":

@@ -1,9 +1,9 @@
 """Provides a simple stateless caching system."""
+
 from __future__ import annotations
 
 import asyncio
 import functools
-import json
 import logging
 import os
 import time
@@ -11,32 +11,68 @@ from collections import OrderedDict
 from collections.abc import Iterator, MutableMapping
 from typing import TYPE_CHECKING, Any
 
+from music_assistant.common.helpers.json import json_dumps, json_loads
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.constants import (
+    DB_SCHEMA_VERSION,
     DB_TABLE_CACHE,
     DB_TABLE_SETTINGS,
     ROOT_LOGGER_NAME,
-    SCHEMA_VERSION,
 )
 from music_assistant.server.helpers.database import DatabaseConnection
+from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
-    from music_assistant.server import MusicAssistant
+    from music_assistant.common.models.config_entries import CoreConfig
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
+CONF_CLEAR_CACHE = "clear_cache"
 
 
-class CacheController:
+class CacheController(CoreController):
     """Basic cache controller using both memory and database."""
 
-    database: DatabaseConnection | None = None
+    domain: str = "cache"
 
-    def __init__(self, mass: MusicAssistant) -> None:
-        """Initialize our caching class."""
-        self.mass = mass
+    def __init__(self, *args, **kwargs) -> None:
+        """Initialize core controller."""
+        super().__init__(*args, **kwargs)
+        self.database: DatabaseConnection | None = None
         self._mem_cache = MemoryCache(500)
+        self.manifest.name = "Cache controller"
+        self.manifest.description = (
+            "Music Assistant's core controller for caching data throughout the application."
+        )
+        self.manifest.icon = "memory"
 
-    async def setup(self) -> None:
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        if action == CONF_CLEAR_CACHE:
+            await self.clear()
+            return (
+                ConfigEntry(
+                    key=CONF_CLEAR_CACHE,
+                    type=ConfigEntryType.LABEL,
+                    label="The cache has been cleared",
+                ),
+            )
+        return (
+            ConfigEntry(
+                key=CONF_CLEAR_CACHE,
+                type=ConfigEntryType.ACTION,
+                label="Clear cache",
+                description="Reset/clear all items in the cache. ",
+            ),
+        )
+
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of cache module."""
+        self.logger.info("Initializing cache controller...")
         await self._setup_database()
         self.__schedule_cleanup_task()
 
@@ -66,7 +102,7 @@ class CacheController:
             not checksum or db_row["checksum"] == checksum and db_row["expires"] >= cur_time
         ):
             try:
-                data = await asyncio.to_thread(json.loads, db_row["data"])
+                data = await asyncio.to_thread(json_loads, db_row["data"])
             except Exception as exc:  # pylint: disable=broad-except
                 LOGGER.exception("Error parsing cache data for %s", cache_key, exc_info=exc)
             else:
@@ -79,7 +115,7 @@ class CacheController:
                 return data
         return default
 
-    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
+    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)) -> None:
         """Set data in cache."""
         if not cache_key:
             return
@@ -90,14 +126,14 @@ class CacheController:
         if (expires - time.time()) < 3600 * 4:
             # do not cache items in db with short expiration
             return
-        data = await asyncio.to_thread(json.dumps, data)
+        data = await asyncio.to_thread(json_dumps, data)
         await self.database.insert(
             DB_TABLE_CACHE,
             {"key": cache_key, "expires": expires, "checksum": checksum, "data": data},
             allow_replace=True,
         )
 
-    async def delete(self, cache_key):
+    async def delete(self, cache_key) -> None:
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
         await self.database.delete(DB_TABLE_CACHE, {"key": cache_key})
@@ -105,20 +141,31 @@ class CacheController:
     async def clear(self, key_filter: str | None = None) -> None:
         """Clear all/partial items from cache."""
         self._mem_cache = {}
+        self.logger.info("Clearing database...")
         query = f"key LIKE '%{key_filter}%'" if key_filter else None
         await self.database.delete(DB_TABLE_CACHE, query=query)
+        await self.database.vacuum()
+        self.logger.info("Clearing database DONE")
 
-    async def auto_cleanup(self):
+    async def auto_cleanup(self) -> None:
         """Sceduled auto cleanup task."""
+        self.logger.debug("Running automatic cleanup...")
         # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
+        cleaned_records = 0
         for db_row in await self.database.get_rows(DB_TABLE_CACHE):
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
+                cleaned_records += 1
+        if cleaned_records > 50:
+            self.logger.debug("Compacting database...")
+            await self.database.vacuum()
+            self.logger.debug("Compacting database done")
+        self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
-    async def _setup_database(self):
+    async def _setup_database(self) -> None:
         """Initialize database."""
         db_path = os.path.join(self.mass.storage_path, "cache.db")
         self.database = DatabaseConnection(db_path)
@@ -134,14 +181,14 @@ class CacheController:
         except (KeyError, ValueError):
             prev_version = 0
 
-        if prev_version not in (0, SCHEMA_VERSION):
-            LOGGER.info(
+        if prev_version not in (0, DB_SCHEMA_VERSION):
+            LOGGER.warning(
                 "Performing database migration from %s to %s",
                 prev_version,
-                SCHEMA_VERSION,
+                DB_SCHEMA_VERSION,
             )
 
-            if prev_version < SCHEMA_VERSION:
+            if prev_version < DB_SCHEMA_VERSION:
                 # for now just keep it simple and just recreate the table(s)
                 await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_CACHE}")
 
@@ -151,10 +198,8 @@ class CacheController:
         # store current schema version
         await self.database.insert_or_replace(
             DB_TABLE_SETTINGS,
-            {"key": "version", "value": str(SCHEMA_VERSION), "type": "str"},
+            {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
-        # compact db
-        await self.database.execute("VACUUM")
 
     async def __create_database_tables(self) -> None:
         """Create database table(s)."""
@@ -176,7 +221,7 @@ class CacheController:
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
         )
 
-    def __schedule_cleanup_task(self):
+    def __schedule_cleanup_task(self) -> None:
         """Schedule the cleanup task."""
         self.mass.create_task(self.auto_cleanup())
         # reschedule self
@@ -220,7 +265,7 @@ def use_cache(expiration=86400 * 30):
 class MemoryCache(MutableMapping):
     """Simple limited in-memory cache implementation."""
 
-    def __init__(self, maxlen: int):
+    def __init__(self, maxlen: int) -> None:
         """Initialize."""
         self._maxlen = maxlen
         self.d = OrderedDict()

@@ -1,17 +1,13 @@
 """Helper and utility functions."""
+
 from __future__ import annotations
 
 import asyncio
 import os
-import platform
-import re
 import socket
-import tempfile
 from collections.abc import Callable
 from typing import Any, TypeVar
-
-import memory_tempfile
-import unidecode
+from uuid import UUID
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
@@ -50,23 +46,16 @@ def try_parse_bool(possible_bool: Any) -> str:
     return possible_bool in ["true", "True", "1", "on", "ON", 1]
 
 
-def create_safe_string(input_str: str) -> str:
-    """Return clean lowered string for compare actions."""
-    input_str = input_str.lower().strip()
-    unaccented_string = unidecode.unidecode(input_str)
-    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string)
-
-
 def create_sort_name(input_str: str) -> str:
     """Create sort name/title from string."""
     input_str = input_str.lower().strip()
-    for item in ["the ", "de ", "les "]:
+    for item in ["the ", "de ", "les ", "dj ", ".", "-", "'", "`"]:
         if input_str.startswith(item):
             input_str = input_str.replace(item, "")
     return input_str.strip()
 
 
-def parse_title_and_version(title: str, track_version: str = None):
+def parse_title_and_version(title: str, track_version: str | None = None):
     """Try to parse clean track title and version from the title."""
     version = ""
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
@@ -142,38 +131,44 @@ def get_version_substitute(version_str: str):
     return version_str.strip()
 
 
-def get_ip():
+async def get_ip():
     """Get primary IP-address for this host."""
-    # pylint: disable=broad-except,no-member
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        # doesn't even have to be reachable
-        sock.connect(("10.255.255.255", 1))
-        _ip = sock.getsockname()[0]
-    except Exception:
-        _ip = "127.0.0.1"
-    finally:
-        sock.close()
-    return _ip
 
-
-def is_port_in_use(port: int) -> bool:
-    """Check if port is in use."""
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+    def _get_ip():
+        """Get primary IP-address for this host."""
+        # pylint: disable=broad-except,no-member
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
-            return _sock.connect_ex(("localhost", port)) == 0
-        except socket.gaierror:
-            return True
+            # doesn't even have to be reachable
+            sock.connect(("10.255.255.255", 1))
+            _ip = sock.getsockname()[0]
+        except Exception:
+            _ip = "127.0.0.1"
+        finally:
+            sock.close()
+        return _ip
+
+    return await asyncio.to_thread(_get_ip)
 
 
 async def select_free_port(range_start: int, range_end: int) -> int:
     """Automatically find available port within range."""
 
+    def is_port_in_use(port: int) -> bool:
+        """Check if port is in use."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+            try:
+                _sock.bind(("127.0.0.1", port))
+            except OSError:
+                return True
+        return False
+
     def _select_free_port():
         for port in range(range_start, range_end):
             if not is_port_in_use(port):
                 return port
-        raise OSError("No free port available")
+        msg = "No free port available"
+        raise OSError(msg)
 
     return await asyncio.to_thread(_select_free_port)
 
@@ -191,26 +186,27 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-def get_ip_pton():
+async def get_ip_pton(ip_string: str | None = None):
     """Return socket pton for local ip."""
+    if ip_string is None:
+        ip_string = await get_ip()
     # pylint:disable=no-member
     try:
-        return socket.inet_pton(socket.AF_INET, get_ip())
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET, ip_string)
     except OSError:
-        return socket.inet_pton(socket.AF_INET6, get_ip())
+        return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
 def get_folder_size(folderpath):
     """Return folder size in gb."""
     total_size = 0
     # pylint: disable=unused-variable
-    for dirpath, dirnames, filenames in os.walk(folderpath):
+    for dirpath, _dirnames, filenames in os.walk(folderpath):
         for _file in filenames:
             _fp = os.path.join(dirpath, _file)
             total_size += os.path.getsize(_fp)
     # pylint: enable=unused-variable
-    total_size_gb = total_size / float(1 << 30)
-    return total_size_gb
+    return total_size / float(1 << 30)
 
 
 def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
@@ -235,14 +231,7 @@ def merge_tuples(base: tuple, new: tuple) -> tuple:
 
 def merge_lists(base: list, new: list) -> list:
     """Merge 2 lists."""
-    return list(x for x in base if x not in new) + list(new)
-
-
-def create_tempfile():
-    """Return a (named) temporary file."""
-    if platform.system() == "Linux":
-        return memory_tempfile.MemoryTempfile(fallback=True).NamedTemporaryFile(buffering=0)
-    return tempfile.NamedTemporaryFile(buffering=0)
+    return [x for x in base if x not in new] + list(new)
 
 
 def get_changed_keys(
@@ -251,21 +240,36 @@ def get_changed_keys(
     ignore_keys: list[str] | None = None,
 ) -> set[str]:
     """Compare 2 dicts and return set of changed keys."""
+    return get_changed_values(dict1, dict2, ignore_keys).keys()
+
+
+def get_changed_values(
+    dict1: dict[str, Any],
+    dict2: dict[str, Any],
+    ignore_keys: list[str] | None = None,
+) -> dict[str, tuple[Any, Any]]:
+    """
+    Compare 2 dicts and return dict of changed values.
+
+    dict key is the changed key, value is tuple of old and new values.
+    """
+    if not dict1 and not dict2:
+        return {}
     if not dict1:
-        return set(dict2.keys())
+        return {key: (None, value) for key, value in dict2.items()}
     if not dict2:
-        return set(dict1.keys())
-    changed_keys = set()
+        return {key: (None, value) for key, value in dict1.items()}
+    changed_values = {}
     for key, value in dict2.items():
         if ignore_keys and key in ignore_keys:
             continue
         if key not in dict1:
-            changed_keys.add(key)
+            changed_values[key] = (None, value)
         elif isinstance(value, dict):
-            changed_keys.update(get_changed_keys(dict1[key], value))
+            changed_values.update(get_changed_values(dict1[key], value, ignore_keys))
         elif dict1[key] != value:
-            changed_keys.add(key)
-    return changed_keys
+            changed_values[key] = (dict1[key], value)
+    return changed_values
 
 
 def empty_queue(q: asyncio.Queue) -> None:
@@ -276,3 +280,12 @@ def empty_queue(q: asyncio.Queue) -> None:
             q.task_done()
         except (asyncio.QueueEmpty, ValueError):
             pass
+
+
+def is_valid_uuid(uuid_to_test: str) -> bool:
+    """Check if uuid string is a valid UUID."""
+    try:
+        uuid_obj = UUID(uuid_to_test)
+    except ValueError:
+        return False
+    return str(uuid_obj) == uuid_to_test

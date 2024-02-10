@@ -1,4 +1,5 @@
 """SMB filesystem provider for Music Assistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -36,11 +37,13 @@ async def setup(
     # check if valid dns name is given for the host
     server: str = config.get_value(CONF_HOST)
     if not await get_ip_from_host(server):
-        raise LoginFailed(f"Unable to resolve {server}, make sure the address is resolveable.")
+        msg = f"Unable to resolve {server}, make sure the address is resolveable."
+        raise LoginFailed(msg)
     # check if share is valid
     share: str = config.get_value(CONF_SHARE)
     if not share or "/" in share or "\\" in share:
-        raise LoginFailed("Invalid share name")
+        msg = "Invalid share name"
+        raise LoginFailed(msg)
     prov = SMBFileSystemProvider(mass, manifest, config)
     await prov.handle_setup()
     return prov
@@ -131,14 +134,17 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         # base_path will be the path where we're going to mount the remote share
-        self.base_path = f"/tmp/{self.instance_id}"
+        self.base_path = f"/tmp/{self.instance_id}"  # noqa: S108
         if not await exists(self.base_path):
             await makedirs(self.base_path)
 
         try:
+            # do unmount first to cleanup any unexpected state
+            await self.unmount(ignore_error=True)
             await self.mount()
         except Exception as err:
-            raise LoginFailed(f"Connection failed for the given details: {err}") from err
+            msg = f"Connection failed for the given details: {err}"
+            raise LoginFailed(msg) from err
 
     async def unload(self) -> None:
         """
@@ -180,7 +186,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             mount_cmd = f"mount -t cifs -o {','.join(options)} //{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
 
         else:
-            raise LoginFailed(f"SMB provider is not supported on {platform.system()}")
+            msg = f"SMB provider is not supported on {platform.system()}"
+            raise LoginFailed(msg)
 
         self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
         self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
@@ -190,9 +197,10 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise LoginFailed(f"SMB mount failed with error: {stderr.decode()}")
+            msg = f"SMB mount failed with error: {stderr.decode()}"
+            raise LoginFailed(msg)
 
-    async def unmount(self) -> None:
+    async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
         proc = await asyncio.create_subprocess_shell(
             f"umount {self.base_path}",
@@ -200,5 +208,5 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             stderr=asyncio.subprocess.PIPE,
         )
         _, stderr = await proc.communicate()
-        if proc.returncode != 0:
+        if proc.returncode != 0 and not ignore_error:
             self.logger.warning("SMB unmount failed with error: %s", stderr.decode())

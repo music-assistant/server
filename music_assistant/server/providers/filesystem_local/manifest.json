@@ -7,5 +7,5 @@
   "requirements": [],
   "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/820",
   "multi_instance": true,
-  "icon": "mdi:mdi-harddisk"
+  "icon": "harddisk"
 }
