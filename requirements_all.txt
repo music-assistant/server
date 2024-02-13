@@ -17,6 +17,7 @@ git+https://github.com/MarvinSchenkel/pytube.git
 git+https://github.com/music-assistant/deezer-python-async@v0.1.2
 hass-client==1.0.0
 ifaddr==0.2.0
+jellyfin_apiclient_python==1.9.2
 mashumaro==3.12
 memory-tempfile==2.2.3
 music-assistant-frontend==2.1.2

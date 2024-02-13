@@ -292,7 +292,6 @@ class AlbumsController(MediaControllerBase[Album]):
         items = []
         for track in await prov.get_album_tracks(item_id):
             assert isinstance(track, AlbumTrack)
-            assert track.track_number
             # make sure that the (full) album is stored on the tracks
             track.album = full_album
             if not isinstance(full_album, ItemMapping) and full_album.metadata.images:
