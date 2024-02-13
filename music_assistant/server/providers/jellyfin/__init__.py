@@ -6,8 +6,10 @@ import mimetypes
 import socket
 import uuid
 from asyncio import TaskGroup
-from collections.abc import AsyncGenerator, Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable, Coroutine
 
 from aiohttp import ClientTimeout
 from jellyfin_apiclient_python import JellyfinClient
@@ -58,10 +60,15 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.media_items import (
     Track as JellyfinTrack,
 )
-from music_assistant.common.models.provider import ProviderManifest
+
+if TYPE_CHECKING:
+    from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import VARIOUS_ARTISTS_NAME
-from music_assistant.server import MusicAssistant
-from music_assistant.server.models import ProviderInstanceType
+
+if TYPE_CHECKING:
+    from music_assistant.server import MusicAssistant
+if TYPE_CHECKING:
+    from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .const import (
@@ -113,7 +120,7 @@ async def setup(
 
 async def get_config_entries(
     mass: MusicAssistant,
-    instance_id: str | None = None,  # noqa: ARG001 pylint: disable=W0613
+    instance_id: str | None = None,  # pylint: disable=W0613
     action: str | None = None,
     values: dict[str, ConfigValueType] | None = None,
 ) -> tuple[ConfigEntry, ...]:
@@ -183,8 +190,8 @@ class JellyfinProvider(MusicProvider):
                 _jellyfin_server = client
                 # json.dumps(server)
             except MusicAssistantError as err:
-                raise LoginFailed("Authentication failed")
-                self.logger.warning("Could not authenticate: %s", str(err))
+                msg = "Authentication failed: %s", str(err)
+                raise LoginFailed(msg)
             return _jellyfin_server
 
         self._jellyfin_server = await self._run_async(connect)
@@ -249,8 +256,7 @@ class JellyfinProvider(MusicProvider):
             media=ITEM_TYPE_AUDIO,
             limit=limit,
         )
-        result = resultset["Items"]
-        return result
+        return resultset["Items"]
 
     async def _search_album(self, search_query, limit) -> list[JellyfinAlbum]:
         if "-" in search_query:
@@ -265,8 +271,7 @@ class JellyfinProvider(MusicProvider):
             media=ITEM_TYPE_ALBUM,
             limit=limit,
         )
-        result = resultset["Items"]
-        return result
+        return resultset["Items"]
 
     async def _search_artist(self, search_query, limit) -> list[JellyfinArtist]:
         resultset = await self._run_async(
@@ -276,8 +281,7 @@ class JellyfinProvider(MusicProvider):
             media=ITEM_TYPE_ARTIST,
             limit=limit,
         )
-        result = resultset["Items"]
-        return result
+        return resultset["Items"]
 
     async def _search_playlist(self, search_query, limit) -> list[JellyfinPlaylist]:
         resultset = await self._run_async(
@@ -287,8 +291,7 @@ class JellyfinProvider(MusicProvider):
             media="Playlist",
             limit=limit,
         )
-        result = resultset["Items"]
-        return result
+        return resultset["Items"]
 
     async def _search_and_parse(
         self, search_coro: Coroutine, parse_coro: Callable
@@ -361,7 +364,8 @@ class JellyfinProvider(MusicProvider):
         artist_id = jellyfin_artist[ITEM_KEY_ID]
         current_artist = API.get_item(self._jellyfin_server.jellyfin, artist_id)
         if not artist_id:
-            raise InvalidDataError("Artist does not have a valid ID")
+            msg = "Artist does not have a valid ID"
+            raise InvalidDataError(msg)
         artist = Artist(
             item_id=artist_id,
             name=jellyfin_artist[ITEM_KEY_NAME],
@@ -626,7 +630,8 @@ class JellyfinProvider(MusicProvider):
         """Get full album details by id."""
         if jellyfin_album := API.get_item(self._jellyfin_server.jellyfin, prov_album_id):
             return await self._run_async(self._parse_album(jellyfin_album))
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -662,23 +667,27 @@ class JellyfinProvider(MusicProvider):
                 prov_artist_id, self.instance_id
             ):
                 return db_artist
-            raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
+            msg = f"Artist not found: {prov_artist_id}"
+            raise MediaNotFoundError(msg)
 
         if jellyfin_artist := API.get_item(self._jellyfin_server.jellyfin, prov_artist_id):
             return await self._parse_artist(jellyfin_artist)
-        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
+        msg = f"Item {prov_artist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         if jellyfin_track := API.get_item(self._jellyfin_server.jellyfin, prov_track_id):
             return await self._parse_track(jellyfin_track)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        msg = f"Item {prov_track_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         if jellyfin_playlist := API.get_item(self._jellyfin_server.jellyfin, prov_playlist_id):
             return await self._parse_playlist(jellyfin_playlist)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        msg = f"Item {prov_playlist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
@@ -722,7 +731,7 @@ class JellyfinProvider(MusicProvider):
             media_type = ContentType.try_parse(media_stream[ITEM_KEY_MEDIA_CODEC])
         else:
             media_type = ContentType.try_parse(mimetype)
-        stream_details = StreamDetails(
+        return StreamDetails(
             item_id=jellyfin_track[ITEM_KEY_ID],
             provider=self.instance_id,
             audio_format=AudioFormat(
@@ -734,7 +743,6 @@ class JellyfinProvider(MusicProvider):
             ),  # 10000000 ticks per millisecond)
             data=jellyfin_track,
         )
-        return stream_details
 
     def _get_thumbnail_url(self, client: JellyfinClient, media_item: dict[str, Any]) -> str | None:
         """Return the URL for the primary image of a media item if available."""
