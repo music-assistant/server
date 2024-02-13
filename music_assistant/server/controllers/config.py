@@ -14,11 +14,7 @@ import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 
-from music_assistant.common.helpers.json import (
-    JSON_DECODE_EXCEPTIONS,
-    json_dumps,
-    json_loads,
-)
+from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
     DEFAULT_CORE_CONFIG_ENTRIES,
@@ -30,10 +26,7 @@ from music_assistant.common.models.config_entries import (
     ProviderConfig,
 )
 from music_assistant.common.models.enums import EventType, PlayerState, ProviderType
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    PlayerUnavailableError,
-)
+from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant.constants import (
     CONF_CORE,
     CONF_PLAYERS,
@@ -752,6 +745,9 @@ class ConfigController:
         else:
             msg = f"Unknown provider domain: {provider_domain}"
             raise KeyError(msg)
+        if prov.depends_on and not self.mass.get_provider(prov.depends_on):
+            msg = f"Provider {manifest.name} depends on {prov.depends_on}"
+            raise ValueError(msg)
         # create new provider config with given values
         existing = {
             x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
