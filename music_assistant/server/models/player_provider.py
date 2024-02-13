@@ -242,4 +242,8 @@ class PlayerProvider(Provider):
     def players(self) -> list[Player]:
         """Return all players belonging to this provider."""
         # pylint: disable=no-member
-        return [player for player in self.mass.players if player.provider == self.domain]
+        return [
+            player
+            for player in self.mass.players
+            if player.provider in (self.instance_id, self.domain)
+        ]

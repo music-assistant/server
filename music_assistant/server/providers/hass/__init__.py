@@ -6,10 +6,12 @@ responsible for maintaining the WebSocket API connection to HA.
 Also, the Music Assistant integration within HA will relay its own api
 communication over the HA api for more flexibility as well as security.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import shortuuid
 from hass_client import HomeAssistantClient
 from hass_client.utils import (
     async_is_supervisor,
@@ -33,6 +35,7 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
+DOMAIN = "hass"
 CONF_URL = "url"
 CONF_AUTH_TOKEN = "token"
 CONF_ACTION_AUTH = "auth"
@@ -66,25 +69,29 @@ async def get_config_entries(
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
             client_id = base_url(auth_helper.callback_url)
             auth_url = get_auth_url(
-                hass_url, auth_helper.callback_url, client_id=client_id, state=values["session_id"]
+                hass_url,
+                auth_helper.callback_url,
+                client_id=client_id,
+                state=values["session_id"],
             )
             result = await auth_helper.authenticate(auth_url)
         if result["state"] != values["session_id"]:
-            raise LoginFailed("session id mismatch")
+            msg = "session id mismatch"
+            raise LoginFailed(msg)
         # get access token after auth was a success
         token_details = await get_token(hass_url, result["code"], client_id=client_id)
         # register for a long lived token
         long_lived_token = await get_long_lived_token(
             hass_url,
             token_details["access_token"],
-            client_name="Music Assistant",
+            client_name=f"Music Assistant {shortuuid.random(6)}",
             client_icon=MASS_LOGO_ONLINE,
             lifespan=365 * 2,
         )
         # set the retrieved token on the values object to pass along
         values[CONF_AUTH_TOKEN] = long_lived_token
 
-    entries = tuple()
+    entries = ()
     if not await async_is_supervisor():
         entries = (
             ConfigEntry(
@@ -120,6 +127,7 @@ class HomeAssistant(PluginProvider):
         url = get_websocket_url(self.config.get_value(CONF_URL))
         token = self.config.get_value(CONF_AUTH_TOKEN)
         self.hass = HomeAssistantClient(url, token, self.mass.http_session)
+        await self.hass.connect()
 
     async def unload(self) -> None:
         """
