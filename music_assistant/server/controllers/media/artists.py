@@ -10,10 +10,7 @@ from typing import TYPE_CHECKING, Any
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
-from music_assistant.common.models.errors import (
-    MediaNotFoundError,
-    UnsupportedFeaturedException,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -441,12 +438,12 @@ class ArtistsController(MediaControllerBase[Artist]):
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
                 try:
-                    maybe_ref_track = await self.mass.music.tracks.get_provider_item(
+                    ref_track = await self.mass.music.tracks.get_provider_item(  # noqa: PLW2901
                         ref_track.item_id, ref_track.provider
                     )
                 except MediaNotFoundError:
                     continue
-            provider_ref_track = maybe_ref_track or ref_track
+            provider_ref_track = ref_track
             for search_str in (
                 f"{db_artist.name} - {provider_ref_track.name}",
                 f"{db_artist.name} {provider_ref_track.name}",
