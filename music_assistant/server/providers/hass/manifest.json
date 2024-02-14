@@ -12,6 +12,6 @@
   "load_by_default": false,
   "icon": "md:webhook",
   "requirements": [
-    "hass-client==1.0.0"
+    "hass-client==1.0.1"
   ]
 }
