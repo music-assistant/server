@@ -20,7 +20,7 @@ ifaddr==0.2.0
 jellyfin_apiclient_python==1.9.2
 mashumaro==3.12
 memory-tempfile==2.2.3
-music-assistant-frontend==2.2.0
+music-assistant-frontend==2.2.1
 orjson==3.9.13
 pillow==10.2.0
 plexapi==4.15.9
