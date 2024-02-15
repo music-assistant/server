@@ -8,6 +8,6 @@
     "@gieljnssns"
   ],
   "requirements": [],
-  "documentation": "https://github.com/orgs/music-assistant/discussions/1160",
+  "documentation": "https://music-assistant.github.io/music-providers/soundcloud/",
   "multi_instance": true
 }
