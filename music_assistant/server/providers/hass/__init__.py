@@ -91,30 +91,58 @@ async def get_config_entries(
         # set the retrieved token on the values object to pass along
         values[CONF_AUTH_TOKEN] = long_lived_token
 
-    entries = ()
-    if not await async_is_supervisor():
-        entries = (
+    if await async_is_supervisor():
+        # on supervisor, we use the internal url
+        # token set to None for auto retrieval
+        return (
             ConfigEntry(
                 key=CONF_URL,
                 type=ConfigEntryType.STRING,
-                label="URL",
+                label=CONF_URL,
                 required=True,
-                description="URL to your Home Assistant instance (e.g. http://192.168.1.1:8123)",
-                value=values.get(CONF_URL) if values else None,
+                default_value="http://supervisor/core/api",
+                value="http://supervisor/core/api",
             ),
             ConfigEntry(
                 key=CONF_AUTH_TOKEN,
-                type=ConfigEntryType.SECURE_STRING,
-                label="Authentication token for HomeAssistant",
-                description="You need to link Music Assistant to your Home Assistant instance.",
-                action=CONF_ACTION_AUTH,
-                action_label="Authenticate Home Assistant",
-                depends_on=CONF_URL,
-                value=values.get(CONF_AUTH_TOKEN) if values else None,
+                type=ConfigEntryType.STRING,
+                label=CONF_AUTH_TOKEN,
+                required=False,
+                default_value=None,
+                value=None,
             ),
         )
-
-    return entries
+    # manual configuration
+    return (
+        ConfigEntry(
+            key=CONF_URL,
+            type=ConfigEntryType.STRING,
+            label="URL",
+            required=True,
+            description="URL to your Home Assistant instance (e.g. http://192.168.1.1:8123)",
+            value=values.get(CONF_URL) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_AUTH,
+            type=ConfigEntryType.ACTION,
+            label="(re)Authenticate Home Assistant",
+            description="Authenticate to your home assistant "
+            "instance and generate the long lived token.",
+            action=CONF_ACTION_AUTH,
+            depends_on=CONF_URL,
+            required=False,
+        ),
+        ConfigEntry(
+            key=CONF_AUTH_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Authentication token for HomeAssistant",
+            description="You can either paste a Long Lived Token here manually or use the "
+            "'authenticate' button to generate a token for you with logging in.",
+            depends_on=CONF_URL,
+            value=values.get(CONF_AUTH_TOKEN) if values else None,
+            advanced=True,
+        ),
+    )
 
 
 class HomeAssistant(PluginProvider):
