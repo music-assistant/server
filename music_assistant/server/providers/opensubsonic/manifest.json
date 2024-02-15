@@ -5,6 +5,6 @@
   "description": "Support for Open Subsonic based streaming providers in Music Assistant.",
   "codeowners": ["@khers"],
   "requirements": ["py-opensonic>=5.0.5"],
-  "documentation": "https://github.com/orgs/music-assistant/discussions/1806",
+  "documentation": "https://music-assistant.github.io/music-providers/subsonic/",
   "multi_instance": true
 }
