@@ -5,7 +5,7 @@
   "description": "Search radio streams from RadioBrowser in Music Assistant.",
   "codeowners": ["@gieljnssns"],
   "requirements": ["radios==0.3.0"],
-  "documentation": "https://github.com/orgs/music-assistant/discussions/1202",
+  "documentation": "https://music-assistant.github.io/music-providers/radio-browser/",
   "multi_instance": false,
   "icon": "radio"
 }

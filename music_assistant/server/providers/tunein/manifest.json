@@ -5,6 +5,6 @@
   "description": "Play your favorite radio stations from Tune-In in Music Assistant.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://github.com/orgs/music-assistant/discussions/1702",
+  "documentation": "https://music-assistant.github.io/music-providers/tunein/",
   "multi_instance": true
 }
