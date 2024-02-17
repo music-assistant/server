@@ -899,6 +899,11 @@ class PlayerController(CoreController):
                 continue
             elif child_player.group_childs:
                 return child_player
+        # select new sync leader: return the first powered player
+        for child_player in self.iter_group_members(
+            group_player, only_powered=True, only_playing=False
+        ):
+            return child_player
         return None
 
     async def _sync_syncgroup(self, player_id: str) -> None:
