@@ -24,7 +24,6 @@ from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_OUTPUT_CHANNELS,
     ConfigEntry,
     ConfigValueType,
 )
@@ -58,7 +57,6 @@ CONF_SYNC_ADJUST = "sync_adjust"
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_OUTPUT_CHANNELS,
     ConfigEntry(
         key=CONF_LATENCY,
         type=ConfigEntryType.INTEGER,
@@ -964,7 +962,7 @@ class AirplayProvider(PlayerProvider):
         ):
             extra_args += ["-v", str(int(atv_player.atv.audio.volume))]
         sync_adjust = self.mass.config.get_raw_player_config_value(
-            atv_player.player_id, CONF_LATENCY, 0
+            atv_player.player_id, CONF_SYNC_ADJUST, 0
         )
 
         atv_player.optimistic_state = PlayerState.PLAYING
