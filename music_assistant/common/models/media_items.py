@@ -9,11 +9,7 @@ from typing import Any, Self
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import (
-    create_sort_name,
-    is_valid_uuid,
-    merge_lists,
-)
+from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
@@ -354,6 +350,11 @@ class Track(MediaItem):
         if isinstance(self.album, Album) and self.album.image:
             return self.album.image
         return super().image
+
+    @property
+    def artist_str(self) -> str:
+        """Return (combined) artist string for track."""
+        return "/".join(x.name for x in self.artists)
 
 
 @dataclass(kw_only=True)
