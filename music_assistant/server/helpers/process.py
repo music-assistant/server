@@ -123,6 +123,9 @@ class AsyncProcess:
     async def close(self) -> None:
         """Close/terminate the process."""
         self.closed = True
+        if self._attached_task and not self._attached_task.done():
+            with suppress(asyncio.CancelledError):
+                self._attached_task.cancel()
         # make sure the process is cleaned up
         self.write_eof()
         if self._proc.returncode is None:
@@ -131,12 +134,15 @@ class AsyncProcess:
                     await self._proc.communicate()
             except TimeoutError:
                 self._proc.kill()
-                await self._proc.communicate()
-        if self._proc.returncode is None:
-            self._proc.kill()
-        if self._attached_task and not self._attached_task.done():
-            with suppress(asyncio.CancelledError):
-                self._attached_task.cancel()
+        await self.wait()
+
+    async def wait(self) -> int:
+        """Wait for the process and return the returncode."""
+        if self._proc.returncode is not None:
+            return self._proc.returncode
+        exitcode = await self._proc.wait()
+        self.closed = True
+        return exitcode
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""

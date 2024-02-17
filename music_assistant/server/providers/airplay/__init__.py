@@ -15,8 +15,7 @@ from pyatv.conf import AppleTV as ATVConf
 from pyatv.const import DeviceModel, DeviceState, PowerState, Protocol
 from pyatv.convert import model_str
 from pyatv.interface import AppleTV as AppleTVInterface
-from pyatv.interface import Audio, DeviceListener, Metadata, PushUpdater, RemoteControl
-from pyatv.protocols.airplay.auth import extract_credentials
+from pyatv.interface import DeviceListener
 from pyatv.protocols.raop import RaopStream
 from zeroconf import ServiceInfo
 
@@ -25,11 +24,19 @@ from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_OUTPUT_CHANNELS,
     ConfigEntry,
     ConfigValueType,
 )
-from music_assistant.common.models.enums import ContentType, PlayerFeature, PlayerState, PlayerType
-from music_assistant.common.models.media_items import AudioFormat, Track
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ContentType,
+    PlayerFeature,
+    PlayerState,
+    PlayerType,
+    ProviderFeature,
+)
+from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.helpers.util import create_tempfile
@@ -43,8 +50,66 @@ if TYPE_CHECKING:
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
-
-PLAYER_CONFIG_ENTRIES = (CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
+CONF_LATENCY = "latency"
+CONF_ENCRYPTION = "encryption"
+CONF_ALAC_ENCODE = "alac_encode"
+CONF_VOLUME_START = "volume_start"
+CONF_SYNC_ADJUST = "sync_adjust"
+PLAYER_CONFIG_ENTRIES = (
+    CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_OUTPUT_CHANNELS,
+    ConfigEntry(
+        key=CONF_LATENCY,
+        type=ConfigEntryType.INTEGER,
+        range=(200, 3000),
+        default_value=1200,
+        label="Latency",
+        description="Sets the number of milliseconds of audio buffer in the player. "
+        "This is important to absorb network throughput jitter. "
+        "Note that the resume after pause will be skipping that amount of time "
+        "and volume changes will be delayed by the same amount, when using digital volume.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_ENCRYPTION,
+        type=ConfigEntryType.BOOLEAN,
+        default_value=False,
+        label="Enable encryption",
+        description="Enable encrypted communication with the player, "
+        "some (3rd party) players require this.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_ALAC_ENCODE,
+        type=ConfigEntryType.BOOLEAN,
+        default_value=True,
+        label="Enable compression",
+        description="Save some network bandwidth by sending the audio as "
+        "(lossless) ALAC at the cost of a bit CPU.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_VOLUME_START,
+        type=ConfigEntryType.BOOLEAN,
+        default_value=False,
+        label="Send volume at playback start",
+        description="Some players require to send/confirm the volume when playback starts. \n"
+        "Enable this setting if the playback volume does not match the MA interface.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_SYNC_ADJUST,
+        type=ConfigEntryType.INTEGER,
+        range=(-500, 500),
+        default_value=0,
+        label="Audio synchronization delay correction",
+        description="If this player is playing audio synced with other players "
+        "and you always hear the audio too early or late on this player, "
+        "you can shift the audio a bit.",
+        advanced=True,
+    ),
+)
 BACKOFF_TIME_LOWER_LIMIT = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT = 300  # Five minutes
 
@@ -87,13 +152,8 @@ def convert_airplay_volume(value: float) -> int:
     return int(portion + normal_min)
 
 
-class AppleTVManager(DeviceListener):
-    """Connection and power manager for an Apple TV.
-
-    An instance is used per device to share the same power state between
-    several platforms. It also manages scanning and connection establishment
-    in case of problems.
-    """
+class AirPlayPlayer(DeviceListener):
+    """Holds the connection to the apyatv instance and the cliraop."""
 
     def __init__(
         self, mass: MusicAssistant, player_id: str, discovery_info: interface.BaseConfig
@@ -110,8 +170,9 @@ class AppleTVManager(DeviceListener):
         self._task = None
         self._playing: interface.Playing | None = None
         self.logger = self.mass.players.logger.getChild("airplay").getChild(self.player_id)
-        self.raop_play_proc: AsyncProcess | None = None
+        self.cliraop_proc: AsyncProcess | None = None
         self.active_remote_id = str(randint(1000, 8000))
+        self.optimistic_state: PlayerState = PlayerState.IDLE
 
     def connection_lost(self, _):
         """Device was unexpectedly disconnected.
@@ -140,9 +201,9 @@ class AppleTVManager(DeviceListener):
 
     async def connect(self):
         """Connect to device."""
+        self.is_on = True
         if self.connected:
             return
-        self.is_on = True
         self._start_connect_loop()
         await asyncio.sleep(2)
 
@@ -160,6 +221,34 @@ class AppleTVManager(DeviceListener):
                 self._task = None
         except Exception:  # pylint: disable=broad-except
             self.logger.exception("An error occurred while disconnecting")
+
+    async def stop(self):
+        """Stop playback and cleanup any running CLIRaop Process."""
+        if self.cliraop_proc and not self.cliraop_proc.closed:
+            # prefer interactive command to our streamer
+            await self.send_cli_command("ACTION=STOP")
+            await self.cliraop_proc.wait()
+            self.optimistic_state = PlayerState.IDLE
+            self.update_attributes()
+        elif atv := self.atv:
+            await atv.remote_control.stop()
+
+    async def send_cli_command(self, command: str) -> None:
+        """Send an interactive command to the running CLIRaop binary."""
+        if not self.cliraop_proc or self.cliraop_proc.closed:
+            return
+
+        named_pipe = f"/tmp/fifo-{self.active_remote_id}"  # noqa: S108
+        if not command.endswith("\n"):
+            command += "\n"
+
+        def send_data():
+            with open(named_pipe, "w") as f:
+                f.write(command)
+                f.flush()
+
+        self.logger.debug("sending command %s", command)
+        await self.mass.create_task(send_data)
 
     def _start_connect_loop(self):
         """Start background connect loop to device."""
@@ -270,10 +359,10 @@ class AppleTVManager(DeviceListener):
             self.atv.push_updater.listener = self
             self.atv.push_updater.start()
 
-        self._address_updated(str(conf.address))
+        self.address_updated(str(conf.address))
 
         self._setup_device()
-        self._update_attributes()
+        self.update_attributes()
 
         self._connection_attempts = 0
         if self._connection_was_lost:
@@ -323,30 +412,34 @@ class AppleTVManager(DeviceListener):
         """Inform about changes to what is currently playing."""
         self.logger.debug("Playstatus received: %s", playstatus)
         self._playing = playstatus
-        self._update_attributes()
+        self.update_attributes()
 
     def playstatus_error(self, updater, exception: Exception) -> None:
         """Inform about an error when updating play status."""
         self.logger.debug("Playstatus error received", exc_info=exception)
         self._playing = None
-        self._update_attributes()
+        self.update_attributes()
 
     def powerstate_update(self, old_state: PowerState, new_state: PowerState) -> None:
         """Update power state when it changes."""
-        self._update_attributes()
+        self.update_attributes()
 
     def volume_update(self, old_level: float, new_level: float) -> None:
         """Update volume when it changes."""
-        self._update_attributes()
+        self.update_attributes()
 
-    def _update_attributes(self) -> None:
+    def update_attributes(self) -> None:
         """Update the player attributes."""
         mass_player = self.mass.players.get(self.player_id)
         mass_player.volume_level = int(self.atv.audio.volume)
-        if self.atv is None or not self.connected:
+        mass_player.powered = self.is_on
+        if self.cliraop_proc and not self.cliraop_proc.closed:
+            mass_player.state = self.optimistic_state
+            # NOTE: alapsed time is pushed from cliraop
+        elif self.atv is None or not self.connected:
             mass_player.powered = False
             mass_player.state = PlayerState.IDLE
-        if self._playing:
+        elif self._playing:
             state = self._playing.device_state
             if state in (DeviceState.Idle, DeviceState.Loading):
                 mass_player.state = PlayerState.IDLE
@@ -368,7 +461,7 @@ class AppleTVManager(DeviceListener):
         """Return true if connection is in progress."""
         return self._task is not None
 
-    def _address_updated(self, address):
+    def address_updated(self, address):
         """Update cached address in config entry."""
         self.logger.debug("Changing address to %s", address)
         self._setup_device()
@@ -377,16 +470,21 @@ class AppleTVManager(DeviceListener):
 class AirplayProvider(PlayerProvider):
     """Player provider for Airplay based players."""
 
-    _atv_players: dict[str, AppleTVManager]
+    _atv_players: dict[str, AirPlayPlayer]
     _discovery_running: bool = False
-    _raop_play_bin: str | None = None
+    _cliraop_bin: str | None = None
     _stream_tasks: dict[str, asyncio.Task]
+
+    @property
+    def supported_features(self) -> tuple[ProviderFeature, ...]:
+        """Return the features supported by this Provider."""
+        return (ProviderFeature.SYNC_PLAYERS,)
 
     async def handle_setup(self) -> None:
         """Handle async initialization of the provider."""
         self._atv_players = {}
         self._stream_tasks = {}
-        self._raop_play_bin = await self.get_raop_play_binary()
+        self._cliraop_bin = await self.get_cliraop_binary()
         self.mass.create_task(self._run_discovery())
         dacp_port = 49831
         self.dacp_id = dacp_id = "1A2B3D4EA1B2C3D5"
@@ -503,22 +601,14 @@ class AirplayProvider(PlayerProvider):
 
         - player_id: player_id of the player to handle the command.
         """
-        # forward command to player and any connected sync members
-        for atv_player in self._get_sync_clients(player_id):
-            if atv_player.raop_play_proc and not atv_player.raop_play_proc.closed:
-                # prefer interactive command to our streamer
-                await self._send_command(atv_player, "ACTION=STOP")
-                mass_player = self.mass.players.get(player_id)
-                mass_player.state = PlayerState.IDLE
-                self.mass.players.update(player_id)
-                await atv_player.raop_play_proc.communicate()
-            elif atv := atv_player.atv:
-                await atv.remote_control.stop()
-            if atv_player.raop_play_proc and not atv_player.raop_play_proc.closed:
-                await atv_player.raop_play_proc.close()
         if stream_task := self._stream_tasks.pop(player_id, None):
             if not stream_task.done():
                 stream_task.cancel()
+
+        # forward command to player and any connected sync members
+        async with asyncio.TaskGroup() as tg:
+            for atv_player in self._get_sync_clients(player_id):
+                tg.create_task(atv_player.stop())
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
@@ -526,15 +616,15 @@ class AirplayProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         """
         # forward command to player and any connected sync members
-        for atv_player in self._get_sync_clients(player_id):
-            if atv_player.raop_play_proc:
-                # prefer interactive command to our streamer
-                await self._send_command(atv_player, "ACTION=PLAY")
-                mass_player = self.mass.players.get(player_id)
-                mass_player.state = PlayerState.PLAYING
-                self.mass.players.update(player_id)
-            elif atv := atv_player.atv:
-                await atv.remote_control.play()
+        async with asyncio.TaskGroup() as tg:
+            for atv_player in self._get_sync_clients(player_id):
+                if atv_player.cliraop_proc and not atv_player.cliraop_proc.closed:
+                    # prefer interactive command to our streamer
+                    tg.create_task(atv_player.send_cli_command("ACTION=PLAY"))
+                    atv_player.optimistic_state = PlayerState.PLAYING
+                    atv_player.update_attributes()
+                elif atv := atv_player.atv:
+                    tg.create_task(atv.remote_control.play())
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
@@ -542,17 +632,17 @@ class AirplayProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         """
         # forward command to player and any connected sync members
-        for atv_player in self._get_sync_clients(player_id):
-            if atv_player.raop_play_proc:
-                # prefer interactive command to our streamer
-                await self._send_command(atv_player, "ACTION=PAUSE")
-                mass_player = self.mass.players.get(player_id)
-                mass_player.state = PlayerState.PAUSED
-                self.mass.players.update(player_id)
-            elif atv := atv_player.atv:
-                await atv.remote_control.pause()
+        async with asyncio.TaskGroup() as tg:
+            for atv_player in self._get_sync_clients(player_id):
+                if atv_player.cliraop_proc and not atv_player.cliraop_proc.closed:
+                    # prefer interactive command to our streamer
+                    tg.create_task(atv_player.send_cli_command("ACTION=PAUSE"))
+                    atv_player.optimistic_state = PlayerState.PAUSED
+                    atv_player.update_attributes()
+                elif atv := atv_player.atv:
+                    tg.create_task(atv.remote_control.pause())
 
-    async def play_media(  # noqa: PLR0915
+    async def play_media(
         self,
         player_id: str,
         queue_item: QueueItem,
@@ -569,7 +659,7 @@ class AirplayProvider(PlayerProvider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
-        # stop any existing streams first
+        # stop existing streams first
         await self.cmd_stop(player_id)
         await self.cmd_power(player_id, True)
         atv_player = self._atv_players[player_id]
@@ -579,44 +669,17 @@ class AirplayProvider(PlayerProvider):
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
 
-        ntp_file = "/tmp/start.ntp"  # noqa: S108
-        ntp_cmd = f"{self._raop_play_bin} -ntp {ntp_file}"
-        await check_output(ntp_cmd)
+        # get current ntp before we start
+        _, stdout = await check_output(f"{self._cliraop_bin} -ntp")
+        ntp = int(stdout.strip())
 
         # setup Raop process for player and its sync childs
-        for atv_player in self._get_sync_clients(player_id):
-            stream: RaopStream | None = next(
-                (x for x in atv_player.atv.stream.instances if isinstance(x, RaopStream)), None
-            )
-            if stream is None:
-                raise RuntimeError("RAOP Not available")
-
-            args = [
-                self._raop_play_bin,
-                "-nf",
-                ntp_file,
-                "-w",
-                "1200",
-                "-p",
-                str(stream.core.service.port),
-                "-v",
-                str(atv_player.atv.audio.volume),
-                "-a",
-                "-dacp",
-                self.dacp_id,
-                "-ar",
-                atv_player.active_remote_id,
-                "-md",
-                atv_player.discovery_info.properties["_raop._tcp.local"]["md"],
-                "-et",
-                atv_player.discovery_info.properties["_raop._tcp.local"]["et"],
-                str(atv_player.discovery_info.address),
-                "-",
-            ]
-            if platform.system() == "Darwin":
-                os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
-            atv_player.raop_play_proc = AsyncProcess(args, enable_stdin=True, enable_stdout=False)
-            await atv_player.raop_play_proc.start()
+        async with asyncio.TaskGroup() as tg:
+            for atv_player in self._get_sync_clients(player_id):
+                if not atv_player.atv:
+                    # just in case...
+                    await atv_player.connect()
+                tg.create_task(self._init_cliraop(atv_player, ntp))
 
         async def _streamer() -> None:
             queue = self.mass.player_queues.get(queue_item.queue_id)
@@ -625,8 +688,7 @@ class AirplayProvider(PlayerProvider):
             player.elapsed_time_last_updated = time.time()
             player.state = PlayerState.PLAYING
             self.mass.players.register_or_update(player)
-            prev_item: QueueItem | None = None
-            # TODO: can we handle 24 bits bit depth ?
+            prev_metadata_checksum: str = ""
             pcm_format = AudioFormat(
                 content_type=ContentType.PCM_S16LE,
                 sample_rate=44100,
@@ -641,151 +703,42 @@ class AirplayProvider(PlayerProvider):
                     seek_position=seek_position,
                     fade_in=fade_in,
                 ):
-                    async with asyncio.TaskGroup() as tg:
-                        # send metadata to player(s) if needed
-                        if prev_item != queue.current_item:
-                            prev_item = queue.current_item
-                            if isinstance(queue.current_item.media_item, Track):
-                                artist = queue.current_item.media_item.artist_str
-                                album = queue.current_item.media_item.album.name
-                                title = queue.current_item.media_item.name
-                            elif (
-                                queue.current_item.streamdetails
-                                and queue.current_item.streamdetails.stream_title
-                            ):
-                                artist = queue.current_item.name
-                                album = ""
-                                title = queue.current_item.streamdetails.stream_title
-                            else:
-                                artist = ""
-                                album = ""
-                                title = queue.current_item.name
-                            duration = queue_item.duration or 0 * 1000
-                            for atv_player in self._get_sync_clients(player_id):
-                                tg.create_task(
-                                    self._send_command(
-                                        atv_player,
-                                        f"TITLE={title}\nARTIST={artist}\nALBUM={album}\n"
-                                        f"DURATION={duration * 1000}\nACTION=SENDMETA",
-                                    )
-                                )
-                            if queue_item.image:
-                                image_path = create_tempfile()
-                                image_data = await self.mass.metadata.get_thumbnail(
-                                    queue_item.image.path, 512, queue_item.image.provider
-                                )
-                                async with aiofiles.open(image_path.name, "wb") as outfile:
-                                    await outfile.write(image_data)
-                                for atv_player in self._get_sync_clients(player_id):
-                                    tg.create_task(
-                                        self._send_command(
-                                            atv_player, f"ARTWORK={image_path.name}\n"
-                                        )
-                                    )
+                    # send metadata to player(s) if needed
+                    # NOTE: this must all be done in separate tasks to not disturb audio
+                    if queue and queue.current_item and queue.current_item.streamdetails:
+                        metadata_checksum = (
+                            queue.current_item.streamdetails.stream_title
+                            or queue.current_item.queue_item_id
+                        )
+                        if prev_metadata_checksum != metadata_checksum:
+                            prev_metadata_checksum = metadata_checksum
+                            self.mass.create_task(self._send_metadata(player_id))
+                    # send progress metadata
+                    for atv_player in self._get_sync_clients(player_id):
+                        self.mass.create_task(
+                            atv_player.send_cli_command(f"PROGRESS={int(queue.elapsed_time)}\n")
+                        )
 
-                        # send audio chunk to player(s)
+                    # send audio chunk to player(s)
+                    async with asyncio.TaskGroup() as tg:
+                        available_clients = 0
                         for atv_player in self._get_sync_clients(player_id):
-                            tg.create_task(atv_player.raop_play_proc.write(pcm_chunk))
+                            if not atv_player.cliraop_proc or atv_player.cliraop_proc.closed:
+                                # this may not happen, but just in case
+                                continue
+                            available_clients += 1
+                            tg.create_task(atv_player.cliraop_proc.write(pcm_chunk))
+                        if not available_clients:
+                            return
+
             finally:
-                await self.cmd_stop(player_id)
+                self.logger.debug("Streamer task ended for player %s", queue.display_name)
+                for atv_player in self._get_sync_clients(player_id):
+                    if atv_player.cliraop_proc and not atv_player.cliraop_proc.closed:
+                        atv_player.cliraop_proc.write_eof()
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
-
-    async def play_media_org(
-        self,
-        player_id: str,
-        queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
-    ) -> None:
-        """Handle PLAY MEDIA using pyatv itself."""
-        await self.cmd_power(player_id, True)
-        atv_player = self._atv_players[player_id]
-        player = self.mass.players.get(player_id)
-
-        if player.synced_to:
-            # should not happen, but just in case
-            raise RuntimeError("Player is synced")
-
-        # regular, single player playback
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-            seek_position=seek_position,
-            fade_in=fade_in,
-            flow_mode=False,
-        )
-
-        async def streamer():
-            stream: RaopStream | None = next(
-                (x for x in atv_player.atv.stream.instances if isinstance(x, RaopStream)), None
-            )
-            if stream is None:
-                raise RuntimeError("RAOP Not available")
-
-            stream.playback_manager.acquire()
-            takeover_release = stream.core.takeover(Audio, Metadata, PushUpdater, RemoteControl)
-            try:
-                client, context = await stream.playback_manager.setup(stream.core.service)
-                context.credentials = extract_credentials(stream.core.service)
-                context.password = stream.core.service.password
-
-                client.listener = stream.listener
-                await client.initialize(stream.core.service.properties)
-
-                # After initialize has been called, all the audio properties will be
-                # initialized and can be used in the miniaudio wrapper
-                # audio_file = await open_source(
-                #     file,
-                #     context.sample_rate,
-                #     context.channels,
-                #     context.bytes_per_channel,
-                # )
-
-                # If the user didn't change volume level prior to streaming, try to extract
-                # volume level from device (if supported). Otherwise set the default level
-                # in pyatv.
-                volume = None
-                if not stream.audio.has_changed_volume and "initialVolume" in client.info:
-                    initial_volume = client.info["initialVolume"]
-                    if not isinstance(initial_volume, float):
-                        msg = (
-                            f"initial volume {initial_volume} has "
-                            "incorrect type {type(initial_volume)}"
-                        )
-                        raise exceptions.ProtocolError(msg)
-                    context.volume = initial_volume
-                else:
-                    # Try to set volume. If it fails, defer to setting it once
-                    # streaming has started.
-                    try:
-                        await stream.audio.set_volume(self.audio.volume)
-                    except Exception as ex:
-                        self.logger.debug("Failed to set volume (%s), delaying call", ex)
-                        volume = stream.audio.volume
-                from pyatv.protocols.raop import open_source
-
-                audio_file = await open_source(url, 44100, 2, 2)
-                img_data = await self.mass.metadata.get_thumbnail(
-                    queue_item.image.path, 256, queue_item.image.provider
-                )
-                metadata = interface.MediaMetadata(
-                    title=queue_item.name, artwork=img_data, duration=300
-                )
-                await client.send_audio(audio_file, metadata, volume=volume)
-
-            finally:
-                takeover_release()
-                # if audio_file:
-                #     await audio_file.close()
-                await stream.playback_manager.teardown()
-
-        if (existing := self._stream_tasks.get(player_id)) and not existing.done():
-            existing.cancel()
-            await asyncio.sleep(0.5)
-
-        self._stream_tasks[player_id] = asyncio.create_task(streamer())
 
     async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
         """Handle PLAY STREAM on given player.
@@ -817,21 +770,11 @@ class AirplayProvider(PlayerProvider):
         - volume_level: volume level (0..100) to set on the player.
         """
         atv_player = self._atv_players[player_id]
-        if atv_player.raop_play_proc:
+        if atv_player.cliraop_proc:
             # prefer interactive command to our streamer
-            await self._send_command(atv_player, f"VOLUME={volume_level}")
+            await atv_player.send_cli_command(f"VOLUME={volume_level}")
         elif atv := atv_player.atv:
             await atv.audio.set_volume(volume_level)
-
-    async def cmd_seek(self, player_id: str, position: int) -> None:
-        """Handle SEEK command for given queue.
-
-        - player_id: player_id of the player to handle the command.
-        - position: position in seconds to seek to in the current playing item.
-        """
-        atv_player = self._atv_players[player_id]
-        if atv := atv_player.atv:
-            await atv.remote_control.set_position(round(position))
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -848,11 +791,13 @@ class AirplayProvider(PlayerProvider):
         player.synced_to = target_player
         group_leader.group_childs.add(player_id)
         self.mass.players.update(target_player)
+        if group_leader.powered:
+            await self.cmd_power(player_id, True)
         if (
             group_leader.state == PlayerState.PLAYING
             and group_leader.active_source == group_leader.player_id
         ):
-            await self.mass.player_queues.resume(group_leader.player_id)
+            self.mass.create_task(self.mass.player_queues.resume(group_leader.player_id))
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -870,22 +815,6 @@ class AirplayProvider(PlayerProvider):
         if player.state == PlayerState.PLAYING:
             await self.cmd_stop(player_id)
         self.mass.players.update(player_id)
-
-    async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates.
-
-        This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
-        """
 
     async def _run_discovery(self) -> None:
         """Discover Airplay players on the network."""
@@ -916,22 +845,18 @@ class AirplayProvider(PlayerProvider):
         """Handle discovered Airplay player on mdns."""
         player_id = f"ap{discovery_info.identifier.lower().replace(":", "")}"
         if player_id in self._atv_players:
-            return  # TODO: handle player updates
+            atv_player = self._atv_players[player_id]
+            if discovery_info.address != atv_player.discovery_info.address:
+                atv_player.address_updated(discovery_info.address)
+            return
         self.logger.info(f"Connecting to {discovery_info.address}")
-        self._atv_players[player_id] = atv_player = AppleTVManager(
+        self._atv_players[player_id] = atv_player = AirPlayPlayer(
             self.mass, player_id, discovery_info
         )
         atv_player._setup_device()
         for player in self.players:
             player.can_sync_with = tuple(x for x in self._atv_players if x != player.player_id)
             self.mass.players.update(player.player_id)
-
-    def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
-        """
-        Call when a power command was executed on one of the child player of a Player/Sync group.
-
-        This is used to handle special actions such as (re)syncing.
-        """
 
     def _is_feature_available(
         self, atv_player: interface.AppleTV, feature: interface.FeatureName
@@ -942,22 +867,24 @@ class AirplayProvider(PlayerProvider):
             return atv_player.features.in_state(interface.FeatureState.Available, feature)
         return False
 
-    async def get_raop_play_binary(self):
+    async def get_cliraop_binary(self):
         """Find the correct raop/airplay binary belonging to the platform."""
         # ruff: noqa: SIM102
-        if self._raop_play_bin is not None:
-            return self._raop_play_bin
+        if self._cliraop_bin is not None:
+            return self._cliraop_bin
 
-        async def check_binary(raop_play_path: str) -> str | None:
+        async def check_binary(cliraop_path: str) -> str | None:
             try:
-                raop_play = await asyncio.create_subprocess_exec(
-                    *[raop_play_path], stdout=asyncio.subprocess.PIPE
+                cliraop = await asyncio.create_subprocess_exec(
+                    *[cliraop_path, "-check"],
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.STDOUT,
                 )
-                stdout, _ = await raop_play.communicate()
-                self.logger.debug(stdout.decode("utf-8"))
-                if raop_play.returncode == 255:
-                    self._raop_play_bin = raop_play_path
-                    return raop_play_path
+                stdout, _ = await cliraop.communicate()
+                stdout = stdout.strip().decode()
+                if cliraop.returncode == 0 and stdout == "cliraop check":
+                    self._cliraop_bin = cliraop_path
+                    return cliraop_path
             except OSError:
                 return None
 
@@ -966,17 +893,17 @@ class AirplayProvider(PlayerProvider):
         architecture = platform.machine().lower()
 
         if bridge_binary := await check_binary(
-            os.path.join(base_path, f"raop_play-{system}-{architecture}")
+            os.path.join(base_path, f"cliraop-{system}-{architecture}")
         ):
             return bridge_binary
 
         msg = f"Unable to locate RAOP Play binary for {system}/{architecture}"
         raise RuntimeError(msg)
 
-    def _get_sync_clients(self, player_id: str) -> list[AppleTVManager]:
+    def _get_sync_clients(self, player_id: str) -> list[AirPlayPlayer]:
         """Get all sync clients for a player."""
         mass_player = self.mass.players.get(player_id, True)
-        sync_clients: list[AppleTVManager] = []
+        sync_clients: list[AirPlayPlayer] = []
         # we need to return the player itself too
         group_child_ids = {player_id}
         group_child_ids.update(mass_player.group_childs)
@@ -985,18 +912,141 @@ class AirplayProvider(PlayerProvider):
                 sync_clients.append(client)
         return sync_clients
 
-    async def _send_command(self, atv_player: AppleTVManager, command: str) -> None:
-        """Send an interactive command to the running Raop Play binary."""
-        if not atv_player.raop_play_proc or atv_player.raop_play_proc.closed:
+    async def _init_cliraop(self, atv_player: AirPlayPlayer, ntp: int) -> None:
+        """Initiatlize CLIRaop process for a player."""
+        stream: RaopStream | None = next(
+            (x for x in atv_player.atv.stream.instances if isinstance(x, RaopStream)), None
+        )
+        if stream is None:
+            raise RuntimeError("RAOP Not available")
+
+        async def log_watcher(cliraop_proc: AsyncProcess) -> None:
+            """Monitor stderr for a running CLIRaop process."""
+            mass_player = self.mass.players.get(atv_player.player_id)
+            logger = self.logger.getChild(atv_player.player_id)
+            async for line in cliraop_proc._proc.stderr:
+                line = line.decode().strip()  # noqa: PLW2901
+                if "set pause" in line:
+                    atv_player.optimistic_state = PlayerState.PAUSED
+                    atv_player.update_attributes()
+                if "Restarted at" in line:
+                    atv_player.optimistic_state = PlayerState.PLAYING
+                    atv_player.update_attributes()
+                elif "after start), played" in line:
+                    millis = int(line.split("played ")[1].split(" ")[0])
+                    mass_player.elapsed_time = millis / 1000
+                    mass_player.elapsed_time_last_updated = time.time()
+                else:
+                    logger.debug(line)
+            # if we reach this point, the process exited
+            if cliraop_proc._proc.returncode is not None:
+                cliraop_proc.closed = True
+            logger.debug(
+                "CLIRaop process stopped with errorcode %s",
+                cliraop_proc._proc.returncode,
+            )
+
+        extra_args = []
+        latency = self.mass.config.get_raw_player_config_value(
+            atv_player.player_id, CONF_LATENCY, 1200
+        )
+        extra_args += ["-l", str(latency)]
+        if self.mass.config.get_raw_player_config_value(
+            atv_player.player_id, CONF_ENCRYPTION, False
+        ):
+            extra_args += ["-et"]
+        if self.mass.config.get_raw_player_config_value(
+            atv_player.player_id, CONF_ALAC_ENCODE, False
+        ):
+            extra_args += ["-a"]
+        if self.mass.config.get_raw_player_config_value(
+            atv_player.player_id, CONF_VOLUME_START, False
+        ):
+            extra_args += ["-v", str(int(atv_player.atv.audio.volume))]
+        sync_adjust = self.mass.config.get_raw_player_config_value(
+            atv_player.player_id, CONF_LATENCY, 0
+        )
+
+        atv_player.optimistic_state = PlayerState.PLAYING
+        # always generate a new active remote id to prevent race conditions
+        # with the named pipe used to send commands
+        atv_player.active_remote_id = str(randint(1000, 8000))
+        args = [
+            self._cliraop_bin,
+            "-n",
+            str(ntp),
+            "-p",
+            str(stream.core.service.port),
+            "-w",
+            str(2000 + sync_adjust),
+            *extra_args,
+            "-dacp",
+            self.dacp_id,
+            "-ar",
+            atv_player.active_remote_id,
+            "-md",
+            atv_player.discovery_info.properties["_raop._tcp.local"]["md"],
+            "-et",
+            atv_player.discovery_info.properties["_raop._tcp.local"]["et"],
+            str(atv_player.discovery_info.address),
+            "-",
+        ]
+        if platform.system() == "Darwin":
+            os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
+        atv_player.cliraop_proc = AsyncProcess(
+            args, enable_stdin=True, enable_stdout=False, enable_stderr=True
+        )
+        await atv_player.cliraop_proc.start()
+        # send empty command to unblock named pipe
+        await atv_player.send_cli_command("\n")
+        atv_player.cliraop_proc.attach_task(log_watcher(atv_player.cliraop_proc))
+
+    async def _send_metadata(self, player_id: str) -> None:
+        """Send metadata to player (and connected sync childs)."""
+        queue = self.mass.player_queues.get(player_id)
+        if not queue or not queue.current_item:
             return
+        duration = min(queue.current_item.duration or 0, 3600)
+        title = queue.current_item.name
+        artist = ""
+        album = ""
+        if queue.current_item.streamdetails and queue.current_item.streamdetails.stream_title:
+            # stream title from radio station
+            stream_title = queue.current_item.streamdetails.stream_title
+            if " - " in stream_title:
+                artist, title = stream_title.split(" - ", 1)
+            else:
+                title = stream_title
+            # set album to radio station name
+            album = queue.current_item.name
+        if media_item := queue.current_item.media_item:
+            if artist_str := getattr(media_item, "artist_str", None):
+                artist = artist_str
+            if _album := getattr(media_item, "album", None):
+                album = _album.name
 
-        named_pipe = f"/tmp/fifo-{atv_player.active_remote_id}"  # noqa: S108
-        if not command.endswith("\n"):
-            command += "\n"
+        cmd = f"TITLE={title or 'Music Assistant'}\nARTIST={artist}\nALBUM={album}\n"
+        cmd += f"DURATION={duration}\nACTION=SENDMETA\n"
 
-        def send_data():
-            with open(named_pipe, "w") as f:
-                f.write(command)
-                f.flush()
+        async with asyncio.TaskGroup() as tg:
+            for atv_player in self._get_sync_clients(player_id):
+                tg.create_task(atv_player.send_cli_command(cmd))
 
-        await self.mass.create_task(send_data)
+        # get image
+        if not queue.current_item.image:
+            return
+        image_path = create_tempfile()
+        image_data = await self.mass.metadata.get_thumbnail(
+            queue.current_item.image.path,
+            512,
+            queue.current_item.image.provider,
+        )
+        async with aiofiles.open(image_path.name, "wb") as outfile:
+            await outfile.write(image_data)
+            async with asyncio.TaskGroup() as tg:
+                for atv_player in self._get_sync_clients(player_id):
+                    if image_path:
+                        tg.create_task(atv_player.send_cli_command(f"ARTWORK={image_path.name}\n"))
+        # make sure the temp file gets deleted again
+        await asyncio.sleep(5)
+        image_path.close()
