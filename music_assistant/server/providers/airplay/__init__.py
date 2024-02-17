@@ -667,6 +667,16 @@ class AirplayProvider(PlayerProvider):
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
 
+        # NOTE: Although the pyatv library is perfectly capable of playback
+        # to not only raop targets but also airplay 1 + 2, its not suitable
+        # for synced playback to multiple clients at once.
+        # Also the performance is horrible. Python is not suitable for realtime
+        # audio streaming.
+        # So, I've decided to a combined route here. I've created a small binary
+        # written in C based on libraop to do the actual timestamped playback.
+        # the raw pcm audio is fed to the stdin of this cliraop binary and we can
+        # send some commands over a named pipe.
+
         # get current ntp before we start
         _, stdout = await check_output(f"{self._cliraop_bin} -ntp")
         ntp = int(stdout.strip())
