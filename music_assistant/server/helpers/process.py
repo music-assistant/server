@@ -57,6 +57,8 @@ class AsyncProcess:
             stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
             close_fds=True,
+            limit=16777216,
+            pipesize=16777216,
         )
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
