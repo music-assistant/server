@@ -20,7 +20,7 @@ from pyatv.protocols.raop import RaopStream
 from zeroconf import ServiceInfo
 
 from music_assistant.common.helpers.datetime import utc
-from music_assistant.common.helpers.util import get_ip_pton
+from music_assistant.common.helpers.util import get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -472,6 +472,8 @@ class AirplayProvider(PlayerProvider):
     _discovery_running: bool = False
     _cliraop_bin: str | None = None
     _stream_tasks: dict[str, asyncio.Task]
+    _dacp_server: asyncio.Server = None
+    _dacp_info: ServiceInfo = None
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -484,13 +486,15 @@ class AirplayProvider(PlayerProvider):
         self._stream_tasks = {}
         self._cliraop_bin = await self.get_cliraop_binary()
         self.mass.create_task(self._run_discovery())
-        dacp_port = 49831
+        dacp_port = await select_free_port(39831, 49831)
         self.dacp_id = dacp_id = f"{randrange(2 ** 64):X}"
         self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
-        await asyncio.start_server(self._handle_dacp_request, "0.0.0.0", dacp_port)
+        self._dacp_server = await asyncio.start_server(
+            self._handle_dacp_request, "0.0.0.0", dacp_port
+        )
         zeroconf_type = "_dacp._tcp.local."
         server_id = f"iTunes_Ctrl_{dacp_id}.{zeroconf_type}"
-        info = ServiceInfo(
+        self._dacp_info = ServiceInfo(
             zeroconf_type,
             name=server_id,
             addresses=[await get_ip_pton(self.mass.streams.publish_ip)],
@@ -503,7 +507,19 @@ class AirplayProvider(PlayerProvider):
             },
             server=f"{socket.gethostname()}.local",
         )
-        await self.mass.zeroconf.async_register_service(info)
+        await self.mass.zeroconf.async_register_service(self._dacp_info)
+
+    async def unload(self) -> None:
+        """Handle close/cleanup of the provider."""
+        # power off all players (will disconnct and close cliraop)
+        for player_id in self._atv_players:
+            await self.cmd_power(player_id, False)
+        # shutdown DACP server
+        if self._dacp_server:
+            self._dacp_server.close()
+        # shutdown DACP zeroconf service
+        if self._dacp_info:
+            await self.mass.zeroconf.async_unregister_service(self._dacp_info)
 
     async def _handle_dacp_request(  # noqa: PLR0915
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
