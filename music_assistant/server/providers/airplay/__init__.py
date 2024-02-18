@@ -49,6 +49,8 @@ if TYPE_CHECKING:
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
+DOMAIN = "airplay"
+
 CONF_LATENCY = "latency"
 CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
@@ -374,7 +376,7 @@ class AirPlayPlayer(DeviceListener):
         if not (mass_player := self.mass.players.get(self.player_id)):
             mass_player = Player(
                 player_id=self.player_id,
-                provider="airplay",
+                provider=DOMAIN,
                 type=PlayerType.PLAYER,
                 name=self.discovery_info.name,
                 available=True,
