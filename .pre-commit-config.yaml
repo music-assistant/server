@@ -1,57 +1,107 @@
 repos:
-  - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v4.5.0
-    hooks:
-      - id: check-yaml
-      - id: end-of-file-fixer
-      - id: trailing-whitespace
-      - id: no-commit-to-branch
-        args:
-          - --branch=main
-      - id: debug-statements
-  - repo: https://github.com/charliermarsh/ruff-pre-commit
-    rev: 'v0.2.0'
-    hooks:
-      - id: ruff
-  - repo: https://github.com/psf/black
-    rev: 24.1.1
-    hooks:
-      - id: black
-        args:
-          - --safe
-          - --quiet
-  - repo: https://github.com/codespell-project/codespell
-    rev: v2.2.6
-    hooks:
-      - id: codespell
-        args: []
-        exclude_types: [csv, json]
-        exclude: ^tests/fixtures/
-        additional_dependencies:
-          - tomli
-
-  # - repo: local
-  #   hooks:
-  #     - id: pylint
-  #       name: pylint
-  #       entry: script/run-in-env.sh pylint -j 0
-  #       language: script
-  #       types: [python]
-  #       files: ^music_assistant/.+\.py$
-
-  #     - id: mypy
-  #       name: mypy
-  #       entry: script/run-in-env.sh mypy
-  #       language: script
-  #       types: [python]
-  #       files: ^music_assistant/.+\.py$
-
   - repo: local
     hooks:
+      - id: ruff-check
+        name: 🐶 Ruff Linter
+        language: system
+        types: [python]
+        entry: scripts/run-in-env.sh ruff check --fix
+        require_serial: true
+        stages: [commit, push, manual]
+      - id: ruff-format
+        name: 🐶 Ruff Formatter
+        language: system
+        types: [python]
+        entry: scripts/run-in-env.sh ruff format
+        require_serial: true
+        stages: [commit, push, manual]
+      - id: check-ast
+        name: 🐍 Check Python AST
+        language: system
+        types: [python]
+        entry: scripts/run-in-env.sh check-ast
+      - id: check-case-conflict
+        name: 🔠 Check for case conflicts
+        language: system
+        entry: scripts/run-in-env.sh check-case-conflict
+      - id: check-docstring-first
+        name: ℹ️  Check docstring is first
+        language: system
+        types: [python]
+        entry: scripts/run-in-env.sh check-docstring-first
+      - id: check-executables-have-shebangs
+        name: 🧐 Check that executables have shebangs
+        language: system
+        types: [text, executable]
+        entry: scripts/run-in-env.sh check-executables-have-shebangs
+        stages: [commit, push, manual]
+      - id: check-json
+        name: ｛ Check JSON files
+        language: system
+        types: [json]
+        entry: scripts/run-in-env.sh check-json
+        files: ^(music_assistant/.+/manifest\.json)$
+      - id: check-merge-conflict
+        name: 💥 Check for merge conflicts
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh check-merge-conflict
+      - id: check-symlinks
+        name: 🔗 Check for broken symlinks
+        language: system
+        types: [symlink]
+        entry: scripts/run-in-env.sh check-symlinks
+      - id: check-toml
+        name: ✅ Check TOML files
+        language: system
+        types: [toml]
+        entry: scripts/run-in-env.sh check-toml
+      - id: codespell
+        name: ✅ Check code for common misspellings
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh codespell
+      - id: detect-private-key
+        name: 🕵️  Detect Private Keys
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh detect-private-key
+      - id: end-of-file-fixer
+        name: ⮐  Fix End of Files
+        language: system
+        types: [text]
+        entry: scripts/run-in-env.sh end-of-file-fixer
+        stages: [commit, push, manual]
+      - id: no-commit-to-branch
+        name: 🛑 Don't commit to main branch
+        language: system
+        entry: scripts/run-in-env.sh no-commit-to-branch
+        pass_filenames: false
+        always_run: true
+        args:
+          - --branch=main
+      # - id: pylint
+      #   name: 🌟 Starring code with pylint
+      #   language: system
+      #   types: [python]
+      #   entry: scripts/run-in-env.sh pylint
+      # - id: trailing-whitespace
+      #   name: ✄  Trim Trailing Whitespace
+      #   language: system
+      #   types: [text]
+      #   entry: scripts/run-in-env.sh trailing-whitespace-fixer
+      #   stages: [commit, push, manual]
+      # - id: mypy
+      #   name: mypy
+      #   entry: scripts/run-in-env.sh mypy
+      #   language: script
+      #   types: [python]
+      #   require_serial: true
+      #   files: ^(music_assistant|pylint)/.+\.py$
       - id: gen_requirements_all
         name: gen_requirements_all
-        entry: script/run-in-env.sh python3 -m script.gen_requirements_all
+        entry: scripts/run-in-env.sh python3 -m scripts.gen_requirements_all
         pass_filenames: false
         language: script
         types: [text]
-        files: ^(music_assistant/.+/manifest\.json|pyproject\.toml|\.pre-commit-config\.yaml|script/gen_requirements_all\.py)$
+        files: ^(music_assistant/.+/manifest\.json|pyproject\.toml|\.pre-commit-config\.yaml|scripts/gen_requirements_all\.py)$

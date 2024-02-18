@@ -8,7 +8,6 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import shortuuid
@@ -27,13 +26,19 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
 )
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_GROUP_MEMBERS,
+    SYNCGROUP_PREFIX,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -65,7 +70,7 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    return tuple()
+    return ()
 
 
 class UniversalGroupProvider(PlayerProvider):
@@ -84,10 +89,11 @@ class UniversalGroupProvider(PlayerProvider):
         self.prev_sync_leaders = {}
         self.mass.loop.create_task(self._register_all_players())
 
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + (
+        return (
+            *base_entries,
             ConfigEntry(
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
@@ -173,7 +179,10 @@ class UniversalGroupProvider(PlayerProvider):
 
         # create multi-client stream job
         stream_job = await self.mass.streams.create_multi_client_stream_job(
-            player_id, start_queue_item=queue_item, seek_position=seek_position, fade_in=fade_in
+            player_id,
+            start_queue_item=queue_item,
+            seek_position=seek_position,
+            fade_in=fade_in,
         )
 
         # forward the stream job to all group members
@@ -215,8 +224,7 @@ class UniversalGroupProvider(PlayerProvider):
             enabled=True,
             values={CONF_GROUP_MEMBERS: members},
         )
-        player = self._register_group_player(new_group_id, name=name, members=members)
-        return player
+        return self._register_group_player(new_group_id, name=name, members=members)
 
     async def _register_all_players(self) -> None:
         """Register all (virtual/fake) group players in the Player controller."""
@@ -224,7 +232,9 @@ class UniversalGroupProvider(PlayerProvider):
         for player_config in player_configs:
             members = player_config.get_value(CONF_GROUP_MEMBERS)
             self._register_group_player(
-                player_config.player_id, player_config.name or player_config.default_name, members
+                player_config.player_id,
+                player_config.name or player_config.default_name,
+                members,
             )
 
     def _register_group_player(
@@ -271,7 +281,7 @@ class UniversalGroupProvider(PlayerProvider):
 
         if not group_player.powered:
             # guard, this should be caught in the player controller but just in case...
-            return
+            return None
 
         powered_childs = [
             x
@@ -300,5 +310,9 @@ class UniversalGroupProvider(PlayerProvider):
                 group_player.display_name,
             )
             self.mass.loop.call_later(
-                1, self.mass.create_task, self.mass.player_queues.resume(group_player.player_id)
+                1,
+                self.mass.create_task,
+                self.mass.player_queues.resume(group_player.player_id),
             )
+            return None
+        return None

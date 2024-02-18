@@ -31,7 +31,7 @@ class Player(DataClassDictMixin):
     available: bool
     powered: bool
     device_info: DeviceInfo
-    supported_features: tuple[PlayerFeature, ...] = field(default=tuple())
+    supported_features: tuple[PlayerFeature, ...] = field(default=())
 
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()
@@ -59,7 +59,7 @@ class Player(DataClassDictMixin):
 
     # can_sync_with: return tuple of player_ids that can be synced to/with this player
     # usually this is just a list of all player_ids within the playerprovider
-    can_sync_with: tuple[str, ...] = field(default=tuple())
+    can_sync_with: tuple[str, ...] = field(default=())
 
     # synced_to: player_id of the player this player is currently synced to
     # also referred to as "sync master"

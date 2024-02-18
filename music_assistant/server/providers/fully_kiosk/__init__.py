@@ -23,13 +23,13 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError, SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_PORT
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
@@ -104,9 +104,8 @@ class FullyKioskProvider(PlayerProvider):
                 self._handle_player_init()
                 self._handle_player_update()
         except Exception as err:
-            raise SetupFailedError(
-                f"Unable to start the FullyKiosk connection ({str(err)}"
-            ) from err
+            msg = f"Unable to start the FullyKiosk connection ({err!s}"
+            raise SetupFailedError(msg) from err
 
     def _handle_player_init(self) -> None:
         """Process FullyKiosk add to Player controller."""
@@ -150,7 +149,8 @@ class FullyKioskProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + (
+        return (
+            *base_entries,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
             ConfigEntry(
@@ -228,7 +228,7 @@ class FullyKioskProvider(PlayerProvider):
         player.state = PlayerState.PLAYING
         self.mass.players.update(player_id)
 
-    async def poll_player(self, player_id: str) -> None:  # noqa: ARG002
+    async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
 
         This is called by the Player Manager;
@@ -248,6 +248,5 @@ class FullyKioskProvider(PlayerProvider):
                 await self._fully.getDeviceInfo()
                 self._handle_player_update()
         except Exception as err:
-            raise PlayerUnavailableError(
-                f"Unable to start the FullyKiosk connection ({str(err)}"
-            ) from err
+            msg = f"Unable to start the FullyKiosk connection ({err!s}"
+            raise PlayerUnavailableError(msg) from err

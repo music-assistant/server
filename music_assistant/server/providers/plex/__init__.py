@@ -5,8 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from asyncio import TaskGroup
-from collections.abc import AsyncGenerator, Callable, Coroutine
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import plexapi.exceptions
 from aiohttp import ClientTimeout
@@ -14,10 +13,6 @@ from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
 from plexapi.audio import Playlist as PlexPlaylist
 from plexapi.audio import Track as PlexTrack
-from plexapi.library import MusicSection as PlexMusicSection
-from plexapi.media import AudioStream as PlexAudioStream
-from plexapi.media import Media as PlexMedia
-from plexapi.media import MediaPart as PlexMediaPart
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.server import PlexServer
 
@@ -34,7 +29,11 @@ from music_assistant.common.models.enums import (
     MediaType,
     ProviderFeature,
 )
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumTrack,
@@ -51,13 +50,25 @@ from music_assistant.common.models.media_items import (
     StreamDetails,
     Track,
 )
-from music_assistant.common.models.provider import ProviderManifest
-from music_assistant.server import MusicAssistant
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
-from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
-from music_assistant.server.providers.plex.helpers import discover_local_servers, get_libraries
+from music_assistant.server.providers.plex.helpers import (
+    discover_local_servers,
+    get_libraries,
+)
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable, Coroutine
+
+    from plexapi.library import MusicSection as PlexMusicSection
+    from plexapi.media import AudioStream as PlexAudioStream
+    from plexapi.media import Media as PlexMedia
+    from plexapi.media import MediaPart as PlexMediaPart
+
+    from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.server import MusicAssistant
+    from music_assistant.server.models import ProviderInstanceType
 
 CONF_ACTION_AUTH = "auth"
 CONF_ACTION_LIBRARY = "library"
@@ -75,7 +86,8 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     if not config.get_value(CONF_AUTH_TOKEN):
-        raise LoginFailed("Invalid login credentials")
+        msg = "Invalid login credentials"
+        raise LoginFailed(msg)
 
     prov = PlexProvider(mass, manifest, config)
     await prov.handle_setup()
@@ -118,7 +130,8 @@ async def get_config_entries(
             auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
             await auth_helper.authenticate(auth_url)
             if not plex_auth.checkLogin():
-                raise LoginFailed("Authentication to MyPlex failed")
+                msg = "Authentication to MyPlex failed"
+                raise LoginFailed(msg)
             # set the retrieved token on the values object to pass along
             values[CONF_AUTH_TOKEN] = plex_auth.token
 
@@ -140,7 +153,8 @@ async def get_config_entries(
         server_http_ip = values.get(CONF_LOCAL_SERVER_IP)
         server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
         if not (libraries := await get_libraries(mass, token, server_http_ip, server_http_port)):
-            raise LoginFailed("Unable to retrieve Servers and/or Music Libraries")
+            msg = "Unable to retrieve Servers and/or Music Libraries"
+            raise LoginFailed(msg)
         conf_libraries.options = tuple(
             # use the same value for both the value and the title
             # until we find out what plex uses as stable identifiers
@@ -196,7 +210,7 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence urllib logger
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
-        server_name, library_name = self.config.get_value(CONF_LIBRARY_ID).split(" / ", 1)
+        _, library_name = self.config.get_value(CONF_LIBRARY_ID).split(" / ", 1)
 
         def connect() -> PlexServer:
             try:
@@ -208,8 +222,9 @@ class PlexProvider(MusicProvider):
                 if "Invalid token" in str(err):
                     # token invalid, invalidate the config
                     self.mass.config.remove_provider_config_value(self.instance_id, CONF_AUTH_TOKEN)
-                    raise LoginFailed("Authentication failed")
-                raise LoginFailed() from err
+                    msg = "Authentication failed"
+                    raise LoginFailed(msg)
+                raise LoginFailed from err
             return plex_server
 
         self._myplex_account = await self.get_myplex_account_and_refresh_token(
@@ -278,7 +293,7 @@ class PlexProvider(MusicProvider):
             return ItemMapping.from_item(paged_list.items[0])
 
         artist_id = FAKE_ARTIST_PREFIX + artist_name
-        artist = Artist(
+        return Artist(
             item_id=artist_id,
             name=artist_name,
             provider=self.domain,
@@ -290,7 +305,6 @@ class PlexProvider(MusicProvider):
                 )
             },
         )
-        return artist
 
     async def _parse(self, plex_media) -> MediaItem | None:
         if plex_media.type == "artist":
@@ -385,7 +399,8 @@ class PlexProvider(MusicProvider):
         """Parse a Plex Artist response to Artist model object."""
         artist_id = plex_artist.key
         if not artist_id:
-            raise InvalidDataError("Artist does not have a valid ID")
+            msg = "Artist does not have a valid ID"
+            raise InvalidDataError(msg)
         artist = Artist(
             item_id=artist_id,
             name=plex_artist.title,
@@ -480,11 +495,14 @@ class PlexProvider(MusicProvider):
         elif plex_track.grandparentKey:
             track.artists.append(
                 self._get_item_mapping(
-                    MediaType.ARTIST, plex_track.grandparentKey, plex_track.grandparentTitle
+                    MediaType.ARTIST,
+                    plex_track.grandparentKey,
+                    plex_track.grandparentTitle,
                 )
             )
         else:
-            raise InvalidDataError("No artist was found for track")
+            msg = "No artist was found for track"
+            raise InvalidDataError(msg)
 
         if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             track.metadata.images = [
@@ -525,7 +543,12 @@ class PlexProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         if not media_types:
-            media_types = [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
+            media_types = [
+                MediaType.ARTIST,
+                MediaType.ALBUM,
+                MediaType.TRACK,
+                MediaType.PLAYLIST,
+            ]
 
         tasks = {}
 
@@ -552,7 +575,8 @@ class PlexProvider(MusicProvider):
                 elif media_type == MediaType.PLAYLIST:
                     tasks[MediaType.ARTIST] = tg.create_task(
                         self._search_and_parse(
-                            self._search_playlist(search_query, limit), self._parse_playlist
+                            self._search_playlist(search_query, limit),
+                            self._parse_playlist,
                         )
                     )
 
@@ -598,7 +622,8 @@ class PlexProvider(MusicProvider):
         """Get full album details by id."""
         if plex_album := await self._get_data(prov_album_id, PlexAlbum):
             return await self._parse_album(plex_album)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
@@ -624,23 +649,27 @@ class PlexProvider(MusicProvider):
                 prov_artist_id, self.instance_id
             ):
                 return db_artist
-            raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
+            msg = f"Artist not found: {prov_artist_id}"
+            raise MediaNotFoundError(msg)
 
         if plex_artist := await self._get_data(prov_artist_id, PlexArtist):
             return await self._parse_artist(plex_artist)
-        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
+        msg = f"Item {prov_artist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         if plex_track := await self._get_data(prov_track_id, PlexTrack):
             return await self._parse_track(plex_track)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        msg = f"Item {prov_track_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         if plex_playlist := await self._get_data(prov_playlist_id, PlexPlaylist):
             return await self._parse_playlist(plex_playlist)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        msg = f"Item {prov_playlist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
@@ -669,7 +698,8 @@ class PlexProvider(MusicProvider):
         """Get streamdetails for a track."""
         plex_track = await self._get_data(item_id, PlexTrack)
         if not plex_track or not plex_track.media:
-            raise MediaNotFoundError(f"track {item_id} not found")
+            msg = f"track {item_id} not found"
+            raise MediaNotFoundError(msg)
 
         media: PlexMedia = plex_track.media[0]
 
@@ -732,5 +762,4 @@ class PlexProvider(MusicProvider):
             self._myplex_account.ping()
             return self._myplex_account
 
-        result = await asyncio.to_thread(_refresh_plex_token)
-        return result
+        return await asyncio.to_thread(_refresh_plex_token)

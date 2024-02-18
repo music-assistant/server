@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from libopensonic.connection import Connection as SonicConnection
 from libopensonic.errors import (
@@ -14,14 +13,6 @@ from libopensonic.errors import (
     ParameterError,
     SonicError,
 )
-from libopensonic.media import Album as SonicAlbum
-from libopensonic.media import AlbumInfo as SonicAlbumInfo
-from libopensonic.media import Artist as SonicArtist
-from libopensonic.media import ArtistInfo as SonicArtistInfo
-from libopensonic.media import Playlist as SonicPlaylist
-from libopensonic.media import PodcastChannel as SonicPodcastChannel
-from libopensonic.media import PodcastEpisode as SonicPodcastEpisode
-from libopensonic.media import Song as SonicSong
 
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
@@ -49,8 +40,21 @@ from music_assistant.constants import (
 )
 from music_assistant.server.models.music_provider import MusicProvider
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
+
+    from libopensonic.media import Album as SonicAlbum
+    from libopensonic.media import AlbumInfo as SonicAlbumInfo
+    from libopensonic.media import Artist as SonicArtist
+    from libopensonic.media import ArtistInfo as SonicArtistInfo
+    from libopensonic.media import Playlist as SonicPlaylist
+    from libopensonic.media import PodcastChannel as SonicPodcastChannel
+    from libopensonic.media import PodcastEpisode as SonicPodcastEpisode
+    from libopensonic.media import Song as SonicSong
+
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
+CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
 
@@ -73,20 +77,23 @@ class OpenSonicProvider(MusicProvider):
             self.config.get_value(CONF_BASE_URL),
             username=self.config.get_value(CONF_USERNAME),
             password=self.config.get_value(CONF_PASSWORD),
+            legacyAuth=self.config.get_value(CONF_ENABLE_LEGACY_AUTH),
             port=port,
             serverPath=path,
             appName="Music Assistant",
         )
         try:
             if not self._conn.ping():
-                raise LoginFailed(
+                msg = (
                     f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, "
                     "check your settings."
                 )
+                raise LoginFailed(msg)
         except (AuthError, CredentialError) as e:
-            raise LoginFailed(
+            msg = (
                 f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
-            ) from e
+            )
+            raise LoginFailed(msg) from e
         self._enable_podcasts = self.config.get_value(CONF_ENABLE_PODCASTS)
 
     @property
@@ -149,7 +156,7 @@ class OpenSonicProvider(MusicProvider):
         return artist
 
     def _parse_podcast_album(self, sonic_channel: SonicPodcastChannel) -> Album:
-        album = Album(
+        return Album(
             item_id=sonic_channel.id,
             provider=self.instance_id,
             name=sonic_channel.title,
@@ -163,7 +170,6 @@ class OpenSonicProvider(MusicProvider):
             },
             album_type=AlbumType.PODCAST,
         )
-        return album
 
     def _parse_podcast_episode(
         self, sonic_episode: SonicPodcastEpisode, sonic_channel: SonicPodcastChannel
@@ -519,7 +525,8 @@ class OpenSonicProvider(MusicProvider):
                     return self._parse_podcast_album(sonic_channel=sonic_channel)
                 except SonicError:
                     pass
-            raise MediaNotFoundError(f"Album {prov_album_id} not found") from e
+            msg = f"Album {prov_album_id} not found"
+            raise MediaNotFoundError(msg) from e
 
         return self._parse_album(sonic_album, sonic_info)
 
@@ -528,7 +535,8 @@ class OpenSonicProvider(MusicProvider):
         try:
             sonic_album: SonicAlbum = await self._run_async(self._conn.getAlbum, prov_album_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Album {prov_album_id} not found") from e
+            msg = f"Album {prov_album_id} not found"
+            raise MediaNotFoundError(msg) from e
         tracks = []
         for sonic_song in sonic_album.songs:
             tracks.append(self._parse_track(sonic_song))
@@ -565,7 +573,8 @@ class OpenSonicProvider(MusicProvider):
                     return self._parse_podcast_artist(sonic_channel=sonic_channel[0])
                 except SonicError:
                     pass
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from e
+            msg = f"Artist {prov_artist_id} not found"
+            raise MediaNotFoundError(msg) from e
         return self._parse_artist(sonic_artist, sonic_info)
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -573,7 +582,8 @@ class OpenSonicProvider(MusicProvider):
         try:
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, prov_track_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Item {prov_track_id} not found") from e
+            msg = f"Item {prov_track_id} not found"
+            raise MediaNotFoundError(msg) from e
         return self._parse_track(sonic_song)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -584,7 +594,8 @@ class OpenSonicProvider(MusicProvider):
         try:
             sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Album {prov_artist_id} not found") from e
+            msg = f"Album {prov_artist_id} not found"
+            raise MediaNotFoundError(msg) from e
         albums = []
         for entry in sonic_artist.albums:
             albums.append(self._parse_album(entry))
@@ -597,7 +608,8 @@ class OpenSonicProvider(MusicProvider):
                 self._conn.getPlaylist, prov_playlist_id
             )
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
+            msg = f"Playlist {prov_playlist_id} not found"
+            raise MediaNotFoundError(msg) from e
         return self._parse_playlist(sonic_playlist)
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
@@ -607,7 +619,8 @@ class OpenSonicProvider(MusicProvider):
                 self._conn.getPlaylist, prov_playlist_id
             )
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
+            msg = f"Playlist {prov_playlist_id} not found"
+            raise MediaNotFoundError(msg) from e
         for index, sonic_song in enumerate(sonic_playlist.songs):
             yield self._parse_track(sonic_song, {"position": index + 1})
 
@@ -629,7 +642,8 @@ class OpenSonicProvider(MusicProvider):
         try:
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, item_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Item {item_id} not found") from e
+            msg = f"Item {item_id} not found"
+            raise MediaNotFoundError(msg) from e
 
         self.mass.create_task(self._report_playback_started(item_id))
 
@@ -658,7 +672,7 @@ class OpenSonicProvider(MusicProvider):
         """Provide a generator for the stream data."""
         audio_buffer = asyncio.Queue(1)
 
-        def _streamer():
+        def _streamer() -> None:
             with self._conn.stream(
                 streamdetails.item_id, timeOffset=seek_position, estimateContentLength=True
             ) as stream:

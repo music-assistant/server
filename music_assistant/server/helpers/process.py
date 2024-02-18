@@ -8,8 +8,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncGenerator, Coroutine
 from contextlib import suppress
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Coroutine
 
 LOGGER = logging.getLogger(__name__)
 
@@ -27,7 +30,7 @@ class AsyncProcess:
         enable_stdin: bool = False,
         enable_stdout: bool = True,
         enable_stderr: bool = False,
-    ):
+    ) -> None:
         """Initialize."""
         self._proc = None
         self._args = args
@@ -39,6 +42,15 @@ class AsyncProcess:
 
     async def __aenter__(self) -> AsyncProcess:
         """Enter context manager."""
+        await self.start()
+        return self
+
+    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+        """Exit context manager."""
+        await self.close()
+
+    async def start(self) -> None:
+        """Perform Async init of process."""
         self._proc = await asyncio.create_subprocess_exec(
             *self._args,
             stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
@@ -46,25 +58,6 @@ class AsyncProcess:
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
             close_fds=True,
         )
-        return self
-
-    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
-        """Exit context manager."""
-        self.closed = True
-        # make sure the process is cleaned up
-        self.write_eof()
-        if self._proc.returncode is None:
-            try:
-                async with asyncio.timeout(10):
-                    await self._proc.communicate()
-            except TimeoutError:
-                self._proc.kill()
-                await self._proc.communicate()
-        if self._proc.returncode is None:
-            self._proc.kill()
-        if self._attached_task and not self._attached_task.done():
-            with suppress(asyncio.CancelledError):
-                self._attached_task.cancel()
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
@@ -110,6 +103,8 @@ class AsyncProcess:
 
     def write_eof(self) -> None:
         """Write end of file to to process stdin."""
+        if not self._enable_stdin:
+            return
         if self.closed or self._proc.stdin.is_closing():
             return
         try:
@@ -124,6 +119,30 @@ class AsyncProcess:
         ):
             # already exited, race condition
             pass
+
+    async def close(self) -> None:
+        """Close/terminate the process."""
+        self.closed = True
+        if self._attached_task and not self._attached_task.done():
+            with suppress(asyncio.CancelledError):
+                self._attached_task.cancel()
+        # make sure the process is cleaned up
+        self.write_eof()
+        if self._proc.returncode is None:
+            try:
+                async with asyncio.timeout(10):
+                    await self._proc.communicate()
+            except TimeoutError:
+                self._proc.kill()
+        await self.wait()
+
+    async def wait(self) -> int:
+        """Wait for the process and return the returncode."""
+        if self._proc.returncode is not None:
+            return self._proc.returncode
+        exitcode = await self._proc.wait()
+        self.closed = True
+        return exitcode
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""

@@ -10,7 +10,6 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-from collections.abc import Iterator
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
@@ -20,6 +19,8 @@ import ifaddr
 import memory_tempfile
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
     from music_assistant.server.models import ProviderModuleType
 
 LOGGER = logging.getLogger(__name__)
@@ -31,13 +32,13 @@ async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     cmd = f"python3 -m pip install --find-links {HA_WHEELS} {package}"
     proc = await asyncio.create_subprocess_shell(
-        cmd, stderr=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.DEVNULL
+        cmd, stderr=asyncio.subprocess.STDOUT, stdout=asyncio.subprocess.PIPE
     )
 
-    _, stderr = await proc.communicate()
+    stdout, _ = await proc.communicate()
 
     if proc.returncode != 0:
-        msg = f"Failed to install package {package}\n{stderr.decode()}"
+        msg = f"Failed to install package {package}\n{stdout.decode()}"
         raise RuntimeError(msg)
 
 
@@ -85,6 +86,7 @@ async def is_hass_supervisor() -> bool:
             return getattr(err, "code", 999) == 401
         except Exception:
             return False
+        return False
 
     return await asyncio.to_thread(_check)
 

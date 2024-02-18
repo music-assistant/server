@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 🏷 Verify PR has a valid label
-        uses: ludeeus/action-require-labels@1.0.0
+        uses: ludeeus/action-require-labels@1.1.0
         with:
           labels: >-
             breaking-change, bugfix, refactor, new-feature, maintenance, ci, dependencies, new-provider

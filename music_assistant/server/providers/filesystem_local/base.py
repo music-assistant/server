@@ -6,13 +6,16 @@ import asyncio
 import contextlib
 import os
 from abc import abstractmethod
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import cchardet
 import xmltodict
 
-from music_assistant.common.helpers.util import create_sort_name, parse_title_and_version
+from music_assistant.common.helpers.util import (
+    create_sort_name,
+    parse_title_and_version,
+)
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigEntryType,
@@ -50,9 +53,13 @@ from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
 from music_assistant.server.models.music_provider import MusicProvider
-from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 from .helpers import get_parentdir
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+    from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 
@@ -73,7 +80,19 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     ),
 )
 
-TRACK_EXTENSIONS = ("mp3", "m4a", "m4b", "mp4", "flac", "wav", "ogg", "aiff", "wma", "dsf", "opus")
+TRACK_EXTENSIONS = (
+    "mp3",
+    "m4a",
+    "m4b",
+    "mp4",
+    "flac",
+    "wav",
+    "ogg",
+    "aiff",
+    "wma",
+    "dsf",
+    "opus",
+)
 PLAYLIST_EXTENSIONS = ("m3u", "pls", "m3u8")
 SUPPORTED_EXTENSIONS = TRACK_EXTENSIONS + PLAYLIST_EXTENSIONS
 IMAGE_EXTENSIONS = ("jpg", "jpeg", "JPG", "JPEG", "png", "PNG", "gif", "GIF")
@@ -197,7 +216,10 @@ class FileSystemProviderBase(MusicProvider):
         return False
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5  # noqa: ARG002
+        self,
+        search_query: str,
+        media_types=list[MediaType] | None,
+        limit: int = 5,
     ) -> SearchResults:
         """Perform search on this file based musicprovider."""
         result = SearchResults()
@@ -278,7 +300,7 @@ class FileSystemProviderBase(MusicProvider):
                     name=item.name,
                 )
 
-    async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:  # noqa: ARG002
+    async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
         # first build a listing of all current items and their checksums
         prev_checksums = {}
@@ -387,7 +409,8 @@ class FileSystemProviderBase(MusicProvider):
             prov_artist_id, self.instance_id
         )
         if db_artist is None:
-            raise MediaNotFoundError(f"Artist not found: {prov_artist_id}")
+            msg = f"Artist not found: {prov_artist_id}"
+            raise MediaNotFoundError(msg)
         if await self.exists(prov_artist_id):
             # if path exists on disk allow parsing full details to allow refresh of metadata
             return await self._parse_artist(db_artist.name, artist_path=prov_artist_id)
@@ -401,13 +424,15 @@ class FileSystemProviderBase(MusicProvider):
                 if prov_mapping.provider_instance == self.instance_id:
                     full_track = await self.get_track(prov_mapping.item_id)
                     return full_track.album
-        raise MediaNotFoundError(f"Album not found: {prov_album_id}")
+        msg = f"Album not found: {prov_album_id}"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         # ruff: noqa: PLR0915, PLR0912
         if not await self.exists(prov_track_id):
-            raise MediaNotFoundError(f"Track path does not exist: {prov_track_id}")
+            msg = f"Track path does not exist: {prov_track_id}"
+            raise MediaNotFoundError(msg)
 
         file_item = await self.resolve(prov_track_id)
         return await self._parse_track(file_item)
@@ -415,7 +440,8 @@ class FileSystemProviderBase(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if not await self.exists(prov_playlist_id):
-            raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
 
         file_item = await self.resolve(prov_playlist_id)
         playlist = Playlist(
@@ -443,7 +469,8 @@ class FileSystemProviderBase(MusicProvider):
             prov_album_id, self.instance_id
         )
         if db_album is None:
-            raise MediaNotFoundError(f"Album not found: {prov_album_id}")
+            msg = f"Album not found: {prov_album_id}"
+            raise MediaNotFoundError(msg)
         album_tracks = await self.mass.music.albums.tracks(db_album.item_id, db_album.provider)
         return [
             track
@@ -456,7 +483,8 @@ class FileSystemProviderBase(MusicProvider):
     ) -> AsyncGenerator[PlaylistTrack, None]:
         """Get playlist tracks for given playlist id."""
         if not await self.exists(prov_playlist_id):
-            raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
 
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
@@ -514,7 +542,8 @@ class FileSystemProviderBase(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         if not await self.exists(prov_playlist_id):
-            raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
         playlist_data = b""
         async for chunk in self.read_file_content(prov_playlist_id):
             playlist_data += chunk
@@ -531,7 +560,8 @@ class FileSystemProviderBase(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         if not await self.exists(prov_playlist_id):
-            raise MediaNotFoundError(f"Playlist path does not exist: {prov_playlist_id}")
+            msg = f"Playlist path does not exist: {prov_playlist_id}"
+            raise MediaNotFoundError(msg)
         cur_lines = []
         _, ext = prov_playlist_id.rsplit(".", 1)
 
@@ -570,7 +600,8 @@ class FileSystemProviderBase(MusicProvider):
             item_id, self.instance_id
         )
         if library_item is None:
-            raise MediaNotFoundError(f"Item not found: {item_id}")
+            msg = f"Item not found: {item_id}"
+            raise MediaNotFoundError(msg)
 
         prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
         file_item = await self.resolve(item_id)
@@ -645,7 +676,7 @@ class FileSystemProviderBase(MusicProvider):
                 position=playlist_position,
             )
         elif tags.album and tags.disc and tags.track:
-            track = AlbumTrack(
+            track = AlbumTrack(  # pylint: disable=missing-kwoa
                 **base_details,
                 disc_number=tags.disc,
                 track_number=tags.track,
@@ -727,10 +758,15 @@ class FileSystemProviderBase(MusicProvider):
                 # fallback to just log error and add track without album
                 else:
                     # default action is to skip the track
-                    raise InvalidDataError("missing ID3 tag [albumartist]")
+                    msg = "missing ID3 tag [albumartist]"
+                    raise InvalidDataError(msg)
 
             track.album = await self._parse_album(
-                tags.album, album_dir, disc_dir, artists=album_artists, barcode=tags.barcode
+                tags.album,
+                album_dir,
+                disc_dir,
+                artists=album_artists,
+                barcode=tags.barcode,
             )
 
         # track artist(s)
@@ -928,7 +964,7 @@ class FileSystemProviderBase(MusicProvider):
                     album.sort_name = sort_name
                 if mbid := info.get("musicbrainzreleasegroupid"):
                     album.mbid = mbid
-                if mb_artist_id := info.get("musicbrainzalbumartistid"):  # noqa: SIM102
+                if mb_artist_id := info.get("musicbrainzalbumartistid"):
                     if album.artists and not album.artists[0].mbid:
                         album.artists[0].mbid = mb_artist_id
                 if description := info.get("review"):
@@ -961,7 +997,9 @@ class FileSystemProviderBase(MusicProvider):
                 try:
                     images.append(
                         MediaItemImage(
-                            type=ImageType(item.name), path=item.path, provider=self.instance_id
+                            type=ImageType(item.name),
+                            path=item.path,
+                            provider=self.instance_id,
                         )
                     )
                 except ValueError:
@@ -969,7 +1007,9 @@ class FileSystemProviderBase(MusicProvider):
                         if item.name.lower().startswith(filename):
                             images.append(
                                 MediaItemImage(
-                                    type=ImageType.THUMB, path=item.path, provider=self.instance_id
+                                    type=ImageType.THUMB,
+                                    path=item.path,
+                                    provider=self.instance_id,
                                 )
                             )
                             break

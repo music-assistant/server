@@ -24,7 +24,8 @@ LOGGER = logging.getLogger(f"{__package__}.connection")
 def get_websocket_url(url: str) -> str:
     """Extract Websocket URL from (base) Music Assistant URL."""
     if not url or "://" not in url:
-        raise RuntimeError(f"{url} is not a valid url")
+        msg = f"{url} is not a valid url"
+        raise RuntimeError(msg)
     ws_url = url.replace("http", "ws")
     if not ws_url.endswith("/ws"):
         ws_url += "/ws"
@@ -51,7 +52,8 @@ class WebsocketsConnection:
         if self._aiohttp_session is None:
             self._aiohttp_session = ClientSession()
         if self._ws_client is not None:
-            raise InvalidState("Already connected")
+            msg = "Already connected"
+            raise InvalidState(msg)
 
         LOGGER.debug("Trying to connect")
         try:
@@ -85,20 +87,24 @@ class WebsocketsConnection:
         ws_msg = await self._ws_client.receive()
 
         if ws_msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
-            raise ConnectionClosed("Connection was closed.")
+            msg = "Connection was closed."
+            raise ConnectionClosed(msg)
 
         if ws_msg.type == WSMsgType.ERROR:
-            raise ConnectionFailed()
+            raise ConnectionFailed
 
         if ws_msg.type != WSMsgType.TEXT:
-            raise InvalidMessage(f"Received non-Text message: {ws_msg.type}")
+            msg = f"Received non-Text message: {ws_msg.type}"
+            raise InvalidMessage(msg)
 
         try:
             msg = json_loads(ws_msg.data)
         except TypeError as err:
-            raise InvalidMessage(f"Received unsupported JSON: {err}") from err
+            msg = f"Received unsupported JSON: {err}"
+            raise InvalidMessage(msg) from err
         except ValueError as err:
-            raise InvalidMessage("Received invalid JSON.") from err
+            msg = "Received invalid JSON."
+            raise InvalidMessage(msg) from err
 
         if LOGGER.isEnabledFor(logging.DEBUG):
             LOGGER.debug("Received message:\n%s\n", pprint.pformat(ws_msg))

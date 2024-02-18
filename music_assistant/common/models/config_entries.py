@@ -3,14 +3,14 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterable
+from collections.abc import Iterable  # noqa: TCH003
 from dataclasses import dataclass
 from types import NoneType
 from typing import Any
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.models.enums import ProviderType
+from music_assistant.common.models.enums import ProviderType  # noqa: TCH001
 from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_CROSSFADE,
@@ -138,7 +138,8 @@ class ConfigEntry(DataClassDictMixin):
                 )
                 self.value = self.default_value
                 return self.value
-            raise ValueError(f"{self.key} has unexpected type: {type(value)}")
+            msg = f"{self.key} has unexpected type: {type(value)}"
+            raise ValueError(msg)
         self.value = value
         return self.value
 

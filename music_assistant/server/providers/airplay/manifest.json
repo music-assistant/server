@@ -5,10 +5,9 @@
   "description": "Support for players that support the Airplay protocol.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://github.com/orgs/music-assistant/discussions/1165",
+  "documentation": "https://music-assistant.github.io/player-support/airplay/",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
-  "depends_on": "slimproto",
-  "icon":"cast-variant"
+  "icon": "cast-variant"
 }

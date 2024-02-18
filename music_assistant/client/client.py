@@ -7,10 +7,13 @@ import logging
 import urllib.parse
 import uuid
 from collections.abc import Callable
-from types import TracebackType
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.client.exceptions import ConnectionClosed, InvalidServerVersion, InvalidState
+from music_assistant.client.exceptions import (
+    ConnectionClosed,
+    InvalidServerVersion,
+    InvalidState,
+)
 from music_assistant.common.models.api import (
     ChunkedResultMessage,
     CommandMessage,
@@ -24,7 +27,6 @@ from music_assistant.common.models.api import (
 from music_assistant.common.models.enums import EventType
 from music_assistant.common.models.errors import ERROR_MAP
 from music_assistant.common.models.event import MassEvent
-from music_assistant.common.models.media_items import MediaItemImage
 from music_assistant.constants import API_SCHEMA_VERSION
 
 from .connection import WebsocketsConnection
@@ -32,7 +34,11 @@ from .music import Music
 from .players import Players
 
 if TYPE_CHECKING:
+    from types import TracebackType
+
     from aiohttp import ClientSession
+
+    from music_assistant.common.models.media_items import MediaItemImage
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = tuple[
@@ -49,7 +55,7 @@ class MusicAssistantClient:
         self.connection = WebsocketsConnection(server_url, aiohttp_session)
         self.logger = logging.getLogger(__package__)
         self._result_futures: dict[str, asyncio.Future] = {}
-        self._subscribers: list[EventSubscriptionType] = list()
+        self._subscribers: list[EventSubscriptionType] = []
         self._stop_called: bool = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._players = Players(self)
@@ -101,7 +107,7 @@ class MusicAssistantClient:
         listener = (cb_func, event_filter, id_filter)
         self._subscribers.append(listener)
 
-        def remove_listener():
+        def remove_listener() -> None:
             self._subscribers.remove(listener)
 
         return remove_listener
@@ -120,12 +126,13 @@ class MusicAssistantClient:
         if info.min_supported_schema_version > API_SCHEMA_VERSION:
             # our schema version is too low and can't be handled by the server anymore.
             await self.connection.disconnect()
-            raise InvalidServerVersion(
+            msg = (
                 f"Schema version is incompatible: {info.schema_version}, "
                 f"the server requires at least {info.min_supported_schema_version} "
                 " - update the Music Assistant client to a more "
                 "recent version or downgrade the server."
             )
+            raise InvalidServerVersion(msg)
 
         self._server_info = info
 
@@ -145,17 +152,19 @@ class MusicAssistantClient:
     ) -> Any:
         """Send a command and get a response."""
         if not self.connection.connected or not self._loop:
-            raise InvalidState("Not connected")
+            msg = "Not connected"
+            raise InvalidState(msg)
 
         if (
             require_schema is not None
             and self.server_info is not None
             and require_schema > self.server_info.schema_version
         ):
-            raise InvalidServerVersion(
+            msg = (
                 "Command not available due to incompatible server version. Update the Music "
                 f"Assistant Server to a version that supports at least api schema {require_schema}."
             )
+            raise InvalidServerVersion(msg)
 
         command_message = CommandMessage(
             message_id=uuid.uuid4().hex,
@@ -178,13 +187,15 @@ class MusicAssistantClient:
     ) -> None:
         """Send a command without waiting for the response."""
         if not self.server_info:
-            raise InvalidState("Not connected")
+            msg = "Not connected"
+            raise InvalidState(msg)
 
         if require_schema is not None and require_schema > self.server_info.schema_version:
-            raise InvalidServerVersion(
+            msg = (
                 "Command not available due to incompatible server version. Update the Music "
                 f"Assistant Server to a version that supports at least api schema {require_schema}."
             )
+            raise InvalidServerVersion(msg)
         command_message = CommandMessage(
             message_id=uuid.uuid4().hex,
             command=command,
@@ -198,7 +209,7 @@ class MusicAssistantClient:
 
         # fetch initial state
         # we do this in a separate task to not block reading messages
-        async def fetch_initial_state():
+        async def fetch_initial_state() -> None:
             await self._players.fetch_state()
 
             if init_ready is not None:

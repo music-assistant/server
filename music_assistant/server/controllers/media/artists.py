@@ -20,13 +20,14 @@ from music_assistant.common.models.media_items import (
     PagedItems,
     Track,
 )
-from music_assistant.constants import VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
-from music_assistant.server.controllers.media.base import MediaControllerBase
-from music_assistant.server.controllers.music import (
+from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_TRACKS,
+    VARIOUS_ARTISTS_ID_MBID,
+    VARIOUS_ARTISTS_NAME,
 )
+from music_assistant.server.controllers.media.base import MediaControllerBase
 from music_assistant.server.helpers.compare import compare_artist, compare_strings
 
 if TYPE_CHECKING:
@@ -40,7 +41,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     media_type = MediaType.ARTIST
     item_cls = Artist
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
@@ -72,7 +73,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             library_item = await self.update_item_in_library(cur_item.item_id, item)
@@ -223,7 +224,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         # delete the artist itself from db
         await super().remove_item_from_library(db_id)
 
-    async def match_artist(self, db_artist: Artist):
+    async def match_artist(self, db_artist: Artist) -> None:
         """Try to find matching artists on all providers for the provided (database) item_id.
 
         This is used to link objects of different providers together.
@@ -407,19 +408,20 @@ class ArtistsController(MediaControllerBase[Artist]):
         )
         # Merge album content with similar tracks
         dynamic_playlist = [
-            *sorted(top_tracks, key=lambda n: random())[:no_of_artist_tracks],  # noqa: ARG005
-            *sorted(similar_tracks, key=lambda n: random())[:no_of_similar_tracks],  # noqa: ARG005
+            *sorted(top_tracks, key=lambda _: random())[:no_of_artist_tracks],
+            *sorted(similar_tracks, key=lambda _: random())[:no_of_similar_tracks],
         ]
         return sorted(dynamic_playlist, key=lambda n: random())  # noqa: ARG005
 
     async def _get_dynamic_tracks(
-        self, media_item: Artist, limit: int = 25  # noqa: ARG002
+        self,
+        media_item: Artist,
+        limit: int = 25,
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
         # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
-        raise UnsupportedFeaturedException(
-            "No Music Provider found that supports requesting similar tracks."
-        )
+        msg = "No Music Provider found that supports requesting similar tracks."
+        raise UnsupportedFeaturedException(msg)
 
     async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
@@ -441,15 +443,16 @@ class ArtistsController(MediaControllerBase[Artist]):
                     )
                 except MediaNotFoundError:
                     continue
+            provider_ref_track = ref_track
             for search_str in (
-                f"{db_artist.name} - {ref_track.name}",
-                f"{db_artist.name} {ref_track.name}",
-                f"{db_artist.sort_name} {ref_track.sort_name}",
-                ref_track.name,
+                f"{db_artist.name} - {provider_ref_track.name}",
+                f"{db_artist.name} {provider_ref_track.name}",
+                f"{db_artist.sort_name} {provider_ref_track.sort_name}",
+                provider_ref_track.name,
             ):
                 search_results = await self.mass.music.tracks.search(search_str, provider.domain)
                 for search_result_item in search_results:
-                    if search_result_item.sort_name != ref_track.sort_name:
+                    if search_result_item.sort_name != provider_ref_track.sort_name:
                         continue
                     # get matching artist from track
                     for search_item_artist in search_result_item.artists:

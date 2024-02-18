@@ -6,7 +6,7 @@ import asyncio
 import os
 import shutil
 import statistics
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator  # noqa: TCH003
 from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
@@ -24,7 +24,11 @@ from music_assistant.common.models.enums import (
     ProviderType,
 )
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    MediaItemType,
+    SearchResults,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     DB_SCHEMA_VERSION,
@@ -42,7 +46,6 @@ from music_assistant.constants import (
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
-from music_assistant.server.models.music_provider import MusicProvider
 
 from .media.albums import AlbumsController
 from .media.artists import ArtistsController
@@ -52,6 +55,7 @@ from .media.tracks import TracksController
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
+    from music_assistant.server.models.music_provider import MusicProvider
 
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
@@ -84,8 +88,8 @@ class MusicController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
-        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         return (
@@ -451,17 +455,25 @@ class MusicController(CoreController):
         for item in result:
             if item.available:
                 return await self.get_item(
-                    item.media_type, item.item_id, item.provider, lazy=False, add_to_library=True
+                    item.media_type,
+                    item.item_id,
+                    item.provider,
+                    lazy=False,
+                    add_to_library=True,
                 )
         return None
 
     async def set_track_loudness(
         self, item_id: str, provider_instance_id_or_domain: str, loudness: int
-    ):
+    ) -> None:
         """List integrated loudness for a track in db."""
         await self.database.insert(
             DB_TABLE_TRACK_LOUDNESS,
-            {"item_id": item_id, "provider": provider_instance_id_or_domain, "loudness": loudness},
+            {
+                "item_id": item_id,
+                "provider": provider_instance_id_or_domain,
+                "loudness": loudness,
+            },
             allow_replace=True,
         )
 
@@ -498,7 +510,7 @@ class MusicController(CoreController):
 
     async def mark_item_played(
         self, media_type: MediaType, item_id: str, provider_instance_id_or_domain: str
-    ):
+    ) -> None:
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
         await self.database.insert(
@@ -520,7 +532,7 @@ class MusicController(CoreController):
         | TracksController
         | RadioController
         | PlaylistController
-    ):  # noqa: E501
+    ):
         """Return controller for MediaType."""
         if media_type == MediaType.ARTIST:
             return self.artists
@@ -549,7 +561,9 @@ class MusicController(CoreController):
                 domains.add(provider.domain)
         return instances
 
-    def _start_provider_sync(self, provider_instance: str, media_types: tuple[MediaType, ...]):
+    def _start_provider_sync(
+        self, provider_instance: str, media_types: tuple[MediaType, ...]
+    ) -> None:
         """Start sync task on provider and track progress."""
         # check if we're not already running a sync task for this provider/mediatype
         for sync_task in self.in_progress_syncs:
@@ -583,11 +597,13 @@ class MusicController(CoreController):
 
         self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
 
-        def on_sync_task_done(task: asyncio.Task):  # noqa: ARG001
+        def on_sync_task_done(task: asyncio.Task) -> None:
             self.in_progress_syncs.remove(sync_spec)
             if task_err := task.exception():
                 self.logger.warning(
-                    "Sync task for %s completed with errors", provider.name, exc_info=task_err
+                    "Sync task for %s completed with errors",
+                    provider.name,
+                    exc_info=task_err,
                 )
             else:
                 self.logger.info("Sync task for %s completed", provider.name)
@@ -624,7 +640,7 @@ class MusicController(CoreController):
         # NOTE: sync_interval is stored in minutes, we need seconds
         self.mass.loop.call_later(sync_interval * 60, self._schedule_sync)
 
-    async def _setup_database(self):
+    async def _setup_database(self) -> None:
         """Initialize database."""
         db_path = os.path.join(self.mass.storage_path, "library.db")
         self.database = DatabaseConnection(db_path)

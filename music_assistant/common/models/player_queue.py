@@ -7,10 +7,10 @@ from dataclasses import dataclass, field
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.models.media_items import MediaItemType
+from music_assistant.common.models.media_items import MediaItemType  # noqa: TCH001
 
 from .enums import PlayerState, RepeatMode
-from .queue_item import QueueItem
+from .queue_item import QueueItem  # noqa: TCH001
 
 
 @dataclass

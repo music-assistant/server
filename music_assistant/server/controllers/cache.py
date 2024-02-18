@@ -48,8 +48,8 @@ class CacheController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
-        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         if action == CONF_CLEAR_CACHE:
@@ -70,7 +70,7 @@ class CacheController(CoreController):
             ),
         )
 
-    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of cache module."""
         self.logger.info("Initializing cache controller...")
         await self._setup_database()
@@ -115,7 +115,7 @@ class CacheController(CoreController):
                 return data
         return default
 
-    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
+    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)) -> None:
         """Set data in cache."""
         if not cache_key:
             return
@@ -133,7 +133,7 @@ class CacheController(CoreController):
             allow_replace=True,
         )
 
-    async def delete(self, cache_key):
+    async def delete(self, cache_key) -> None:
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
         await self.database.delete(DB_TABLE_CACHE, {"key": cache_key})
@@ -147,7 +147,7 @@ class CacheController(CoreController):
         await self.database.vacuum()
         self.logger.info("Clearing database DONE")
 
-    async def auto_cleanup(self):
+    async def auto_cleanup(self) -> None:
         """Sceduled auto cleanup task."""
         self.logger.debug("Running automatic cleanup...")
         # for now we simply reset the memory cache
@@ -165,7 +165,7 @@ class CacheController(CoreController):
             self.logger.debug("Compacting database done")
         self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
-    async def _setup_database(self):
+    async def _setup_database(self) -> None:
         """Initialize database."""
         db_path = os.path.join(self.mass.storage_path, "cache.db")
         self.database = DatabaseConnection(db_path)
@@ -221,7 +221,7 @@ class CacheController(CoreController):
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
         )
 
-    def __schedule_cleanup_task(self):
+    def __schedule_cleanup_task(self) -> None:
         """Schedule the cleanup task."""
         self.mass.create_task(self.auto_cleanup())
         # reschedule self
@@ -265,7 +265,7 @@ def use_cache(expiration=86400 * 30):
 class MemoryCache(MutableMapping):
     """Simple limited in-memory cache implementation."""
 
-    def __init__(self, maxlen: int):
+    def __init__(self, maxlen: int) -> None:
         """Initialize."""
         self._maxlen = maxlen
         self.d = OrderedDict()

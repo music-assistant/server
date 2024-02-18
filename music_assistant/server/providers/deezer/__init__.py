@@ -33,7 +33,6 @@ from music_assistant.common.models.media_items import (
     AlbumTrack,
     Artist,
     AudioFormat,
-    BrowseFolder,
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
@@ -45,7 +44,11 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.provider import ProviderManifest
-from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
+
+# pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import app_var
+
+# pylint: enable=no-name-in-module
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
@@ -105,12 +108,14 @@ async def get_access_token(
         ssl=False,
     )
     if response.status != 200:
-        raise ConnectionError(f"HTTP Error {response.status}: {response.reason}")
+        msg = f"HTTP Error {response.status}: {response.reason}"
+        raise ConnectionError(msg)
     response_text = await response.text()
     try:
         return response_text.split("=")[1].split("&")[0]
     except Exception as error:
-        raise LoginFailed("Invalid auth code") from error
+        msg = "Invalid auth code"
+        raise LoginFailed(msg) from error
 
 
 async def setup(
@@ -196,7 +201,12 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """
         # If no media_types are provided, search for all types
         if not media_types:
-            media_types = [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
+            media_types = [
+                MediaType.ARTIST,
+                MediaType.ALBUM,
+                MediaType.TRACK,
+                MediaType.PLAYLIST,
+            ]
 
         # Create a task for each media_type
         tasks = {}
@@ -378,22 +388,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             raise NotImplementedError
         return result
 
-    async def recommendations(self) -> list[BrowseFolder]:
+    async def recommendations(self) -> list[Track]:
         """Get deezer's recommendations."""
-        browser_folder = BrowseFolder(
-            item_id="recommendations",
-            provider=self.domain,
-            path="recommendations",
-            name="Recommendations",
-            label="recommendations",
-            items=[
-                self.parse_track(track=track, user_country=self.gw_client.user_country)
-                for track in await self.client.get_recommended_tracks()
-            ],
-        )
-        return [browser_folder]
+        return [
+            self.parse_track(track=track, user_country=self.gw_client.user_country)
+            for track in await self.client.get_user_recommended_tracks()
+        ]
 
-    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         playlist = await self.client.get_playlist(int(prov_playlist_id))
         await playlist.add_tracks(tracks=[int(i) for i in prov_track_ids])
@@ -474,7 +476,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     del buffer[:2048]
         yield bytes(buffer)
 
-    async def log_listen_cb(self, stream_details):
+    async def log_listen_cb(self, stream_details) -> None:
         """Log the end of a track playback."""
         await self.gw_client.log_listen(last_track=stream_details)
 
@@ -709,7 +711,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         if song_data["results"]["FILESIZE_MP3_320"] or song_data["results"]["FILESIZE_MP3_128"]:
             return ContentType.MP3
 
-        raise NotImplementedError("Unsupported contenttype")
+        msg = "Unsupported contenttype"
+        raise NotImplementedError(msg)
 
     def track_available(self, track: deezer.Track, user_country: str) -> bool:
         """Check if a given track is available in the users country."""
@@ -733,6 +736,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     def decrypt_chunk(self, chunk, blowfish_key):
         """Decrypt a given chunk using the blow fish key."""
         cipher = Blowfish.new(
-            blowfish_key.encode("ascii"), Blowfish.MODE_CBC, b"\x00\x01\x02\x03\x04\x05\x06\x07"
+            blowfish_key.encode("ascii"),
+            Blowfish.MODE_CBC,
+            b"\x00\x01\x02\x03\x04\x05\x06\x07",
         )
         return cipher.decrypt(chunk)

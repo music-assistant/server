@@ -10,6 +10,8 @@ from mashumaro.mixins.orjson import DataClassORJSONMixin
 from music_assistant.common.helpers.json import get_serializable_value
 from music_assistant.common.models.event import MassEvent
 
+# pylint: disable=unnecessary-lambda
+
 
 @dataclass
 class CommandMessage(DataClassORJSONMixin):

@@ -1,6 +1,7 @@
 """Models for providers and plugins in the MA ecosystem."""
+from __future__ import annotations
 
-import asyncio
+import asyncio  # noqa: TCH003
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
@@ -8,7 +9,7 @@ from mashumaro.mixins.orjson import DataClassORJSONMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
-from .enums import MediaType, ProviderFeature, ProviderType
+from .enums import MediaType, ProviderFeature, ProviderType  # noqa: TCH001
 
 
 @dataclass
@@ -49,7 +50,7 @@ class ProviderManifest(DataClassORJSONMixin):
     icon_svg_dark: str | None = None
 
     @classmethod
-    async def parse(cls: "ProviderManifest", manifest_file: str) -> "ProviderManifest":
+    async def parse(cls: ProviderManifest, manifest_file: str) -> ProviderManifest:
         """Parse ProviderManifest from file."""
         return await load_json_file(manifest_file, ProviderManifest)
 

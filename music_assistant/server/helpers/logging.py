@@ -109,13 +109,15 @@ def log_exception(format_err: Callable[..., Any], *args: Any) -> None:
 @overload
 def catch_log_exception(
     func: Callable[..., Coroutine[Any, Any, Any]], format_err: Callable[..., Any]
-) -> Callable[..., Coroutine[Any, Any, None]]: ...
+) -> Callable[..., Coroutine[Any, Any, None]]:
+    ...
 
 
 @overload
 def catch_log_exception(
     func: Callable[..., Any], format_err: Callable[..., Any]
-) -> Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]: ...
+) -> Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]:
+    ...
 
 
 def catch_log_exception(
@@ -184,12 +186,10 @@ def async_create_catching_coro(target: Coroutine[Any, Any, _T]) -> Coroutine[Any
     target: target coroutine.
     """
     trace = traceback.extract_stack()
-    wrapped_target = catch_log_coro_exception(
+    return catch_log_coro_exception(
         target,
         lambda: "Exception in {} called from\n {}".format(
             target.__name__,
             "".join(traceback.format_list(trace[:-1])),
         ),
     )
-
-    return wrapped_target
