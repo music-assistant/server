@@ -849,7 +849,7 @@ class AirplayProvider(PlayerProvider):
 
     async def _player_discovered(self, discovery_info: interface.BaseConfig) -> None:
         """Handle discovered Airplay player on mdns."""
-        player_id = f"ap{discovery_info.identifier.lower().replace(":", "")}"
+        player_id = f"ap{discovery_info.identifier.lower().replace(':', '')}"
         if player_id in self._atv_players:
             atv_player = self._atv_players[player_id]
             if discovery_info.address != atv_player.discovery_info.address:
