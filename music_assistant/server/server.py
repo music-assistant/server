@@ -527,7 +527,7 @@ class MusicAssistant:
                 if file_str != "manifest.json":
                     continue
                 try:
-                    provider_manifest = await ProviderManifest.parse(file_path)
+                    provider_manifest: ProviderManifest = await ProviderManifest.parse(file_path)
                     # check for icon.svg file
                     if not provider_manifest.icon_svg:
                         icon_path = os.path.join(provider_path, "icon.svg")
@@ -538,9 +538,15 @@ class MusicAssistant:
                         icon_path = os.path.join(provider_path, "icon_dark.svg")
                         if os.path.isfile(icon_path):
                             provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
-                    # install requirements
-                    for requirement in provider_manifest.requirements:
-                        await install_package(requirement)
+                    # try to load the module
+                    try:
+                        await get_provider_module(provider_manifest.domain)
+                    except ImportError:
+                        # install requirements
+                        for requirement in provider_manifest.requirements:
+                            await install_package(requirement)
+                        # try loading the provider again to be safe
+                        await get_provider_module(provider_manifest.domain)
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
                 except Exception as exc:  # pylint: disable=broad-except
