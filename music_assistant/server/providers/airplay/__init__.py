@@ -10,6 +10,8 @@ from random import randint, randrange
 from typing import TYPE_CHECKING, cast
 
 import aiofiles
+import shortuuid
+from aiofiles.os import wrap
 from pyatv import connect, exceptions, interface, scan
 from pyatv.conf import AppleTV as ATVConf
 from pyatv.const import DeviceModel, DeviceState, PowerState, Protocol
@@ -38,7 +40,6 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.server.helpers.process import AsyncProcess, check_output
-from music_assistant.server.helpers.util import create_tempfile
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -1057,25 +1058,29 @@ class AirplayProvider(PlayerProvider):
         cmd = f"TITLE={title or 'Music Assistant'}\nARTIST={artist}\nALBUM={album}\n"
         cmd += f"DURATION={duration}\nACTION=SENDMETA\n"
 
-        async with asyncio.TaskGroup() as tg:
-            for atv_player in self._get_sync_clients(player_id):
-                tg.create_task(atv_player.send_cli_command(cmd))
+        for atv_player in self._get_sync_clients(player_id):
+            await atv_player.send_cli_command(cmd)
+
+        # temp test for not sending artwork
+        exists_func = wrap(os.path.exists)
+        if await exists_func("/tmp/do_not_send_artwork"):  # noqa: S108
+            return
 
         # get image
         if not queue.current_item.image:
             return
-        image_path = create_tempfile()
+        image_path = f"/tmp/{shortuuid.random(12)}"  # noqa: S108
         image_data = await self.mass.metadata.get_thumbnail(
             queue.current_item.image.path,
             512,
             queue.current_item.image.provider,
         )
-        async with aiofiles.open(image_path.name, "wb") as outfile:
+        async with aiofiles.open(image_path, "wb") as outfile:
             await outfile.write(image_data)
-            async with asyncio.TaskGroup() as tg:
-                for atv_player in self._get_sync_clients(player_id):
-                    if image_path:
-                        tg.create_task(atv_player.send_cli_command(f"ARTWORK={image_path.name}\n"))
+        for atv_player in self._get_sync_clients(player_id):
+            if image_path:
+                await atv_player.send_cli_command(f"ARTWORK={image_path}\n")
         # make sure the temp file gets deleted again
-        await asyncio.sleep(5)
-        image_path.close()
+        await asyncio.sleep(10)
+        rm_func = wrap(os.remove)
+        await rm_func(image_path)
