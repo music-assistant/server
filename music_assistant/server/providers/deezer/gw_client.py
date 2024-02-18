@@ -27,6 +27,7 @@ class DeezerGWError(BaseException):
 class GWClient:
     """The GWClient class can be used to perform actions not being of the official API."""
 
+    _arl_token: str
     _api_token: str
     _gw_csrf_token: str | None
     _license: str | None
@@ -37,22 +38,16 @@ class GWClient:
     ]
     user_country: str
 
-    def __init__(self, session: ClientSession, api_token: str) -> None:
+    def __init__(self, session: ClientSession, api_token: str, arl_token: str) -> None:
         """Provide an aiohttp ClientSession and the deezer api_token."""
         self._api_token = api_token
+        self._arl_token = arl_token
         self.session = session
 
-    async def _get_cookie(self) -> None:
-        await self.session.get(
-            "https://api.deezer.com/platform/generic/track/3135556",
-            headers={"Authorization": f"Bearer {self._api_token}", "User-Agent": USER_AGENT_HEADER},
-        )
-        json_response = await self._gw_api_call("user.getArl", False, http_method="GET")
-        arl = json_response.get("results")
-
+    async def _set_cookie(self) -> None:
         cookie = Morsel()
 
-        cookie.set("arl", arl, arl)
+        cookie.set("arl", self._arl_token, self._arl_token)
         cookie.domain = ".deezer.com"
         cookie.path = "/"
         cookie.httponly = {"HttpOnly": True}
@@ -85,7 +80,7 @@ class GWClient:
 
     async def setup(self) -> None:
         """Call this to let the client get its cookies, license and tokens."""
-        await self._get_cookie()
+        await self._set_cookie()
         await self._update_user_data()
 
     async def _get_license(self):

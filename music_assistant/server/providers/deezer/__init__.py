@@ -89,6 +89,7 @@ class DeezerCredentials:
 
 
 CONF_ACCESS_TOKEN = "access_token"
+CONF_ARL_TOKEN = "arl_token"
 CONF_ACTION_AUTH = "auth"
 DEEZER_AUTH_URL = "https://connect.deezer.com/oauth/auth.php"
 RELAY_URL = "https://deezer.oauth.jonathanbangert.com/"
@@ -156,6 +157,14 @@ async def get_config_entries(
             action_label="Authenticate with Deezer",
             value=values.get(CONF_ACCESS_TOKEN) if values else None,
         ),
+        ConfigEntry(
+            key=CONF_ARL_TOKEN,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Arl token",
+            required=True,
+            description="See https://www.dumpmedia.com/deezplus/deezer-arl.html",
+            value=values.get(CONF_ARL_TOKEN) if values else None,
+        ),
     )
 
 
@@ -183,7 +192,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
         self.user = await self.client.get_user()
 
-        self.gw_client = GWClient(self.mass.http_session, self.config.get_value(CONF_ACCESS_TOKEN))
+        self.gw_client = GWClient(self.mass.http_session, self.config.get_value(CONF_ACCESS_TOKEN), self.config.get_value(CONF_ARL_TOKEN))
         await self.gw_client.setup()
 
     @property
