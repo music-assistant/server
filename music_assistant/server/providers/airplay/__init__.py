@@ -485,8 +485,8 @@ class AirplayProvider(PlayerProvider):
         self._cliraop_bin = await self.get_cliraop_binary()
         self.mass.create_task(self._run_discovery())
         dacp_port = 49831
-        self.dacp_id = dacp_id = "1A2B3D4EA1B2C3D5"
-        self.logger.info("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
+        self.dacp_id = dacp_id = f"{randrange(2 ** 64):X}"
+        self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
         await asyncio.start_server(self._handle_dacp_request, "0.0.0.0", dacp_port)
         zeroconf_type = "_dacp._tcp.local."
         server_id = f"iTunes_Ctrl_{dacp_id}.{zeroconf_type}"
@@ -801,11 +801,9 @@ class AirplayProvider(PlayerProvider):
         self.mass.players.update(target_player)
         if group_leader.powered:
             await self.cmd_power(player_id, True)
-        if (
-            group_leader.state == PlayerState.PLAYING
-            and group_leader.active_source == group_leader.player_id
-        ):
-            self.mass.create_task(self.mass.player_queues.resume(group_leader.player_id))
+        active_queue = self.mass.player_queues.get_active_queue(group_leader.player_id)
+        if active_queue.state == PlayerState.PLAYING:
+            self.mass.create_task(self.mass.player_queues.resume(active_queue.queue_id))
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
@@ -1011,7 +1009,7 @@ class AirplayProvider(PlayerProvider):
 
     async def _send_metadata(self, player_id: str) -> None:
         """Send metadata to player (and connected sync childs)."""
-        queue = self.mass.player_queues.get(player_id)
+        queue = self.mass.player_queues.get_active_queue(player_id)
         if not queue or not queue.current_item:
             return
         duration = min(queue.current_item.duration or 0, 3600)
