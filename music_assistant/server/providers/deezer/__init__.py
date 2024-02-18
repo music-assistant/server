@@ -192,7 +192,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
 
         self.user = await self.client.get_user()
 
-        self.gw_client = GWClient(self.mass.http_session, self.config.get_value(CONF_ACCESS_TOKEN), self.config.get_value(CONF_ARL_TOKEN))
+        self.gw_client = GWClient(self.mass.http_session, self.config.get_value(CONF_ACCESS_TOKEN), 
+                                  self.config.get_value(CONF_ARL_TOKEN))
         await self.gw_client.setup()
 
     @property
