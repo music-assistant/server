@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import platform
 import socket
@@ -108,6 +109,13 @@ PLAYER_CONFIG_ENTRIES = (
         description="If this player is playing audio synced with other players "
         "and you always hear the audio too early or late on this player, "
         "you can shift the audio a bit.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key="no_metadata",
+        type=ConfigEntryType.BOOLEAN,
+        default_value=False,
+        label="Do not send metadata",
         advanced=True,
     ),
 )
@@ -490,6 +498,8 @@ class AirplayProvider(PlayerProvider):
         self._cliraop_bin = await self.get_cliraop_binary()
         self.mass.create_task(self._run_discovery())
         dacp_port = await select_free_port(39831, 49831)
+        # the pyatv logger is way to noisy, silence it a bit
+        logging.getLogger("pyatv").setLevel(self.logger.level + 10)
         self.dacp_id = dacp_id = f"{randrange(2 ** 64):X}"
         self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
         self._dacp_server = await asyncio.start_server(
@@ -1036,6 +1046,10 @@ class AirplayProvider(PlayerProvider):
         queue = self.mass.player_queues.get_active_queue(player_id)
         if not queue or not queue.current_item:
             return
+        # temp test for not sending artwork
+        if self.mass.config.get_raw_player_config_value(player_id, "no_metadata", False):
+            self.logger.info("Skip sending metadata...")
+            return
         duration = min(queue.current_item.duration or 0, 3600)
         title = queue.current_item.name
         artist = ""
@@ -1061,26 +1075,22 @@ class AirplayProvider(PlayerProvider):
         for atv_player in self._get_sync_clients(player_id):
             await atv_player.send_cli_command(cmd)
 
-        # temp test for not sending artwork
-        exists_func = wrap(os.path.exists)
-        if await exists_func("/tmp/do_not_send_artwork"):  # noqa: S108
-            return
-
         # get image
         if not queue.current_item.image:
             return
-        image_path = f"/tmp/{shortuuid.random(12)}"  # noqa: S108
+        temp_image_path = f"/tmp/{shortuuid.random(12)}"  # noqa: S108
         image_data = await self.mass.metadata.get_thumbnail(
             queue.current_item.image.path,
             512,
             queue.current_item.image.provider,
         )
-        async with aiofiles.open(image_path, "wb") as outfile:
+        if not image_data:
+            return
+        async with aiofiles.open(temp_image_path, "wb") as outfile:
             await outfile.write(image_data)
         for atv_player in self._get_sync_clients(player_id):
-            if image_path:
-                await atv_player.send_cli_command(f"ARTWORK={image_path}\n")
+            await atv_player.send_cli_command(f"ARTWORK={temp_image_path}\n")
         # make sure the temp file gets deleted again
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
         rm_func = wrap(os.remove)
-        await rm_func(image_path)
+        await rm_func(temp_image_path)
