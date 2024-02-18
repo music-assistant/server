@@ -873,7 +873,12 @@ class AirplayProvider(PlayerProvider):
             if discovery_info.address != atv_player.discovery_info.address:
                 atv_player.address_updated(discovery_info.address)
             return
-        self.logger.info(f"Connecting to {discovery_info.address}")
+        if "_raop._tcp.local" not in discovery_info.properties:
+            # skip players without raop
+            return
+        self.logger.debug(
+            "Discovered Airplay device %s on %s", discovery_info.name, discovery_info.address
+        )
         self._atv_players[player_id] = atv_player = AirPlayPlayer(
             self.mass, player_id, discovery_info
         )
