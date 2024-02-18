@@ -1,13 +1,8 @@
 [project]
 name = "music_assistant"
 # The version is set by GH action on release
-version = "0.0.0"
-license = { text = "Apache-2.0" }
-description = "Music Assistant"
-readme = "README.md"
-requires-python = ">=3.11"
 authors = [
-  { name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com" },
+  {name = "The Music Assistant Authors", email = "marcelveldt@users.noreply.github.com"},
 ]
 classifiers = [
   "Environment :: Console",
@@ -15,6 +10,11 @@ classifiers = [
   "Programming Language :: Python :: 3.12",
 ]
 dependencies = ["aiohttp", "orjson", "mashumaro"]
+description = "Music Assistant"
+license = {text = "Apache-2.0"}
+readme = "README.md"
+requires-python = ">=3.11"
+version = "0.0.0"
 
 [project.optional-dependencies]
 server = [
@@ -63,10 +63,10 @@ mass = "music_assistant.__main__:main"
 ignore-words-list = "provid,hass,followings,childs"
 
 [tool.setuptools]
+include-package-data = true
+packages = ["music_assistant"]
 platforms = ["any"]
 zip-safe = false
-packages = ["music_assistant"]
-include-package-data = true
 
 [tool.setuptools.package-data]
 music_assistant = ["py.typed"]
@@ -78,18 +78,16 @@ show-fixes = true
 line-length = 100
 target-version = "py311"
 
-
 [tool.ruff.lint.pydocstyle]
 # Use Google-style docstrings.
 convention = "pep257"
 
 [tool.ruff.lint.pylint]
 
+max-args = 10
 max-branches = 25
 max-returns = 15
-max-args = 10
 max-statements = 50
-
 
 [tool.mypy]
 platform = "linux"
@@ -134,13 +132,10 @@ disable = [
   "duplicate-code",
   "format",
   "unsubscriptable-object",
-  "unused-argument",                           # handled by ruff
-  "unspecified-encoding",                      # handled by ruff
+  "unused-argument", # handled by ruff
+  "unspecified-encoding", # handled by ruff
   "isinstance-second-argument-not-valid-type", # conflict with ruff
-  "fixme",                                     # we're still developing
-
-  # TEMPORARY DISABLED rules
-  # The below rules must be enabled later one-by-one !
+  "fixme", # we're still developing  # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "too-many-return-statements",
   "unsupported-assignment-operation",
   "invalid-name",
@@ -165,12 +160,10 @@ disable = [
   "no-else-raise",
   "undefined-loop-variable",
   "too-many-nested-blocks",
-  "too-many-public-methods",          # unavoidable?
-  "too-many-arguments",               # unavoidable?
-  "too-many-branches",                # unavoidable?
-  "too-many-instance-attributes",     # unavoidable?
-
-
+  "too-many-public-methods", # unavoidable?
+  "too-many-arguments", # unavoidable?
+  "too-many-branches", # unavoidable?
+  "too-many-instance-attributes", # unavoidable?
 ]
 
 [tool.pylint.SIMILARITIES]
@@ -185,27 +178,24 @@ asyncio_mode = "auto"
 
 [tool.ruff.lint]
 ignore = [
-  "ANN002",  # Just annoying, not really useful
-  "ANN003",  # Just annoying, not really useful
-  "ANN101",  # Self... explanatory
-  "ANN401",  # Opinioated warning on disallowing dynamically typed expressions
-  "D203",    # Conflicts with other rules
-  "D213",    # Conflicts with other rules
-  "D417",    # False positives in some occasions
-  "FIX002",  # Just annoying, not really useful
+  "ANN002", # Just annoying, not really useful
+  "ANN003", # Just annoying, not really useful
+  "ANN101", # Self... explanatory
+  "ANN401", # Opinioated warning on disallowing dynamically typed expressions
+  "D203", # Conflicts with other rules
+  "D213", # Conflicts with other rules
+  "D417", # False positives in some occasions
+  "EM101", # Just annoying, not really useful
+  "FIX002", # Just annoying, not really useful
   "PLR2004", # Just annoying, not really useful
-  "PD011",   # Just annoying, not really useful
-  "S101",    # assert is often used to satisfy type checking
-  "TD002",   # Just annoying, not really useful
-  "TD003",   # Just annoying, not really useful
-  "TD004",   # Just annoying, not really useful
-
-  # Conflicts with the Ruff formatter
-  "COM812",
-  "ISC001",
-
-  # TEMPORARY DISABLED rules
-  # The below rules must be enabled later one-by-one !
+  "PD011", # Just annoying, not really useful
+  "S101", # assert is often used to satisfy type checking
+  "TD002", # Just annoying, not really useful
+  "TD003", # Just annoying, not really useful
+  "TD004", # Just annoying, not really useful
+  "TRY003", # Just annoying, not really useful
+  "COM812", # Conflicts with the Ruff formatter
+  "ISC001", # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",
   "FBT001",
   "FBT002",

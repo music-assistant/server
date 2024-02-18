@@ -401,15 +401,6 @@ class PlayerController(CoreController):
         if player.powered == powered:
             return  # nothing to do
 
-        # inform (active) group player if needed
-        # NOTE: this must be on the top to prevent race conditions
-        if active_group_player := self._get_active_player_group(player):
-            if active_group_player.player_id.startswith(SYNCGROUP_PREFIX):
-                self._on_syncgroup_child_power(
-                    active_group_player.player_id, player.player_id, powered
-                )
-            elif player_prov := self.get_player_provider(active_group_player.player_id):
-                player_prov.on_child_power(active_group_player.player_id, player.player_id, powered)
         # stop player at power off
         if (
             not powered
@@ -437,8 +428,16 @@ class PlayerController(CoreController):
         # as fast as possible and prevent race conditions
         player.powered = powered
         self.update(player_id)
+        # handle actions when a syncgroup child turns on
+        if active_group_player := self._get_active_player_group(player):
+            if active_group_player.player_id.startswith(SYNCGROUP_PREFIX):
+                self._on_syncgroup_child_power(
+                    active_group_player.player_id, player.player_id, powered
+                )
+            elif player_prov := self.get_player_provider(active_group_player.player_id):
+                player_prov.on_child_power(active_group_player.player_id, player.player_id, powered)
         # handle 'auto play on power on'  feature
-        if (
+        elif (
             powered
             and self.mass.config.get_raw_player_config_value(player_id, CONF_AUTO_PLAY, False)
             and player.active_source in (None, player_id)
@@ -899,6 +898,16 @@ class PlayerController(CoreController):
                 continue
             elif child_player.group_childs:
                 return child_player
+        # select new sync leader: return the first playing player
+        for child_player in self.iter_group_members(
+            group_player, only_powered=True, only_playing=True
+        ):
+            return child_player
+        # fallback select new sync leader: return the first powered player
+        for child_player in self.iter_group_members(
+            group_player, only_powered=True, only_playing=False
+        ):
+            return child_player
         return None
 
     async def _sync_syncgroup(self, player_id: str) -> None:

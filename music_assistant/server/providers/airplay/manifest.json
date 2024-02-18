@@ -9,6 +9,5 @@
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
-  "depends_on": "slimproto",
-  "icon":"cast-variant"
+  "icon": "cast-variant"
 }
