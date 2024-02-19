@@ -10,9 +10,6 @@ import time
 from random import randint, randrange
 from typing import TYPE_CHECKING, cast
 
-import aiofiles
-import shortuuid
-from aiofiles.os import wrap
 from pyatv import connect, exceptions, interface, scan
 from pyatv.conf import AppleTV as ATVConf
 from pyatv.const import DeviceModel, DeviceState, PowerState, Protocol
@@ -743,8 +740,16 @@ class AirplayProvider(PlayerProvider):
                             prev_metadata_checksum = metadata_checksum
                             self.mass.create_task(self._send_metadata(player_id))
 
-                    # send audio chunk to player(s)
                     async with asyncio.TaskGroup() as tg:
+                        # send progress metadata
+                        if queue.elapsed_time:
+                            for atv_player in self._get_sync_clients(player_id):
+                                tg.create_task(
+                                    atv_player.send_cli_command(
+                                        f"PROGRESS={int(queue.elapsed_time)}\n"
+                                    )
+                                )
+                        # send audio chunk to player(s)
                         available_clients = 0
                         for atv_player in self._get_sync_clients(player_id):
                             if not atv_player.cliraop_proc or atv_player.cliraop_proc.closed:
@@ -754,15 +759,6 @@ class AirplayProvider(PlayerProvider):
                             tg.create_task(atv_player.cliraop_proc.write(pcm_chunk))
                         if not available_clients:
                             return
-
-                        # send progress metadata
-                        if queue.elapsed_time:
-                            for atv_player in self._get_sync_clients(player_id):
-                                tg.create_task(
-                                    atv_player.send_cli_command(
-                                        f"PROGRESS={int(queue.elapsed_time)}\n"
-                                    )
-                                )
 
             finally:
                 self.logger.debug("Streamer task ended for player %s", queue.display_name)
@@ -962,12 +958,16 @@ class AirplayProvider(PlayerProvider):
             logger = self.logger.getChild(atv_player.player_id)
             async for line in cliraop_proc._proc.stderr:
                 line = line.decode().strip()  # noqa: PLW2901
+                if not line:
+                    continue
                 if "set pause" in line:
                     atv_player.optimistic_state = PlayerState.PAUSED
                     atv_player.update_attributes()
-                if "Restarted at" in line:
+                    logger.info(line)
+                elif "Restarted at" in line:
                     atv_player.optimistic_state = PlayerState.PLAYING
                     atv_player.update_attributes()
+                    logger.info(line)
                 elif "after start), played" in line:
                     millis = int(line.split("played ")[1].split(" ")[0])
                     mass_player.elapsed_time = millis / 1000
@@ -1070,19 +1070,9 @@ class AirplayProvider(PlayerProvider):
         # get image
         if not queue.current_item.image:
             return
-        temp_image_path = f"/tmp/{shortuuid.random(12)}"  # noqa: S108
-        image_data = await self.mass.metadata.get_thumbnail(
-            queue.current_item.image.path,
-            512,
-            queue.current_item.image.provider,
+
+        image_url = self.mass.metadata.get_image_url(
+            queue.current_item.image, size=512, prefer_proxy=True
         )
-        if not image_data:
-            return
-        async with aiofiles.open(temp_image_path, "wb") as outfile:
-            await outfile.write(image_data)
         for atv_player in self._get_sync_clients(player_id):
-            await atv_player.send_cli_command(f"ARTWORK={temp_image_path}\n")
-        # make sure the temp file gets deleted again
-        await asyncio.sleep(30)
-        rm_func = wrap(os.remove)
-        await rm_func(temp_image_path)
+            await atv_player.send_cli_command(f"ARTWORK={image_url}\n")
