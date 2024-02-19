@@ -829,7 +829,7 @@ class AirplayProvider(PlayerProvider):
         if atv_player.cliraop_proc:
             # prefer interactive command to our streamer
             await atv_player.send_cli_command(f"VOLUME={volume_level}\n")
-        elif atv := atv_player.atv:
+        if atv := atv_player.atv:
             await atv.audio.set_volume(volume_level)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
