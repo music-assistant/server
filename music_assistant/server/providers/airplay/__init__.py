@@ -7,6 +7,7 @@ import os
 import platform
 import socket
 import time
+from collections.abc import AsyncGenerator
 from random import randint, randrange
 from typing import TYPE_CHECKING, cast
 
@@ -37,6 +38,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -685,16 +687,60 @@ class AirplayProvider(PlayerProvider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
+        # start streaming the queue (pcm) audio in a background task
+        queue = self.mass.player_queues.get_active_queue(player_id)
+        self._stream_tasks[player_id] = asyncio.create_task(
+            self._stream_audio(
+                player_id,
+                queue=queue,
+                audio_iterator=self.mass.streams.get_flow_stream(
+                    queue,
+                    start_queue_item=queue_item,
+                    pcm_format=AudioFormat(
+                        content_type=ContentType.PCM_S16LE,
+                        sample_rate=44100,
+                        bit_depth=16,
+                        channels=2,
+                    ),
+                    seek_position=seek_position,
+                    fade_in=fade_in,
+                ),
+            )
+        )
+
+    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
+        """Handle PLAY STREAM on given player.
+
+        This is a special feature from the Universal Group provider.
+        """
+        if stream_job.pcm_format.bit_depth != 16 or stream_job.pcm_format.sample_rate != 44100:
+            # TODO: resample on the fly here ?
+            raise RuntimeError("Unsupported PCM format")
+        # start streaming the queue (pcm) audio in a background task
+        queue = self.mass.player_queues.get_active_queue(player_id)
+        self._stream_tasks[player_id] = asyncio.create_task(
+            self._stream_audio(
+                player_id,
+                queue=queue,
+                audio_iterator=stream_job.subscribe(player_id),
+            )
+        )
+
+    async def _stream_audio(
+        self, player_id: str, queue: PlayerQueue, audio_iterator: AsyncGenerator[bytes, None]
+    ) -> None:
+        """Handle the actual streaming of audio to Airplay."""
         # stop existing streams first
         await self.cmd_stop(player_id)
         await self.cmd_power(player_id, True)
-        atv_player = self._atv_players[player_id]
         player = self.mass.players.get(player_id)
-
         if player.synced_to:
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
-
+        player.elapsed_time = 0
+        player.elapsed_time_last_updated = time.time()
+        player.state = PlayerState.PLAYING
+        self.mass.players.update(player_id)
         # NOTE: Although the pyatv library is perfectly capable of playback
         # to not only raop targets but also airplay 1 + 2, its not suitable
         # for synced playback to multiple clients at once.
@@ -716,75 +762,42 @@ class AirplayProvider(PlayerProvider):
                     # just in case...
                     await atv_player.connect()
                 tg.create_task(self._init_cliraop(atv_player, ntp))
+        prev_metadata_checksum: str = ""
+        try:
+            async for pcm_chunk in audio_iterator:
+                # send metadata to player(s) if needed
+                # NOTE: this must all be done in separate tasks to not disturb audio
+                if queue and queue.current_item and queue.current_item.streamdetails:
+                    metadata_checksum = (
+                        queue.current_item.streamdetails.stream_title
+                        or queue.current_item.queue_item_id
+                    )
+                    if prev_metadata_checksum != metadata_checksum:
+                        prev_metadata_checksum = metadata_checksum
+                        self.mass.create_task(self._send_metadata(player_id))
 
-        async def _streamer() -> None:
-            queue = self.mass.player_queues.get(queue_item.queue_id)
-            player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
-            player.elapsed_time = 0
-            player.elapsed_time_last_updated = time.time()
-            player.state = PlayerState.PLAYING
-            self.mass.players.register_or_update(player)
-            prev_metadata_checksum: str = ""
-            pcm_format = AudioFormat(
-                content_type=ContentType.PCM_S16LE,
-                sample_rate=44100,
-                bit_depth=16,
-                channels=2,
-            )
-            try:
-                async for pcm_chunk in self.mass.streams.get_flow_stream(
-                    queue,
-                    start_queue_item=queue_item,
-                    pcm_format=pcm_format,
-                    seek_position=seek_position,
-                    fade_in=fade_in,
-                ):
-                    # send metadata to player(s) if needed
-                    # NOTE: this must all be done in separate tasks to not disturb audio
-                    if queue and queue.current_item and queue.current_item.streamdetails:
-                        metadata_checksum = (
-                            queue.current_item.streamdetails.stream_title
-                            or queue.current_item.queue_item_id
-                        )
-                        if prev_metadata_checksum != metadata_checksum:
-                            prev_metadata_checksum = metadata_checksum
-                            self.mass.create_task(self._send_metadata(player_id))
-
-                    async with asyncio.TaskGroup() as tg:
-                        # send progress metadata
-                        if queue.elapsed_time:
-                            for atv_player in self._get_sync_clients(player_id):
-                                tg.create_task(
-                                    atv_player.send_cli_command(
-                                        f"PROGRESS={int(queue.elapsed_time)}\n"
-                                    )
-                                )
-                        # send audio chunk to player(s)
-                        available_clients = 0
+                async with asyncio.TaskGroup() as tg:
+                    # send progress metadata
+                    if queue.elapsed_time:
                         for atv_player in self._get_sync_clients(player_id):
-                            if not atv_player.cliraop_proc or atv_player.cliraop_proc.closed:
-                                # this may not happen, but just in case
-                                continue
-                            available_clients += 1
-                            tg.create_task(atv_player.cliraop_proc.write(pcm_chunk))
-                        if not available_clients:
-                            return
-
-            finally:
-                self.logger.debug("Streamer task ended for player %s", queue.display_name)
-                for atv_player in self._get_sync_clients(player_id):
-                    if atv_player.cliraop_proc and not atv_player.cliraop_proc.closed:
-                        atv_player.cliraop_proc.write_eof()
-
-        # start streaming the queue (pcm) audio in a background task
-        self._stream_tasks[player_id] = asyncio.create_task(_streamer())
-
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        raise NotImplementedError
+                            tg.create_task(
+                                atv_player.send_cli_command(f"PROGRESS={int(queue.elapsed_time)}\n")
+                            )
+                    # send audio chunk to player(s)
+                    available_clients = 0
+                    for atv_player in self._get_sync_clients(player_id):
+                        if not atv_player.cliraop_proc or atv_player.cliraop_proc.closed:
+                            # this may not happen, but just in case
+                            continue
+                        available_clients += 1
+                        tg.create_task(atv_player.cliraop_proc.write(pcm_chunk))
+                    if not available_clients:
+                        return
+        finally:
+            self.logger.debug("Streaming ended for player %s", player.display_name)
+            for atv_player in self._get_sync_clients(player_id):
+                if atv_player.cliraop_proc and not atv_player.cliraop_proc.closed:
+                    atv_player.cliraop_proc.write_eof()
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.

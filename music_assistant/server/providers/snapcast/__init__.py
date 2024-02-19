@@ -314,13 +314,9 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError(msg)
         # stop any existing streams first
         await self.cmd_stop(player_id)
-        # TEMP - TODO - WARNING - ACHTUNG - HACK
-        # override pcm format of streamjob due to issue with snapcast
-        # that seems to only accept a 48000/16 stream somehow ?!
-        stream_job.pcm_format.content_type = ContentType.PCM_S16LE
-        stream_job.pcm_format.sample_rate = 48000
-        stream_job.pcm_format.bit_depth = 16
-        # end of hack
+        if stream_job.pcm_format.bit_depth != 16 or stream_job.pcm_format.sample_rate != 48000:
+            # TODO: resample on the fly here ?
+            raise RuntimeError("Unsupported PCM format")
         stream, port = await self._create_stream()
         stream_job.expected_players.add(player_id)
         snap_group = self._get_snapgroup(player_id)
