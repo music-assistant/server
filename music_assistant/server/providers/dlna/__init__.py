@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import time
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -49,10 +50,7 @@ if TYPE_CHECKING:
     from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
     from async_upnp_client.utils import CaseInsensitiveDict
 
-    from music_assistant.common.models.config_entries import (
-        PlayerConfig,
-        ProviderConfig,
-    )
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
@@ -283,6 +281,8 @@ class DLNAPlayerProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
+        # silence the async_upnp_client logger
+        logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
         self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
