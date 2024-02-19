@@ -177,7 +177,7 @@ class CastStatusListener:
         if not self._valid:
             return
         if group_uuid == self.castplayer.player.active_source:
-            self.castplayer.player.active_source = ""
+            self.castplayer.player.active_source = None
         self.prov.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.player.display_name, group_uuid
         )
