@@ -55,6 +55,7 @@ CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
 CONF_VOLUME_START = "volume_start"
 CONF_SYNC_ADJUST = "sync_adjust"
+CONF_PASSWORD = "password"
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -106,6 +107,15 @@ PLAYER_CONFIG_ENTRIES = (
         description="If this player is playing audio synced with other players "
         "and you always hear the audio too early or late on this player, "
         "you can shift the audio a bit.",
+        advanced=True,
+    ),
+    ConfigEntry(
+        key=CONF_PASSWORD,
+        type=ConfigEntryType.STRING,
+        default_value=None,
+        required=False,
+        label="Device password",
+        description="Some devices require a password to connect/play.",
         advanced=True,
     ),
 )
@@ -1002,6 +1012,10 @@ class AirplayProvider(PlayerProvider):
         sync_adjust = self.mass.config.get_raw_player_config_value(
             atv_player.player_id, CONF_SYNC_ADJUST, 0
         )
+        if device_password := self.mass.config.get_raw_player_config_value(
+            atv_player.player_id, CONF_PASSWORD, None
+        ):
+            extra_args += ["-P", device_password]
         if self.logger.level == logging.DEBUG:
             extra_args += ["-d", "5"]
 
