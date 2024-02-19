@@ -1006,6 +1006,8 @@ class AirplayProvider(PlayerProvider):
         sync_adjust = self.mass.config.get_raw_player_config_value(
             atv_player.player_id, CONF_SYNC_ADJUST, 0
         )
+        if self.logger.level == logging.DEBUG:
+            extra_args += ["-d", "5"]
 
         atv_player.optimistic_state = PlayerState.PLAYING
         # always generate a new active remote id to prevent race conditions
