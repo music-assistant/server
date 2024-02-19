@@ -21,7 +21,7 @@ jellyfin_apiclient_python==1.9.2
 mashumaro==3.12
 memory-tempfile==2.2.3
 music-assistant-frontend==2.2.2
-orjson==3.9.13
+orjson==3.9.14
 pillow==10.2.0
 plexapi==4.15.9
 py-opensonic>=5.0.5
