@@ -102,6 +102,7 @@ async def get_config_entries(
                 required=True,
                 default_value="http://supervisor/core/api",
                 value="http://supervisor/core/api",
+                hidden=True,
             ),
             ConfigEntry(
                 key=CONF_AUTH_TOKEN,
@@ -110,6 +111,7 @@ async def get_config_entries(
                 required=False,
                 default_value=None,
                 value=None,
+                hidden=True,
             ),
         )
     # manual configuration
