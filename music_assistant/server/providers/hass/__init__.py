@@ -9,6 +9,7 @@ communication over the HA api for more flexibility as well as security.
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING
 
 import shortuuid
@@ -156,6 +157,7 @@ class HomeAssistant(PluginProvider):
         """Handle async initialization of the plugin."""
         url = get_websocket_url(self.config.get_value(CONF_URL))
         token = self.config.get_value(CONF_AUTH_TOKEN)
+        logging.getLogger("hass_client").setLevel(self.logger.level)
         self.hass = HomeAssistantClient(url, token, self.mass.http_session)
         await self.hass.connect()
 
