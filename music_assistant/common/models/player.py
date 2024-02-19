@@ -25,7 +25,7 @@ class Player(DataClassDictMixin):
     """Representation of a Player within Music Assistant."""
 
     player_id: str
-    provider: str
+    provider: str  # instance_id of the player provider
     type: PlayerType
     name: str
     available: bool
@@ -51,6 +51,7 @@ class Player(DataClassDictMixin):
     # active_source: return player_id of the active queue for this player
     # if the player is grouped and a group is active, this will be set to the group's player_id
     # otherwise it will be set to the own player_id
+    # can also be an actual different source if the player supports that
     active_source: str | None = None
 
     # current_item_id: return item_id/uri of the current active/loaded item on the player

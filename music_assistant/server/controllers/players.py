@@ -168,6 +168,12 @@ class PlayerController(CoreController):
             msg = f"Player {player_id} is already registered"
             raise AlreadyRegisteredError(msg)
 
+        # make sure that the player's provider is set to the instance id
+        if prov := self.mass.get_provider(player.provider):
+            player.provider = prov.instance_id
+        else:
+            raise RuntimeError("Invalid provider ID given: %s", player.provider)
+
         # make sure a default config exists
         self.mass.config.create_default_player_config(
             player_id, player.provider, player.name, player.enabled_by_default
@@ -203,6 +209,7 @@ class PlayerController(CoreController):
             return
 
         if player.player_id in self._players:
+            self._players[player.player_id] = player
             self.update(player.player_id)
             return
 
