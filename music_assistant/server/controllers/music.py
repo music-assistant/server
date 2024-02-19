@@ -6,7 +6,7 @@ import asyncio
 import os
 import shutil
 import statistics
-from collections.abc import AsyncGenerator  # noqa: TCH003
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING

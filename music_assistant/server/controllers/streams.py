@@ -12,7 +12,7 @@ import asyncio
 import logging
 import time
 import urllib.parse
-from collections.abc import AsyncGenerator  # noqa: TCH003
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING
 

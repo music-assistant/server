@@ -1,7 +1,7 @@
 """Models for providers and plugins in the MA ecosystem."""
 from __future__ import annotations
 
-import asyncio  # noqa: TCH003
+import asyncio
 from dataclasses import dataclass, field
 from typing import Any, TypedDict
 
@@ -9,7 +9,7 @@ from mashumaro.mixins.orjson import DataClassORJSONMixin
 
 from music_assistant.common.helpers.json import load_json_file
 
-from .enums import MediaType, ProviderFeature, ProviderType  # noqa: TCH001
+from .enums import MediaType, ProviderFeature, ProviderType
 
 
 @dataclass
