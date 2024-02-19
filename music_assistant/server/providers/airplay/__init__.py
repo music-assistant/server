@@ -854,7 +854,7 @@ class AirplayProvider(PlayerProvider):
         try:
             self._discovery_running = True
             self.logger.debug("Airplay discovery started...")
-            discovered_devices = await scan(self.mass.loop, timeout=5)
+            discovered_devices = await scan(self.mass.loop, protocol=Protocol.RAOP, timeout=30)
 
             if not discovered_devices:
                 self.logger.debug("No devices found")
