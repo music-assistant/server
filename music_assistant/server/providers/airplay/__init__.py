@@ -687,6 +687,9 @@ class AirplayProvider(PlayerProvider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
+        # stop existing streams first
+        await self.cmd_stop(player_id)
+        # power on player if needed
         # start streaming the queue (pcm) audio in a background task
         queue = self.mass.player_queues.get_active_queue(player_id)
         self._stream_tasks[player_id] = asyncio.create_task(
@@ -713,6 +716,10 @@ class AirplayProvider(PlayerProvider):
 
         This is a special feature from the Universal Group provider.
         """
+        # stop existing streams first
+        await self.cmd_stop(player_id)
+        # power on player if needed
+        await self.cmd_power(player_id, True)
         if stream_job.pcm_format.bit_depth != 16 or stream_job.pcm_format.sample_rate != 44100:
             # TODO: resample on the fly here ?
             raise RuntimeError("Unsupported PCM format")
@@ -730,9 +737,6 @@ class AirplayProvider(PlayerProvider):
         self, player_id: str, queue: PlayerQueue, audio_iterator: AsyncGenerator[bytes, None]
     ) -> None:
         """Handle the actual streaming of audio to Airplay."""
-        # stop existing streams first
-        await self.cmd_stop(player_id)
-        await self.cmd_power(player_id, True)
         player = self.mass.players.get(player_id)
         if player.synced_to:
             # should not happen, but just in case
