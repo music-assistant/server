@@ -708,6 +708,8 @@ class PlayerController(CoreController):
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
+        # reset active_source just in case
+        player.active_source = None
 
     @api_command("players/create_group")
     async def create_group(self, provider: str, name: str, members: list[str]) -> Player:

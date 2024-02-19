@@ -866,8 +866,7 @@ class AirplayProvider(PlayerProvider):
         group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
         group_leader.group_childs.remove(player_id)
         player.synced_to = None
-        if player.state == PlayerState.PLAYING:
-            await self.cmd_stop(player_id)
+        await self.cmd_stop(player_id)
         self.mass.players.update(player_id)
 
     async def _run_discovery(self) -> None:
