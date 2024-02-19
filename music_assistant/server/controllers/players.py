@@ -672,6 +672,12 @@ class PlayerController(CoreController):
         elif child_player.state == PlayerState.PLAYING:
             # stop child player if it is currently playing
             await self.cmd_stop(player_id)
+        if player_id not in parent_player.can_sync_with:
+            raise RuntimeError(
+                "Player %s can not be synced with %s",
+                child_player.display_name,
+                parent_player.display_name,
+            )
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
