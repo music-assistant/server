@@ -43,14 +43,14 @@ server = [
   "uvloop==0.19.0",
 ]
 test = [
-  "black==24.1.1",
+  "black==24.2.0",
   "codespell==2.2.6",
   "isort==5.13.2",
   "mypy==1.8.0",
-  "pre-commit==3.6.0",
+  "pre-commit==3.6.2",
   "pre-commit-hooks==4.5.0",
   "pylint==3.0.3",
-  "pytest==8.0.0",
+  "pytest==8.0.1",
   "pytest-aiohttp==1.0.5",
   "pytest-cov==4.1.0",
   "ruff==0.2.1",

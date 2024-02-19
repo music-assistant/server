@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp
 from asyncio_throttle import Throttler
 
+from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
@@ -736,11 +737,14 @@ class SpotifyProvider(MusicProvider):
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
         async with self._throttler:
             time_start = time.time()
+            result = None
             try:
                 async with self.mass.http_session.get(
                     url, headers=headers, params=kwargs, ssl=False, timeout=120
                 ) as response:
-                    result = await response.json()
+                    # get text before json so we can log the body in case of errorrs
+                    result = await response.text()
+                    result = json_loads(result)
                     if "error" in result or ("status" in result and "error" in result["status"]):
                         self.logger.error("%s - %s", endpoint, result)
                         return None
@@ -748,14 +752,13 @@ class SpotifyProvider(MusicProvider):
                 aiohttp.ContentTypeError,
                 JSONDecodeError,
             ):
-                self.logger.exception("%s", endpoint)
+                self.logger.exception("Error while processing %s: %s", endpoint, result)
                 return None
-            finally:
-                self.logger.debug(
-                    "Processing GET/%s took %s seconds",
-                    endpoint,
-                    round(time.time() - time_start, 2),
-                )
+            self.logger.debug(
+                "Processing GET/%s took %s seconds",
+                endpoint,
+                round(time.time() - time_start, 2),
+            )
             return result
 
     async def _delete_data(self, endpoint, data=None, **kwargs):
