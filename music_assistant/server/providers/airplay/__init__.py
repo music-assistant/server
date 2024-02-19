@@ -111,13 +111,6 @@ PLAYER_CONFIG_ENTRIES = (
         "you can shift the audio a bit.",
         advanced=True,
     ),
-    ConfigEntry(
-        key="no_metadata",
-        type=ConfigEntryType.BOOLEAN,
-        default_value=False,
-        label="Do not send metadata",
-        advanced=True,
-    ),
 )
 BACKOFF_TIME_LOWER_LIMIT = 15  # seconds
 BACKOFF_TIME_UPPER_LIMIT = 300  # Five minutes
@@ -1048,10 +1041,6 @@ class AirplayProvider(PlayerProvider):
         """Send metadata to player (and connected sync childs)."""
         queue = self.mass.player_queues.get_active_queue(player_id)
         if not queue or not queue.current_item:
-            return
-        # temp test for not sending artwork
-        if self.mass.config.get_raw_player_config_value(player_id, "no_metadata", False):
-            self.logger.info("Skip sending metadata...")
             return
         duration = min(queue.current_item.duration or 0, 3600)
         title = queue.current_item.name
