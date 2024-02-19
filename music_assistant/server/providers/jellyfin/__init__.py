@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import mimetypes
 import socket
 import uuid
@@ -33,42 +34,38 @@ from music_assistant.common.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
+from music_assistant.common.models.media_items import Album
+from music_assistant.common.models.media_items import Album as JellyfinAlbum
+from music_assistant.common.models.media_items import AlbumTrack
+from music_assistant.common.models.media_items import Artist
+from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import (
-    Album,
-    AlbumTrack,
-    Artist,
     AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemImage,
-    Playlist,
+)
+from music_assistant.common.models.media_items import Playlist
+from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
+from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
     StreamDetails,
-    Track,
 )
-from music_assistant.common.models.media_items import (
-    Album as JellyfinAlbum,
-)
-from music_assistant.common.models.media_items import (
-    Artist as JellyfinArtist,
-)
-from music_assistant.common.models.media_items import (
-    Playlist as JellyfinPlaylist,
-)
-from music_assistant.common.models.media_items import (
-    Track as JellyfinTrack,
-)
+from music_assistant.common.models.media_items import Track
+from music_assistant.common.models.media_items import Track as JellyfinTrack
 
 if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
+
 from music_assistant.constants import VARIOUS_ARTISTS_NAME
 
 if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
 if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
+
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .const import (
@@ -166,6 +163,7 @@ class JellyfinProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Initialize provider(instance) with given configuration."""
+        logging.getLogger("jellyfin_apiclient_python").setLevel(self.logger.level + 10)
 
         def connect() -> JellyfinClient:
             try:
