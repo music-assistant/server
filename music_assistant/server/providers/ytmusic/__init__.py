@@ -119,7 +119,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = YoutubeMusicProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -188,7 +188,7 @@ class YoutubeMusicProvider(MusicProvider):
     _signature_timestamp = 0
     _cipher = None
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
         logging.getLogger("pytube").setLevel(self.logger.level + 10)
         if not self.config.get_value(CONF_AUTH_TOKEN):

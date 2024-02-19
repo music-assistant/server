@@ -43,9 +43,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = URLProvider(mass, manifest, config)
-    await prov.handle_setup()
-    return prov
+    return URLProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -68,11 +66,11 @@ async def get_config_entries(
 class URLProvider(MusicProvider):
     """Music Provider for manual URL's/files added to the queue."""
 
-    async def handle_setup(self) -> None:
-        """Handle async initialization of the provider.
-
-        Called when provider is registered.
-        """
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
+        """Initialize MusicProvider."""
+        super().__init__(mass, manifest, config)
         self._full_url = {}
 
     async def get_track(self, prov_track_id: str) -> Track:

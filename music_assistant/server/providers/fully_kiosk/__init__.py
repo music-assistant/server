@@ -43,7 +43,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = FullyKioskProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -90,7 +90,7 @@ class FullyKioskProvider(PlayerProvider):
 
     _fully: FullyKiosk
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._fully = FullyKiosk(
             self.mass.http_session,
@@ -101,14 +101,13 @@ class FullyKioskProvider(PlayerProvider):
         try:
             async with asyncio.timeout(15):
                 await self._fully.getDeviceInfo()
-                self._handle_player_init()
-                self._handle_player_update()
         except Exception as err:
             msg = f"Unable to start the FullyKiosk connection ({err!s}"
             raise SetupFailedError(msg) from err
 
-    def _handle_player_init(self) -> None:
-        """Process FullyKiosk add to Player controller."""
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        # Add FullyKiosk device to Player controller.
         player_id = self._fully.deviceInfo["deviceID"]
         player = self.mass.players.get(player_id, raise_unavailable=False)
         address = (
@@ -130,6 +129,7 @@ class FullyKioskProvider(PlayerProvider):
                 supported_features=(PlayerFeature.VOLUME_SET,),
             )
         self.mass.players.register_or_update(player)
+        self._handle_player_update()
 
     def _handle_player_update(self) -> None:
         """Update FullyKiosk player attributes."""

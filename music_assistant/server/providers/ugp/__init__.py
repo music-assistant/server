@@ -26,11 +26,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
 )
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_GROUP_MEMBERS,
-    SYNCGROUP_PREFIX,
-)
+from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -52,9 +48,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = UniversalGroupProvider(mass, manifest, config)
-    await prov.handle_setup()
-    return prov
+    return UniversalGroupProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -84,10 +78,16 @@ class UniversalGroupProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return (ProviderFeature.PLAYER_GROUP_CREATE,)
 
-    async def handle_setup(self) -> None:
-        """Handle async initialization of the provider."""
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
+        """Initialize MusicProvider."""
+        super().__init__(mass, manifest, config)
         self.prev_sync_leaders = {}
-        self.mass.loop.create_task(self._register_all_players())
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await self._register_all_players()
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""

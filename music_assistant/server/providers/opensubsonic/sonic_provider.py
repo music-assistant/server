@@ -66,7 +66,7 @@ class OpenSonicProvider(MusicProvider):
     _conn: SonicConnection = None
     _enable_podcasts: bool = True
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
         logging.getLogger("libopensonic").setLevel(self.logger.level)
         port = self.config.get_value(CONF_PORT)

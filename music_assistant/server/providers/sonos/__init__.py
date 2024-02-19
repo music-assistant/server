@@ -94,7 +94,7 @@ async def setup(
     logging.getLogger("soco").setLevel(logging.INFO)
     logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
     prov = SonosPlayerProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -144,7 +144,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return (ProviderFeature.SYNC_PLAYERS,)
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.sonosplayers: OrderedDict[str, SonosPlayer] = OrderedDict()
         self.topology_condition = asyncio.Condition()
@@ -157,7 +157,9 @@ class SonosPlayerProvider(PlayerProvider):
         self.creation_lock = asyncio.Lock()
         self._known_invisible: set[SoCo] = set()
 
-        self.mass.create_task(self._run_discovery())
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await self._run_discovery()
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""

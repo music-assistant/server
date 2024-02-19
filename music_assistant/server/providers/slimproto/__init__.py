@@ -104,7 +104,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = SlimprotoProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -199,7 +199,7 @@ class SlimprotoProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return (ProviderFeature.SYNC_PLAYERS,)
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}

@@ -47,7 +47,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = HomeAssistant(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -153,11 +153,11 @@ class HomeAssistant(PluginProvider):
 
     hass: HomeAssistantClient
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
         url = get_websocket_url(self.config.get_value(CONF_URL))
         token = self.config.get_value(CONF_AUTH_TOKEN)
-        logging.getLogger("hass_client").setLevel(self.logger.level)
+        logging.getLogger("hass_client").setLevel(self.logger.level + 10)
         self.hass = HomeAssistantClient(url, token, self.mass.http_session)
         await self.hass.connect()
 

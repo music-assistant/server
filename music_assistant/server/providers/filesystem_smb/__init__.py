@@ -45,7 +45,7 @@ async def setup(
         msg = "Invalid share name"
         raise LoginFailed(msg)
     prov = SMBFileSystemProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -131,7 +131,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
     smb library for Python (and we tried both pysmb and smbprotocol).
     """
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # base_path will be the path where we're going to mount the remote share
         self.base_path = f"/tmp/{self.instance_id}"  # noqa: S108

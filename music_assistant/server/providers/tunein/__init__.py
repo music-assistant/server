@@ -10,11 +10,7 @@ from asyncio_throttle import Throttler
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-)
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     AudioFormat,
     ContentType,
@@ -58,7 +54,7 @@ async def setup(
             "Email address detected instead of username, "
             "it is advised to use the tunein username instead of email."
         )
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -96,7 +92,7 @@ class TuneInProvider(MusicProvider):
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=1)
 

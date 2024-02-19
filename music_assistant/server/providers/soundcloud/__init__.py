@@ -59,7 +59,7 @@ async def setup(
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
     prov = SoundcloudMusicProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -105,7 +105,7 @@ class SoundcloudMusicProvider(MusicProvider):
     _soundcloud = None
     _me = None
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Set up the Soundcloud provider."""
         client_id = self.config.get_value(CONF_CLIENT_ID)
         auth_token = self.config.get_value(CONF_AUTHORIZATION)
