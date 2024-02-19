@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import TYPE_CHECKING, Any
 
 from libopensonic.connection import Connection as SonicConnection
@@ -67,6 +68,7 @@ class OpenSonicProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the music provider and test the connection."""
+        logging.getLogger("libopensonic").setLevel(self.logger.level)
         port = self.config.get_value(CONF_PORT)
         if port is None:
             port = 443
