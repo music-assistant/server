@@ -598,7 +598,7 @@ class AirplayProvider(PlayerProvider):
                 if abs(volume - int(atv_player.atv.audio.volume)) > 2:
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))
             else:
-                self.logger.warning(
+                self.logger.debug(
                     "Unknown DACP request for %s: %s",
                     atv_player.discovery_info.name,
                     path,
