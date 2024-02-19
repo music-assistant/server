@@ -710,7 +710,7 @@ class SonosPlayer:
 
         # media info (track info)
         self.mass_player.current_item_id = self.uri
-        if self.uri and self.player_id in self.uri:
+        if self.uri and self.mass.streams.base_url in self.uri and self.player_id in self.uri:
             self.mass_player.active_source = self.player_id
         else:
             self.mass_player.active_source = self.source_name

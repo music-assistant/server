@@ -527,8 +527,10 @@ class ChromecastProvider(PlayerProvider):
 
         # active source
         if (
-            status.content_id and castplayer.player_id in status.content_id
-        ) or castplayer.cc.app_id == pychromecast.config.APP_MEDIA_RECEIVER:
+            status.content_id
+            and self.mass.streams.base_url in status.content_id
+            and castplayer.player_id in status.content_id
+        ):
             castplayer.player.active_source = castplayer.player_id
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
