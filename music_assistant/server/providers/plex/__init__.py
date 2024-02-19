@@ -29,11 +29,7 @@ from music_assistant.common.models.enums import (
     MediaType,
     ProviderFeature,
 )
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-)
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     AlbumTrack,
@@ -53,10 +49,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
-from music_assistant.server.providers.plex.helpers import (
-    discover_local_servers,
-    get_libraries,
-)
+from music_assistant.server.providers.plex.helpers import discover_local_servers, get_libraries
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
@@ -208,7 +201,8 @@ class PlexProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the music provider by connecting to the server."""
-        # silence urllib logger
+        # silence loggers
+        logging.getLogger("plexapi").setLevel(self.logger.level + 10)
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
         _, library_name = self.config.get_value(CONF_LIBRARY_ID).split(" / ", 1)
 
