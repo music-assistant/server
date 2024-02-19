@@ -132,7 +132,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = AirplayProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -492,12 +492,11 @@ class AirplayProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return (ProviderFeature.SYNC_PLAYERS,)
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._atv_players = {}
         self._stream_tasks = {}
         self._cliraop_bin = await self.get_cliraop_binary()
-        self.mass.create_task(self._run_discovery())
         dacp_port = await select_free_port(39831, 49831)
         # the pyatv logger is way to noisy, silence it a bit
         logging.getLogger("pyatv").setLevel(self.logger.level + 10)
@@ -522,6 +521,10 @@ class AirplayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.zeroconf.async_register_service(self._dacp_info)
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await self._run_discovery()
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""

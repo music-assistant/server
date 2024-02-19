@@ -57,7 +57,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = SnapCastProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -106,7 +106,7 @@ class SnapCastProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return (ProviderFeature.SYNC_PLAYERS,)
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.snapcast_server_host = self.config.get_value(CONF_SNAPCAST_SERVER_HOST)
         self.snapcast_server_control_port = self.config.get_value(CONF_SNAPCAST_SERVER_CONTROL_PORT)
@@ -119,7 +119,6 @@ class SnapCastProvider(PlayerProvider):
                 reconnect=True,
             )
             self._snapserver.set_on_update_callback(self._handle_update)
-            self._handle_update()
             self.logger.info(
                 f"Started Snapserver connection on:"
                 f"{self.snapcast_server_host}:{self.snapcast_server_control_port}"
@@ -127,6 +126,17 @@ class SnapCastProvider(PlayerProvider):
         except OSError as err:
             msg = "Unable to start the Snapserver connection ?"
             raise SetupFailedError(msg) from err
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        # initial load of players
+        self._handle_update()
+
+    async def unload(self) -> None:
+        """Handle close/cleanup of the provider."""
+        for client in self._snapserver.clients:
+            await self.cmd_stop(client.identifier)
+        await self._snapserver.stop()
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -189,12 +199,6 @@ class SnapCastProvider(PlayerProvider):
         elif stream := self._get_snapstream(player_id):
             player.active_source = stream.name
         self.mass.players.register_or_update(player)
-
-    async def unload(self) -> None:
-        """Handle close/cleanup of the provider."""
-        for client in self._snapserver.clients:
-            await self.cmd_stop(client.identifier)
-        await self._snapserver.stop()
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""

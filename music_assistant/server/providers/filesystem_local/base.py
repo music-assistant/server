@@ -12,10 +12,7 @@ from typing import TYPE_CHECKING
 import cchardet
 import xmltodict
 
-from music_assistant.common.helpers.util import (
-    create_sort_name,
-    parse_title_and_version,
-)
+from music_assistant.common.helpers.util import create_sort_name, parse_title_and_version
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigEntryType,
@@ -158,7 +155,7 @@ class FileSystemProviderBase(MusicProvider):
         return SUPPORTED_FEATURES
 
     @abstractmethod
-    async def handle_setup(self) -> None:
+    async def async_setup(self) -> None:
         """Handle async initialization of the provider."""
 
     @abstractmethod

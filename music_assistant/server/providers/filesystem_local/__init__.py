@@ -48,7 +48,7 @@ async def setup(
         msg = f"Music Directory {conf_path} does not exist"
         raise SetupFailedError(msg)
     prov = LocalFileSystemProvider(mass, manifest, config)
-    await prov.handle_setup()
+    prov.base_path = config.get_value(CONF_PATH)
     return prov
 
 
@@ -98,10 +98,6 @@ class LocalFileSystemProvider(FileSystemProviderBase):
     """Implementation of a musicprovider for local files."""
 
     base_path: str
-
-    async def handle_setup(self) -> None:
-        """Handle async initialization of the provider."""
-        self.base_path = self.config.get_value(CONF_PATH)
 
     async def listdir(
         self, path: str, recursive: bool = False

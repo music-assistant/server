@@ -90,9 +90,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = ChromecastProvider(mass, manifest, config)
-    await prov.handle_setup()
-    return prov
+    return ChromecastProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -135,8 +133,11 @@ class ChromecastProvider(PlayerProvider):
     castplayers: dict[str, CastPlayer]
     _discover_lock: threading.Lock
 
-    async def handle_setup(self) -> None:
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
         """Handle async initialization of the provider."""
+        super.__init__(mass, manifest, config)
         self._discover_lock = threading.Lock()
         self.castplayers = {}
         self.mz_mgr = MultizoneManager()
@@ -150,6 +151,9 @@ class ChromecastProvider(PlayerProvider):
         )
         # silence pychromecast logging
         logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
         # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 

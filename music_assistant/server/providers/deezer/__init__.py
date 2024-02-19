@@ -124,7 +124,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = DeezerProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -176,8 +176,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     credentials: DeezerCredentials
     user: deezer.User
 
-    async def handle_setup(self) -> None:
-        """Set up the Deezer provider."""
+    async def handle_async_init(self) -> None:
+        """Handle async init of the Deezer provider."""
         self.credentials = DeezerCredentials(
             app_id=DEEZER_APP_ID,
             app_secret=DEEZER_APP_SECRET,

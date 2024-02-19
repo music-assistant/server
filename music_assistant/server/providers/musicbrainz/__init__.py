@@ -47,7 +47,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = MusicbrainzProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -203,7 +203,7 @@ class MusicbrainzProvider(MetadataProvider):
 
     throttler: Throttler
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
         self.throttler = Throttler(rate_limit=1, period=1)

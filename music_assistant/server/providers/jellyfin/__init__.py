@@ -109,7 +109,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = JellyfinProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -159,7 +159,7 @@ class JellyfinProvider(MusicProvider):
 
     # _jellyfin_server : JellyfinClient = None
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Initialize provider(instance) with given configuration."""
         logging.getLogger("pytube").setLevel(self.logger.level + 10)
         logging.getLogger("ytmusicapi").setLevel(self.logger.level + 10)

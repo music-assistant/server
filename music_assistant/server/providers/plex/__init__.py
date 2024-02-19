@@ -83,7 +83,7 @@ async def setup(
         raise LoginFailed(msg)
 
     prov = PlexProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -199,7 +199,7 @@ class PlexProvider(MusicProvider):
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)

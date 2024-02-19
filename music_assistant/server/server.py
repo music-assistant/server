@@ -420,7 +420,7 @@ class MusicAssistant:
                 )
                 raise SetupFailedError(msg)
 
-        # try to load the module
+        # try to setup the module
         prov_mod = await get_provider_module(domain)
         try:
             async with asyncio.timeout(30):
@@ -436,6 +436,7 @@ class MusicAssistant:
         )
         provider.available = True
         self._providers[provider.instance_id] = provider
+        self.create_task(provider.loaded_in_mass())
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         # if this is a music provider, start sync

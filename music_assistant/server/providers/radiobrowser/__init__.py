@@ -46,7 +46,7 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     prov = RadioBrowserProvider(mass, manifest, config)
 
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -74,7 +74,7 @@ class RadioBrowserProvider(MusicProvider):
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.radios = RadioBrowser(
             session=self.mass.http_session, user_agent=f"MusicAssistant/{self.mass.version}"

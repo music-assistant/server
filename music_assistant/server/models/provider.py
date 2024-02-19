@@ -51,8 +51,8 @@ class Provider:
         """Return the features supported by this Provider."""
         return ()
 
-    async def handle_setup(self) -> None:
-        """Handle async initialization of the provider."""
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
 
     async def unload(self) -> None:
         """

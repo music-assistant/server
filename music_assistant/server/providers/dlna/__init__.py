@@ -113,7 +113,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = DLNAPlayerProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -277,7 +277,7 @@ class DLNAPlayerProvider(PlayerProvider):
     upnp_factory: UpnpFactory
     notify_server: DLNANotifyServer
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
@@ -286,7 +286,10 @@ class DLNAPlayerProvider(PlayerProvider):
         self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
-        self.mass.create_task(self._run_discovery())
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await self._run_discovery()
 
     async def unload(self) -> None:
         """

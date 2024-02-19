@@ -142,8 +142,12 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
+    hass_prov: HomeAssistantProvider = mass.get_provider(HASS_DOMAIN)
+    if not hass_prov:
+        msg = "The Home Assistant Plugin needs to be set-up first"
+        raise SetupFailedError(msg)
     prov = HomeAssistantPlayers(mass, manifest, config)
-    await prov.handle_setup()
+    prov.hass_prov = hass_prov
     return prov
 
 
@@ -185,24 +189,21 @@ class HomeAssistantPlayers(PlayerProvider):
 
     hass_prov: HomeAssistantProvider
 
-    async def handle_setup(self) -> None:
-        """Handle async initialization of the plugin."""
-        hass_prov: HomeAssistantProvider = self.mass.get_provider(HASS_DOMAIN)
-        if not hass_prov:
-            msg = "The Home Assistant Plugin needs to be set-up first"
-            raise SetupFailedError(msg)
-        self.hass_prov = hass_prov
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
         player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
         # prefetch the device- and entity registry
-        device_registry = {x["id"]: x for x in await hass_prov.hass.get_device_registry()}
-        entity_registry = {x["entity_id"]: x for x in await hass_prov.hass.get_entity_registry()}
+        device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
+        entity_registry = {
+            x["entity_id"]: x for x in await self.hass_prov.hass.get_entity_registry()
+        }
         # setup players from hass entities
-        async for state in _get_hass_media_players(hass_prov):
+        async for state in _get_hass_media_players(self.hass_prov):
             if state["entity_id"] not in player_ids:
                 continue
             await self._setup_player(state, entity_registry, device_registry)
         # register for entity state updates
-        await hass_prov.hass.subscribe_entities(self._on_entity_state_update, player_ids)
+        await self.hass_prov.hass.subscribe_entities(self._on_entity_state_update, player_ids)
         # remove any leftover players (after reconfigure of players)
         for player in self.players:
             if player.player_id not in player_ids:
