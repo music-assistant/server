@@ -13,17 +13,10 @@ from typing import TYPE_CHECKING
 from uuid import UUID
 
 import pychromecast
-from pychromecast.controllers.media import (
-    STREAM_TYPE_BUFFERED,
-    STREAM_TYPE_LIVE,
-    MediaController,
-)
+from pychromecast.controllers.media import STREAM_TYPE_BUFFERED, STREAM_TYPE_LIVE, MediaController
 from pychromecast.controllers.multizone import MultizoneController, MultizoneManager
 from pychromecast.discovery import CastBrowser, SimpleCastListener
-from pychromecast.socket_client import (
-    CONNECTION_STATUS_CONNECTED,
-    CONNECTION_STATUS_DISCONNECTED,
-)
+from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_STATUS_DISCONNECTED
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -41,13 +34,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_FLOW_MODE,
-    CONF_LOG_LEVEL,
-    CONF_PLAYERS,
-    MASS_LOGO_ONLINE,
-)
+from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE, CONF_PLAYERS, MASS_LOGO_ONLINE
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -58,10 +45,7 @@ if TYPE_CHECKING:
     from pychromecast.models import CastInfo
     from pychromecast.socket_client import ConnectionStatus
 
-    from music_assistant.common.models.config_entries import (
-        PlayerConfig,
-        ProviderConfig,
-    )
+    from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
@@ -165,11 +149,7 @@ class ChromecastProvider(PlayerProvider):
             self.mass.zeroconf,
         )
         # silence pychromecast logging
-        log_level = self.config.get_value(CONF_LOG_LEVEL)
-        if log_level == "DEBUG":
-            logging.getLogger("pychromecast").setLevel(logging.DEBUG)
-        else:
-            logging.getLogger("pychromecast").setLevel(logging.INFO)
+        logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
         # start discovery in executor
         await self.mass.loop.run_in_executor(None, self.browser.start_discovery)
 

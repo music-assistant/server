@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import platform
 import socket
@@ -246,7 +247,6 @@ class AirPlayPlayer(DeviceListener):
         def send_data():
             with open(named_pipe, "w") as f:
                 f.write(command)
-                f.flush()
 
         self.logger.debug("sending command %s", command)
         await self.mass.create_task(send_data)
@@ -490,6 +490,8 @@ class AirplayProvider(PlayerProvider):
         self._cliraop_bin = await self.get_cliraop_binary()
         self.mass.create_task(self._run_discovery())
         dacp_port = await select_free_port(39831, 49831)
+        # the pyatv logger is way to noisy, silence it a bit
+        logging.getLogger("pyatv").setLevel(self.logger.level + 10)
         self.dacp_id = dacp_id = f"{randrange(2 ** 64):X}"
         self.logger.debug("Starting DACP ActiveRemote %s on port %s", dacp_id, dacp_port)
         self._dacp_server = await asyncio.start_server(
@@ -740,11 +742,6 @@ class AirplayProvider(PlayerProvider):
                         if prev_metadata_checksum != metadata_checksum:
                             prev_metadata_checksum = metadata_checksum
                             self.mass.create_task(self._send_metadata(player_id))
-                    # send progress metadata
-                    for atv_player in self._get_sync_clients(player_id):
-                        self.mass.create_task(
-                            atv_player.send_cli_command(f"PROGRESS={int(queue.elapsed_time)}\n")
-                        )
 
                     # send audio chunk to player(s)
                     async with asyncio.TaskGroup() as tg:
@@ -757,6 +754,15 @@ class AirplayProvider(PlayerProvider):
                             tg.create_task(atv_player.cliraop_proc.write(pcm_chunk))
                         if not available_clients:
                             return
+
+                        # send progress metadata
+                        if queue.elapsed_time:
+                            for atv_player in self._get_sync_clients(player_id):
+                                tg.create_task(
+                                    atv_player.send_cli_command(
+                                        f"PROGRESS={int(queue.elapsed_time)}\n"
+                                    )
+                                )
 
             finally:
                 self.logger.debug("Streamer task ended for player %s", queue.display_name)
@@ -799,7 +805,7 @@ class AirplayProvider(PlayerProvider):
         atv_player = self._atv_players[player_id]
         if atv_player.cliraop_proc:
             # prefer interactive command to our streamer
-            await atv_player.send_cli_command(f"VOLUME={volume_level}")
+            await atv_player.send_cli_command(f"VOLUME={volume_level}\n")
         elif atv := atv_player.atv:
             await atv.audio.set_volume(volume_level)
 
@@ -848,7 +854,7 @@ class AirplayProvider(PlayerProvider):
         try:
             self._discovery_running = True
             self.logger.debug("Airplay discovery started...")
-            discovered_devices = await scan(self.mass.loop, timeout=5)
+            discovered_devices = await scan(self.mass.loop, protocol=Protocol.RAOP, timeout=30)
 
             if not discovered_devices:
                 self.logger.debug("No devices found")
@@ -996,6 +1002,8 @@ class AirplayProvider(PlayerProvider):
         sync_adjust = self.mass.config.get_raw_player_config_value(
             atv_player.player_id, CONF_SYNC_ADJUST, 0
         )
+        if self.logger.level == logging.DEBUG:
+            extra_args += ["-d", "5"]
 
         atv_player.optimistic_state = PlayerState.PLAYING
         # always generate a new active remote id to prevent race conditions
@@ -1027,8 +1035,6 @@ class AirplayProvider(PlayerProvider):
             args, enable_stdin=True, enable_stdout=False, enable_stderr=True
         )
         await atv_player.cliraop_proc.start()
-        # send empty command to unblock named pipe
-        await atv_player.send_cli_command("\n")
         atv_player.cliraop_proc.attach_task(log_watcher(atv_player.cliraop_proc))
 
     async def _send_metadata(self, player_id: str) -> None:
@@ -1061,26 +1067,22 @@ class AirplayProvider(PlayerProvider):
         for atv_player in self._get_sync_clients(player_id):
             await atv_player.send_cli_command(cmd)
 
-        # temp test for not sending artwork
-        exists_func = wrap(os.path.exists)
-        if await exists_func("/tmp/do_not_send_artwork"):  # noqa: S108
-            return
-
         # get image
         if not queue.current_item.image:
             return
-        image_path = f"/tmp/{shortuuid.random(12)}"  # noqa: S108
+        temp_image_path = f"/tmp/{shortuuid.random(12)}"  # noqa: S108
         image_data = await self.mass.metadata.get_thumbnail(
             queue.current_item.image.path,
             512,
             queue.current_item.image.provider,
         )
-        async with aiofiles.open(image_path, "wb") as outfile:
+        if not image_data:
+            return
+        async with aiofiles.open(temp_image_path, "wb") as outfile:
             await outfile.write(image_data)
         for atv_player in self._get_sync_clients(player_id):
-            if image_path:
-                await atv_player.send_cli_command(f"ARTWORK={image_path}\n")
+            await atv_player.send_cli_command(f"ARTWORK={temp_image_path}\n")
         # make sure the temp file gets deleted again
-        await asyncio.sleep(10)
+        await asyncio.sleep(30)
         rm_func = wrap(os.remove)
-        await rm_func(image_path)
+        await rm_func(temp_image_path)

@@ -25,7 +25,7 @@ class Provider:
         self.manifest = manifest
         self.config = config
         mass_logger = logging.getLogger(ROOT_LOGGER_NAME)
-        self.logger = mass_logger.getChild(f"providers.{self.domain}")
+        self.logger = mass_logger.getChild(f"providers.{self.instance_id}")
         log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
