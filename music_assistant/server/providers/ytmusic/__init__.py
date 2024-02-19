@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 from collections.abc import AsyncGenerator  # noqa: TCH003
 from operator import itemgetter
@@ -189,6 +190,7 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def handle_setup(self) -> None:
         """Set up the YTMusic provider."""
+        logging.getLogger("pytube").setLevel(self.logger.level + 10)
         if not self.config.get_value(CONF_AUTH_TOKEN):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
