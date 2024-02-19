@@ -45,7 +45,7 @@ from music_assistant.server.helpers.util import (
     is_hass_supervisor,
 )
 
-from .models import ProviderInstanceType  # noqa: TCH001
+from .models import ProviderInstanceType
 
 if TYPE_CHECKING:
     from types import TracebackType

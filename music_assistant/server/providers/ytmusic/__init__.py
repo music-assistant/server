@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
-from collections.abc import AsyncGenerator  # noqa: TCH003
+from collections.abc import AsyncGenerator
 from operator import itemgetter
 from time import time
 from typing import TYPE_CHECKING

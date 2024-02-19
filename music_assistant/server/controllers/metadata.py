@@ -329,9 +329,11 @@ class MetaDataController(CoreController):
 
         return None
 
-    def get_image_url(self, image: MediaItemImage, size: int = 0) -> str:
+    def get_image_url(
+        self, image: MediaItemImage, size: int = 0, prefer_proxy: bool = False
+    ) -> str:
         """Get (proxied) URL for MediaItemImage."""
-        if image.provider != "url":
+        if image.provider != "url" or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))

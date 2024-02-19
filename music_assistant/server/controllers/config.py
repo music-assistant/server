@@ -320,13 +320,11 @@ class ConfigController:
     async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
         available_providers = {x.instance_id for x in self.mass.providers}
-        # add both domain and instance id
-        available_providers.update({x.domain for x in self.mass.providers})
         return [
             await self.get_player_config(raw_conf["player_id"])
             for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
             # filter out unavailable providers
-            if self.mass.get_provider(raw_conf["provider"])
+            if raw_conf["provider"] in available_providers
             # optional provider filter
             and (provider in (None, raw_conf["provider"]))
         ]

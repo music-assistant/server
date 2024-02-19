@@ -168,6 +168,12 @@ class PlayerController(CoreController):
             msg = f"Player {player_id} is already registered"
             raise AlreadyRegisteredError(msg)
 
+        # make sure that the player's provider is set to the instance id
+        if prov := self.mass.get_provider(player.provider):
+            player.provider = prov.instance_id
+        else:
+            raise RuntimeError("Invalid provider ID given: %s", player.provider)
+
         # make sure a default config exists
         self.mass.config.create_default_player_config(
             player_id, player.provider, player.name, player.enabled_by_default
@@ -203,6 +209,7 @@ class PlayerController(CoreController):
             return
 
         if player.player_id in self._players:
+            self._players[player.player_id] = player
             self.update(player.player_id)
             return
 
@@ -665,6 +672,12 @@ class PlayerController(CoreController):
         elif child_player.state == PlayerState.PLAYING:
             # stop child player if it is currently playing
             await self.cmd_stop(player_id)
+        if player_id not in parent_player.can_sync_with:
+            raise RuntimeError(
+                "Player %s can not be synced with %s",
+                child_player.display_name,
+                parent_player.display_name,
+            )
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_sync(player_id, target_player)
@@ -695,6 +708,8 @@ class PlayerController(CoreController):
         # all checks passed, forward command to the player provider
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_unsync(player_id)
+        # reset active_source just in case
+        player.active_source = None
 
     @api_command("players/create_group")
     async def create_group(self, provider: str, name: str, members: list[str]) -> Player:
