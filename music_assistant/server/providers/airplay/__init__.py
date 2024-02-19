@@ -254,7 +254,6 @@ class AirPlayPlayer(DeviceListener):
         def send_data():
             with open(named_pipe, "w") as f:
                 f.write(command)
-                f.flush()
 
         self.logger.debug("sending command %s", command)
         await self.mass.create_task(send_data)
@@ -750,11 +749,6 @@ class AirplayProvider(PlayerProvider):
                         if prev_metadata_checksum != metadata_checksum:
                             prev_metadata_checksum = metadata_checksum
                             self.mass.create_task(self._send_metadata(player_id))
-                    # send progress metadata
-                    for atv_player in self._get_sync_clients(player_id):
-                        self.mass.create_task(
-                            atv_player.send_cli_command(f"PROGRESS={int(queue.elapsed_time)}\n")
-                        )
 
                     # send audio chunk to player(s)
                     async with asyncio.TaskGroup() as tg:
@@ -767,6 +761,15 @@ class AirplayProvider(PlayerProvider):
                             tg.create_task(atv_player.cliraop_proc.write(pcm_chunk))
                         if not available_clients:
                             return
+
+                        # send progress metadata
+                        if queue.elapsed_time:
+                            for atv_player in self._get_sync_clients(player_id):
+                                tg.create_task(
+                                    atv_player.send_cli_command(
+                                        f"PROGRESS={int(queue.elapsed_time)}\n"
+                                    )
+                                )
 
             finally:
                 self.logger.debug("Streamer task ended for player %s", queue.display_name)
@@ -809,7 +812,7 @@ class AirplayProvider(PlayerProvider):
         atv_player = self._atv_players[player_id]
         if atv_player.cliraop_proc:
             # prefer interactive command to our streamer
-            await atv_player.send_cli_command(f"VOLUME={volume_level}")
+            await atv_player.send_cli_command(f"VOLUME={volume_level}\n")
         elif atv := atv_player.atv:
             await atv.audio.set_volume(volume_level)
 
@@ -1039,8 +1042,6 @@ class AirplayProvider(PlayerProvider):
             args, enable_stdin=True, enable_stdout=False, enable_stderr=True
         )
         await atv_player.cliraop_proc.start()
-        # send empty command to unblock named pipe
-        await atv_player.send_cli_command("\n")
         atv_player.cliraop_proc.attach_task(log_watcher(atv_player.cliraop_proc))
 
     async def _send_metadata(self, player_id: str) -> None:
