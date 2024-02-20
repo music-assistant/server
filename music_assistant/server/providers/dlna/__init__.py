@@ -251,7 +251,7 @@ class DLNAPlayer:
         return PlayerState.IDLE
 
     @staticmethod
-    def get_supported_features(device: DmrDevice) -> set(PlayerFeature):
+    def get_supported_features(device: DmrDevice) -> set[PlayerFeature]:
         """Get player features that are supported at this moment.
 
         Supported features may change as the device enters different states.
