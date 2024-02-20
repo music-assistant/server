@@ -551,7 +551,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
             LOGGER.debug("Error while parsing radio URL %s: %s", url, err)
 
     result = (url, supports_icy)
-    await mass.cache.set(cache_key, result)
+    await mass.cache.set(cache_key, result, expiration=86400)
     return result
 
 
