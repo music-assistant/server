@@ -24,11 +24,7 @@ from music_assistant.common.models.enums import (
     ProviderType,
 )
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
-from music_assistant.common.models.media_items import (
-    BrowseFolder,
-    MediaItemType,
-    SearchResults,
-)
+from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.constants import (
     DB_SCHEMA_VERSION,
@@ -600,6 +596,8 @@ class MusicController(CoreController):
         def on_sync_task_done(task: asyncio.Task) -> None:
             self.in_progress_syncs.remove(sync_spec)
             if task_err := task.exception():
+                if task.cancelled():
+                    return
                 self.logger.warning(
                     "Sync task for %s completed with errors",
                     provider.name,

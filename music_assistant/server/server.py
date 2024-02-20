@@ -452,7 +452,7 @@ class MusicAssistant:
             # remove mdns discovery if needed
             if provider.manifest.mdns_discovery:
                 for mdns_type in provider.manifest.mdns_discovery:
-                    self.aiobrowser.types.discard(mdns_type)
+                    self._aiobrowser.types.discard(mdns_type)
             # make sure to stop any running sync tasks first
             for sync_task in self.music.in_progress_syncs:
                 if sync_task.provider_instance == instance_id:
