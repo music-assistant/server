@@ -122,7 +122,7 @@ class SpotifyProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._throttler = Throttler(rate_limit=1, period=0.1)
+        self._throttler = Throttler(rate_limit=1, period=1)
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
         # try to get a token, raise if that fails
@@ -742,7 +742,7 @@ class SpotifyProvider(MusicProvider):
                 async with self.mass.http_session.get(
                     url, headers=headers, params=kwargs, ssl=False, timeout=120
                 ) as response:
-                    # get text before json so we can log the body in case of errorrs
+                    # get text before json so we can log the body in case of errors
                     result = await response.text()
                     result = json_loads(result)
                     if "error" in result or ("status" in result and "error" in result["status"]):

@@ -238,7 +238,7 @@ class PlayerController(CoreController):
         if player_id not in self._players:
             return
         player = self._players[player_id]
-        # calculate active_source
+        # calculate active_source (if needed)
         player.active_source = self._get_active_source(player)
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
@@ -534,6 +534,7 @@ class PlayerController(CoreController):
                 elif member.active_source == group_player.player_id:
                     # turn off child player when group turns off
                     tg.create_task(self.cmd_power(member.player_id, False))
+                    member.active_source = None
             # edge case: group turned on but no members are powered, power them all!
             if not members_powered and power:
                 for member in self.iter_group_members(group_player, only_powered=False):
@@ -789,9 +790,14 @@ class PlayerController(CoreController):
         """Return the active_source id for given player."""
         # if player is synced, return group leader's active source
         if player.synced_to and (parent_player := self.get(player.synced_to)):
-            return parent_player.player_id
-        if active_player_group := self._get_active_player_group(player):
-            return active_player_group.player_id
+            return parent_player.active_source
+        # fallback to the first active group player
+        if player.powered:
+            for group_player in self._get_player_groups(
+                player, available_only=True, powered_only=True
+            ):
+                if group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+                    return group_player.active_source
         # defaults to the player's own player id if not active source set
         return player.active_source or player.player_id
 
