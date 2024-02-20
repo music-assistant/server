@@ -25,7 +25,7 @@ from music_assistant.common.models.config_entries import (
     ConfigValueOption,
     ConfigValueType,
 )
-from music_assistant.common.models.enums import ConfigEntryType, ContentType
+from music_assistant.common.models.enums import ConfigEntryType, ContentType, MediaType
 from music_assistant.common.models.errors import MediaNotFoundError, QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.constants import (
@@ -515,7 +515,7 @@ class StreamsController(CoreController):
             # feed stdin with pcm audio chunks from origin
             async def read_audio() -> None:
                 try:
-                    async for chunk in get_media_stream(
+                    async for _, chunk in get_media_stream(
                         self.mass,
                         streamdetails=queue_item.streamdetails,
                         pcm_format=pcm_format,
@@ -777,6 +777,8 @@ class StreamsController(CoreController):
         use_crossfade = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_CROSSFADE, False
         )
+        if start_queue_item.media_type != MediaType.TRACK:
+            use_crossfade = False
         pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
         self.logger.info(
             "Start Queue Flow stream for Queue %s - crossfade: %s",
@@ -814,12 +816,13 @@ class StreamsController(CoreController):
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             queue_track.streamdetails.seconds_skipped = seek_position
-            buffer_size = crossfade_size if use_crossfade else int(pcm_sample_size * 2)
+            buffer_size = int(pcm_sample_size * 2)  # 2 seconds
+            if use_crossfade:
+                buffer_size += crossfade_size
             bytes_written = 0
             buffer = b""
-            chunk_num = 0
             # handle incoming audio chunks
-            async for chunk in get_media_stream(
+            async for is_last_chunk, chunk in get_media_stream(
                 self.mass,
                 queue_track.streamdetails,
                 pcm_format=pcm_format,
@@ -829,23 +832,24 @@ class StreamsController(CoreController):
                 strip_silence_begin=use_crossfade,
                 strip_silence_end=use_crossfade,
             ):
-                chunk_num += 1
-
-                # throttle buffer, do not allow more than 30 seconds in buffer
+                # throttle buffer, do not allow more than 30 seconds in player's own buffer
                 seconds_buffered = (total_bytes_written + bytes_written) / pcm_sample_size
                 player = self.mass.players.get(queue.queue_id)
                 if seconds_buffered > 60 and player.corrected_elapsed_time > 30:
                     while (seconds_buffered - player.corrected_elapsed_time) > 30:
                         await asyncio.sleep(1)
 
-                ####  HANDLE FIRST PART OF TRACK
+                # ALWAYS APPEND CHUNK TO BUFFER
+                buffer += chunk
+                if not is_last_chunk and len(buffer) < buffer_size:
+                    # buffer is not full enough, move on
+                    continue
 
-                # buffer full for crossfade
-                if last_fadeout_part and (len(buffer) >= buffer_size):
-                    first_part = buffer + chunk
+                ####  HANDLE CROSSFADE OF PREVIOUS TRACK AND NEW TRACK
+                if not is_last_chunk and last_fadeout_part:
                     # perform crossfade
-                    fadein_part = first_part[:crossfade_size]
-                    remaining_bytes = first_part[crossfade_size:]
+                    fadein_part = buffer[:crossfade_size]
+                    remaining_bytes = buffer[crossfade_size:]
                     crossfade_part = await crossfade_pcm_parts(
                         fadein_part,
                         last_fadeout_part,
@@ -855,39 +859,37 @@ class StreamsController(CoreController):
                     # send crossfade_part
                     yield crossfade_part
                     bytes_written += len(crossfade_part)
-                    # also write the leftover bytes from the strip action
+                    # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
                         yield remaining_bytes
                         bytes_written += len(remaining_bytes)
-
+                        del remaining_bytes
                     # clear vars
                     last_fadeout_part = b""
                     buffer = b""
-                    continue
 
-                # enough data in buffer, feed to output
-                if len(buffer) >= (buffer_size * 2):
-                    yield buffer[:buffer_size]
-                    bytes_written += buffer_size
-                    buffer = buffer[buffer_size:] + chunk
-                    continue
+                #### HANDLE END OF TRACK
+                elif is_last_chunk:
+                    if use_crossfade:
+                        # if crossfade is enabled, save fadeout part to pickup for next track
+                        last_fadeout_part = buffer[-crossfade_size:]
+                        remaining_bytes = buffer[:-crossfade_size]
+                        yield remaining_bytes
+                        bytes_written += len(remaining_bytes)
+                        del remaining_bytes
+                    else:
+                        # no crossfade enabled, just yield the (entire) buffer last part
+                        yield buffer
+                        bytes_written += len(buffer)
+                    # clear vars
+                    buffer = b""
 
-                # all other: fill buffer
-                buffer += chunk
-                continue
-
-            #### HANDLE END OF TRACK
-
-            if buffer and use_crossfade:
-                # if crossfade is enabled, save fadeout part to pickup for next track
-                last_fadeout_part = buffer[-crossfade_size:]
-                remaining_bytes = buffer[:-crossfade_size]
-                yield remaining_bytes
-                bytes_written += len(remaining_bytes)
-            elif buffer:
-                # no crossfade enabled, just yield the buffer last part
-                yield buffer
-                bytes_written += len(buffer)
+                #### OTHER: enough data in buffer, feed to output
+                else:
+                    chunk_size = len(chunk)
+                    yield buffer[:chunk_size]
+                    bytes_written += chunk_size
+                    buffer = buffer[chunk_size:]
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping

@@ -78,7 +78,6 @@ class MusicAssistant:
     loop: asyncio.AbstractEventLoop
     http_session: ClientSession
     aiozc: AsyncZeroconf
-    aiobrowser: AsyncServiceBrowser
     config: ConfigController
     webserver: WebserverController
     cache: CacheController
@@ -87,6 +86,7 @@ class MusicAssistant:
     players: PlayerController
     player_queues: PlayerQueuesController
     streams: StreamsController
+    _aiobrowser: AsyncServiceBrowser
 
     def __init__(self, storage_path: str) -> None:
         """Initialize the MusicAssistant Server."""
@@ -109,11 +109,6 @@ class MusicAssistant:
         # create shared zeroconf instance
         # TODO: enumerate interfaces and enable IPv6 support
         self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
-        # self.aiobrowser = AsyncServiceBrowser(
-        #     self.aiozc.zeroconf,
-        #     [],
-        #     handlers=[self._on_mdns_service_state_change],
-        # )
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
@@ -154,10 +149,10 @@ class MusicAssistant:
         await self.streams.setup(await self.config.get_core_config("streams"))
         # register all api commands (methods with decorator)
         self._register_api_commands()
-        # setup discovery
-        self.create_task(self._setup_discovery())
         # load providers
         await self._load_providers()
+        # setup discovery
+        self.create_task(self._setup_discovery())
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -454,6 +449,10 @@ class MusicAssistant:
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""
         if provider := self._providers.get(instance_id):
+            # remove mdns discovery if needed
+            if provider.manifest.mdns_discovery:
+                for mdns_type in provider.manifest.mdns_discovery:
+                    self.aiobrowser.types.discard(mdns_type)
             # make sure to stop any running sync tasks first
             for sync_task in self.music.in_progress_syncs:
                 if sync_task.provider_instance == instance_id:
@@ -573,10 +572,20 @@ class MusicAssistant:
                 tg.create_task(load_provider_manifest(dir_str, dir_path))
 
     async def _setup_discovery(self) -> None:
-        """Make this Music Assistant instance discoverable on the network."""
+        """Handle setup of MDNS discovery."""
+        # create a global mdns browser
+        all_types: set[str] = set()
+        for prov_manifest in self._provider_manifests.values():
+            if prov_manifest.mdns_discovery:
+                all_types.update(prov_manifest.mdns_discovery)
+        self._aiobrowser = AsyncServiceBrowser(
+            self.aiozc.zeroconf,
+            list(all_types),
+            handlers=[self._on_mdns_service_state_change],
+        )
+        # register MA itself on mdns to be discovered
         zeroconf_type = "_mass._tcp.local."
         server_id = self.server_id
-        # register MA on mdns to be discovered
         LOGGER.debug("Starting Zeroconf broadcast...")
         info = AsyncServiceInfo(
             zeroconf_type,
@@ -606,6 +615,21 @@ class MusicAssistant:
         state_change: ServiceStateChange,
     ) -> None:
         """Handle MDNS service state callback."""
+
+        async def process_mdns_state_change(prov: ProviderInstanceType):
+            if state_change == ServiceStateChange.Removed:
+                info = None
+            else:
+                info = AsyncServiceInfo(service_type, name)
+                await info.async_request(zeroconf, 3000)
+            await prov.on_mdns_service_state_change(name, state_change, info)
+
+        LOGGER.debug(f"Service {name} of type {service_type} state changed: {state_change}")
+        for prov in self._providers.values():
+            if not prov.manifest.mdns_discovery:
+                continue
+            if service_type in prov.manifest.mdns_discovery:
+                self.create_task(process_mdns_state_change(prov))
 
     async def __aenter__(self) -> Self:
         """Return Context manager."""
