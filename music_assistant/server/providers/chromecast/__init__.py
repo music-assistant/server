@@ -137,7 +137,7 @@ class ChromecastProvider(PlayerProvider):
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Handle async initialization of the provider."""
-        super.__init__(mass, manifest, config)
+        super().__init__(mass, manifest, config)
         self._discover_lock = threading.Lock()
         self.castplayers = {}
         self.mz_mgr = MultizoneManager()
@@ -147,7 +147,7 @@ class ChromecastProvider(PlayerProvider):
                 remove_callback=self._on_chromecast_removed,
                 update_callback=self._on_chromecast_discovered,
             ),
-            self.mass.zeroconf,
+            self.mass.aiozc.zeroconf,
         )
         # silence pychromecast logging
         logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
@@ -395,7 +395,7 @@ class ChromecastProvider(PlayerProvider):
                 return
             # new player discovered
             cast_info = ChromecastInfo.from_cast_info(disc_info)
-            cast_info.fill_out_missing_chromecast_info(self.mass.zeroconf)
+            cast_info.fill_out_missing_chromecast_info(self.mass.aiozc.zeroconf)
             if cast_info.is_dynamic_group:
                 self.logger.debug("Discovered a dynamic cast group which will be ignored.")
                 return
@@ -418,7 +418,7 @@ class ChromecastProvider(PlayerProvider):
                 cast_info=cast_info,
                 cc=pychromecast.get_chromecast_from_cast_info(
                     disc_info,
-                    self.mass.zeroconf,
+                    self.mass.aiozc.zeroconf,
                 ),
                 player=Player(
                     player_id=player_id,

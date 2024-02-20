@@ -12,7 +12,8 @@ from uuid import uuid4
 
 import aiofiles
 from aiohttp import ClientSession, TCPConnector
-from zeroconf import InterfaceChoice, NonUniqueNameException, ServiceInfo, Zeroconf
+from zeroconf import IPVersion, NonUniqueNameException, ServiceStateChange, Zeroconf
+from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
 from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.api import ServerInfoMessage
@@ -76,7 +77,8 @@ class MusicAssistant:
 
     loop: asyncio.AbstractEventLoop
     http_session: ClientSession
-    zeroconf: Zeroconf
+    aiozc: AsyncZeroconf
+    aiobrowser: AsyncServiceBrowser
     config: ConfigController
     webserver: WebserverController
     cache: CacheController
@@ -105,7 +107,13 @@ class MusicAssistant:
         self.running_as_hass_addon = await is_hass_supervisor()
         self.version = await get_package_version("music_assistant")
         # create shared zeroconf instance
-        self.zeroconf = Zeroconf(interfaces=InterfaceChoice.All)
+        # TODO: enumerate interfaces and enable IPv6 support
+        self.aiozc = AsyncZeroconf(ip_version=IPVersion.V4Only)
+        # self.aiobrowser = AsyncServiceBrowser(
+        #     self.aiozc.zeroconf,
+        #     [],
+        #     handlers=[self._on_mdns_service_state_change],
+        # )
         # create shared aiohttp ClientSession
         self.http_session = ClientSession(
             loop=self.loop,
@@ -568,8 +576,9 @@ class MusicAssistant:
         """Make this Music Assistant instance discoverable on the network."""
         zeroconf_type = "_mass._tcp.local."
         server_id = self.server_id
-
-        info = ServiceInfo(
+        # register MA on mdns to be discovered
+        LOGGER.debug("Starting Zeroconf broadcast...")
+        info = AsyncServiceInfo(
             zeroconf_type,
             name=f"{server_id}.{zeroconf_type}",
             addresses=[await get_ip_pton(self.webserver.publish_ip)],
@@ -577,18 +586,26 @@ class MusicAssistant:
             properties=self.get_server_info().to_dict(),
             server="mass.local.",
         )
-        LOGGER.debug("Starting Zeroconf broadcast...")
         try:
             existing = getattr(self, "mass_zc_service_set", None)
             if existing:
-                await self.zeroconf.async_update_service(info)
+                await self.aiozc.async_update_service(info)
             else:
-                await self.zeroconf.async_register_service(info)
+                await self.aiozc.async_register_service(info)
             self.mass_zc_service_set = True
         except NonUniqueNameException:
             LOGGER.exception(
                 "Music Assistant instance with identical name present in the local network!"
             )
+
+    def _on_mdns_service_state_change(
+        self,
+        zeroconf: Zeroconf,  # pylint: disable=unused-argument
+        service_type: str,
+        name: str,
+        state_change: ServiceStateChange,
+    ) -> None:
+        """Handle MDNS service state callback."""
 
     async def __aenter__(self) -> Self:
         """Return Context manager."""

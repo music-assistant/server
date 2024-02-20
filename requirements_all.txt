@@ -7,7 +7,7 @@ aiohttp==3.9.3
 aiorun==2023.7.2
 aioslimproto==2.3.3
 aiosqlite==0.19.0
-async-upnp-client==0.38.1
+async-upnp-client==0.38.2
 asyncio-throttle==1.0.2
 colorlog==6.8.2
 cryptography==42.0.2
@@ -21,7 +21,7 @@ jellyfin_apiclient_python==1.9.2
 mashumaro==3.12
 memory-tempfile==2.2.3
 music-assistant-frontend==2.2.2
-orjson==3.9.13
+orjson==3.9.14
 pillow==10.2.0
 plexapi==4.15.9
 py-opensonic>=5.0.5
