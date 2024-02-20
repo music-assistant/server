@@ -595,9 +595,9 @@ class MusicController(CoreController):
 
         def on_sync_task_done(task: asyncio.Task) -> None:
             self.in_progress_syncs.remove(sync_spec)
+            if task.cancelled():
+                return
             if task_err := task.exception():
-                if task.cancelled():
-                    return
                 self.logger.warning(
                     "Sync task for %s completed with errors",
                     provider.name,
