@@ -177,7 +177,6 @@ class AirPlayPlayer(DeviceListener):
         self.connected = False
         self._connection_attempts = 0
         self._connection_was_lost = False
-        self._task = None
         self._playing: interface.Playing | None = None
         self.logger = self.mass.players.logger.getChild("airplay").getChild(self.player_id)
         self.cliraop_proc: AsyncProcess | None = None
@@ -229,9 +228,6 @@ class AirPlayPlayer(DeviceListener):
             if self.atv:
                 self.atv.close()
                 self.atv = None
-            if self._task:
-                self._task.cancel()
-                self._task = None
         except Exception:  # pylint: disable=broad-except
             self.logger.exception("An error occurred while disconnecting")
 
@@ -415,11 +411,6 @@ class AirPlayPlayer(DeviceListener):
         else:
             mass_player.state = PlayerState.IDLE
         self.mass.players.update(self.player_id)
-
-    @property
-    def is_connecting(self):
-        """Return true if connection is in progress."""
-        return self._task is not None
 
     def address_updated(self, address):
         """Update cached address in config entry."""
@@ -974,7 +965,7 @@ class AirplayProvider(PlayerProvider):
         ):
             extra_args += ["-u"]
         if self.mass.config.get_raw_player_config_value(
-            atv_player.player_id, CONF_ALAC_ENCODE, False
+            atv_player.player_id, CONF_ALAC_ENCODE, True
         ):
             extra_args += ["-a"]
         if self.mass.config.get_raw_player_config_value(
