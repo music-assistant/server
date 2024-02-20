@@ -8,6 +8,9 @@ from typing import TYPE_CHECKING
 from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from zeroconf import ServiceStateChange
+    from zeroconf.asyncio import AsyncServiceInfo
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.enums import ProviderFeature, ProviderType
     from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
@@ -25,7 +28,7 @@ class Provider:
         self.manifest = manifest
         self.config = config
         mass_logger = logging.getLogger(ROOT_LOGGER_NAME)
-        self.logger = mass_logger.getChild(f"providers.{self.instance_id}")
+        self.logger = mass_logger.getChild(f"providers.{self.domain}")
         log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
@@ -60,6 +63,11 @@ class Provider:
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
+
+    async def on_mdns_service_state_change(
+        self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
+    ) -> None:
+        """Handle MDNS service state callback."""
 
     @property
     def type(self) -> ProviderType:

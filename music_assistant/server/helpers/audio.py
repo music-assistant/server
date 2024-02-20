@@ -395,8 +395,8 @@ async def get_media_stream(  # noqa: PLR0915
     seek_position: int = 0,
     fade_in: bool = False,
     strip_silence_begin: bool = False,
-    strip_silence_end: bool = True,
-) -> AsyncGenerator[bytes, None]:
+    strip_silence_end: bool = False,
+) -> AsyncGenerator[tuple[bool, bytes], None]:
     """
     Get the (raw PCM) audio stream for the given streamdetails.
 
@@ -458,7 +458,7 @@ async def get_media_stream(  # noqa: PLR0915
                         sample_rate=pcm_format.sample_rate,
                         bit_depth=pcm_format.bit_depth,
                     )
-                    yield stripped_audio
+                    yield (False, stripped_audio)
                     bytes_sent += len(stripped_audio)
                     prev_chunk = b""
                     del stripped_audio
@@ -470,7 +470,7 @@ async def get_media_stream(  # noqa: PLR0915
 
                 # middle part of the track, send previous chunk and collect current chunk
                 if prev_chunk:
-                    yield prev_chunk
+                    yield (False, prev_chunk)
                     bytes_sent += len(prev_chunk)
 
                 prev_chunk = chunk
@@ -484,11 +484,11 @@ async def get_media_stream(  # noqa: PLR0915
                     bit_depth=pcm_format.bit_depth,
                     reverse=True,
                 )
-                yield stripped_audio
+                yield (True, stripped_audio)
                 bytes_sent += len(stripped_audio)
                 del stripped_audio
             else:
-                yield prev_chunk
+                yield (True, prev_chunk)
                 bytes_sent += len(prev_chunk)
 
             del prev_chunk

@@ -35,7 +35,11 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str =
 
 
 async def get_image_thumb(
-    mass: MusicAssistant, path_or_url: str, size: int | None, provider: str = "url"
+    mass: MusicAssistant,
+    path_or_url: str,
+    size: int | None,
+    provider: str = "url",
+    image_format: str = "PNG",
 ) -> bytes:
     """Get (optimized) PNG thumbnail from image url."""
     img_data = await get_image_data(mass, path_or_url, provider)
@@ -45,7 +49,7 @@ async def get_image_thumb(
         img = Image.open(BytesIO(img_data))
         if size:
             img.thumbnail((size, size), Image.LANCZOS)  # pylint: disable=no-member
-        img.convert("RGB").save(data, "PNG", optimize=True)
+        img.convert("RGB").save(data, image_format, optimize=True)
         return data.getvalue()
 
     return await asyncio.to_thread(_create_image)

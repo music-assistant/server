@@ -330,24 +330,35 @@ class MetaDataController(CoreController):
         return None
 
     def get_image_url(
-        self, image: MediaItemImage, size: int = 0, prefer_proxy: bool = False
+        self,
+        image: MediaItemImage,
+        size: int = 0,
+        prefer_proxy: bool = False,
+        image_format: str = "png",
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
         if image.provider != "url" or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
-            return f"{self.mass.streams.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}"  # noqa: E501
+            return f"{self.mass.streams.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}&fmt={image_format}"  # noqa: E501
         return image.path
 
     async def get_thumbnail(
-        self, path: str, size: int | None = None, provider: str = "url", base64: bool = False
+        self,
+        path: str,
+        size: int | None = None,
+        provider: str = "url",
+        base64: bool = False,
+        image_format: str = "png",
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        thumbnail = await get_image_thumb(self.mass, path, size=size, provider=provider)
+        thumbnail = await get_image_thumb(
+            self.mass, path, size=size, provider=provider, image_format=image_format
+        )
         if base64:
             enc_image = b64encode(thumbnail).decode()
-            thumbnail = f"data:image/png;base64,{enc_image}"
+            thumbnail = f"data:image/{image_format};base64,{enc_image}"
         return thumbnail
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
@@ -355,17 +366,20 @@ class MetaDataController(CoreController):
         path = request.query["path"]
         provider = request.query.get("provider", "url")
         size = int(request.query.get("size", "0"))
+        image_format = request.query.get("fmt", "png")
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote(path)
 
         with suppress(FileNotFoundError):
-            image_data = await self.get_thumbnail(path, size=size, provider=provider)
+            image_data = await self.get_thumbnail(
+                path, size=size, provider=provider, image_format=image_format
+            )
             # we set the cache header to 1 year (forever)
             # the client can use the checksum value to refresh when content changes
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000"},
-                content_type="image/png",
+                content_type=f"image/{image_format}",
             )
         return web.Response(status=404)
