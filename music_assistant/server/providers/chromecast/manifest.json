@@ -9,7 +9,7 @@
   "requirements": [
     "PyChromecast==13.1.0"
   ],
-  "documentation": "https://music-assistant.github.io/player-support/google-cast/",
+  "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
