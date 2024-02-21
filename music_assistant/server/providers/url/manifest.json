@@ -5,7 +5,7 @@
   "description": "Built-in/generic provider to play music (or playlists) from a remote URL.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://music-assistant.github.io/music-providers/url/",
+  "documentation": "https://music-assistant.io/music-providers/url/",
   "multi_instance": false,
   "builtin": true,
   "hidden": true,
