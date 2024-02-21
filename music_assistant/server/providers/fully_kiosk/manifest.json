@@ -5,7 +5,7 @@
   "description": "Support for media players from the Fully Kiosk app.",
   "codeowners": ["@music-assistant"],
   "requirements": ["python-fullykiosk==0.0.12"],
-  "documentation": "https://music-assistant.github.io/player-support/fully-kiosk/",
+  "documentation": "https://music-assistant.io/player-support/fully-kiosk/",
   "multi_instance": true,
   "builtin": false,
   "load_by_default": false
