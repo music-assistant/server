@@ -7,7 +7,7 @@
     "@music-assistant"
   ],
   "requirements": [],
-  "documentation": "https://music-assistant.github.io/player-support/airplay/",
+  "documentation": "https://music-assistant.io/player-support/airplay/",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
