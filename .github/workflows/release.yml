@@ -43,6 +43,8 @@ jobs:
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
+      - name: Wait for PyPI
+        run: sleep 120
 
   build-and-push-container-image:
     name: Builds and pushes the Music Assistant Server container to ghcr.io

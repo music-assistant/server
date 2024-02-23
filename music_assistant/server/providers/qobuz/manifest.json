@@ -5,6 +5,6 @@
   "description": "Qobuz support for Music Assistant: Lossless (and hi-res) Music provider.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://music-assistant.github.io/music-providers/qobuz/",
+  "documentation": "https://music-assistant.io/music-providers/qobuz/",
   "multi_instance": true
 }

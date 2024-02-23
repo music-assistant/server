@@ -677,7 +677,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Search for tracks and parse them."""
         deezer_tracks = await self.client.search(query=query, limit=limit)
         tracks = []
-        async for index, track in enumerate(deezer_tracks):
+        for index, track in enumerate(deezer_tracks):
             tracks.append(self.parse_track(track, user_country))
             if index == limit:
                 return tracks
@@ -687,7 +687,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Search for artists and parse them."""
         deezer_artist = await self.client.search_artists(query=query, limit=limit)
         artists = []
-        async for index, artist in enumerate(deezer_artist):
+        for index, artist in enumerate(deezer_artist):
             artists.append(self.parse_artist(artist))
             if index == limit:
                 return artists
@@ -697,7 +697,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Search for album and parse them."""
         deezer_albums = await self.client.search_albums(query=query, limit=limit)
         albums = []
-        async for index, album in enumerate(deezer_albums):
+        for index, album in enumerate(deezer_albums):
             albums.append(self.parse_album(album))
             if index == limit:
                 return albums
@@ -707,7 +707,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Search for playlists and parse them."""
         deezer_playlists = await self.client.search_playlists(query=query, limit=limit)
         playlists = []
-        async for index, playlist in enumerate(deezer_playlists):
+        for index, playlist in enumerate(deezer_playlists):
             playlists.append(self.parse_playlist(playlist))
             if index == limit:
                 return playlists

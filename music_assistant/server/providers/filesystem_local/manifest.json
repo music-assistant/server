@@ -5,7 +5,7 @@
   "description": "Support for music files that are present on a local accessible disk/folder.",
   "codeowners": ["@music-assistant"],
   "requirements": [],
-  "documentation": "https://music-assistant.github.io/music-providers/filesystem/",
+  "documentation": "https://music-assistant.io/music-providers/filesystem/",
   "multi_instance": true,
   "icon": "harddisk"
 }

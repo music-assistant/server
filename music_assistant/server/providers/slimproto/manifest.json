@@ -9,7 +9,7 @@
   "requirements": [
     "aioslimproto==2.3.3"
   ],
-  "documentation": "https://music-assistant.github.io/player-support/slimproto/",
+  "documentation": "https://music-assistant.io/player-support/slimproto/",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": false
