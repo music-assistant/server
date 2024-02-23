@@ -287,7 +287,7 @@ class WebsocketClientHandler:
             while not wsock.closed:
                 msg = await wsock.receive()
 
-                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING):
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
                     break
 
                 if msg.type != WSMsgType.TEXT:
