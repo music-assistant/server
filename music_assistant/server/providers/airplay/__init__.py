@@ -669,6 +669,9 @@ class AirplayProvider(PlayerProvider):
         parent_player.group_childs.add(parent_player.player_id)
         parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
+        # mark players as powered
+        parent_player.powered = True
+        child_player.powered = True
         # check if we should (re)start or join a stream session
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if active_queue.state == PlayerState.PLAYING:
