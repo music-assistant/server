@@ -386,6 +386,7 @@ class AirplayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.aiozc.async_register_service(self._dacp_info)
+        self._resync_handle: asyncio.TimerHandle | None = None
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -501,6 +502,10 @@ class AirplayProvider(PlayerProvider):
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
         """
+        # fix race condition where resync and play media are called at more or less the same time
+        if self._resync_handle:
+            self._resync_handle.cancel()
+            self._resync_handle = None
         # always stop existing stream first
         await self.cmd_stop(player_id)
         # start streaming the queue (pcm) audio in a background task
@@ -529,6 +534,10 @@ class AirplayProvider(PlayerProvider):
 
         This is a special feature from the Universal Group provider.
         """
+        # fix race condition where resync and play media are called at more or less the same time
+        if self._resync_handle:
+            self._resync_handle.cancel()
+            self._resync_handle = None
         # always stop existing stream first
         await self.cmd_stop(player_id)
         if stream_job.pcm_format.bit_depth != 16 or stream_job.pcm_format.sample_rate != 44100:
@@ -640,18 +649,37 @@ class AirplayProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
-        player = self.mass.players.get(player_id, raise_unavailable=True)
-        group_leader = self.mass.players.get(target_player, raise_unavailable=True)
-        if group_leader.synced_to:
+        child_player = self.mass.players.get(player_id)
+        assert child_player  # guard
+        parent_player = self.mass.players.get(target_player)
+        assert parent_player  # guard
+        if parent_player.synced_to:
             raise RuntimeError("Player is already synced")
-        player.synced_to = target_player
-        group_leader.group_childs.add(player_id)
-        self.mass.players.update(target_player)
-        if group_leader.powered:
-            await self.mass.players.cmd_power(player_id, True)
-        active_queue = self.mass.player_queues.get_active_queue(group_leader.player_id)
+        if child_player.synced_to and child_player.synced_to != target_player:
+            raise RuntimeError("Player is already synced to another player")
+        # always make sure that the parent player is part of the sync group
+        parent_player.group_childs.add(parent_player.player_id)
+        parent_player.group_childs.add(child_player.player_id)
+        child_player.synced_to = parent_player.player_id
+        # check if we should (re)start or join a stream session
+        active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if active_queue.state == PlayerState.PLAYING:
-            self.mass.create_task(self.mass.player_queues.resume(active_queue.queue_id))
+            # playback needs to be restarted to form a new multi client stream session
+            def resync() -> None:
+                self._resync_handle = None
+                self.mass.create_task(
+                    self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
+                )
+
+            # this could potentially be called by multiple players at the exact same time
+            # so we debounce the resync a bit here with a timer
+            if self._resync_handle:
+                self._resync_handle.cancel()
+            self._resync_handle = self.mass.loop.call_later(0.5, resync)
+        else:
+            # make sure that the player manager gets an update
+            self.mass.players.update(child_player.player_id, skip_forward=True)
+            self.mass.players.update(parent_player.player_id, skip_forward=True)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player.
