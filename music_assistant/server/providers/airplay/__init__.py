@@ -286,23 +286,27 @@ class AirplayStreamJob:
             line = line.decode().strip()  # noqa: PLW2901
             if not line:
                 continue
-            logger.debug(line)
-            if "set pause" in line:
-                mass_player.state = PlayerState.PAUSED
-                self.mass.players.update(airplay_player.player_id)
-            elif "Restarted at" in line:
-                mass_player.state = PlayerState.PLAYING
-                self.mass.players.update(airplay_player.player_id)
-            elif "after start), played" in line:
-                millis = int(line.split("played ")[1].split(" ")[0])
+            if "elapsed milliseconds:" in line:
+                millis = int(line.split("elapsed milliseconds: ")[1])
                 mass_player.elapsed_time = millis / 1000
                 mass_player.elapsed_time_last_updated = time.time()
+                continue  # do not log this line, its too verbose
+            if "set pause" in line or "Pause at" in line:
+                mass_player.state = PlayerState.PAUSED
+                self.mass.players.update(airplay_player.player_id)
+            elif "Restarted at" in line or "restarting w/ pause" in line:
+                mass_player.state = PlayerState.PLAYING
+                self.mass.players.update(airplay_player.player_id)
+            elif "Stopped at" in line:
+                mass_player.state = PlayerState.IDLE
+                self.mass.players.update(airplay_player.player_id)
             elif "restarting w/o pause" in line:
                 # streaming has started
                 mass_player.state = PlayerState.PLAYING
                 mass_player.elapsed_time = 0
                 mass_player.elapsed_time_last_updated = time.time()
                 self.mass.players.update(airplay_player.player_id)
+            logger.debug(line)
 
         # if we reach this point, the process exited
         airplay_player.logger.debug("Log watcher task finished...")
@@ -580,6 +584,7 @@ class AirplayProvider(PlayerProvider):
             airplay_player.active_stream = AirplayStreamJob(self, airplay_player)
             await airplay_player.active_stream.init_cliraop(start_ntp)
         prev_metadata_checksum: str = ""
+        prev_progress_report: float = 0
         async for pcm_chunk in audio_iterator:
             # send audio chunk to player(s)
             available_clients = 0
@@ -594,12 +599,15 @@ class AirplayProvider(PlayerProvider):
                         continue
                     available_clients += 1
                     tg.create_task(airplay_player.active_stream.write_chunk(pcm_chunk))
-                    # always send the progress
-                    tg.create_task(
-                        airplay_player.active_stream.send_cli_command(
-                            f"PROGRESS={int(queue.elapsed_time)}\n"
+                    # send the progress report every 5 seconds
+                    now = time.time()
+                    if now - prev_progress_report >= 5:
+                        prev_progress_report = now
+                        tg.create_task(
+                            airplay_player.active_stream.send_cli_command(
+                                f"PROGRESS={int(queue.elapsed_time)}\n"
+                            )
                         )
-                    )
             if not available_clients:
                 # this streamjob is no longer active
                 return
