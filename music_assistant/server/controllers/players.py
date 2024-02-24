@@ -400,15 +400,15 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         - powered: bool if player should be powered on or off.
         """
-        player = self.get(player_id, True)
-
-        if player.powered == powered:
-            return  # nothing to do
-
         # forward to syncgroup if needed
         if player_id.startswith(SYNCGROUP_PREFIX):
             await self.cmd_group_power(player_id, powered)
             return
+
+        player = self.get(player_id, True)
+
+        if player.powered == powered:
+            return  # nothing to do
 
         # always stop player at power off
         if (
