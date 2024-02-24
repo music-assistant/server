@@ -576,6 +576,12 @@ class AirplayProvider(PlayerProvider):
         if player.synced_to:
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
+        synced_player_ids = [x.player_id for x in self._get_sync_clients(player_id)]
+        self.logger.info(
+            "Starting RAOP stream for Queue %s to %s",
+            queue.display_name,
+            "/".join(synced_player_ids),
+        )
 
         # Python is not suitable for realtime audio streaming.
         # So, I've decided to go the fancy route here. I've created a small binary
