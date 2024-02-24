@@ -181,6 +181,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Return Config Entries for the given player."""
         base_entries = await super().get_player_config_entries(player_id)
         if not (sonos_player := self.sonosplayers.get(player_id)):
+            # most probably a syncgroup
             return base_entries
         return (
             *base_entries,

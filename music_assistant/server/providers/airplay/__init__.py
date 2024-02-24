@@ -444,8 +444,11 @@ class AirplayProvider(PlayerProvider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        entries = await super().get_player_config_entries(player_id)
-        return entries + PLAYER_CONFIG_ENTRIES
+        base_entries = await super().get_player_config_entries(player_id)
+        if player_id not in self._players:
+            # most probably a syncgroup
+            return base_entries
+        return base_entries + PLAYER_CONFIG_ENTRIES
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
