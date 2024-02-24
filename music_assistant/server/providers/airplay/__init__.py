@@ -255,10 +255,18 @@ class AirplayStreamJob:
         # prefer interactive command to our streamer
         await self.send_cli_command("ACTION=STOP")
         # use communicate to clear stdin/stdout and wait for exit
-        await self._cliraop_proc.wait()
-        # stop background task
-        if self._log_reader_task and not self._log_reader_task.done():
-            self._log_reader_task.cancel()
+        try:
+            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
+        except TimeoutError:
+            self.airplay_player.logger.error(  # noqa: TRY400
+                "RAOP process did not stop on time, attempting forced close."
+            )
+            self._cliraop_proc.kill()
+            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
+        finally:
+            # stop background task
+            if self._log_reader_task and not self._log_reader_task.done():
+                self._log_reader_task.cancel()
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""
