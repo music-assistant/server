@@ -459,6 +459,10 @@ class SlimprotoProvider(PlayerProvider):
 
         This is a special feature from the Universal Group provider.
         """
+        # fix race condition where resync and play media are called at more or less the same time
+        if self._resync_handle:
+            self._resync_handle.cancel()
+            self._resync_handle = None
         # forward command to player and any connected sync members
         sync_clients = self._get_sync_clients(player_id)
         async with asyncio.TaskGroup() as tg:
@@ -551,13 +555,17 @@ class SlimprotoProvider(PlayerProvider):
         assert child_player  # guard
         parent_player = self.mass.players.get(target_player)
         assert parent_player  # guard
+        if parent_player.synced_to:
+            raise RuntimeError("Player is already synced")
+        if child_player.synced_to and child_player.synced_to != target_player:
+            raise RuntimeError("Player is already synced to another player")
         # always make sure that the parent player is part of the sync group
         parent_player.group_childs.add(parent_player.player_id)
         parent_player.group_childs.add(child_player.player_id)
         child_player.synced_to = parent_player.player_id
         # check if we should (re)start or join a stream session
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
-        if parent_player.state == PlayerState.PLAYING:
+        if active_queue.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
             def resync() -> None:
                 self._resync_handle = None
@@ -572,8 +580,8 @@ class SlimprotoProvider(PlayerProvider):
             self._resync_handle = self.mass.loop.call_later(0.5, resync)
         else:
             # make sure that the player manager gets an update
-            self.mass.players.update(child_player.player_id)
-            self.mass.players.update(parent_player.player_id)
+            self.mass.players.update(child_player.player_id, skip_forward=True)
+            self.mass.players.update(parent_player.player_id, skip_forward=True)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Handle UNSYNC command for given player."""

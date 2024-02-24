@@ -400,15 +400,17 @@ class PlayerController(CoreController):
         - player_id: player_id of the player to handle the command.
         - powered: bool if player should be powered on or off.
         """
+        # forward to syncgroup if needed
         if player_id.startswith(SYNCGROUP_PREFIX):
             await self.cmd_group_power(player_id, powered)
             return
+
         player = self.get(player_id, True)
 
         if player.powered == powered:
             return  # nothing to do
 
-        # stop player at power off
+        # always stop player at power off
         if (
             not powered
             and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
@@ -416,6 +418,7 @@ class PlayerController(CoreController):
             and player.powered
         ):
             await self.cmd_stop(player_id)
+
         # unsync player at power off
         if not powered:
             if player.synced_to is not None:
@@ -520,9 +523,12 @@ class PlayerController(CoreController):
         """Handle power command for a PlayerGroup."""
         group_player = self.get(player_id, True)
 
-        group_player.powered = power
-        if not power:
-            group_player.state = PlayerState.IDLE
+        if group_player.powered == power:
+            return  # nothing to do
+
+        # always stop (group/master)player at power off
+        if not power and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
+            await self.cmd_stop(player_id)
 
         async with asyncio.TaskGroup() as tg:
             members_powered = False
