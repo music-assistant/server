@@ -170,7 +170,9 @@ class AirplayStreamJob:
         # with the named pipe used to send commands
         self.active_remote_id: str = str(randint(1000, 8000))
         self.start_ntp: int | None = None  # use as checksum
+        self._audio_buffer = asyncio.Queue(2)
         self._log_reader_task: asyncio.Task | None = None
+        self._audio_reader_task: asyncio.Task | None = None
         self._cliraop_proc: asyncio.subprocess.Process | None = None
 
     @property
@@ -229,6 +231,7 @@ class AirplayStreamJob:
             close_fds=True,
         )
         self._log_reader_task = asyncio.create_task(self._log_watcher())
+        self._audio_reader_task = asyncio.create_task(self._audio_reader())
 
     async def stop(self):
         """Stop playback and cleanup."""
@@ -323,25 +326,36 @@ class AirplayStreamJob:
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(airplay_player.player_id)
 
+    async def _audio_reader(self) -> None:
+        """Read audio chunks from buffer and send them to the cliraop process."""
+        logger = self.airplay_player.logger
+        logger.debug("Audio reader started")
+        while self.running:
+            chunk = await self._audio_buffer.get()
+            if not self.running or self._cliraop_proc.stdin.is_closing():
+                # guard
+                return
+            if chunk == b"":
+                # EOF chunk
+                self._cliraop_proc.stdin.write_eof()
+                await self._cliraop_proc.stdin.drain()
+                break
+            self._cliraop_proc.stdin.write(chunk)
+            with suppress(BrokenPipeError):
+                await self._cliraop_proc.stdin.drain()
+        logger.debug("Audio reader finished")
+
     async def write_chunk(self, data: bytes) -> None:
         """Write a chunk of (pcm) data to the stdin of CLIRaop."""
-        if not self.running or not self._cliraop_proc.stdin.can_write_eof():
+        if not self.running:
             return
-        self._cliraop_proc.stdin.write(data)
-        if not self.running or not self._cliraop_proc.stdin.can_write_eof():
-            return
-        with suppress(BrokenPipeError):
-            await self._cliraop_proc.stdin.drain()
+        await self._audio_buffer.put(data)
 
     async def write_eof(self, data: bytes) -> None:
         """Write a chunk of (pcm) data to the stdin of CLIRaop."""
-        if not self.running or not self._cliraop_proc.stdin.can_write_eof():
+        if not self.running:
             return
-        self._cliraop_proc.stdin.write_eof()
-        if not self.running or not self._cliraop_proc.stdin.can_write_eof():
-            return
-        with suppress(BrokenPipeError):
-            await self._cliraop_proc.stdin.drain()
+        await self._audio_buffer.put(b"")
 
 
 @dataclass
@@ -603,17 +617,16 @@ class AirplayProvider(PlayerProvider):
         async for pcm_chunk in audio_iterator:
             # send audio chunk to player(s)
             available_clients = 0
-            async with asyncio.TaskGroup() as tg:
-                for airplay_player in self._get_sync_clients(player_id):
-                    if (
-                        not airplay_player.active_stream
-                        or not airplay_player.active_stream.running
-                        or airplay_player.active_stream.start_ntp != start_ntp
-                    ):
-                        # catch when this stream is no longer active on the player
-                        continue
-                    available_clients += 1
-                    tg.create_task(airplay_player.active_stream.write_chunk(pcm_chunk))
+            for airplay_player in self._get_sync_clients(player_id):
+                if (
+                    not airplay_player.active_stream
+                    or not airplay_player.active_stream.running
+                    or airplay_player.active_stream.start_ntp != start_ntp
+                ):
+                    # catch when this stream is no longer active on the player
+                    continue
+                available_clients += 1
+                await airplay_player.active_stream.write_chunk(pcm_chunk)
             if not available_clients:
                 # this streamjob is no longer active
                 return
