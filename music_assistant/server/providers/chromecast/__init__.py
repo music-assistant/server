@@ -149,8 +149,11 @@ class ChromecastProvider(PlayerProvider):
             ),
             self.mass.aiozc.zeroconf,
         )
-        # silence pychromecast logging
-        logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
+        # set-up pychromecast logging
+        if self.log_level == "VERBOSE":
+            logging.getLogger("pychromecast").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("pychromecast").setLevel(self.logger.level + 10)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
