@@ -29,22 +29,14 @@ class Provider:
         self.config = config
         mass_logger = logging.getLogger(ROOT_LOGGER_NAME)
         self.logger = mass_logger.getChild(f"providers.{self.domain}")
-        log_level = config.get_value(CONF_LOG_LEVEL)
+        self.log_level = log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
         else:
-            self.logger.setLevel(log_level)
+            self.logger.setLevel("DEBUG" if log_level == "VERBOSE" else log_level)
             # if the root logger's level is higher, we need to adjust that too
             if logging.getLogger().level > self.logger.level:
                 logging.getLogger().setLevel(self.logger.level)
-        # apply logger settings to modules/packages used by this provider
-        for pkg_name in manifest.requirements:
-            dependency = pkg_name.split("=")[0].split("<")[0].split(">")[0]
-            # unless log level is explicitly set to debug,
-            # we silence the dependency logger to warning level
-            conf_log_level = self.config.get_value(CONF_LOG_LEVEL)
-            level = logging.DEBUG if conf_log_level == logging.DEBUG else logging.WARNING
-            logging.getLogger(dependency).setLevel(level)
         self.logger.debug("Log level configured to %s", log_level)
         self.cache = mass.cache
         self.available = False

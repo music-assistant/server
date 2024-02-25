@@ -154,11 +154,12 @@ def catch_request_errors(
         player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         dlna_player = self.dlnaplayers[player_id]
         dlna_player.last_command = time.time()
-        self.logger.debug(
-            "Handling command %s for player %s",
-            func.__name__,
-            dlna_player.player.display_name,
-        )
+        if self.log_level == "VERBOSE":
+            self.logger.debug(
+                "Handling command %s for player %s",
+                func.__name__,
+                dlna_player.player.display_name,
+            )
         if not dlna_player.available:
             self.logger.warning("Device disappeared when trying to call %s", func.__name__)
             return None
@@ -282,7 +283,10 @@ class DLNAPlayerProvider(PlayerProvider):
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
         # silence the async_upnp_client logger
-        logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
+        if self.log_level == "VERBOSE":
+            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
         self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)

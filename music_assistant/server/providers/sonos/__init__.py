@@ -90,10 +90,14 @@ async def setup(
     soco_config.REQUEST_TIMEOUT = 9.5
     soco_config.ZGT_EVENT_FALLBACK = False
     zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
-    # silence the soco logger a bit
-    logging.getLogger("soco").setLevel(logging.INFO)
-    logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
     prov = SonosPlayerProvider(mass, manifest, config)
+    # set-up soco logging
+    if prov.log_level == "VERBOSE":
+        logging.getLogger("soco").setLevel(logging.DEBUG)
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
+    else:
+        logging.getLogger("pychromecast").setLevel(prov.logger.level + 10)
+        logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
     await prov.handle_async_init()
     return prov
 
