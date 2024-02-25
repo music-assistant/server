@@ -620,6 +620,7 @@ class AirplayProvider(PlayerProvider):
 
             # send metadata to player(s) if needed
             # NOTE: this must all be done in separate tasks to not disturb audio
+            now = time.time()
             if queue and queue.current_item and queue.current_item.streamdetails:
                 metadata_checksum = (
                     queue.current_item.streamdetails.stream_title
@@ -628,15 +629,11 @@ class AirplayProvider(PlayerProvider):
                 if prev_metadata_checksum != metadata_checksum:
                     prev_metadata_checksum = metadata_checksum
                     self.mass.create_task(self._send_metadata(player_id, queue))
-            # send the progress report every 5 seconds
-            now = time.time()
-            if now - prev_progress_report >= 5:
-                prev_progress_report = now
-                self.mass.create_task(
-                    airplay_player.active_stream.send_cli_command(
-                        f"PROGRESS={int(queue.elapsed_time)}\n"
-                    )
-                )
+                    prev_progress_report = now
+                # send the progress report every 5 seconds
+                elif now - prev_progress_report >= 5:
+                    prev_progress_report = now
+                    self.mass.create_task(self._send_progress(player_id, queue))
 
         # end of stream reached - write eof
         for airplay_player in self._get_sync_clients(player_id):
@@ -941,8 +938,9 @@ class AirplayProvider(PlayerProvider):
             if _album := getattr(media_item, "album", None):
                 album = _album.name
 
+        progress = int(queue.corrected_elapsed_time)
         cmd = f"TITLE={title or 'Music Assistant'}\nARTIST={artist}\nALBUM={album}\n"
-        cmd += f"DURATION={duration}\nACTION=SENDMETA\n"
+        cmd += f"DURATION={duration}\nPROGRESS={progress}\nACTION=SENDMETA\n"
 
         for airplay_player in self._get_sync_clients(player_id):
             if not airplay_player.active_stream or not airplay_player.active_stream.running:
@@ -966,9 +964,8 @@ class AirplayProvider(PlayerProvider):
         """Send progress report to player (and connected sync childs)."""
         if not queue or not queue.current_item:
             return
+        progress = int(queue.corrected_elapsed_time)
         for airplay_player in self._get_sync_clients(player_id):
             if not airplay_player.active_stream or not airplay_player.active_stream.running:
                 continue
-            await airplay_player.active_stream.send_cli_command(
-                f"PROGRESS={int(queue.elapsed_time)}\n"
-            )
+            await airplay_player.active_stream.send_cli_command(f"PROGRESS={progress}\n")
