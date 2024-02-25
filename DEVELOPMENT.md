@@ -12,12 +12,11 @@ It is recommended to use Visual Studio Code as your IDE, since launch files to s
 With this repository cloned locally, execute the following commands in a terminal from the root of your repository:
 * `python -m venv .venv` (create a new separate virtual environment to nicely separate the project dependencies)
 * `source .venv/bin/activate` (activate the virtual environment)
-* `pip install -r requirements_all.txt` (install the project's dependencies)
+* `pip install -e .[test]` (install the project's dev and test dependencies)
 * Hit (Fn +) F5 to start Music Assistant locally
 * The pre-compiled UI of Music Assistant will be available at `localhost:8095` 🎉
 
 All code is linted and verified using [pre-commit](https://pre-commit.com/). To make sure that all these checks are executed successfully *before* you push your code:
-* `pip install pre-commit`
 * `pre-commit install`
 This ensures that the pre-commit checks kick in when you create a commit locally.
 
