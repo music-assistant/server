@@ -48,8 +48,6 @@ if TYPE_CHECKING:
 
 DOMAIN = "airplay"
 
-CONF_LATENCY = "latency"
-DEFAULT_LATENCY = 2000
 CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
 CONF_VOLUME_START = "volume_start"
@@ -58,18 +56,6 @@ CONF_PASSWORD = "password"
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
-    ConfigEntry(
-        key=CONF_LATENCY,
-        type=ConfigEntryType.INTEGER,
-        range=(500, 4000),
-        default_value=DEFAULT_LATENCY,
-        label="Latency",
-        description="Sets the number of milliseconds of audio buffer in the player. "
-        "This is important to absorb network throughput jitter. \n"
-        "Increase this value if you notice network dropouts at the cost of a slower "
-        "response to commands.",
-        advanced=True,
-    ),
     ConfigEntry(
         key=CONF_ENCRYPTION,
         type=ConfigEntryType.BOOLEAN,
@@ -198,10 +184,6 @@ class AirplayStreamJob:
         extra_args = []
         player_id = self.airplay_player.player_id
         mass_player = self.mass.players.get(player_id)
-        latency = self.mass.config.get_raw_player_config_value(
-            player_id, CONF_LATENCY, DEFAULT_LATENCY
-        )
-        extra_args += ["-l", str(latency)]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENCRYPTION, False):
             extra_args += ["-e"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
@@ -223,7 +205,7 @@ class AirplayStreamJob:
             "-p",
             str(self.airplay_player.discovery_info.port),
             "-w",
-            str(2500 - sync_adjust),
+            str(2000 - sync_adjust),
             "-v",
             str(mass_player.volume_level),
             *extra_args,
