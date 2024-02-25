@@ -63,8 +63,6 @@ class AsyncProcess:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
-            if chunk == b"":
-                break
             yield chunk
             if len(chunk) < n:
                 break
