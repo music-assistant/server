@@ -187,6 +187,7 @@ ignore = [
   "D213", # Conflicts with other rules
   "D417", # False positives in some occasions
   "EM101", # Just annoying, not really useful
+  "EM102", # Just annoying, not really useful
   "FIX002", # Just annoying, not really useful
   "PLR2004", # Just annoying, not really useful
   "PD011", # Just annoying, not really useful
