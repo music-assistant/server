@@ -17,7 +17,7 @@ from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.helpers.datetime import utc
-from music_assistant.common.helpers.util import get_ip_pton, select_free_port
+from music_assistant.common.helpers.util import empty_queue, get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -250,22 +250,14 @@ class AirplayStreamJob:
         if not self.running:
             return
         self._stop_requested = True
-        # prefer interactive command to our streamer
-        await self._audio_buffer.put(b"EOF")
+        # stop background tasks
+        if self._log_reader_task and not self._log_reader_task.done():
+            self._log_reader_task.cancel()
+        if self._audio_reader_task and not self._audio_reader_task.done():
+            self._audio_reader_task.cancel()
         await self.send_cli_command("ACTION=STOP")
-        # use communicate to clear stdin/stdout and wait for exit
-        try:
-            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
-        except TimeoutError:
-            self.airplay_player.logger.error(  # noqa: TRY400
-                "RAOP process did not stop on time, attempting forced close."
-            )
-            self._cliraop_proc.kill()
-            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
-        finally:
-            # stop background task
-            if self._log_reader_task and not self._log_reader_task.done():
-                self._log_reader_task.cancel()
+        empty_queue(self._audio_buffer)
+        await asyncio.wait_for(self._cliraop_proc.communicate(), 5)
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""
@@ -490,6 +482,8 @@ class AirplayProvider(PlayerProvider):
 
         - player_id: player_id of the player to handle the command.
         """
+        if existing_stream := self._stream_tasks.get(player_id):
+            existing_stream.cancel()
 
         async def stop_player(airplay_player: AirPlayPlayer) -> None:
             if airplay_player.active_stream:
@@ -549,7 +543,12 @@ class AirplayProvider(PlayerProvider):
             self._resync_handle.cancel()
             self._resync_handle = None
         # always stop existing stream first
-        await self.cmd_stop(player_id)
+        if existing_stream := self._stream_tasks.get(player_id):
+            existing_stream.cancel()
+        async with asyncio.TaskGroup() as tg:
+            for airplay_player in self._get_sync_clients(player_id):
+                if airplay_player.active_stream and airplay_player.active_stream.running:
+                    tg.create_task(airplay_player.active_stream.stop())
         # start streaming the queue (pcm) audio in a background task
         queue = self.mass.player_queues.get_active_queue(player_id)
         self._stream_tasks[player_id] = asyncio.create_task(
@@ -581,7 +580,12 @@ class AirplayProvider(PlayerProvider):
             self._resync_handle.cancel()
             self._resync_handle = None
         # always stop existing stream first
-        await self.cmd_stop(player_id)
+        if existing_stream := self._stream_tasks.get(player_id):
+            existing_stream.cancel()
+        async with asyncio.TaskGroup() as tg:
+            for airplay_player in self._get_sync_clients(player_id):
+                if airplay_player.active_stream and airplay_player.active_stream.running:
+                    tg.create_task(airplay_player.active_stream.stop())
         if stream_job.pcm_format.bit_depth != 16 or stream_job.pcm_format.sample_rate != 44100:
             # TODO: resample on the fly here ?
             raise RuntimeError("Unsupported PCM format")
