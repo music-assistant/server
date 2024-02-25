@@ -905,7 +905,9 @@ class StreamsController(CoreController):
                 queue.display_name,
                 queue_track.streamdetails.seconds_streamed,
             )
-
+        # end of queue flow: make sure we yield the last_fadeout_part
+        if last_fadeout_part:
+            yield last_fadeout_part
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def _get_player_ffmpeg_args(
