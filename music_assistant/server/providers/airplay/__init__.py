@@ -209,8 +209,10 @@ class AirplayStreamJob:
             # NOTE: This may not work as we might need to do
             # some fancy hashing with the plain password first?!
             extra_args += ["-P", device_password]
-        if self.airplay_player.logger.level == logging.DEBUG:
+        if self.prov.log_level == "DEBUG":
             extra_args += ["-d", "5"]
+        elif self.prov.log_level == "VERBOSE":
+            extra_args += ["-d", "10"]
 
         args = [
             self.prov.cliraop_bin,
@@ -273,7 +275,8 @@ class AirplayStreamJob:
             with open(named_pipe, "w") as f:
                 f.write(command)
 
-        self.airplay_player.logger.debug("sending command %s", command)
+        if self.prov.log_level == "VERBOSE":
+            self.airplay_player.logger.debug("sending command %s", command)
         await self.mass.create_task(send_data)
 
     async def _log_watcher(self) -> None:
@@ -293,23 +296,23 @@ class AirplayStreamJob:
                 mass_player.elapsed_time_last_updated = time.time()
                 continue
             if "set pause" in line or "Pause at" in line:
-                logger.info("raop streaming paused")
+                logger.debug("raop streaming paused")
                 mass_player.state = PlayerState.PAUSED
                 self.mass.players.update(airplay_player.player_id)
                 continue
             if "Restarted at" in line or "restarting w/ pause" in line:
-                logger.info("raop streaming restarted after pause")
+                logger.debug("raop streaming restarted after pause")
                 mass_player.state = PlayerState.PLAYING
                 self.mass.players.update(airplay_player.player_id)
                 continue
             if "Stopped at" in line:
-                logger.info("raop streaming stopped")
+                logger.debug("raop streaming stopped")
                 mass_player.state = PlayerState.IDLE
                 self.mass.players.update(airplay_player.player_id)
                 continue
             if "restarting w/o pause" in line:
                 # streaming has started
-                logger.info("raop streaming started")
+                logger.debug("raop streaming started")
                 mass_player.state = PlayerState.PLAYING
                 mass_player.elapsed_time = 0
                 mass_player.elapsed_time_last_updated = time.time()
@@ -319,7 +322,8 @@ class AirplayStreamJob:
                 logger.warning(line)
                 continue
             # debug log everything else
-            logger.debug(line)
+            if self.prov.log_level == "VERBOSE":
+                logger.debug(line)
 
         # if we reach this point, the process exited
         logger.debug(
@@ -428,10 +432,9 @@ class AirplayProvider(PlayerProvider):
         player_id = f"ap{raw_id.lower()}"
         # handle removed player
         if state_change == ServiceStateChange.Removed:
-            self.logger.debug("Airplay device %s removed", name)
             if mass_player := self.mass.players.get(player_id):
                 # the player has become unavailable
-                self.logger.info("Player removed %s", display_name)
+                self.logger.info("Player offline: %s", display_name)
                 mass_player.available = False
                 self.mass.players.update(player_id)
             return
@@ -608,7 +611,7 @@ class AirplayProvider(PlayerProvider):
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
         synced_player_ids = [x.player_id for x in self._get_sync_clients(player_id)]
-        self.logger.info(
+        self.logger.debug(
             "Starting RAOP stream for Queue %s to %s",
             queue.display_name,
             "/".join(synced_player_ids),
