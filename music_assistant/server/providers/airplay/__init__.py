@@ -158,9 +158,11 @@ def get_model_from_am(am_property: str | None) -> tuple[str, str]:
     return (manufacturer, model)
 
 
-def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str:
+def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
     """Get primary IP address from zeroconf discovery info."""
-    return next(x for x in discovery_info.parsed_addresses(IPVersion.V4Only) if x != "127.0.0.1")
+    return next(
+        (x for x in discovery_info.parsed_addresses(IPVersion.V4Only) if x != "127.0.0.1"), None
+    )
 
 
 class AirplayStreamJob:
@@ -179,11 +181,16 @@ class AirplayStreamJob:
         self._log_reader_task: asyncio.Task | None = None
         self._audio_reader_task: asyncio.Task | None = None
         self._cliraop_proc: asyncio.subprocess.Process | None = None
+        self._stop_requested = False
 
     @property
     def running(self) -> bool:
         """Return bool if we're running."""
-        return self._cliraop_proc and self._cliraop_proc.returncode is None
+        return (
+            not self._stop_requested
+            and self._cliraop_proc
+            and self._cliraop_proc.returncode is None
+        )
 
     async def init_cliraop(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
@@ -242,7 +249,9 @@ class AirplayStreamJob:
         """Stop playback and cleanup."""
         if not self.running:
             return
+        self._stop_requested = True
         # prefer interactive command to our streamer
+        await self._audio_buffer.put(b"EOF")
         await self.send_cli_command("ACTION=STOP")
         # use communicate to clear stdin/stdout and wait for exit
         try:
@@ -337,15 +346,15 @@ class AirplayStreamJob:
         logger.debug("Audio reader started")
         while self.running:
             chunk = await self._audio_buffer.get()
-            if not self.running or self._cliraop_proc.stdin.is_closing():
-                # guard
-                return
             if chunk == b"EOF":
                 # EOF chunk
-                self._cliraop_proc.stdin.write_eof()
-                await self._cliraop_proc.stdin.drain()
                 break
             self._cliraop_proc.stdin.write(chunk)
+            with suppress(BrokenPipeError):
+                await self._cliraop_proc.stdin.drain()
+        # send EOF
+        if self._cliraop_proc.returncode is None and not self._cliraop_proc.stdin.is_closing():
+            self._cliraop_proc.stdin.write_eof()
             with suppress(BrokenPipeError):
                 await self._cliraop_proc.stdin.drain()
         logger.debug("Audio reader finished")
@@ -437,7 +446,7 @@ class AirplayProvider(PlayerProvider):
         if airplay_player := self._players.get(player_id):
             if mass_player := self.mass.players.get(player_id):
                 cur_address = get_primary_ip_address(info)
-                if cur_address != airplay_player.address:
+                if cur_address and cur_address != airplay_player.address:
                     airplay_player.address = cur_address
                     airplay_player.logger.info(
                         "Address updated from %s to %s", airplay_player.address, cur_address
@@ -735,6 +744,9 @@ class AirplayProvider(PlayerProvider):
         group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
         group_leader.group_childs.remove(player_id)
         player.synced_to = None
+        # guard if this was the last sync child of the group player
+        if group_leader.group_childs == {group_leader.player_id}:
+            group_leader.group_childs.remove(group_leader.player_id)
         await self.cmd_stop(player_id)
         self.mass.players.update(player_id)
 
@@ -788,6 +800,8 @@ class AirplayProvider(PlayerProvider):
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
         address = get_primary_ip_address(info)
+        if address is None:
+            return
         # some guards if our info is valid/complete
         if "md" not in info.decoded_properties:
             return
