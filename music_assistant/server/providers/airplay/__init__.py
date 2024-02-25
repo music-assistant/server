@@ -616,15 +616,6 @@ class AirplayProvider(PlayerProvider):
                         continue
                     available_clients += 1
                     tg.create_task(airplay_player.active_stream.write_chunk(pcm_chunk))
-                    # send the progress report every 5 seconds
-                    now = time.time()
-                    if now - prev_progress_report >= 5:
-                        prev_progress_report = now
-                        tg.create_task(
-                            airplay_player.active_stream.send_cli_command(
-                                f"PROGRESS={int(queue.elapsed_time)}\n"
-                            )
-                        )
             if not available_clients:
                 # this streamjob is no longer active
                 return
@@ -639,6 +630,15 @@ class AirplayProvider(PlayerProvider):
                 if prev_metadata_checksum != metadata_checksum:
                     prev_metadata_checksum = metadata_checksum
                     self.mass.create_task(self._send_metadata(player_id, queue))
+            # send the progress report every 5 seconds
+            now = time.time()
+            if now - prev_progress_report >= 5:
+                prev_progress_report = now
+                self.mass.create_task(
+                    airplay_player.active_stream.send_cli_command(
+                        f"PROGRESS={int(queue.elapsed_time)}\n"
+                    )
+                )
 
         # end of stream reached - write eof
         for airplay_player in self._get_sync_clients(player_id):
@@ -947,7 +947,7 @@ class AirplayProvider(PlayerProvider):
         cmd += f"DURATION={duration}\nACTION=SENDMETA\n"
 
         for airplay_player in self._get_sync_clients(player_id):
-            if not airplay_player.active_stream:
+            if not airplay_player.active_stream or not airplay_player.active_stream.running:
                 continue
             await airplay_player.active_stream.send_cli_command(cmd)
 
@@ -960,6 +960,17 @@ class AirplayProvider(PlayerProvider):
             queue.current_item.image, size=500, prefer_proxy=True, image_format="jpeg"
         )
         for airplay_player in self._get_sync_clients(player_id):
-            if not airplay_player.active_stream:
+            if not airplay_player.active_stream or not airplay_player.active_stream.running:
                 continue
             await airplay_player.active_stream.send_cli_command(f"ARTWORK={image_url}\n")
+
+    async def _send_progress(self, player_id: str, queue: PlayerQueue) -> None:
+        """Send progress report to player (and connected sync childs)."""
+        if not queue or not queue.current_item:
+            return
+        for airplay_player in self._get_sync_clients(player_id):
+            if not airplay_player.active_stream or not airplay_player.active_stream.running:
+                continue
+            await airplay_player.active_stream.send_cli_command(
+                f"PROGRESS={int(queue.elapsed_time)}\n"
+            )
