@@ -642,7 +642,6 @@ class AirplayProvider(PlayerProvider):
                 if prev_metadata_checksum != metadata_checksum:
                     prev_metadata_checksum = metadata_checksum
                     self.mass.create_task(self._send_metadata(player_id, queue))
-                    prev_progress_report = now
                 # send the progress report every 5 seconds
                 elif now - prev_progress_report >= 5:
                     prev_progress_report = now
@@ -878,16 +877,17 @@ class AirplayProvider(PlayerProvider):
 
             player_id = airplay_player.player_id
             mass_player = self.mass.players.get(player_id)
+            active_queue = self.mass.player_queues.get_active_queue(player_id)
             if path == "/ctrl-int/1/nextitem":
-                self.mass.create_task(self.mass.player_queues.next(player_id))
+                self.mass.create_task(self.mass.player_queues.next(active_queue.queue_id))
             elif path == "/ctrl-int/1/previtem":
-                self.mass.create_task(self.mass.player_queues.previous(player_id))
+                self.mass.create_task(self.mass.player_queues.previous(active_queue.queue_id))
             elif path == "/ctrl-int/1/play":
-                self.mass.create_task(self.mass.player_queues.play(player_id))
+                self.mass.create_task(self.mass.player_queues.play(active_queue.queue_id))
             elif path == "/ctrl-int/1/playpause":
-                self.mass.create_task(self.mass.player_queues.play_pause(player_id))
+                self.mass.create_task(self.mass.player_queues.play_pause(active_queue.queue_id))
             elif path == "/ctrl-int/1/stop":
-                self.mass.create_task(self.cmd_stop(player_id))
+                self.mass.create_task(self.mass.player_queues.stop(active_queue.queue_id))
             elif path == "/ctrl-int/1/volumeup":
                 self.mass.create_task(self.mass.players.cmd_volume_up(player_id))
             elif path == "/ctrl-int/1/volumedown":
@@ -895,10 +895,12 @@ class AirplayProvider(PlayerProvider):
             elif path == "/ctrl-int/1/shuffle_songs":
                 queue = self.mass.player_queues.get(player_id)
                 self.mass.create_task(
-                    self.mass.player_queues.set_shuffle(player_id, not queue.shuffle_enabled)
+                    self.mass.player_queues.set_shuffle(
+                        active_queue.queue_id, not queue.shuffle_enabled
+                    )
                 )
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
-                self.mass.create_task(self.mass.player_queues.pause(player_id))
+                self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
             elif "dmcp.device-volume=" in path:
                 raop_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 volume = convert_airplay_volume(raop_volume)
@@ -951,9 +953,8 @@ class AirplayProvider(PlayerProvider):
             if _album := getattr(media_item, "album", None):
                 album = _album.name
 
-        progress = int(queue.corrected_elapsed_time)
         cmd = f"TITLE={title or 'Music Assistant'}\nARTIST={artist}\nALBUM={album}\n"
-        cmd += f"DURATION={duration}\nPROGRESS={progress}\nACTION=SENDMETA\n"
+        cmd += f"DURATION={duration}\nPROGRESS=0\nACTION=SENDMETA\n"
 
         for airplay_player in self._get_sync_clients(player_id):
             if not airplay_player.active_stream or not airplay_player.active_stream.running:
