@@ -357,7 +357,7 @@ class AirplayStreamJob:
             return
         await self._audio_buffer.put(data)
 
-    async def write_eof(self, data: bytes) -> None:
+    async def write_eof(self) -> None:
         """Write end-of-file chunk to the audo buffer."""
         if not self.running:
             return
@@ -660,6 +660,7 @@ class AirplayProvider(PlayerProvider):
                 )
                 if prev_metadata_checksum != metadata_checksum:
                     prev_metadata_checksum = metadata_checksum
+                    prev_progress_report = now
                     self.mass.create_task(self._send_metadata(player_id, queue))
                 # send the progress report every 5 seconds
                 elif now - prev_progress_report >= 5:
@@ -667,6 +668,11 @@ class AirplayProvider(PlayerProvider):
                     self.mass.create_task(self._send_progress(player_id, queue))
 
         # end of stream reached - write eof
+        self.logger.debug(
+            "Finished RAOP stream for Queue %s to %s",
+            queue.display_name,
+            "/".join(synced_player_ids),
+        )
         for airplay_player in self._get_sync_clients(player_id):
             if (
                 not airplay_player.active_stream
