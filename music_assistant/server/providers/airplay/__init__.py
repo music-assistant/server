@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from random import randint, randrange
 from typing import TYPE_CHECKING
 
-from zeroconf import ServiceStateChange
+from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.helpers.datetime import utc
@@ -156,6 +156,11 @@ def get_model_from_am(am_property: str | None) -> tuple[str, str]:
     else:
         model = am_property
     return (manufacturer, model)
+
+
+def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str:
+    """Get primary IP address from zeroconf discovery info."""
+    return next(x for x in discovery_info.parsed_addresses(IPVersion.V4Only) if x != "127.0.0.1")
 
 
 class AirplayStreamJob:
@@ -364,6 +369,7 @@ class AirPlayPlayer:
 
     player_id: str
     discovery_info: AsyncServiceInfo
+    address: str
     logger: logging.Logger
     active_stream: AirplayStreamJob | None = None
 
@@ -430,11 +436,11 @@ class AirplayProvider(PlayerProvider):
         # handle update for existing device
         if airplay_player := self._players.get(player_id):
             if mass_player := self.mass.players.get(player_id):
-                cur_address = info.parsed_addresses()[0]
-                prev_address = airplay_player.discovery_info.parsed_addresses()[0]
-                if cur_address != prev_address:
+                cur_address = get_primary_ip_address(info)
+                if cur_address != airplay_player.address:
+                    airplay_player.address = cur_address
                     airplay_player.logger.info(
-                        "Address updated from %s to %s", prev_address, cur_address
+                        "Address updated from %s to %s", airplay_player.address, cur_address
                     )
                     mass_player.device_info = DeviceInfo(
                         model=mass_player.device_info.model,
@@ -781,17 +787,15 @@ class AirplayProvider(PlayerProvider):
         self, player_id: str, display_name: str, info: AsyncServiceInfo
     ) -> None:
         """Handle setup of a new player that is discovered using mdns."""
-        address = info.parsed_addresses()[0]
+        address = get_primary_ip_address(info)
         # some guards if our info is valid/complete
-        if address == "127.0.0.1":
-            return
         if "md" not in info.decoded_properties:
             return
         if "et" not in info.decoded_properties:
             return
         self.logger.debug("Discovered Airplay device %s on %s", display_name, address)
         self._players[player_id] = AirPlayPlayer(
-            player_id, discovery_info=info, logger=self.logger.getChild(player_id)
+            player_id, discovery_info=info, address=address, logger=self.logger.getChild(player_id)
         )
         manufacturer, model = get_model_from_am(info.decoded_properties.get("am"))
         if "apple tv" in model.lower():
