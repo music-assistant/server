@@ -683,7 +683,7 @@ class OpenSonicProvider(MusicProvider):
                         audio_buffer.put(chunk), self.mass.loop
                     ).result()
             # send empty chunk when we're done
-            asyncio.run_coroutine_threadsafe(audio_buffer.put(b""), self.mass.loop).result()
+            asyncio.run_coroutine_threadsafe(audio_buffer.put(b"EOF"), self.mass.loop).result()
 
         # fire up an executor thread to put the audio chunks (threadsafe) on the audio buffer
         streamer_task = self.mass.loop.run_in_executor(None, _streamer)
@@ -691,7 +691,7 @@ class OpenSonicProvider(MusicProvider):
             while True:
                 # keep reading from the audio buffer until there is no more data
                 chunk = await audio_buffer.get()
-                if chunk == b"":
+                if chunk == b"EOF":
                     break
                 yield chunk
         finally:

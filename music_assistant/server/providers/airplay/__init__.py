@@ -335,7 +335,7 @@ class AirplayStreamJob:
             if not self.running or self._cliraop_proc.stdin.is_closing():
                 # guard
                 return
-            if chunk == b"":
+            if chunk == b"EOF":
                 # EOF chunk
                 self._cliraop_proc.stdin.write_eof()
                 await self._cliraop_proc.stdin.drain()
@@ -346,16 +346,16 @@ class AirplayStreamJob:
         logger.debug("Audio reader finished")
 
     async def write_chunk(self, data: bytes) -> None:
-        """Write a chunk of (pcm) data to the stdin of CLIRaop."""
+        """Write a chunk of (pcm) data to the audio buffer."""
         if not self.running:
             return
         await self._audio_buffer.put(data)
 
     async def write_eof(self, data: bytes) -> None:
-        """Write a chunk of (pcm) data to the stdin of CLIRaop."""
+        """Write end-of-file chunk to the audo buffer."""
         if not self.running:
             return
-        await self._audio_buffer.put(b"")
+        await self._audio_buffer.put(b"EOF")
 
 
 @dataclass

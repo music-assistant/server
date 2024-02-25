@@ -137,7 +137,7 @@ class MultiClientStreamJob:
             self._audio_task.cancel()
         for sub_queue in self.subscribed_players.values():
             with suppress(asyncio.QueueFull):
-                sub_queue.put_nowait(b"")
+                sub_queue.put_nowait(b"EOF")
 
     def resolve_stream_url(self, child_player_id: str, output_codec: ContentType) -> str:
         """Resolve the childplayer specific stream URL to this streamjob."""
@@ -167,7 +167,7 @@ class MultiClientStreamJob:
             and player_id not in self.workaround_players_seen
         ):
             self.workaround_players_seen.add(player_id)
-            yield b""
+            yield b"EOF"
             return
 
         try:
@@ -184,10 +184,10 @@ class MultiClientStreamJob:
                 # so that chunks can be pushed
                 self._all_clients_connected.set()
 
-            # keep reading audio chunks from the queue until we receive an empty one
+            # keep reading audio chunks from the queue until we receive an EOF chunk
             while True:
                 chunk = await sub_queue.get()
-                if chunk == b"":
+                if chunk == b"EOF":
                     # EOF chunk received
                     break
                 yield chunk
@@ -246,8 +246,8 @@ class MultiClientStreamJob:
 
             await self._put_chunk(chunk)
 
-        # mark EOF with empty chunk
-        await self._put_chunk(b"")
+        # mark EOF with EOF chunk
+        await self._put_chunk(b"EOF")
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
