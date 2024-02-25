@@ -277,35 +277,51 @@ class AirplayStreamJob:
             if not line:
                 continue
             if "elapsed milliseconds:" in line:
+                # do not log this line, its too verbose
                 millis = int(line.split("elapsed milliseconds: ")[1])
                 mass_player.elapsed_time = millis / 1000
                 mass_player.elapsed_time_last_updated = time.time()
-                continue  # do not log this line, its too verbose
+                continue
             if "set pause" in line or "Pause at" in line:
+                logger.info("raop streaming paused")
                 mass_player.state = PlayerState.PAUSED
                 self.mass.players.update(airplay_player.player_id)
-            elif "Restarted at" in line or "restarting w/ pause" in line:
+                continue
+            if "Restarted at" in line or "restarting w/ pause" in line:
+                logger.info("raop streaming restarted after pause")
                 mass_player.state = PlayerState.PLAYING
                 self.mass.players.update(airplay_player.player_id)
-            elif "Stopped at" in line:
+                continue
+            if "Stopped at" in line:
+                logger.info("raop streaming stopped")
                 mass_player.state = PlayerState.IDLE
                 self.mass.players.update(airplay_player.player_id)
-            elif "restarting w/o pause" in line:
+                continue
+            if "restarting w/o pause" in line:
                 # streaming has started
+                logger.info("raop streaming started")
                 mass_player.state = PlayerState.PLAYING
                 mass_player.elapsed_time = 0
                 mass_player.elapsed_time_last_updated = time.time()
                 self.mass.players.update(airplay_player.player_id)
+                continue
+            if "lost packet out of backlog" in line:
+                logger.warning(line)
+                continue
+            # debug log everything else
             logger.debug(line)
 
         # if we reach this point, the process exited
-        airplay_player.logger.debug("Log watcher task finished...")
-        mass_player.state = PlayerState.IDLE
-        self.mass.players.update(airplay_player.player_id)
         logger.debug(
             "CLIRaop process stopped with errorcode %s",
             self._cliraop_proc.returncode,
         )
+        if (
+            airplay_player.active_stream
+            and airplay_player.active_stream.active_remote_id == self.active_remote_id
+        ):
+            mass_player.state = PlayerState.IDLE
+            self.mass.players.update(airplay_player.player_id)
 
     async def write_chunk(self, data: bytes) -> None:
         """Write a chunk of (pcm) data to the stdin of CLIRaop."""
