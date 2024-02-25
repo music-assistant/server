@@ -404,7 +404,7 @@ class OpenSonicProvider(MusicProvider):
             with self._conn.getCoverArt(path) as art:
                 return art.content
 
-        await asyncio.to_thread(_get_cover_art)
+        return await asyncio.to_thread(_get_cover_art)
 
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 20
