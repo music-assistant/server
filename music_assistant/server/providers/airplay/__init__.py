@@ -249,15 +249,16 @@ class AirplayStreamJob:
         """Stop playback and cleanup."""
         if not self.running:
             return
+        await self.send_cli_command("ACTION=STOP")
         self._stop_requested = True
         # stop background tasks
         if self._log_reader_task and not self._log_reader_task.done():
             self._log_reader_task.cancel()
         if self._audio_reader_task and not self._audio_reader_task.done():
             self._audio_reader_task.cancel()
-        await self.send_cli_command("ACTION=STOP")
+
         empty_queue(self._audio_buffer)
-        await asyncio.wait_for(self._cliraop_proc.communicate(), 5)
+        await asyncio.wait_for(self._cliraop_proc.communicate(), 30)
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""
@@ -545,10 +546,9 @@ class AirplayProvider(PlayerProvider):
         # always stop existing stream first
         if existing_stream := self._stream_tasks.get(player_id):
             existing_stream.cancel()
-        async with asyncio.TaskGroup() as tg:
-            for airplay_player in self._get_sync_clients(player_id):
-                if airplay_player.active_stream and airplay_player.active_stream.running:
-                    tg.create_task(airplay_player.active_stream.stop())
+        for airplay_player in self._get_sync_clients(player_id):
+            if airplay_player.active_stream and airplay_player.active_stream.running:
+                self.mass.create_task(airplay_player.active_stream.stop())
         # start streaming the queue (pcm) audio in a background task
         queue = self.mass.player_queues.get_active_queue(player_id)
         self._stream_tasks[player_id] = asyncio.create_task(
