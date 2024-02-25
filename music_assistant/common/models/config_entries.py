@@ -288,6 +288,7 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
         ConfigValueOption("warning", "WARNING"),
         ConfigValueOption("error", "ERROR"),
         ConfigValueOption("debug", "DEBUG"),
+        ConfigValueOption("verbose", "VERBOSE"),
     ),
     default_value="GLOBAL",
     advanced=True,
