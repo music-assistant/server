@@ -256,8 +256,12 @@ class AirplayStreamJob:
         # stop background tasks
         if self._log_reader_task and not self._log_reader_task.done():
             self._log_reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._log_reader_task
         if self._audio_reader_task and not self._audio_reader_task.done():
             self._audio_reader_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._audio_reader_task
 
         empty_queue(self._audio_buffer)
         await asyncio.wait_for(self._cliraop_proc.communicate(), 30)
