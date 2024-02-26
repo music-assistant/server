@@ -203,6 +203,9 @@ class AirplayStreamJob:
             extra_args += ["-e"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
             extra_args += ["-a"]
+        if "airport" in mass_player.device_info.model.lower():
+            # enforce auth on airport express
+            extra_args += ["-auth"]
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         if device_password := self.mass.config.get_raw_player_config_value(
             player_id, CONF_PASSWORD, None
