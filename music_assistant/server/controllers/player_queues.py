@@ -712,9 +712,10 @@ class PlayerQueuesController(CoreController):
         queue.available = player.available
         queue.items = len(self._queue_items[queue_id])
         # determine if this queue is currently active for this player
-        queue.active = player.active_source == queue.queue_id
+        queue.active = player.powered and player.active_source == queue.queue_id
         if not queue.active:
             queue.state = PlayerState.IDLE
+            self._prev_states.pop(queue_id, None)
             return
         # update current item from player report
         if queue.flow_mode:
