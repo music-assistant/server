@@ -4,7 +4,7 @@
   "name": "YouTube Music",
   "description": "Support for the YouTube Music streaming provider in Music Assistant.",
   "codeowners": ["@MarvinSchenkel"],
-  "requirements": ["ytmusicapi==1.5.2", "git+https://github.com/MarvinSchenkel/pytube.git"],
+  "requirements": ["ytmusicapi==1.5.3", "git+https://github.com/MarvinSchenkel/pytube.git"],
   "documentation": "https://music-assistant.io/music-providers/youtube-music/",
   "multi_instance": true
 }
