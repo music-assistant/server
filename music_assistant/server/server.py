@@ -603,7 +603,7 @@ class MusicAssistant:
                 await self.aiozc.async_register_service(info)
             self.mass_zc_service_set = True
         except NonUniqueNameException:
-            LOGGER.exception(
+            LOGGER.error(
                 "Music Assistant instance with identical name present in the local network!"
             )
 

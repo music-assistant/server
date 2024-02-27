@@ -198,6 +198,7 @@ ignore = [
   "TD003", # Just annoying, not really useful
   "TD004", # Just annoying, not really useful
   "TRY003", # Just annoying, not really useful
+  "TRY400", # Just annoying, not really useful
   "COM812", # Conflicts with the Ruff formatter
   "ISC001", # TEMPORARY DISABLED rules  # The below rules must be enabled later one-by-one !
   "BLE001",

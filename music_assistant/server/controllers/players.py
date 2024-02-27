@@ -875,7 +875,7 @@ class PlayerController(CoreController):
                             "Error while requesting latest state from player %s: %s",
                             player.display_name,
                             str(err),
-                            exc_info=err,
+                            exc_info=err if self.logger.isEnabledFor(10) else None,
                         )
                     finally:
                         # always update player state

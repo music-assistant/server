@@ -356,7 +356,7 @@ class FileSystemProviderBase(MusicProvider):
                     )
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
-                self.logger.exception("Error processing %s - %s", item.path, str(err))
+                self.logger.error("Error processing %s - %s", item.path, str(err))
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
@@ -504,7 +504,12 @@ class FileSystemProviderBase(MusicProvider):
                     yield media_item
 
         except Exception as err:  # pylint: disable=broad-except
-            self.logger.warning("Error while parsing playlist %s", prov_playlist_id, exc_info=err)
+            self.logger.warning(
+                "Error while parsing playlist %s: %s",
+                prov_playlist_id,
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
 
     async def _parse_playlist_line(
         self, line: str, playlist_path: str, position: int

@@ -104,7 +104,12 @@ class CacheController(CoreController):
             try:
                 data = await asyncio.to_thread(json_loads, db_row["data"])
             except Exception as exc:  # pylint: disable=broad-except
-                LOGGER.exception("Error parsing cache data for %s", cache_key, exc_info=exc)
+                LOGGER.error(
+                    "Error parsing cache data for %s: %s",
+                    cache_key,
+                    str(exc),
+                    exc_info=exc if self.logger.isEnabledFor(10) else None,
+                )
             else:
                 # also store in memory cache for faster access
                 self._mem_cache[cache_key] = (

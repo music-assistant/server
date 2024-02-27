@@ -248,6 +248,7 @@ class WebsocketClientHandler:
         self._to_write: asyncio.Queue = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task | None = None
         self._writer_task: asyncio.Task | None = None
+        self.log_level = webserver.log_level
         self._logger = WebSocketLogAdapter(webserver.logger, {"connid": id(self)})
 
     async def disconnect(self) -> None:
@@ -374,7 +375,10 @@ class WebsocketClientHandler:
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:  # pylint: disable=broad-except
-            self._logger.exception("Error handling message: %s", msg)
+            if self.log_level == "VERBOSE":
+                self._logger.exception("Error handling message: %s", msg)
+            else:
+                self._logger.error("Error handling message: %s: %s", msg.command, str(err))
             self._send_message(
                 ErrorResultMessage(msg.message_id, getattr(err, "error_code", 999), str(err))
             )
@@ -407,7 +411,7 @@ class WebsocketClientHandler:
         try:
             self._to_write.put_nowait(_message)
         except asyncio.QueueFull:
-            self._logger.exception("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
+            self._logger.error("Client exceeded max pending messages: %s", MAX_PENDING_MSG)
 
             self._cancel()
 

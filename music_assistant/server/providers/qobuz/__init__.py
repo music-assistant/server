@@ -760,9 +760,9 @@ class QobuzProvider(MusicProvider):
                 JSONDecodeError,
                 AssertionError,
                 ValueError,
-            ) as err:
+            ):
                 text = await response.text()
-                self.logger.exception("Error while processing %s: %s", endpoint, text, exc_info=err)
+                self.logger.error("Error while processing %s: %s", endpoint, text)
                 return None
             return result
 

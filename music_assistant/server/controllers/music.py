@@ -601,7 +601,7 @@ class MusicController(CoreController):
                 self.logger.warning(
                     "Sync task for %s completed with errors",
                     provider.name,
-                    exc_info=task_err,
+                    exc_info=task_err if self.logger.isEnabledFor(10) else None,
                 )
             else:
                 self.logger.info("Sync task for %s completed", provider.name)

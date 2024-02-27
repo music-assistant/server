@@ -752,7 +752,7 @@ class SpotifyProvider(MusicProvider):
                 aiohttp.ContentTypeError,
                 JSONDecodeError,
             ):
-                self.logger.exception("Error while processing %s: %s", endpoint, result)
+                self.logger.error("Error while processing %s: %s", endpoint, result)
                 return None
             self.logger.debug(
                 "Processing GET/%s took %s seconds",
