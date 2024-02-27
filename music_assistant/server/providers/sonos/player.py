@@ -238,7 +238,7 @@ class SonosPlayer:
             event,
             self.zone_name,
             message,
-            exc_info=exc_info,
+            exc_info=exc_info if self.logger.isEnabledFor(10) else None,
         )
 
     async def subscribe(self) -> None:

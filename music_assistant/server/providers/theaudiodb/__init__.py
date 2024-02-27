@@ -279,7 +279,7 @@ class AudioDbMetadataProvider(MetadataProvider):
                 aiohttp.client_exceptions.ContentTypeError,
                 JSONDecodeError,
             ):
-                self.logger.exception("Failed to retrieve %s", endpoint)
+                self.logger.error("Failed to retrieve %s", endpoint)
                 text_result = await response.text()
                 self.logger.debug(text_result)
                 return None

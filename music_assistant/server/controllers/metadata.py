@@ -226,7 +226,11 @@ class MetaDataController(CoreController):
                     MediaItemImage(type=ImageType.THUMB, path=img_path, provider="file")
                 ]
         except Exception as err:
-            LOGGER.debug("Error while creating playlist image", exc_info=err)
+            LOGGER.warning(
+                "Error while creating playlist image: %s",
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())
 

@@ -167,7 +167,10 @@ def catch_request_errors(
             return await func(self, *args, **kwargs)
         except UpnpError as err:
             dlna_player.force_poll = True
-            self.logger.exception("Error during call %s: %r", func.__name__, err)
+            if self.log_level == "VERBOSE":
+                self.logger.exception("Error during call %s: %r", func.__name__, err)
+            else:
+                self.logger.error("Error during call %s: %r", func.__name__, str(err))
         return None
 
     return wrapper

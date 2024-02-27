@@ -482,7 +482,10 @@ class SonosPlayerProvider(PlayerProvider):
                         self.logger.debug("Failed to add SonosPlayer %s: %s", soco, err)
                     except Exception as err:
                         self.logger.warning(
-                            "Failed to add SonosPlayer %s: %s", soco, err, exc_info=err
+                            "Failed to add SonosPlayer %s: %s",
+                            soco,
+                            err,
+                            exc_info=err if self.logger.isEnabledFor(10) else None,
                         )
             finally:
                 self._discovery_running = False
