@@ -597,7 +597,7 @@ class SpotifyProvider(MusicProvider):
             raise LoginFailed(msg)
         # retrieve token with librespot
         retries = 0
-        while retries < 20:
+        while retries < 5:
             try:
                 retries += 1
                 if not tokeninfo:
@@ -651,8 +651,14 @@ class SpotifyProvider(MusicProvider):
             "-p",
             self.config.get_value(CONF_PASSWORD),
         ]
-        librespot = await asyncio.create_subprocess_exec(*args)
-        await librespot.wait()
+        if self._ap_workaround:
+            args += ["--ap-port", "12345"]
+        librespot = await asyncio.create_subprocess_exec(
+            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
+        )
+        stdout, _ = await librespot.communicate()
+        if stdout.decode().strip() != "authorized":
+            raise LoginFailed(f"Login failed for username {self.config.get_value(CONF_USERNAME)}")
         # get token with (authorized) librespot
         scopes = [
             "user-read-playback-state",
