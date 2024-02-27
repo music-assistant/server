@@ -160,9 +160,15 @@ def get_model_from_am(am_property: str | None) -> tuple[str, str]:
 
 def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
     """Get primary IP address from zeroconf discovery info."""
-    return next(
-        (x for x in discovery_info.parsed_addresses(IPVersion.V4Only) if x != "127.0.0.1"), None
-    )
+    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
+        if address.startswith("127"):
+            # filter out loopback address
+            continue
+        if address.startswith("169.254"):
+            # filter out APIPA address
+            continue
+        return address
+    return None
 
 
 class AirplayStreamJob:
