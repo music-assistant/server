@@ -50,9 +50,6 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
 
 
-# monkey patch the SlimClient
-SlimClient._process_stat_stmf = lambda x, y: None  # noqa: ARG005
-
 CACHE_KEY_PREV_STATE = "slimproto_prev_state"
 
 # sync constants
@@ -270,17 +267,8 @@ class SlimprotoProvider(PlayerProvider):
                 self.mass.create_task(self._handle_connected(client))
                 return
 
-            if event_type == SlimEventType.PLAYER_DECODER_READY:
-                self.mass.create_task(self._handle_decoder_ready(client))
-                return
-
             if event_type == SlimEventType.PLAYER_BUFFER_READY:
                 self.mass.create_task(self._handle_buffer_ready(client))
-                return
-
-            if event_type == SlimEventType.PLAYER_OUTPUT_UNDERRUN:
-                # player ran out of buffer
-                self.mass.create_task(self._handle_output_underrun(client))
                 return
 
             if event_type == SlimEventType.PLAYER_HEARTBEAT:
@@ -638,8 +626,8 @@ class SlimprotoProvider(PlayerProvider):
         # update player state on player events
         player.available = True
         player.current_item_id = (
-            client.current_metadata.get("item_id")
-            if client.current_metadata
+            client.current_media.metadata.get("item_id")
+            if client.current_media and client.current_media.metadata
             else client.current_url
         )
         player.active_source = player.player_id
@@ -668,13 +656,6 @@ class SlimprotoProvider(PlayerProvider):
         # handle sync
         if player.synced_to:
             self._handle_client_sync(client)
-
-    async def _handle_output_underrun(self, client: SlimClient) -> None:
-        """Process SlimClient Output Underrun Event."""
-        player = self.mass.players.get(client.player_id)
-        self.logger.error("Player %s ran out of buffer", player.display_name)
-        player.state = PlayerState.IDLE
-        self.mass.players.update(client.player_id)
 
     def _handle_client_sync(self, client: SlimClient) -> None:
         """Synchronize audio of a sync client."""
@@ -750,7 +731,10 @@ class SlimprotoProvider(PlayerProvider):
             self.mass.create_task(self._pause_for(client.player_id, delta))
 
     async def _handle_buffer_ready(self, client: SlimClient) -> None:
-        """Handle buffer ready event, player has buffered a (new) track."""
+        """Handle buffer ready event, player has buffered a (new) track.
+
+        Only used when autoplay=0 for coordinated start of synec players.
+        """
         player = self.mass.players.get(client.player_id)
         if player.synced_to:
             # unpause of sync child is handled by sync master
