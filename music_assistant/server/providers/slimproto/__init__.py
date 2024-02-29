@@ -34,7 +34,7 @@ from music_assistant.common.models.enums import (
     PlayerType,
     ProviderFeature,
 )
-from music_assistant.common.models.errors import QueueEmpty, SetupFailedError
+from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.constants import CONF_CROSSFADE, CONF_CROSSFADE_DURATION, CONF_PORT
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -42,8 +42,6 @@ from music_assistant.server.models.player_provider import PlayerProvider
 from .cli import LmsCli
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Coroutine
-
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
@@ -189,7 +187,6 @@ class SlimprotoProvider(PlayerProvider):
     _socket_servers: list[asyncio.Server | asyncio.BaseTransport]
     _socket_clients: dict[str, SlimClient]
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
-    _virtual_providers: dict[str, tuple[Coroutine, Callable]]
     _do_not_resync_before: dict[str, float]
     _cli: LmsCli
     port: int = DEFAULT_SLIMPROTO_PORT
@@ -203,7 +200,6 @@ class SlimprotoProvider(PlayerProvider):
         """Handle async initialization of the provider."""
         self._socket_clients = {}
         self._sync_playpoints = {}
-        self._virtual_providers = {}
         self._do_not_resync_before = {}
         self.port = self.config.get_value(CONF_PORT)
         self._resync_handle: asyncio.TimerHandle | None = None
@@ -239,9 +235,6 @@ class SlimprotoProvider(PlayerProvider):
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
-        if getattr(self, "_virtual_providers", None):
-            msg = "Virtual providers loaded"
-            raise RuntimeError(msg)
         if hasattr(self, "_socket_clients"):
             for client in list(self._socket_clients.values()):
                 with suppress(RuntimeError):
@@ -303,39 +296,38 @@ class SlimprotoProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not (client := self._socket_clients.get(player_id)):
+        if not (self._socket_clients.get(player_id)):
             return base_entries
 
         # create preset entries (for players that support it)
         preset_entries = ()
-        if client.device_model not in self._virtual_providers:
-            presets = []
-            async for playlist in self.mass.music.playlists.iter_library_items(True):
-                presets.append(ConfigValueOption(playlist.name, playlist.uri))
-            async for radio in self.mass.music.radio.iter_library_items(True):
-                presets.append(ConfigValueOption(radio.name, radio.uri))
-            # dynamically extend the amount of presets when needed
-            if self.mass.config.get_raw_player_config_value(player_id, "preset_15"):
-                preset_count = 20
-            elif self.mass.config.get_raw_player_config_value(player_id, "preset_10"):
-                preset_count = 15
-            elif self.mass.config.get_raw_player_config_value(player_id, "preset_5"):
-                preset_count = 10
-            else:
-                preset_count = 5
-            preset_entries = tuple(
-                ConfigEntry(
-                    key=f"preset_{index}",
-                    type=ConfigEntryType.STRING,
-                    options=presets,
-                    label=f"Preset {index}",
-                    description="Assign a playable item to the player's preset. "
-                    "Only supported on real squeezebox hardware or jive(lite) based emulators.",
-                    advanced=False,
-                    required=False,
-                )
-                for index in range(1, preset_count + 1)
+        presets = []
+        async for playlist in self.mass.music.playlists.iter_library_items(True):
+            presets.append(ConfigValueOption(playlist.name, playlist.uri))
+        async for radio in self.mass.music.radio.iter_library_items(True):
+            presets.append(ConfigValueOption(radio.name, radio.uri))
+        # dynamically extend the amount of presets when needed
+        if self.mass.config.get_raw_player_config_value(player_id, "preset_15"):
+            preset_count = 20
+        elif self.mass.config.get_raw_player_config_value(player_id, "preset_10"):
+            preset_count = 15
+        elif self.mass.config.get_raw_player_config_value(player_id, "preset_5"):
+            preset_count = 10
+        else:
+            preset_count = 5
+        preset_entries = tuple(
+            ConfigEntry(
+                key=f"preset_{index}",
+                type=ConfigEntryType.STRING,
+                options=presets,
+                label=f"Preset {index}",
+                description="Assign a playable item to the player's preset. "
+                "Only supported on real squeezebox hardware or jive(lite) based emulators.",
+                advanced=False,
+                required=False,
             )
+            for index in range(1, preset_count + 1)
+        )
 
         return (
             base_entries
@@ -481,14 +473,29 @@ class SlimprotoProvider(PlayerProvider):
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
-        # we don't have to do anything,
-        # enqueuing the next item is handled in the buffer ready callback
+        client = self._socket_clients[player_id]
+        url = await self.mass.streams.resolve_stream_url(
+            queue_item=queue_item,
+            # for now just hardcode flac as we assume that every (modern)
+            # slimproto based player can handle that just fine
+            output_codec=ContentType.FLAC,
+            flow_mode=False,
+        )
+        await self._handle_play_url(
+            client,
+            url=url,
+            queue_item=queue_item,
+            enqueue=True,
+            send_flush=False,
+            auto_play=True,
+        )
 
     async def _handle_play_url(
         self,
         client: SlimClient,
         url: str,
         queue_item: QueueItem | None,
+        enqueue: bool = False,
         send_flush: bool = True,
         auto_play: bool = False,
     ) -> None:
@@ -509,6 +516,7 @@ class SlimprotoProvider(PlayerProvider):
                 if queue_item
                 else {"item_id": client.player_id, "title": "Music Assistant"}
             ),
+            enqueue=enqueue,
             send_flush=send_flush,
             transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
             transition_duration=transition_duration,
@@ -598,29 +606,9 @@ class SlimprotoProvider(PlayerProvider):
         self.mass.players.update(child_player.player_id)
         self.mass.players.update(parent_player.player_id)
 
-    def register_virtual_provider(
-        self,
-        player_model: str,
-        register_callback: Coroutine,
-        update_callback: Callable,
-    ) -> None:
-        """Register a virtual provider based on slimproto, such as the airplay bridge."""
-        self._virtual_providers[player_model] = (
-            register_callback,
-            update_callback,
-        )
-
-    def unregister_virtual_provider(
-        self,
-        player_model: str,
-    ) -> None:
-        """Unregister a virtual provider."""
-        self._virtual_providers.pop(player_model, None)
-
     async def _handle_player_update(self, client: SlimClient) -> None:
         """Process SlimClient update/add to Player controller."""
         player_id = client.player_id
-        virtual_provider_info = self._virtual_providers.get(client.device_model)
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
             # player does not yet exist, create it
@@ -645,9 +633,6 @@ class SlimprotoProvider(PlayerProvider):
                 max_sample_rate=int(client.max_sample_rate),
                 supports_24bit=int(client.max_sample_rate) > 44100,
             )
-            if virtual_provider_info:
-                # if this player is part of a virtual provider run the callback
-                await virtual_provider_info[0](player)
             self.mass.players.register_or_update(player)
 
         # update player state on player events
@@ -666,9 +651,6 @@ class SlimprotoProvider(PlayerProvider):
         player.can_sync_with = tuple(
             x.player_id for x in self._socket_clients.values() if x.player_id != player_id
         )
-        if virtual_provider_info:
-            # if this player is part of a virtual provider run the callback
-            virtual_provider_info[1](player)
         self.mass.players.update(player_id)
 
     def _handle_player_heartbeat(self, client: SlimClient) -> None:
@@ -766,33 +748,6 @@ class SlimprotoProvider(PlayerProvider):
             self.logger.debug("%s resync: pauseFor %sms", player.display_name, delta)
             self._do_not_resync_before[client.player_id] = time.time() + (delta / 1000) + 2
             self.mass.create_task(self._pause_for(client.player_id, delta))
-
-    async def _handle_decoder_ready(self, client: SlimClient) -> None:
-        """Handle decoder ready event, player is ready for the next track."""
-        if not client.current_metadata:
-            return
-        player = self.mass.players.get(client.player_id)
-        if player.synced_to:
-            # handled by sync master
-            return
-        if client.state == SlimPlayerState.STOPPED:
-            return
-        if player.active_source != player.player_id:
-            return
-        with suppress(QueueEmpty):
-            next_item = await self.mass.player_queues.preload_next_item(client.player_id)
-            url = await self.mass.streams.resolve_stream_url(
-                queue_item=next_item,
-                output_codec=ContentType.FLAC,
-                flow_mode=False,
-            )
-            await self._handle_play_url(
-                client,
-                url=url,
-                queue_item=next_item,
-                send_flush=False,
-                auto_play=True,
-            )
 
     async def _handle_buffer_ready(self, client: SlimClient) -> None:
         """Handle buffer ready event, player has buffered a (new) track."""
