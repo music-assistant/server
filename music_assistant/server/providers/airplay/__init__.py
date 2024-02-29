@@ -363,12 +363,12 @@ class AirplayStreamJob:
                 # EOF chunk
                 break
             self._cliraop_proc.stdin.write(chunk)
-            with suppress(BrokenPipeError):
+            with suppress(BrokenPipeError, ConnectionResetError):
                 await self._cliraop_proc.stdin.drain()
         # send EOF
         if self._cliraop_proc.returncode is None and not self._cliraop_proc.stdin.is_closing():
             self._cliraop_proc.stdin.write_eof()
-            with suppress(BrokenPipeError):
+            with suppress(BrokenPipeError, ConnectionResetError):
                 await self._cliraop_proc.stdin.drain()
         logger.debug("Audio reader finished")
 
