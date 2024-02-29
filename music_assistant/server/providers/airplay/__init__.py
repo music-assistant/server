@@ -459,10 +459,10 @@ class AirplayProvider(PlayerProvider):
             if mass_player := self.mass.players.get(player_id):
                 cur_address = get_primary_ip_address(info)
                 if cur_address and cur_address != airplay_player.address:
-                    airplay_player.address = cur_address
                     airplay_player.logger.info(
                         "Address updated from %s to %s", airplay_player.address, cur_address
                     )
+                    airplay_player.address = cur_address
                     mass_player.device_info = DeviceInfo(
                         model=mass_player.device_info.model,
                         manufacturer=mass_player.device_info.manufacturer,
