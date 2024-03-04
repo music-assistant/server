@@ -31,7 +31,7 @@ pycryptodome==3.20.0
 python-fullykiosk==0.0.12
 python-slugify==8.0.4
 radios==0.3.0
-shortuuid==1.0.11
+shortuuid==1.0.12
 snapcast-mod==2.4.3
 soco==0.30.2
 sonos-websocket==0.1.3
