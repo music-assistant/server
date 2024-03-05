@@ -393,10 +393,9 @@ class StreamsController(CoreController):
     ) -> str:
         """Resolve the stream URL for the given QueueItem."""
         fmt = output_codec.value
-        # handle raw pcm
-        if output_codec.is_pcm():
-            msg = "PCM is not possible as output format"
-            raise RuntimeError(msg)
+        # handle raw pcm without exact format specifiers
+        if output_codec.is_pcm() and ";" not in fmt:
+            fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
         query_params = {}
         base_path = "flow" if flow_mode else "single"
         url = f"{self._server.base_url}/{queue_item.queue_id}/{base_path}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
