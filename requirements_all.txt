@@ -6,11 +6,11 @@ aiofiles==23.2.1
 aiohttp==3.9.3
 aiorun==2023.7.2
 aioslimproto==2.3.3
-aiosqlite==0.19.0
+aiosqlite==0.20.0
 async-upnp-client==0.38.2
 asyncio-throttle==1.0.2
 colorlog==6.8.2
-cryptography==42.0.4
+cryptography==42.0.5
 defusedxml==0.7.1
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
@@ -31,7 +31,7 @@ pycryptodome==3.20.0
 python-fullykiosk==0.0.12
 python-slugify==8.0.4
 radios==0.3.0
-shortuuid==1.0.11
+shortuuid==1.0.12
 snapcast-mod==2.4.3
 soco==0.30.2
 sonos-websocket==0.1.3

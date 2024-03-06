@@ -158,7 +158,7 @@ async def select_free_port(range_start: int, range_end: int) -> int:
         """Check if port is in use."""
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
             try:
-                _sock.bind(("127.0.0.1", port))
+                _sock.bind(("0.0.0.0", port))
             except OSError:
                 return True
         return False
