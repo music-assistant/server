@@ -463,6 +463,7 @@ class SlimprotoProvider(PlayerProvider):
                 )
                 if queue_item.image
                 else MASS_LOGO_ONLINE,
+                "duration": queue_item.duration,
             }
         elif queue_item:
             metadata = {
@@ -476,6 +477,7 @@ class SlimprotoProvider(PlayerProvider):
                 )
                 if queue_item.image
                 else MASS_LOGO_ONLINE,
+                "duration": queue_item.duration,
             }
         else:
             metadata = {
