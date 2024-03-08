@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import requests
 from asyncio import TaskGroup
 from typing import TYPE_CHECKING, Any
 
@@ -69,6 +70,8 @@ CONF_AUTH_TOKEN = "token"
 CONF_LIBRARY_ID = "library_id"
 CONF_LOCAL_SERVER_IP = "local_server_ip"
 CONF_LOCAL_SERVER_PORT = "local_server_port"
+CONF_LOCAL_SERVER_SSL = "local_server_ssl"
+CONF_LOCAL_SERVER_VERIFY_CERT = "local_server_verify_cert"
 CONF_USE_GDM = "use_gdm"
 CONF_ACTION_GDM = "gdm"
 FAKE_ARTIST_PREFIX = "_fake://"
@@ -113,9 +116,13 @@ async def get_config_entries(
         if server_details[0] is None and server_details[1] is None:
             values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
             values[CONF_LOCAL_SERVER_PORT] = "Discovery failed, please add Port manually"
+            values[CONF_LOCAL_SERVER_SSL] = "Discovery failed, please set SSL manually"
+            values[CONF_LOCAL_SERVER_VERIFY_CERT] = "Discovery failed, please set Verify certificate manually"
         else:
             values[CONF_LOCAL_SERVER_IP] = server_details[0]
             values[CONF_LOCAL_SERVER_PORT] = server_details[1]
+            values[CONF_LOCAL_SERVER_SSL] = False
+            values[CONF_LOCAL_SERVER_VERIFY_CERT] = False
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
@@ -145,7 +152,9 @@ async def get_config_entries(
         token = mass.config.decrypt_string(values.get(CONF_AUTH_TOKEN))
         server_http_ip = values.get(CONF_LOCAL_SERVER_IP)
         server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
-        if not (libraries := await get_libraries(mass, token, server_http_ip, server_http_port)):
+        server_http_ssl = values.get(CONF_LOCAL_SERVER_SSL)
+        server_http_verify_cert = values.get(CONF_LOCAL_SERVER_VERIFY_CERT)
+        if not (libraries := await get_libraries(mass, token, server_http_ssl, server_http_ip, server_http_port, server_http_verify_cert)):
             msg = "Unable to retrieve Servers and/or Music Libraries"
             raise LoginFailed(msg)
         conf_libraries.options = tuple(
@@ -180,6 +189,22 @@ async def get_config_entries(
             value=values.get(CONF_LOCAL_SERVER_PORT) if values else None,
         ),
         ConfigEntry(
+            key=CONF_LOCAL_SERVER_SSL,
+            type=ConfigEntryType.BOOLEAN,
+            label="SSL (HTTPS)",
+            description="Connect to the local server using SSL (HTTPS)",
+            required=True,
+            default_value=False,
+        ),
+        ConfigEntry(
+            key=CONF_LOCAL_SERVER_VERIFY_CERT,
+            type=ConfigEntryType.BOOLEAN,
+            label="Verify certificate",
+            description="Verify local server SSL certificate",
+            required=True,
+            default_value=True,
+        ),
+        ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Authentication token for MyPlex.tv",
@@ -208,9 +233,12 @@ class PlexProvider(MusicProvider):
 
         def connect() -> PlexServer:
             try:
+                session = requests.Session()
+                session.verify = self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT) if self.config.get_value(CONF_LOCAL_SERVER_SSL) else False
+                local_server_protocol = "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
                 plex_server = PlexServer(
-                    f"http://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}",
-                    token=self.config.get_value(CONF_AUTH_TOKEN),
+                    f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}",
+                    token=self.config.get_value(CONF_AUTH_TOKEN), session=session,
                 )
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
