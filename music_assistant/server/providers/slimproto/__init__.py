@@ -26,6 +26,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -47,6 +48,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_ENFORCE_MP3,
     CONF_PORT,
+    CONF_SYNC_ADJUST,
     MASS_LOGO_ONLINE,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -89,7 +91,6 @@ class SyncPlayPoint:
     diff: int
 
 
-CONF_SYNC_ADJUST = "sync_adjust"
 CONF_CLI_TELNET = "cli_telnet"
 CONF_CLI_JSON = "cli_json"
 CONF_DISCOVERY = "discovery"
@@ -267,17 +268,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_OUTPUT_CHANNELS,
                 CONF_ENTRY_CROSSFADE_DURATION,
                 CONF_ENTRY_ENFORCE_MP3,
-                ConfigEntry(
-                    key=CONF_SYNC_ADJUST,
-                    type=ConfigEntryType.INTEGER,
-                    range=(0, 1500),
-                    default_value=0,
-                    label="Audio synchronization delay correction",
-                    description="If this player is playing audio synced with other players "
-                    "and you always hear the audio too late on this player, "
-                    "you can shift the audio a bit.",
-                    advanced=True,
-                ),
+                CONF_ENTRY_SYNC_ADJUST,
             )
         )
 

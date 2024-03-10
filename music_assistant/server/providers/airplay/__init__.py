@@ -21,6 +21,7 @@ from music_assistant.common.helpers.util import empty_queue, get_ip_pton, select
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
     ConfigValueType,
 )
@@ -35,6 +36,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.player_queue import PlayerQueue
+from music_assistant.constants import CONF_SYNC_ADJUST
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -51,7 +53,6 @@ DOMAIN = "airplay"
 CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
 CONF_VOLUME_START = "volume_start"
-CONF_SYNC_ADJUST = "sync_adjust"
 CONF_PASSWORD = "password"
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE,
@@ -74,17 +75,7 @@ PLAYER_CONFIG_ENTRIES = (
         "(lossless) ALAC at the cost of a bit CPU.",
         advanced=True,
     ),
-    ConfigEntry(
-        key=CONF_SYNC_ADJUST,
-        type=ConfigEntryType.INTEGER,
-        range=(-500, 500),
-        default_value=0,
-        label="Audio synchronization delay correction",
-        description="If this player is playing audio synced with other players "
-        "and you always hear the audio too early or late on this player, "
-        "you can shift the audio a bit.",
-        advanced=True,
-    ),
+    CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry(
         key=CONF_PASSWORD,
         type=ConfigEntryType.STRING,

@@ -23,6 +23,7 @@ from music_assistant.constants import (
     CONF_HIDE_PLAYER,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
+    CONF_SYNC_ADJUST,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     SECURE_STRING_SUBSTITUTE,
@@ -420,4 +421,18 @@ CONF_ENTRY_ENFORCE_MP3 = ConfigEntry(
     "into a lossy mp3 codec. \n\n "
     "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
     advanced=True,
+)
+
+CONF_ENTRY_SYNC_ADJUST = (
+    ConfigEntry(
+        key=CONF_SYNC_ADJUST,
+        type=ConfigEntryType.INTEGER,
+        range=(-500, 500),
+        default_value=0,
+        label="Audio synchronization delay correction",
+        description="If this player is playing audio synced with other players "
+        "and you always hear the audio too early or late on this player, "
+        "you can shift the audio a bit.",
+        advanced=True,
+    ),
 )
