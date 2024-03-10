@@ -17,10 +17,12 @@ from aioslimproto.client import SlimClient
 from aioslimproto.client import TransitionType as SlimTransition
 from aioslimproto.models import EventType as SlimEventType
 from aioslimproto.models import Preset as SlimPreset
+from aioslimproto.models import VisualisationType as SlimVisualisationType
 from aioslimproto.server import SlimServer
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
@@ -94,17 +96,37 @@ class SyncPlayPoint:
 CONF_CLI_TELNET = "cli_telnet"
 CONF_CLI_JSON = "cli_json"
 CONF_DISCOVERY = "discovery"
+CONF_DISPLAY = "display"
+CONF_VISUALIZATION = "visualization"
+
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_SLIMPROTO_PORT = 3483
+DEFAULT_VISUALIZATION = SlimVisualisationType.SPECTRUM_ANALYZER.value
 
-CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
-    key=CONF_CROSSFADE_DURATION,
-    type=ConfigEntryType.INTEGER,
-    range=(1, 10),
-    default_value=8,
-    label="Crossfade duration",
-    description="Duration in seconds of the crossfade between tracks (if enabled)",
+
+CONF_ENTRY_DISPLAY = ConfigEntry(
+    key=CONF_DISPLAY,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=True,
+    required=False,
+    label="Enable display support",
+    description="Enable/disable native display support on " "squeezebox or squeezelite32 hardware.",
     advanced=True,
+)
+CONF_ENTRY_VISUALIZATION = ConfigEntry(
+    key=CONF_VISUALIZATION,
+    type=ConfigEntryType.STRING,
+    default_value=DEFAULT_VISUALIZATION,
+    options=tuple(
+        ConfigValueOption(title=x.name.replace("_", " ").title(), value=x.value)
+        for x in SlimVisualisationType
+    ),
+    required=False,
+    label="Visualization type",
+    description="The type of visualization to show on the display "
+    "during playback if the device supports this.",
+    advanced=True,
+    depends_on=CONF_DISPLAY,
 )
 
 
@@ -269,6 +291,8 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_CROSSFADE_DURATION,
                 CONF_ENTRY_ENFORCE_MP3,
                 CONF_ENTRY_SYNC_ADJUST,
+                CONF_ENTRY_DISPLAY,
+                CONF_ENTRY_VISUALIZATION,
             )
         )
 
@@ -278,6 +302,7 @@ class SlimprotoProvider(PlayerProvider):
 
         if slimplayer := self.slimproto.get_player(config.player_id):
             self.mass.create_task(self._set_preset_items(slimplayer))
+            self.mass.create_task(self._set_display(slimplayer))
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
@@ -812,8 +837,9 @@ class SlimprotoProvider(PlayerProvider):
         """Handle a slimplayer connected event."""
         player_id = slimplayer.player_id
         self.logger.info("Player %s connected", slimplayer.name or player_id)
-        # set presets
+        # set presets and display
         await self._set_preset_items(slimplayer)
+        await self._set_display(slimplayer)
         # update all attributes
         await self._handle_player_update(slimplayer)
         # update existing players so they can update their `can_sync_with` field
@@ -877,3 +903,15 @@ class SlimprotoProvider(PlayerProvider):
             else:
                 break
         slimplayer.presets = preset_items
+
+    async def _set_display(self, slimplayer: SlimClient) -> None:
+        """Set the display config for a player."""
+        display_enabled = self.mass.config.get_raw_player_config_value(
+            slimplayer.player_id, CONF_DISPLAY, True
+        )
+        visualization = self.mass.config.get_raw_player_config_value(
+            slimplayer.player_id, CONF_VISUALIZATION, DEFAULT_VISUALIZATION
+        )
+        await slimplayer.configure_display(
+            visualisation=SlimVisualisationType(visualization), disabled=not display_enabled
+        )

@@ -54,6 +54,8 @@ CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
 CONF_VOLUME_START = "volume_start"
 CONF_PASSWORD = "password"
+
+
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -78,7 +80,7 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry(
         key=CONF_PASSWORD,
-        type=ConfigEntryType.STRING,
+        type=ConfigEntryType.SECURE_STRING,
         default_value=None,
         required=False,
         label="Device password",
