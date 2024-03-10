@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_ENFORCE_MP3,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -406,5 +407,17 @@ CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Hide this player in the user interface",
     default_value=False,
+    advanced=True,
+)
+
+CONF_ENTRY_ENFORCE_MP3 = ConfigEntry(
+    key=CONF_ENFORCE_MP3,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enforce (lossy) mp3 stream",
+    default_value=False,
+    description="By default, Music Assistant sends lossless, high quality audio "
+    "to all players. Some players can not deal with that and require the stream to be packed "
+    "into a lossy mp3 codec. \n\n "
+    "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
     advanced=True,
 )

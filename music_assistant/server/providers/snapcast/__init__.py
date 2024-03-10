@@ -295,13 +295,18 @@ class SnapCastProvider(PlayerProvider):
                 ):
                     writer.write(pcm_chunk)
                     await writer.drain()
-
-            finally:
-                await self._snapserver.stream_remove_stream(stream.identifier)
+                # end of the stream reached
                 if writer.can_write_eof():
-                    writer.close()
+                    writer.write_eof()
+                    await writer.drain()
+                # we need to wait a bit before removing the stream to ensure
+                # that all snapclients have consumed the audio
+                # https://github.com/music-assistant/hass-music-assistant/issues/1962
+                await asyncio.sleep(30)
+            finally:
                 if not writer.is_closing():
                     writer.close()
+                await self._snapserver.stream_remove_stream(stream.identifier)
                 self.logger.debug("Closed connection to %s:%s", host, port)
 
         # start streaming the queue (pcm) audio in a background task
@@ -340,12 +345,18 @@ class SnapCastProvider(PlayerProvider):
                 async for pcm_chunk in stream_job.subscribe(player_id):
                     writer.write(pcm_chunk)
                     await writer.drain()
-            finally:
-                await self._snapserver.stream_remove_stream(stream.identifier)
+                # end of the stream reached
                 if writer.can_write_eof():
-                    writer.close()
+                    writer.write_eof()
+                    await writer.drain()
+                # we need to wait a bit before removing the stream to ensure
+                # that all snapclients have consumed the audio
+                # https://github.com/music-assistant/hass-music-assistant/issues/1962
+                await asyncio.sleep(30)
+            finally:
                 if not writer.is_closing():
                     writer.close()
+                await self._snapserver.stream_remove_stream(stream.identifier)
                 self.logger.debug("Closed connection to %s:%s", host, port)
 
         # start streaming the queue (pcm) audio in a background task
