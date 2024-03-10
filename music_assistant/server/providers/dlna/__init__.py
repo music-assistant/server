@@ -25,6 +25,7 @@ from async_upnp_client.search import async_search
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_FLOW_MODE,
     ConfigEntry,
     ConfigValueType,
@@ -38,7 +39,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE, CONF_PLAYERS
+from music_assistant.constants import CONF_CROSSFADE, CONF_ENFORCE_MP3, CONF_FLOW_MODE, CONF_PLAYERS
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -63,7 +64,7 @@ BASE_PLAYER_FEATURES = (
 )
 
 CONF_ENQUEUE_NEXT = "enqueue_next"
-CONF_ENFORCE_MP3 = "enforce_mp3"
+
 
 PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
@@ -88,17 +89,7 @@ PLAYER_CONFIG_ENTRIES = (
     ),
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
-    ConfigEntry(
-        key=CONF_ENFORCE_MP3,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enforce (lossy) mp3 stream",
-        default_value=False,
-        description="By default, Music Assistant sends lossless, high quality audio "
-        "to all players. Some players can not deal with that and require the stream to be packed "
-        "into a lossy mp3 codec. \n\n "
-        "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
-        advanced=True,
-    ),
+    CONF_ENTRY_ENFORCE_MP3,
 )
 
 CONF_NETWORK_SCAN = "network_scan"
