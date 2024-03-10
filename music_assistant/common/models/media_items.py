@@ -36,7 +36,12 @@ class AudioFormat(DataClassDictMixin):
 
     def __post_init__(self):
         """Execute actions after init."""
-        if not self.output_format_str:
+        if not self.output_format_str and self.content_type.is_pcm():
+            self.output_format_str = (
+                f"pcm;codec=pcm;rate={self.sample_rate};"
+                f"bitrate={self.bit_depth};channels={self.channels}"
+            )
+        elif not self.output_format_str:
             self.output_format_str = self.content_type.value
 
     @property
