@@ -80,7 +80,7 @@ async def is_hass_supervisor() -> bool:
 
     def _check():
         try:
-            urllib.request.urlopen("http://supervisor/core")
+            urllib.request.urlopen("http://supervisor/core", timeout=1)
         except urllib.error.URLError as err:
             # this should return a 401 unauthorized if it exists
             return getattr(err, "code", 999) == 401
