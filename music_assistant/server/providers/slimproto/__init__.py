@@ -829,7 +829,7 @@ class SlimprotoProvider(PlayerProvider):
         # all child's ready (or timeout) - start play
         async with asyncio.TaskGroup() as tg:
             for _client in self._get_sync_clients(player.player_id):
-                timestamp = _client.jiffies + 200
+                timestamp = _client.jiffies + 500
                 sync_delay = self.mass.config.get_raw_player_config_value(
                     _client.player_id, CONF_SYNC_ADJUST, 0
                 )
