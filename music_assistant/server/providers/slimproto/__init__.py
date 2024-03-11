@@ -712,6 +712,10 @@ class SlimprotoProvider(PlayerProvider):
             self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
             slimplayer.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
             slimplayer.signal_update()
+        elif event.data == "button jump_fwd":
+            await self.mass.player_queues.next(queue.queue_id)
+        elif event.data == "button jump_rew":
+            await self.mass.player_queues.previous(queue.queue_id)
         elif event.data.startswith("time "):
             # seek request
             _, param = event.data.split(" ", 1)
