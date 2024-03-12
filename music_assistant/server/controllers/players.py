@@ -953,7 +953,7 @@ class PlayerController(CoreController):
 
     async def _register_syncgroups(self) -> None:
         """Register all (virtual/fake) syncgroup players."""
-        player_configs = await self.mass.config.get_player_configs()
+        player_configs = await self.mass.config.get_player_configs(include_values=True)
         for player_config in player_configs:
             if not player_config.player_id.startswith(SYNCGROUP_PREFIX):
                 continue
