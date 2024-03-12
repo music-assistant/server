@@ -228,7 +228,9 @@ class UniversalGroupProvider(PlayerProvider):
 
     async def _register_all_players(self) -> None:
         """Register all (virtual/fake) group players in the Player controller."""
-        player_configs = await self.mass.config.get_player_configs(self.instance_id)
+        player_configs = await self.mass.config.get_player_configs(
+            self.instance_id, include_values=True
+        )
         for player_config in player_configs:
             members = player_config.get_value(CONF_GROUP_MEMBERS)
             self._register_group_player(

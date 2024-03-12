@@ -937,7 +937,6 @@ class StreamsController(CoreController):
             "-i",
             "-",
         ]
-        input_args += ["-metadata", 'title="Music Assistant"']
         # select output args
         if output_format.content_type == ContentType.FLAC:
             # set compression level to 0 to prevent issues with cast players

@@ -515,7 +515,7 @@ class MusicAssistant:
                 self.config.set(f"{CONF_PROVIDERS}/{prov_conf.instance_id}/last_error", str(exc))
 
         # load all configured (and enabled) providers
-        prov_configs = await self.config.get_provider_configs()
+        prov_configs = await self.config.get_provider_configs(include_values=True)
         async with asyncio.TaskGroup() as tg:
             for prov_conf in prov_configs:
                 if not prov_conf.enabled:

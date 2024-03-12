@@ -160,12 +160,15 @@ class ConfigController:
         self,
         provider_type: ProviderType | None = None,
         provider_domain: str | None = None,
+        include_values: bool = False,
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
         return [
             await self.get_provider_config(prov_conf["instance_id"])
+            if include_values
+            else ProviderConfig.parse([], prov_conf)
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
             and (provider_domain is None or prov_conf["domain"] == provider_domain)
@@ -317,11 +320,15 @@ class ConfigController:
         await self._load_provider_config(config)
 
     @api_command("config/players")
-    async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
+    async def get_player_configs(
+        self, provider: str | None = None, include_values: bool = False
+    ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
         available_providers = {x.instance_id for x in self.mass.providers}
         return [
             await self.get_player_config(raw_conf["player_id"])
+            if include_values
+            else PlayerConfig.parse([], raw_conf)
             for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
             # filter out unavailable providers
             if raw_conf["provider"] in available_providers
@@ -501,12 +508,14 @@ class ConfigController:
         self.set(conf_key, default_config.to_raw())
 
     @api_command("config/core")
-    async def get_core_configs(
-        self,
-    ) -> list[CoreConfig]:
+    async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
             await self.get_core_config(core_controller)
+            if include_values
+            else CoreConfig.parse(
+                [], self.get(f"{CONF_CORE}/{core_controller}", {"domain": core_controller})
+            )
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
 

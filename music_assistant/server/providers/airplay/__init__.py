@@ -199,44 +199,46 @@ class AirplayStreamJob:
         player_id = self.airplay_player.player_id
         mass_player = self.mass.players.get(player_id)
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENCRYPTION, False):
-            extra_args += ["-e"]
+            extra_args += ["-encrypt"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
-            extra_args += ["-a"]
+            extra_args += ["-alac"]
         if "airport" in mass_player.device_info.model.lower():
             # enforce auth on airport express
             extra_args += ["-auth"]
+        for prop in ("et", "md", "am", "pk", "pw"):
+            if prop_value := self.airplay_player.discovery_info.decoded_properties.get(prop):
+                extra_args += [f"-{prop}", prop_value]
+
         sync_adjust = self.mass.config.get_raw_player_config_value(player_id, CONF_SYNC_ADJUST, 0)
         if device_password := self.mass.config.get_raw_player_config_value(
             player_id, CONF_PASSWORD, None
         ):
             # NOTE: This may not work as we might need to do
             # some fancy hashing with the plain password first?!
-            extra_args += ["-P", device_password]
+            extra_args += ["-password", device_password]
         if self.prov.log_level == "DEBUG":
-            extra_args += ["-d", "5"]
+            extra_args += ["-debug", "5"]
         elif self.prov.log_level == "VERBOSE":
-            extra_args += ["-d", "10"]
+            extra_args += ["-debug", "10"]
 
         args = [
             self.prov.cliraop_bin,
-            "-n",
+            "-ntpstart",
             str(start_ntp),
-            "-p",
+            "-port",
             str(self.airplay_player.discovery_info.port),
-            "-w",
+            "-wait",
             str(2000 - sync_adjust),
-            "-v",
+            "-volume",
             str(mass_player.volume_level),
             *extra_args,
             "-dacp",
             self.prov.dacp_id,
-            "-ar",
+            "-activeremote",
             self.active_remote_id,
-            "-md",
-            self.airplay_player.discovery_info.decoded_properties["md"],
-            "-et",
-            self.airplay_player.discovery_info.decoded_properties["et"],
-            str(self.airplay_player.discovery_info.parsed_addresses()[0]),
+            "-udn",
+            str(self.airplay_player.discovery_info.name),
+            self.airplay_player.address,
             "-",
         ]
         if platform.system() == "Darwin":
@@ -288,12 +290,13 @@ class AirplayStreamJob:
             self.airplay_player.logger.debug("sending command %s", command)
         await self.mass.create_task(send_data)
 
-    async def _log_watcher(self) -> None:
+    async def _log_watcher(self) -> None:  # noqa: PLR0915
         """Monitor stderr for the running CLIRaop process."""
         airplay_player = self.airplay_player
         mass_player = self.mass.players.get(airplay_player.player_id)
         logger = airplay_player.logger
         airplay_player.logger.debug("Starting log watcher task...")
+        lost_packets = 0
         async for line in self._cliraop_proc.stderr:
             line = line.decode().strip()  # noqa: PLW2901
             if not line:
@@ -328,7 +331,13 @@ class AirplayStreamJob:
                 self.mass.players.update(airplay_player.player_id)
                 continue
             if "lost packet out of backlog" in line:
-                logger.warning(line)
+                lost_packets += 1
+                if lost_packets == 10:
+                    logger.warning("Packet loss detected, resuming playback...")
+                    queue = self.mass.player_queues.get_active_queue(mass_player.player_id)
+                    await self.mass.player_queues.resume(queue.queue_id)
+                else:
+                    logger.debug(line)
                 continue
             # debug log everything else
             if self.prov.log_level == "VERBOSE":
@@ -950,8 +959,10 @@ class AirplayProvider(PlayerProvider):
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 if active_stream := airplay_player.active_stream:
-                    active_stream.prevent_playback = True
-                    self.mass.create_task(self.monitor_prevent_playback(player_id))
+                    # ignore this if we just started playing to prevent false positives
+                    if mass_player.elapsed_time > 2 and mass_player.state == PlayerState.PLAYING:
+                        active_stream.prevent_playback = True
+                        self.mass.create_task(self.monitor_prevent_playback(player_id))
             elif "device-prevent-playback=0" in path:
                 # device reports that its ready for playback again
                 if active_stream := airplay_player.active_stream:
@@ -1040,12 +1051,12 @@ class AirplayProvider(PlayerProvider):
             count += 1
             if not (airplay_player := self._players.get(player_id)):
                 return
-            if not airplay_player.active_stream:
+            if not (active_stream := airplay_player.active_stream):
                 return
-            if airplay_player.active_stream.start_ntp != prev_ntp:
+            if active_stream.start_ntp != prev_ntp:
                 # checksum
                 return
-            if not airplay_player.active_stream.prevent_playback:
+            if not active_stream.prevent_playback:
                 return
             await asyncio.sleep(0.25)
 
