@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import requests
 from asyncio import TaskGroup
 from typing import TYPE_CHECKING, Any
 
 import plexapi.exceptions
+import requests
 from aiohttp import ClientTimeout
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
@@ -117,7 +117,9 @@ async def get_config_entries(
             values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
             values[CONF_LOCAL_SERVER_PORT] = "Discovery failed, please add Port manually"
             values[CONF_LOCAL_SERVER_SSL] = "Discovery failed, please set SSL manually"
-            values[CONF_LOCAL_SERVER_VERIFY_CERT] = "Discovery failed, please set Verify certificate manually"
+            values[CONF_LOCAL_SERVER_VERIFY_CERT] = (
+                "Discovery failed, please set " "Verify certificate manually"
+            )
         else:
             values[CONF_LOCAL_SERVER_IP] = server_details[0]
             values[CONF_LOCAL_SERVER_PORT] = server_details[1]
@@ -154,7 +156,16 @@ async def get_config_entries(
         server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
         server_http_ssl = values.get(CONF_LOCAL_SERVER_SSL)
         server_http_verify_cert = values.get(CONF_LOCAL_SERVER_VERIFY_CERT)
-        if not (libraries := await get_libraries(mass, token, server_http_ssl, server_http_ip, server_http_port, server_http_verify_cert)):
+        if not (
+            libraries := await get_libraries(
+                mass,
+                token,
+                server_http_ssl,
+                server_http_ip,
+                server_http_port,
+                server_http_verify_cert,
+            )
+        ):
             msg = "Unable to retrieve Servers and/or Music Libraries"
             raise LoginFailed(msg)
         conf_libraries.options = tuple(
@@ -234,11 +245,18 @@ class PlexProvider(MusicProvider):
         def connect() -> PlexServer:
             try:
                 session = requests.Session()
-                session.verify = self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT) if self.config.get_value(CONF_LOCAL_SERVER_SSL) else False
-                local_server_protocol = "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
+                session.verify = (
+                    self.config.get_value(CONF_LOCAL_SERVER_VERIFY_CERT)
+                    if self.config.get_value(CONF_LOCAL_SERVER_SSL)
+                    else False
+                )
+                local_server_protocol = (
+                    "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
+                )
                 plex_server = PlexServer(
                     f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}",
-                    token=self.config.get_value(CONF_AUTH_TOKEN), session=session,
+                    token=self.config.get_value(CONF_AUTH_TOKEN),
+                    session=session,
                 )
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
