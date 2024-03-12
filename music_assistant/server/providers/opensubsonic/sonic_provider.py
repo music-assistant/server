@@ -639,7 +639,7 @@ class OpenSonicProvider(MusicProvider):
         )
         return [self._parse_track(entry) for entry in songs]
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get the details needed to process a specified track."""
         try:
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, item_id)

@@ -239,7 +239,7 @@ class MusicProvider(Provider):
         if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
             raise NotImplementedError
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError
 
