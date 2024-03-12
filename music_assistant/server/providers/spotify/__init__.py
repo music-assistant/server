@@ -119,10 +119,12 @@ class SpotifyProvider(MusicProvider):
     _auth_token: str | None = None
     _sp_user: str | None = None
     _librespot_bin: str | None = None
+    # rate limiter needs to be specified on provider-level,
+    # so make it an instance attribute
+    _throttler = Throttler(rate_limit=1, period=1)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._throttler = Throttler(rate_limit=1, period=1)
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
         # try to get a token, raise if that fails
@@ -733,11 +735,12 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
-    async def _get_data(self, endpoint, tokeninfo: dict | None = None, **kwargs):
+    async def _get_data(self, endpoint, **kwargs):
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         kwargs["market"] = "from_token"
         kwargs["country"] = "from_token"
+        tokeninfo = kwargs.pop("tokeninfo", None)
         if tokeninfo is None:
             tokeninfo = await self.login()
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
@@ -748,6 +751,14 @@ class SpotifyProvider(MusicProvider):
                 async with self.mass.http_session.get(
                     url, headers=headers, params=kwargs, ssl=False, timeout=120
                 ) as response:
+                    # handle spotify rate limiter
+                    if response.status == 429:
+                        backoff_time = int(response.headers["Retry-After"])
+                        self.logger.debug(
+                            "Waiting %s seconds on Spotify rate limiter", backoff_time
+                        )
+                        await asyncio.sleep(backoff_time)
+                        return await self._get_data(endpoint, **kwargs)
                     # get text before json so we can log the body in case of errors
                     result = await response.text()
                     result = json_loads(result)
