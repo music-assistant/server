@@ -813,7 +813,7 @@ class SlimprotoProvider(PlayerProvider):
             return
         if not player.group_childs:
             # not a sync group, continue
-            await slimplayer.play()
+            await slimplayer.unpause_at(slimplayer.jiffies)
             return
         count = 0
         while count < 40:
