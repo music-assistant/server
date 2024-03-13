@@ -178,7 +178,8 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
         return
     try:
         analyze_jobs.add(streamdetails.uri)
-        LOGGER.debug("Start analyzing EBU R128 loudness for %s", streamdetails.uri)
+        item_name = f"{streamdetails.provider}/{streamdetails.item_id}"
+        LOGGER.debug("Start analyzing EBU R128 loudness for %s", item_name)
         # calculate EBU R128 integrated loudness with ffmpeg
         input_file = streamdetails.direct or "-"
         proc_args = [
@@ -223,7 +224,7 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
 
             _, stderr = await ffmpeg_proc.communicate()
             if loudness_details := _parse_loudnorm(stderr):
-                LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
+                LOGGER.debug("Loudness measurement for %s: %s", item_name, loudness_details)
                 streamdetails.loudness = loudness_details
                 await mass.music.set_track_loudness(
                     streamdetails.item_id, streamdetails.provider, loudness_details
@@ -231,7 +232,7 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
             else:
                 LOGGER.warning(
                     "Could not determine EBU R128 loudness of %s - %s",
-                    streamdetails.uri,
+                    item_name,
                     stderr.decode() or "received empty value",
                 )
     finally:
@@ -266,7 +267,7 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
                 LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
             # prefer cache
-            item_key = f"{prov_media.provider_instance}/{prov_media.item_id}"
+            item_key = f"{music_prov.lookup_key}/{prov_media.item_id}"
             cache_key = f"streamdetails_{item_key}"
             if cache := await mass.cache.get(cache_key):
                 LOGGER.debug(f"Using cached streamdetails for {item_key}")
@@ -458,21 +459,39 @@ async def get_media_stream(  # noqa: PLR0915
                 prev_chunk = chunk
 
             # all chunks received, strip silence of last part
-            if strip_silence_end:
-                stripped_audio = await strip_silence(
+
+            if strip_silence_end and prev_chunk:
+                final_chunk = await strip_silence(
                     mass,
                     prev_chunk,
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
                     reverse=True,
                 )
-                yield (True, stripped_audio)
-                bytes_sent += len(stripped_audio)
-                del stripped_audio
             else:
-                yield (True, prev_chunk)
-                bytes_sent += len(prev_chunk)
+                final_chunk = prev_chunk
 
+            # use communicate to read stderr and wait for exit
+            # read log for loudness measurement (or errors)
+            _, stderr = await ffmpeg_proc.communicate()
+            if ffmpeg_proc.returncode != 0:
+                # ffmpeg has a non zero returncode meaning trouble
+                LOGGER.getChild("ffmpeg").warning("STREAM ERROR on %s", streamdetails.uri)
+                LOGGER.getChild("ffmpeg").warning(stderr.decode())
+            elif loudness_details := _parse_loudnorm(stderr):
+                LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
+                streamdetails.loudness = loudness_details
+                await mass.music.set_track_loudness(
+                    streamdetails.item_id, streamdetails.provider, loudness_details
+                )
+            else:
+                LOGGER.getChild("ffmpeg").debug(stderr.decode())
+
+            # ensure the final chunk is sent and mark as final
+            # its important this is done here at the end so we can catch errors first
+            yield (True, final_chunk)
+            bytes_sent += len(final_chunk)
+            del final_chunk
             del prev_chunk
 
         except (asyncio.CancelledError, GeneratorExit):
@@ -481,36 +500,24 @@ async def get_media_stream(  # noqa: PLR0915
         else:
             LOGGER.debug("finished media stream for: %s", streamdetails.uri)
             # store accurate duration
-            streamdetails.duration = seek_position + streamdetails.seconds_streamed
+            streamdetails.duration = seek_position + bytes_sent / pcm_sample_size
         finally:
             # report playback
-            seconds_streamed = bytes_sent / pcm_sample_size
+            seconds_streamed = bytes_sent / pcm_sample_size if bytes_sent else 0
             streamdetails.seconds_streamed = seconds_streamed
-            mass.create_task(
-                mass.music.mark_item_played(
-                    streamdetails.media_type, streamdetails.item_id, streamdetails.provider
+            if seconds_streamed < 20:
+                mass.create_task(
+                    mass.music.mark_item_played(
+                        streamdetails.media_type, streamdetails.item_id, streamdetails.provider
+                    )
                 )
-            )
-            if music_prov := mass.get_provider(streamdetails.provider):
-                mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
+                if music_prov := mass.get_provider(streamdetails.provider):
+                    mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
-            # read log for loudness measurement (or errors)
-            stderr = await ffmpeg_proc.read_stderr(64000)
-            if loudness_details := _parse_loudnorm(stderr):
-                LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
-                streamdetails.loudness = loudness_details
-                await mass.music.set_track_loudness(
-                    streamdetails.item_id, streamdetails.provider, loudness_details
-                )
-            else:
-                # probably something bad happened, log ffmpeg output
-                level = logging.WARNING if chunk_num <= 1 else logging.DEBUG
-                LOGGER.getChild("ffmpeg").log(level, stderr.decode())
-
-            if not streamdetails.loudness and chunk_num > 10:
-                # send loudness analyze job to background worker
-                # note that we only do this if a track was at least been partially played
-                mass.create_task(analyze_loudness(mass, streamdetails))
+                if not streamdetails.loudness:
+                    # send loudness analyze job to background worker
+                    # note that we only do this if a track was at least been partially played
+                    mass.create_task(analyze_loudness(mass, streamdetails))
 
 
 async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool]:
@@ -906,7 +913,6 @@ def _parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
     try:
         loudness_data = json_loads(stderr_data)
     except JSON_DECODE_EXCEPTIONS:
-        LOGGER.warning("Unable to parse loudness info: %s", stderr_data)
         return None
     return LoudnessMeasurement(
         integrated=float(loudness_data["input_i"]),

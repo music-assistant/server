@@ -975,7 +975,8 @@ class PlayerQueuesController(CoreController):
             return  # guard, just in case something bad happened
         if not current_item.duration:
             return
-        if current_item.streamdetails and current_item.streamdetails.seconds_streamed:
+        # NOTE: 'seconds_streamed' can actually be 0 if there was a stream error!
+        if current_item.streamdetails and current_item.streamdetails.seconds_streamed is not None:
             duration = current_item.streamdetails.seconds_streamed
         else:
             duration = current_item.duration
@@ -1143,10 +1144,14 @@ class PlayerQueuesController(CoreController):
                     track_time = elapsed_time_queue - total_time
                     break
                 track_duration = (
+                    # NOTE: 'seconds_streamed' can actually be 0 if there was a stream error!
                     queue_track.streamdetails.seconds_streamed
-                    or queue_track.streamdetails.duration
-                    or queue_track.duration
-                    or FALLBACK_DURATION
+                    if queue_track.streamdetails.seconds_streamed is not None
+                    else (
+                        queue_track.streamdetails.duration
+                        or queue_track.duration
+                        or FALLBACK_DURATION
+                    )
                 )
                 if elapsed_time_queue > (track_duration + total_time):
                     # total elapsed time is more than (streamed) track duration

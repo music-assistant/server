@@ -69,6 +69,7 @@ class StreamDetails(DataClassDictMixin):
         d.pop("seconds_streamed", None)
         d.pop("seconds_skipped", None)
         d.pop("target_loudness", None)
+        return d
 
     @property
     def uri(self) -> str:

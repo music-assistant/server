@@ -461,36 +461,38 @@ class MusicController(CoreController):
         self, item_id: str, provider_instance_id_or_domain: str, loudness: LoudnessMeasurement
     ) -> None:
         """Store Loudness Measurement for a track in db."""
-        await self.database.insert(
-            DB_TABLE_TRACK_LOUDNESS,
-            {
-                "item_id": item_id,
-                "provider": provider_instance_id_or_domain,
-                "integrated": loudness.integrated,
-                "true_peak": loudness.true_peak,
-                "lra": loudness.lra,
-                "threshold": loudness.threshold,
-            },
-            allow_replace=True,
-        )
+        if provider := self.mass.get_provider(provider_instance_id_or_domain):
+            await self.database.insert(
+                DB_TABLE_TRACK_LOUDNESS,
+                {
+                    "item_id": item_id,
+                    "provider": provider.lookup_key,
+                    "integrated": loudness.integrated,
+                    "true_peak": loudness.true_peak,
+                    "lra": loudness.lra,
+                    "threshold": loudness.threshold,
+                },
+                allow_replace=True,
+            )
 
     async def get_track_loudness(
         self, item_id: str, provider_instance_id_or_domain: str
     ) -> LoudnessMeasurement | None:
         """Get Loudness Measurement for a track in db."""
-        if result := await self.database.get_row(
-            DB_TABLE_TRACK_LOUDNESS,
-            {
-                "item_id": item_id,
-                "provider": provider_instance_id_or_domain,
-            },
-        ):
-            return LoudnessMeasurement(
-                integrated=result["integrated"],
-                true_peak=result["true_peak"],
-                lra=result["lra"],
-                threshold=result["threshold"],
-            )
+        if provider := self.mass.get_provider(provider_instance_id_or_domain):
+            if result := await self.database.get_row(
+                DB_TABLE_TRACK_LOUDNESS,
+                {
+                    "item_id": item_id,
+                    "provider": provider.lookup_key,
+                },
+            ):
+                return LoudnessMeasurement(
+                    integrated=result["integrated"],
+                    true_peak=result["true_peak"],
+                    lra=result["lra"],
+                    threshold=result["threshold"],
+                )
         return None
 
     async def mark_item_played(

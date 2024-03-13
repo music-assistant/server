@@ -49,6 +49,11 @@ class MusicProvider(Provider):
         """
         return True
 
+    @property
+    def lookup_key(self) -> str:
+        """Return domain if streaming_provider or instance_id otherwise."""
+        return self.domain if self.is_streaming_provider else self.instance_id
+
     async def search(
         self,
         search_query: str,
