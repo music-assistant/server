@@ -40,10 +40,10 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
 from music_assistant.common.models.provider import ProviderManifest
+from music_assistant.common.models.streamdetails import StreamDetails
 
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var

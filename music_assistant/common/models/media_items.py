@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from time import time
 from typing import Any, Self
 
 from mashumaro import DataClassDictMixin
@@ -472,64 +471,3 @@ def media_from_dict(media_item: dict) -> MediaItemType:
     if media_item["media_type"] == "radio":
         return Radio.from_dict(media_item)
     return MediaItem.from_dict(media_item)
-
-
-@dataclass(kw_only=True)
-class StreamDetails(DataClassDictMixin):
-    """Model for streamdetails."""
-
-    # NOTE: the actual provider/itemid of the streamdetails may differ
-    # from the connected media_item due to track linking etc.
-    # the streamdetails are only used to provide details about the content
-    # that is going to be streamed.
-
-    # mandatory fields
-    provider: str
-    item_id: str
-    audio_format: AudioFormat
-    media_type: MediaType = MediaType.TRACK
-
-    # stream_title: radio streams can optionally set this field
-    stream_title: str | None = None
-    # duration of the item to stream, copied from media_item if omitted
-    duration: int | None = None
-    # total size in bytes of the item, calculated at eof when omitted
-    size: int | None = None
-    # expires: timestamp this streamdetails expire
-    expires: float = time() + 3600
-    # data: provider specific data (not exposed externally)
-    data: Any = None
-    # if the url/file is supported by ffmpeg directly, use direct stream
-    direct: str | None = None
-    # bool to indicate that the providers 'get_audio_stream' supports seeking of the item
-    can_seek: bool = True
-    # callback: optional callback function (or coroutine) to call when the stream completes.
-    # needed for streaming provivders to report what is playing
-    # receives the streamdetails as only argument from which to grab
-    # details such as seconds_streamed.
-    callback: Any = None
-
-    # the fields below will be set/controlled by the streamcontroller
-    queue_id: str | None = None
-    seconds_streamed: float | None = None
-    seconds_skipped: float | None = None
-    gain_correct: float | None = None
-    loudness: float | None = None
-
-    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
-        """Exclude internal fields from dict."""
-        d.pop("data")
-        d.pop("direct")
-        d.pop("expires")
-        d.pop("queue_id")
-        d.pop("callback")
-        return d
-
-    def __str__(self) -> str:
-        """Return pretty printable string of object."""
-        return self.uri
-
-    @property
-    def uri(self) -> str:
-        """Return uri representation of item."""
-        return f"{self.provider}://{self.media_type.value}/{self.item_id}"

@@ -16,9 +16,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     Radio,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 
 from .provider import Provider
 

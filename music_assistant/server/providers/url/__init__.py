@@ -13,9 +13,9 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.audio import (
     get_file_stream,
     get_http_stream,

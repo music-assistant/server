@@ -8,7 +8,8 @@ from uuid import uuid4
 from mashumaro import DataClassDictMixin
 
 from .enums import MediaType
-from .media_items import Album, ItemMapping, MediaItemImage, Radio, StreamDetails, Track
+from .media_items import Album, ItemMapping, MediaItemImage, Radio, Track
+from .streamdetails import StreamDetails
 
 
 @dataclass

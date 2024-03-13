@@ -146,6 +146,15 @@ class AsyncProcess:
         """Write bytes to process and read back results."""
         return await self._proc.communicate(input_data)
 
+    async def read_stderr(self, n: int = -1) -> bytes:
+        """Read up to n bytes from the stderr stream.
+
+        If n is positive, this function try to read n bytes,
+        and may return less or equal bytes than requested, but at least one byte.
+        If EOF was received before any byte is read, this function returns empty byte object.
+        """
+        return await self._proc.stderr.read(n)
+
     def attach_task(self, coro: Coroutine) -> asyncio.Task:
         """Attach given coro func as reader/writer task to properly cancel it when needed."""
         self._attached_task = task = asyncio.create_task(coro)
