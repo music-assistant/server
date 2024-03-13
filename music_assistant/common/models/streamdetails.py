@@ -53,22 +53,22 @@ class StreamDetails(DataClassDictMixin):
     can_seek: bool = True
 
     # the fields below will be set/controlled by the streamcontroller
+    loudness: LoudnessMeasurement | None = None
     queue_id: str | None = None
     seconds_streamed: float | None = None
     seconds_skipped: float | None = None
-    loudness: LoudnessMeasurement | None = None
     target_loudness: float | None = None
-
-    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
-        """Exclude internal fields from dict."""
-        d.pop("data")
-        d.pop("direct")
-        d.pop("expires")
-        return d
 
     def __str__(self) -> str:
         """Return pretty printable string of object."""
         return self.uri
+
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Execute action(s) on serialization."""
+        d.pop("queue_id", None)
+        d.pop("seconds_streamed", None)
+        d.pop("seconds_skipped", None)
+        d.pop("target_loudness", None)
 
     @property
     def uri(self) -> str:

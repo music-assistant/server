@@ -238,22 +238,19 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
         analyze_jobs.discard(streamdetails.uri)
 
 
-async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> None:
-    """Set streamdetails for the given QueueItem.
+async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> StreamDetails:
+    """Get streamdetails for the given QueueItem.
 
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
         param media_item: The QueueItem for which to request the streamdetails for.
     """
-    streamdetails = None
     if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
-        LOGGER.debug(f"Using cached streamdetails for {queue_item.uri}")
-        # we already have fresh streamdetails, use these
-        queue_item.streamdetails.seconds_skipped = None
-        queue_item.streamdetails.seconds_streamed = None
-        streamdetails = queue_item.streamdetails
+        LOGGER.debug(f"Using cached streamdetails from queue_item for {queue_item.uri}")
+        # we already have (fresh) streamdetails stored on the queueitem, use these.
+        # make a copy to prevent we're altering an existing object and introduce race conditions.
+        streamdetails = StreamDetails.from_dict(queue_item.streamdetails.to_dict())
     else:
-        # fetch streamdetails from provider
         # always request the full item as there might be other qualities available
         full_item = await mass.music.get_item_by_uri(queue_item.uri)
         # sort by quality and check track availability
@@ -263,23 +260,33 @@ async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Non
             if not prov_media.available:
                 LOGGER.debug(f"Skipping unavailable {prov_media}")
                 continue
-            # get streamdetails from provider
+            # guard that provider is available
             music_prov = mass.get_provider(prov_media.provider_instance)
             if not music_prov:
                 LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
+            # prefer cache
+            item_key = f"{prov_media.provider_instance}/{prov_media.item_id}"
+            cache_key = f"streamdetails_{item_key}"
+            if cache := await mass.cache.get(cache_key):
+                LOGGER.debug(f"Using cached streamdetails for {item_key}")
+                streamdetails = StreamDetails.from_dict(cache)
+                break
+            # get streamdetails from provider
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
                     prov_media.item_id
                 )
+                # store streamdetails in cache
+                expiration = streamdetails.expires - time()
+                if expiration > 300:
+                    await mass.cache.set(cache_key, streamdetails.to_dict(), expiration - 60)
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
             else:
                 break
-
-    if not streamdetails:
-        msg = f"Unable to retrieve streamdetails for {queue_item}"
-        raise MediaNotFoundError(msg)
+        else:
+            raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
 
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
@@ -304,8 +311,7 @@ async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Non
         and streamdetails.data.startswith("http")
     ):
         streamdetails.direct = streamdetails.data
-    # set streamdetails as attribute on the queue_item
-    queue_item.streamdetails = streamdetails
+    return streamdetails
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):

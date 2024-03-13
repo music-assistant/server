@@ -35,6 +35,15 @@ class QueueItem(DataClassDictMixin):
         if not self.name:
             self.name = self.uri
 
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Execute action(s) on serialization."""
+        # Exclude internal streamdetails fields from dict
+        if streamdetails := d.get("streamdetails"):
+            streamdetails.pop("data", None)
+            streamdetails.pop("direct", None)
+            streamdetails.pop("expires", None)
+        return d
+
     @property
     def uri(self) -> str:
         """Return uri for this QueueItem (for logging purposes)."""
