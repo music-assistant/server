@@ -525,24 +525,26 @@ class PlayerController(CoreController):
 
         if group_player.powered == power:
             return  # nothing to do
+        # make sure to update the group power state
+        group_player.powered = power
 
         # always stop (group/master)player at power off
         if not power and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(player_id)
 
         async with asyncio.TaskGroup() as tg:
-            members_powered = False
+            any_member_powered = False
             for member in self.iter_group_members(group_player, only_powered=True):
-                members_powered = True
+                any_member_powered = True
                 if power:
                     # set active source to group player if the group (is going to be) powered
                     member.active_source = group_player.player_id
-                elif member.active_source == group_player.player_id:
+                else:
                     # turn off child player when group turns off
                     tg.create_task(self.cmd_power(member.player_id, False))
                     member.active_source = None
             # edge case: group turned on but no members are powered, power them all!
-            if not members_powered and power:
+            if not any_member_powered and power:
                 for member in self.iter_group_members(group_player, only_powered=False):
                     tg.create_task(self.cmd_power(member.player_id, True))
                     member.active_source = group_player.player_id
