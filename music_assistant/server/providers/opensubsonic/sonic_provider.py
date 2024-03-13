@@ -65,6 +65,7 @@ class OpenSonicProvider(MusicProvider):
 
     _conn: SonicConnection = None
     _enable_podcasts: bool = True
+    _seek_support: bool = False
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
@@ -97,6 +98,17 @@ class OpenSonicProvider(MusicProvider):
             )
             raise LoginFailed(msg) from e
         self._enable_podcasts = self.config.get_value(CONF_ENABLE_PODCASTS)
+        try:
+            ret = await self._run_async(self._conn.getOpenSubsonicExtensions)
+            extensions = ret["openSubsonicExtensions"]
+            for entry in extensions:
+                if entry["name"] == "transcodeOffset":
+                    self._seek_support = True
+                    break
+        except OSError:
+            logging.getLogger("libopensonic").info(
+                "Server does not support transcodeOffset, seeking in player provider"
+            )
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -656,6 +668,7 @@ class OpenSonicProvider(MusicProvider):
         return StreamDetails(
             item_id=sonic_song.id,
             provider=self.instance_id,
+            can_seek=self._seek_support,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
             callback=self._report_playback_stopped,
