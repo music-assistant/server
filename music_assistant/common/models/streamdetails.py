@@ -53,11 +53,6 @@ class StreamDetails(DataClassDictMixin):
     direct: str | None = None
     # can_seek: bool to indicate that the providers 'get_audio_stream' supports seeking of the item
     can_seek: bool = True
-    # callback: optional callback function (or coroutine) to call when the stream completes.
-    # needed for streaming provivders to report what is playing
-    # receives the streamdetails as only argument from which to grab
-    # details such as seconds_streamed.
-    callback: Any = None
 
     # the fields below will be set/controlled by the streamcontroller
     queue_id: str | None = None
@@ -71,8 +66,6 @@ class StreamDetails(DataClassDictMixin):
         d.pop("data")
         d.pop("direct")
         d.pop("expires")
-        d.pop("queue_id")
-        d.pop("callback")
         return d
 
     def __str__(self) -> str:

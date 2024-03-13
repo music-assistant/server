@@ -469,24 +469,24 @@ async def get_media_stream(  # noqa: PLR0915
 
             del prev_chunk
 
-            # update duration details based on the actual pcm data we sent
-            streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
-            streamdetails.duration = seek_position + streamdetails.seconds_streamed
-
         except (asyncio.CancelledError, GeneratorExit):
             LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
             raise
         else:
             LOGGER.debug("finished media stream for: %s", streamdetails.uri)
+            # store accurate duration
+            streamdetails.duration = seek_position + streamdetails.seconds_streamed
         finally:
             # report playback
+            seconds_streamed = bytes_sent / pcm_sample_size
+            streamdetails.seconds_streamed = seconds_streamed
             mass.create_task(
                 mass.music.mark_item_played(
                     streamdetails.media_type, streamdetails.item_id, streamdetails.provider
                 )
             )
-            if streamdetails.callback:
-                mass.create_task(streamdetails.callback, streamdetails)
+            if music_prov := mass.get_provider(streamdetails.provider):
+                mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
             # read log for loudness measurement (or errors)
             stderr = await ffmpeg_proc.read_stderr(64000)

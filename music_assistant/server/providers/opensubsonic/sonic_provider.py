@@ -658,14 +658,14 @@ class OpenSonicProvider(MusicProvider):
             provider=self.instance_id,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
-            callback=self._report_playback_stopped,
         )
 
     async def _report_playback_started(self, item_id: str) -> None:
         await self._run_async(self._conn.scrobble, sid=item_id, submission=False)
 
-    async def _report_playback_stopped(self, streamdetails: StreamDetails) -> None:
-        if streamdetails.seconds_streamed >= streamdetails.duration / 2:
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+        if seconds_streamed >= streamdetails.duration / 2:
             await self._run_async(self._conn.scrobble, sid=streamdetails.item_id, submission=True)
 
     async def get_audio_stream(

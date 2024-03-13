@@ -250,6 +250,9 @@ class MusicProvider(Provider):
         if streamdetails.direct is None:
             raise NotImplementedError
 
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+
     async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
         """
         Resolve an image from an image path.

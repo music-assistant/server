@@ -454,7 +454,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             data={"url": url, "format": url_details["format"]},
             expires=url_details["exp"],
             size=int(song_data[f"FILESIZE_{url_details['format']}"]),
-            callback=self.log_listen_cb,
         )
 
     async def get_audio_stream(
@@ -489,9 +488,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     del buffer[:2048]
         yield bytes(buffer)
 
-    async def log_listen_cb(self, stream_details) -> None:
-        """Log the end of a track playback."""
-        await self.gw_client.log_listen(last_track=stream_details)
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+        await self.gw_client.log_listen(last_track=streamdetails)
 
     ### PARSING METADATA FUNCTIONS ###
 
