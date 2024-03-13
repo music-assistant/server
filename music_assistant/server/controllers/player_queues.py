@@ -666,9 +666,9 @@ class PlayerQueuesController(CoreController):
         # try to restore previous state
         if prev_state := await self.mass.cache.get(f"queue.state.{queue_id}"):
             try:
-                queue = PlayerQueue.from_dict(prev_state)
+                queue = PlayerQueue.from_cache(prev_state)
                 prev_items = await self.mass.cache.get(f"queue.items.{queue_id}", default=[])
-                queue_items = [QueueItem.from_dict(x) for x in prev_items]
+                queue_items = [QueueItem.from_cache(x) for x in prev_items]
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
@@ -897,7 +897,7 @@ class PlayerQueuesController(CoreController):
             self.mass.create_task(
                 self.mass.cache.set(
                     f"queue.items.{queue_id}",
-                    [x.to_dict() for x in self._queue_items[queue_id]],
+                    [x.to_cache() for x in self._queue_items[queue_id]],
                 )
             )
 
@@ -907,7 +907,7 @@ class PlayerQueuesController(CoreController):
         self.mass.create_task(
             self.mass.cache.set(
                 f"queue.state.{queue_id}",
-                queue.to_dict(),
+                queue.to_cache(),
             )
         )
 

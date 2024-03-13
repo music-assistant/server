@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Self
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
@@ -69,6 +70,18 @@ class QueueItem(DataClassDictMixin):
             media_item=media_item,
             image=get_image(media_item),
         )
+
+    def to_cache(self) -> dict[str, Any]:
+        """Return the dict that is suitable for storing into the cache db."""
+        base = self.to_dict()
+        base.pop("streamdetails", None)
+        return base
+
+    @classmethod
+    def from_cache(cls: Self, d: dict[Any, Any]) -> Self:
+        """Restore a QueueItem from a cache dict."""
+        d.pop("streamdetails", None)
+        return cls.from_dict(d)
 
 
 def get_image(media_item: Track | Radio | None) -> MediaItemImage | None:

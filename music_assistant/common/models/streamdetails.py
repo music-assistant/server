@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from time import time
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import MediaType
-
-if TYPE_CHECKING:
-    from music_assistant.common.models.media_items import AudioFormat
+from music_assistant.common.models.media_items import AudioFormat
 
 
 @dataclass(kw_only=True)
