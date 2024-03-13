@@ -202,9 +202,6 @@ class AirplayStreamJob:
             extra_args += ["-encrypt"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
             extra_args += ["-alac"]
-        if "airport" in mass_player.device_info.model.lower():
-            # enforce auth on airport express
-            extra_args += ["-auth"]
         for prop in ("et", "md", "am", "pk", "pw"):
             if prop_value := self.airplay_player.discovery_info.decoded_properties.get(prop):
                 extra_args += [f"-{prop}", prop_value]
@@ -213,8 +210,6 @@ class AirplayStreamJob:
         if device_password := self.mass.config.get_raw_player_config_value(
             player_id, CONF_PASSWORD, None
         ):
-            # NOTE: This may not work as we might need to do
-            # some fancy hashing with the plain password first?!
             extra_args += ["-password", device_password]
         if self.prov.log_level == "DEBUG":
             extra_args += ["-debug", "5"]
