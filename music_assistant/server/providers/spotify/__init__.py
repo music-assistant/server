@@ -34,9 +34,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 
 # pylint: disable=no-name-in-module
@@ -366,11 +366,6 @@ class SpotifyProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         # make sure a valid track is requested.
         track = await self.get_track(item_id)
-        if not track:
-            msg = f"track {item_id} not found"
-            raise MediaNotFoundError(msg)
-        # make sure that the token is still valid by just requesting it
-        await self.login()
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
@@ -378,6 +373,9 @@ class SpotifyProvider(MusicProvider):
                 content_type=ContentType.OGG,
             ),
             duration=track.duration,
+            # these streamdetails may be cached for a long time,
+            # as there is no time sensitive info in them
+            expires=time.time() + 30 * 24 * 3600,
         )
 
     async def get_audio_stream(

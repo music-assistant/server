@@ -13,9 +13,9 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     ProviderMapping,
     Radio,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.audio import (
     get_file_stream,
     get_http_stream,
@@ -183,7 +183,7 @@ class URLProvider(MusicProvider):
             await self.mass.cache.set(cache_key, media_info.raw)
         return (item_id, url, media_info)
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         item_id, url, media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration

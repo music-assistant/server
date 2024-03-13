@@ -40,9 +40,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import VARIOUS_ARTISTS_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION

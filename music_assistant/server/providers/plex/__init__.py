@@ -43,9 +43,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
@@ -688,7 +688,7 @@ class PlexProvider(MusicProvider):
                 return albums
         return []
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track."""
         plex_track = await self._get_data(item_id, PlexTrack)
         if not plex_track or not plex_track.media:

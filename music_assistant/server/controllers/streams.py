@@ -44,7 +44,7 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_media_stream,
-    set_stream_details,
+    get_stream_details,
 )
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.helpers.util import get_ips
@@ -457,7 +457,7 @@ class StreamsController(CoreController):
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
         try:
-            await set_stream_details(self.mass, queue_item=queue_item)
+            queue_item.streamdetails = await get_stream_details(self.mass, queue_item=queue_item)
         except MediaNotFoundError:
             raise web.HTTPNotFound(
                 reason=f"Unable to retrieve streamdetails for item: {queue_item}"
@@ -789,7 +789,7 @@ class StreamsController(CoreController):
             # get (next) queue item to stream
             if queue_track is None:
                 queue_track = start_queue_item
-                await set_stream_details(self.mass, queue_track)
+                queue_track.streamdetails = await get_stream_details(self.mass, queue_track)
             else:
                 seek_position = 0
                 fade_in = False

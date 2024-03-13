@@ -35,7 +35,7 @@ from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import FALLBACK_DURATION, ROOT_LOGGER_NAME
 from music_assistant.server.helpers.api import api_command
-from music_assistant.server.helpers.audio import set_stream_details
+from music_assistant.server.helpers.audio import get_stream_details
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
@@ -666,9 +666,9 @@ class PlayerQueuesController(CoreController):
         # try to restore previous state
         if prev_state := await self.mass.cache.get(f"queue.state.{queue_id}"):
             try:
-                queue = PlayerQueue.from_dict(prev_state)
+                queue = PlayerQueue.from_cache(prev_state)
                 prev_items = await self.mass.cache.get(f"queue.items.{queue_id}", default=[])
-                queue_items = [QueueItem.from_dict(x) for x in prev_items]
+                queue_items = [QueueItem.from_cache(x) for x in prev_items]
             except Exception as err:
                 self.logger.warning(
                     "Failed to restore the queue(items) for %s - %s",
@@ -821,7 +821,7 @@ class PlayerQueuesController(CoreController):
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
                 # that are not playable which will stop playback.
-                await set_stream_details(mass=self.mass, queue_item=next_item)
+                await get_stream_details(mass=self.mass, queue_item=next_item)
                 # Lazy load the full MediaItem for the QueueItem, making sure to get the
                 # maximum quality of thumbs
                 next_item.media_item = await self.mass.music.get_item_by_uri(next_item.uri)
@@ -897,7 +897,7 @@ class PlayerQueuesController(CoreController):
             self.mass.create_task(
                 self.mass.cache.set(
                     f"queue.items.{queue_id}",
-                    [x.to_dict() for x in self._queue_items[queue_id]],
+                    [x.to_cache() for x in self._queue_items[queue_id]],
                 )
             )
 
@@ -907,7 +907,7 @@ class PlayerQueuesController(CoreController):
         self.mass.create_task(
             self.mass.cache.set(
                 f"queue.state.{queue_id}",
-                queue.to_dict(),
+                queue.to_cache(),
             )
         )
 
@@ -975,7 +975,8 @@ class PlayerQueuesController(CoreController):
             return  # guard, just in case something bad happened
         if not current_item.duration:
             return
-        if current_item.streamdetails and current_item.streamdetails.seconds_streamed:
+        # NOTE: 'seconds_streamed' can actually be 0 if there was a stream error!
+        if current_item.streamdetails and current_item.streamdetails.seconds_streamed is not None:
             duration = current_item.streamdetails.seconds_streamed
         else:
             duration = current_item.duration
@@ -1143,10 +1144,14 @@ class PlayerQueuesController(CoreController):
                     track_time = elapsed_time_queue - total_time
                     break
                 track_duration = (
+                    # NOTE: 'seconds_streamed' can actually be 0 if there was a stream error!
                     queue_track.streamdetails.seconds_streamed
-                    or queue_track.streamdetails.duration
-                    or queue_track.duration
-                    or FALLBACK_DURATION
+                    if queue_track.streamdetails.seconds_streamed is not None
+                    else (
+                        queue_track.streamdetails.duration
+                        or queue_track.duration
+                        or FALLBACK_DURATION
+                    )
                 )
                 if elapsed_time_queue > (track_duration + total_time):
                     # total elapsed time is more than (streamed) track duration

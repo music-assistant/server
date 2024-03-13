@@ -40,10 +40,10 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
 from music_assistant.common.models.provider import ProviderManifest
+from music_assistant.common.models.streamdetails import StreamDetails
 
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
@@ -440,7 +440,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         ]["data"][:limit]
         return [await self.get_track(track["SNG_ID"]) for track in tracks]
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
         url_details, song_data = await self.gw_client.get_deezer_track_urls(item_id)
         url = url_details["sources"][0]["url"]
@@ -454,7 +454,6 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             data={"url": url, "format": url_details["format"]},
             expires=url_details["exp"],
             size=int(song_data[f"FILESIZE_{url_details['format']}"]),
-            callback=self.log_listen_cb,
         )
 
     async def get_audio_stream(
@@ -489,9 +488,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     del buffer[:2048]
         yield bytes(buffer)
 
-    async def log_listen_cb(self, stream_details) -> None:
-        """Log the end of a track playback."""
-        await self.gw_client.log_listen(last_track=stream_details)
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+        await self.gw_client.log_listen(last_track=streamdetails)
 
     ### PARSING METADATA FUNCTIONS ###
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Any, Self
 
 from mashumaro import DataClassDictMixin
 
@@ -44,3 +45,25 @@ class PlayerQueue(DataClassDictMixin):
     def corrected_elapsed_time(self) -> float:
         """Return the corrected/realtime elapsed time."""
         return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
+
+    def to_cache(self) -> dict[str, Any]:
+        """Return the dict that is suitable for storing into the cache db."""
+        d = self.to_dict()
+        d.pop("current_item", None)
+        d.pop("next_item", None)
+        d.pop("index_in_buffer", None)
+        d.pop("announcement_in_progress", None)
+        d.pop("flow_mode", None)
+        d.pop("flow_mode_start_index", None)
+        return d
+
+    @classmethod
+    def from_cache(cls: Self, d: dict[Any, Any]) -> Self:
+        """Restore a PlayerQueue from a cache dict."""
+        d.pop("current_item", None)
+        d.pop("next_item", None)
+        d.pop("index_in_buffer", None)
+        d.pop("announcement_in_progress", None)
+        d.pop("flow_mode", None)
+        d.pop("flow_mode_start_index", None)
+        return cls.from_dict(d)

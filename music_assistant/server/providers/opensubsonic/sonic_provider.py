@@ -29,9 +29,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_PATH,
@@ -651,7 +651,7 @@ class OpenSonicProvider(MusicProvider):
         )
         return [self._parse_track(entry) for entry in songs]
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get the details needed to process a specified track."""
         try:
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, item_id)
@@ -671,14 +671,14 @@ class OpenSonicProvider(MusicProvider):
             can_seek=self._seek_support,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
-            callback=self._report_playback_stopped,
         )
 
     async def _report_playback_started(self, item_id: str) -> None:
         await self._run_async(self._conn.scrobble, sid=item_id, submission=False)
 
-    async def _report_playback_stopped(self, streamdetails: StreamDetails) -> None:
-        if streamdetails.seconds_streamed >= streamdetails.duration / 2:
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+        if seconds_streamed >= streamdetails.duration / 2:
             await self._run_async(self._conn.scrobble, sid=streamdetails.item_id, submission=True)
 
     async def get_audio_stream(

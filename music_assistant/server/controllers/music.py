@@ -5,20 +5,17 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
-import statistics
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
-from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     EventType,
-    ExternalID,
     MediaType,
     ProviderFeature,
     ProviderType,
@@ -26,6 +23,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
+from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
     DB_SCHEMA_VERSION,
     DB_TABLE_ALBUM_TRACKS,
@@ -460,48 +458,41 @@ class MusicController(CoreController):
         return None
 
     async def set_track_loudness(
-        self, item_id: str, provider_instance_id_or_domain: str, loudness: int
+        self, item_id: str, provider_instance_id_or_domain: str, loudness: LoudnessMeasurement
     ) -> None:
-        """List integrated loudness for a track in db."""
-        await self.database.insert(
-            DB_TABLE_TRACK_LOUDNESS,
-            {
-                "item_id": item_id,
-                "provider": provider_instance_id_or_domain,
-                "loudness": loudness,
-            },
-            allow_replace=True,
-        )
+        """Store Loudness Measurement for a track in db."""
+        if provider := self.mass.get_provider(provider_instance_id_or_domain):
+            await self.database.insert(
+                DB_TABLE_TRACK_LOUDNESS,
+                {
+                    "item_id": item_id,
+                    "provider": provider.lookup_key,
+                    "integrated": loudness.integrated,
+                    "true_peak": loudness.true_peak,
+                    "lra": loudness.lra,
+                    "threshold": loudness.threshold,
+                },
+                allow_replace=True,
+            )
 
     async def get_track_loudness(
         self, item_id: str, provider_instance_id_or_domain: str
-    ) -> float | None:
-        """Get integrated loudness for a track in db."""
-        if result := await self.database.get_row(
-            DB_TABLE_TRACK_LOUDNESS,
-            {
-                "item_id": item_id,
-                "provider": provider_instance_id_or_domain,
-            },
-        ):
-            return result["loudness"]
-        return None
-
-    async def get_provider_loudness(self, provider_instance_id_or_domain: str) -> float | None:
-        """Get average integrated loudness for tracks of given provider."""
-        all_items = []
-        if provider_instance_id_or_domain == "url":
-            # this is not a very good idea for random urls
-            return None
-        for db_row in await self.database.get_rows(
-            DB_TABLE_TRACK_LOUDNESS,
-            {
-                "provider": provider_instance_id_or_domain,
-            },
-        ):
-            all_items.append(db_row["loudness"])
-        if all_items:
-            return statistics.fmean(all_items)
+    ) -> LoudnessMeasurement | None:
+        """Get Loudness Measurement for a track in db."""
+        if provider := self.mass.get_provider(provider_instance_id_or_domain):
+            if result := await self.database.get_row(
+                DB_TABLE_TRACK_LOUDNESS,
+                {
+                    "item_id": item_id,
+                    "provider": provider.lookup_key,
+                },
+            ):
+                return LoudnessMeasurement(
+                    integrated=result["integrated"],
+                    true_peak=result["true_peak"],
+                    lra=result["lra"],
+                    threshold=result["threshold"],
+                )
         return None
 
     async def mark_item_played(
@@ -661,52 +652,18 @@ class MusicController(CoreController):
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
             # handle db migration from previous schema to this one
-            if prev_version == 25:
+            if prev_version == 27:
                 self.logger.info(
                     "Performing database migration from %s to %s",
                     prev_version,
                     DB_SCHEMA_VERSION,
                 )
                 self.logger.warning("DATABASE MIGRATION IN PROGRESS - THIS CAN TAKE A WHILE")
-                # migrate external id(s)
-                for table in (
-                    DB_TABLE_ARTISTS,
-                    DB_TABLE_ALBUMS,
-                    DB_TABLE_TRACKS,
-                    DB_TABLE_PLAYLISTS,
-                    DB_TABLE_RADIOS,
-                ):
-                    # create new external_ids column
-                    await self.database.execute(
-                        f"ALTER TABLE {table} "
-                        "ADD COLUMN external_ids "
-                        "json NOT NULL DEFAULT '[]'"
-                    )
-                    if table in (DB_TABLE_PLAYLISTS, DB_TABLE_RADIOS):
-                        continue
-                    # migrate existing ids into the new external_ids column
-                    async for item in self.database.iter_items(table):
-                        external_ids: set[tuple[str, str]] = set()
-                        if mbid := item["mbid"]:
-                            external_ids.add((ExternalID.MUSICBRAINZ, mbid))
-                        for prov_mapping in json_loads(item["provider_mappings"]):
-                            if isrc := prov_mapping.get("isrc"):
-                                external_ids.add((ExternalID.ISRC, isrc))
-                            if barcode := prov_mapping.get("barcode"):
-                                external_ids.add((ExternalID.BARCODE, barcode))
-                        if external_ids:
-                            await self.database.update(
-                                table,
-                                {
-                                    "item_id": item["item_id"],
-                                },
-                                {
-                                    "external_ids": json_dumps(external_ids),
-                                },
-                            )
-                    # drop mbid column
-                    await self.database.execute(f"DROP INDEX IF EXISTS {table}_mbid_idx")
-                    await self.database.execute(f"ALTER TABLE {table} DROP COLUMN mbid")
+
+                # migrate loudness measurements table
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACK_LOUDNESS}")
+                await self.__create_database_tables()
+
                 # db migration succeeded
                 self.logger.info(
                     "Database migration to version %s completed",
@@ -759,7 +716,10 @@ class MusicController(CoreController):
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_LOUDNESS}(
                     item_id INTEGER NOT NULL,
                     provider TEXT NOT NULL,
-                    loudness REAL,
+                    integrated REAL,
+                    true_peak REAL,
+                    lra REAL,
+                    threshold REAL,
                     UNIQUE(item_id, provider));"""
         )
         await self.database.execute(

@@ -39,6 +39,7 @@ class AsyncProcess:
         self._enable_stderr = enable_stderr
         self._attached_task: asyncio.Task = None
         self.closed = False
+        self.returncode: int | None = None
 
     async def __aenter__(self) -> AsyncProcess:
         """Enter context manager."""
@@ -129,22 +130,36 @@ class AsyncProcess:
         if self._proc.returncode is None:
             try:
                 async with asyncio.timeout(10):
-                    await self._proc.communicate()
+                    await self.communicate()
             except TimeoutError:
                 self._proc.kill()
         await self.wait()
 
     async def wait(self) -> int:
         """Wait for the process and return the returncode."""
+        if self.returncode is not None:
+            return self.returncode
         if self._proc.returncode is not None:
-            return self._proc.returncode
-        exitcode = await self._proc.wait()
+            self.returncode = self._proc.returncode
+            return self.returncode
+        self.returncode = await self._proc.wait()
         self.closed = True
-        return exitcode
+        return self.returncode
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
-        return await self._proc.communicate(input_data)
+        stdout, stderr = await self._proc.communicate(input_data)
+        self.returncode = self._proc.returncode
+        return (stdout, stderr)
+
+    async def read_stderr(self, n: int = -1) -> bytes:
+        """Read up to n bytes from the stderr stream.
+
+        If n is positive, this function try to read n bytes,
+        and may return less or equal bytes than requested, but at least one byte.
+        If EOF was received before any byte is read, this function returns empty byte object.
+        """
+        return await self._proc.stderr.read(n)
 
     def attach_task(self, coro: Coroutine) -> asyncio.Task:
         """Attach given coro func as reader/writer task to properly cancel it when needed."""
