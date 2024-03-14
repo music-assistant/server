@@ -815,8 +815,8 @@ class JellyfinProvider(MusicProvider):
         """Return the audio stream for the provider item."""
         url = API.audio_url(self._jellyfin_server.jellyfin, streamdetails.item_id)
 
-            async for chunk in get_http_stream(
-                self.mass, streamdetails.data, streamdetails, seek_position
-            ):
-                yield chunk
+        async for chunk in get_http_stream(
+            self.mass, streamdetails.data, streamdetails, seek_position
+        ):
+            yield chunk
 
