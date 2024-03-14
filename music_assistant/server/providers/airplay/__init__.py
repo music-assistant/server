@@ -45,7 +45,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 DOMAIN = "airplay"
@@ -253,20 +252,22 @@ class AirplayStreamJob:
             return
         await self.send_cli_command("ACTION=STOP")
         self._stop_requested = True
+        if not force:
+            return
         # stop background tasks
         if self._log_reader_task and not self._log_reader_task.done():
-            if force:
-                self._log_reader_task.cancel()
             with suppress(asyncio.CancelledError):
+                self._log_reader_task.cancel()
                 await self._log_reader_task
         if self._audio_reader_task and not self._audio_reader_task.done():
-            if force:
-                self._audio_reader_task.cancel()
             with suppress(asyncio.CancelledError):
+                self._audio_reader_task.cancel()
                 await self._audio_reader_task
-
         empty_queue(self._audio_buffer)
-        await asyncio.wait_for(self._cliraop_proc.communicate(), 30)
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._cliraop_proc.communicate(), 5)
+        if self._cliraop_proc.returncode is None:
+            self._cliraop_proc.kill()
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""
@@ -566,52 +567,34 @@ class AirplayProvider(PlayerProvider):
             if airplay_player.active_stream and airplay_player.active_stream.running:
                 self.mass.create_task(airplay_player.active_stream.stop(force=True))
         # start streaming the queue (pcm) audio in a background task
-        queue = self.mass.player_queues.get_active_queue(player_id)
-        self._stream_tasks[player_id] = asyncio.create_task(
-            self._stream_audio(
-                player_id,
-                queue=queue,
-                audio_iterator=self.mass.streams.get_flow_stream(
-                    queue,
-                    start_queue_item=queue_item,
-                    pcm_format=AudioFormat(
-                        content_type=ContentType.PCM_S16LE,
-                        sample_rate=44100,
-                        bit_depth=16,
-                        channels=2,
-                    ),
-                    seek_position=seek_position,
-                    fade_in=fade_in,
-                ),
-            )
+        queue = self.mass.player_queues.get_active_queue(queue_item.queue_id)
+        pcm_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            sample_rate=44100,
+            bit_depth=16,
+            channels=2,
         )
+        # handle special case for UGP multi client stream
+        if stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id):
+            stream_job.expected_players.add(player_id)
+            audio_iterator = stream_job.subscribe(
+                player_id=player_id,
+                output_format=pcm_format,
+            )
+        else:
+            audio_iterator = self.mass.streams.get_flow_stream(
+                queue,
+                start_queue_item=queue_item,
+                pcm_format=pcm_format,
+                seek_position=seek_position,
+                fade_in=fade_in,
+            )
 
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        # fix race condition where resync and play media are called at more or less the same time
-        if self._resync_handle:
-            self._resync_handle.cancel()
-            self._resync_handle = None
-        # always stop existing stream first
-        if existing_stream := self._stream_tasks.get(player_id):
-            existing_stream.cancel()
-        async with asyncio.TaskGroup() as tg:
-            for airplay_player in self._get_sync_clients(player_id):
-                if airplay_player.active_stream and airplay_player.active_stream.running:
-                    tg.create_task(airplay_player.active_stream.stop(force=True))
-        if stream_job.pcm_format.bit_depth != 16 or stream_job.pcm_format.sample_rate != 44100:
-            # TODO: resample on the fly here ?
-            raise RuntimeError("Unsupported PCM format")
-        # start streaming the queue (pcm) audio in a background task
-        queue = self.mass.player_queues.get_active_queue(player_id)
         self._stream_tasks[player_id] = asyncio.create_task(
             self._stream_audio(
                 player_id,
                 queue=queue,
-                audio_iterator=stream_job.subscribe(player_id),
+                audio_iterator=audio_iterator,
             )
         )
 
@@ -955,7 +938,7 @@ class AirplayProvider(PlayerProvider):
                 # device switched to another source (or is powered off)
                 if active_stream := airplay_player.active_stream:
                     # ignore this if we just started playing to prevent false positives
-                    if mass_player.elapsed_time > 2 and mass_player.state == PlayerState.PLAYING:
+                    if mass_player.elapsed_time > 10 and mass_player.state == PlayerState.PLAYING:
                         active_stream.prevent_playback = True
                         self.mass.create_task(self.monitor_prevent_playback(player_id))
             elif "device-prevent-playback=0" in path:
@@ -1053,7 +1036,7 @@ class AirplayProvider(PlayerProvider):
                 return
             if not active_stream.prevent_playback:
                 return
-            await asyncio.sleep(0.25)
+            await asyncio.sleep(0.5)
 
         airplay_player.logger.info(
             "Player has been in prevent playback mode for too long, powering off.",

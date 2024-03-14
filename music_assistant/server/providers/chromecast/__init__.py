@@ -49,7 +49,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -250,6 +249,7 @@ class ChromecastProvider(PlayerProvider):
             player_id, CONF_FLOW_MODE
         ) or await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
         url = await self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
             seek_position=seek_position,
@@ -286,25 +286,11 @@ class ChromecastProvider(PlayerProvider):
         media_controller = castplayer.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, queuedata, True)
 
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        url = stream_job.resolve_stream_url(player_id, ContentType.FLAC)
-        castplayer = self.castplayers[player_id]
-        await asyncio.to_thread(
-            castplayer.cc.play_media,
-            url,
-            content_type="audio/flac",
-            title="Music Assistant",
-            thumb=MASS_LOGO_ONLINE,
-        )
-
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         castplayer = self.castplayers[player_id]
         url = await self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )

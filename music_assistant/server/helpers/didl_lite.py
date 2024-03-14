@@ -33,12 +33,14 @@ def create_didl_metadata(
             "</DIDL-Lite>"
         )
     is_radio = queue_item.media_type != MediaType.TRACK or not queue_item.duration
-    image_url = mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
+    image_url = (
+        mass.metadata.get_image_url(queue_item.image) if queue_item.image else MASS_LOGO_ONLINE
+    )
     if is_radio:
         # radio or other non-track item
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'
-            '<item id="1" parentID="0" restricted="1">'
+            f'<item id="flowmode" parentID="0" restricted="1">'
             f"<dc:title>{escape_string(queue_item.name)}</dc:title>"
             f"<upnp:albumArtURI>{escape_string(image_url)}</upnp:albumArtURI>"
             f"<dc:queueItemId>{queue_item.queue_item_id}</dc:queueItemId>"

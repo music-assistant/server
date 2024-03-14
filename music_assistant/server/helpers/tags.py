@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -366,51 +367,54 @@ async def parse_tags(
         file_path,
     )
 
-    async with AsyncProcess(
+    writer_task: asyncio.Task | None = None
+    ffmpeg_proc = AsyncProcess(
         args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
-    ) as proc:
-        if file_path == "-":
-            # feed the file contents to the process
+    )
+    await ffmpeg_proc.start()
 
-            async def chunk_feeder() -> None:
-                bytes_read = 0
-                try:
-                    async for chunk in input_file:
-                        if proc.closed:
-                            break
-                        await proc.write(chunk)
-                        bytes_read += len(chunk)
-                        del chunk
-                        if bytes_read > 25 * 1000000:
-                            # this is possibly a m4a file with 'moove atom' metadata at the
-                            # end of the file
-                            # we'll have to read the entire file to do something with it
-                            # for now we just ignore/deny these files
-                            LOGGER.error("Found file with tags not present at beginning of file")
-                            break
-                finally:
-                    proc.write_eof()
+    async def writer() -> None:
+        bytes_read = 0
+        async for chunk in input_file:
+            if ffmpeg_proc.closed:
+                break
+            await ffmpeg_proc.write(chunk)
+            bytes_read += len(chunk)
+            del chunk
+            if bytes_read > 25 * 1000000:
+                # this is possibly a m4a file with 'moove atom' metadata at the
+                # end of the file
+                # we'll have to read the entire file to do something with it
+                # for now we just ignore/deny these files
+                LOGGER.error("Found file with tags not present at beginning of file")
+                break
 
-            proc.attach_task(chunk_feeder())
+    if file_path == "-":
+        # feed the file contents to the process
+        writer_task = asyncio.create_task(writer)
 
-        try:
-            res = await proc.read(-1)
-            data = json.loads(res)
-            if error := data.get("error"):
-                raise InvalidDataError(error["string"])
-            if not data.get("streams"):
-                msg = "Not an audio file"
-                raise InvalidDataError(msg)
-            tags = AudioTags.parse(data)
-            del res
-            del data
-            if not tags.duration and file_size and tags.bit_rate:
-                # estimate duration from filesize/bitrate
-                tags.duration = int((file_size * 8) / tags.bit_rate)
-            return tags
-        except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-            msg = f"Unable to retrieve info for {file_path}: {err!s}"
-            raise InvalidDataError(msg) from err
+    try:
+        res = await ffmpeg_proc.read(-1)
+        data = json.loads(res)
+        if error := data.get("error"):
+            raise InvalidDataError(error["string"])
+        if not data.get("streams"):
+            msg = "Not an audio file"
+            raise InvalidDataError(msg)
+        tags = AudioTags.parse(data)
+        del res
+        del data
+        if not tags.duration and file_size and tags.bit_rate:
+            # estimate duration from filesize/bitrate
+            tags.duration = int((file_size * 8) / tags.bit_rate)
+        return tags
+    except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
+        msg = f"Unable to retrieve info for {file_path}: {err!s}"
+        raise InvalidDataError(msg) from err
+    finally:
+        if writer_task and not writer_task.done():
+            writer_task.cancel()
+        await ffmpeg_proc.close()
 
 
 async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> bytes | None:
@@ -436,20 +440,27 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         "-",
     )
 
-    async with AsyncProcess(
+    writer_task: asyncio.Task | None = None
+    ffmpeg_proc = AsyncProcess(
         args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
-    ) as proc:
-        if file_path == "-":
-            # feed the file contents to the process
-            async def chunk_feeder() -> None:
-                try:
-                    async for chunk in input_file:
-                        if proc.closed:
-                            break
-                        await proc.write(chunk)
-                finally:
-                    proc.write_eof()
+    )
+    await ffmpeg_proc.start()
 
-            proc.attach_task(chunk_feeder())
+    async def writer() -> None:
+        async for chunk in input_file:
+            if ffmpeg_proc.closed:
+                break
+            await ffmpeg_proc.write(chunk)
+        ffmpeg_proc.write_eof()
 
-        return await proc.read(-1)
+    # feed the file contents to the process stdin
+    if file_path == "-":
+        writer_task = asyncio.create_task(writer)
+
+    # return image bytes from stdout
+    try:
+        return await ffmpeg_proc.read(-1)
+    finally:
+        if writer_task and not writer_task.cancelled():
+            writer_task.cancel()
+        await ffmpeg_proc.close()

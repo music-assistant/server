@@ -31,7 +31,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 AUDIOMANAGER_STREAM_MUSIC = 3
@@ -199,6 +198,7 @@ class FullyKioskProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
         url = await self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
             seek_position=seek_position,
@@ -207,22 +207,6 @@ class FullyKioskProvider(PlayerProvider):
         )
         await self._fully.playSound(url, AUDIOMANAGER_STREAM_MUSIC)
         player.current_item_id = queue_item.queue_id
-        player.elapsed_time = 0
-        player.elapsed_time_last_updated = time.time()
-        player.state = PlayerState.PLAYING
-        self.mass.players.update(player_id)
-
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        player = self.mass.players.get(player_id)
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        output_codec = ContentType.MP3 if enforce_mp3 else ContentType.FLAC
-        url = stream_job.resolve_stream_url(player_id, output_codec)
-        await self._fully.playSound(url, AUDIOMANAGER_STREAM_MUSIC)
-        player.current_item_id = player_id
         player.elapsed_time = 0
         player.elapsed_time_last_updated = time.time()
         player.state = PlayerState.PLAYING

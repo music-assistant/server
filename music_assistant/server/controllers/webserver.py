@@ -375,7 +375,7 @@ class WebsocketClientHandler:
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:  # pylint: disable=broad-except
-            if self.log_level == "VERBOSE":
+            if self._logger.isEnabledFor(logging.DEBUG):
                 self._logger.exception("Error handling message: %s", msg)
             else:
                 self._logger.error("Error handling message: %s: %s", msg.command, str(err))
