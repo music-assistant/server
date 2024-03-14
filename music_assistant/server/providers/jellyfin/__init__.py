@@ -808,7 +808,7 @@ class JellyfinProvider(MusicProvider):
 
         return mime_type
 
-    async def get_audio_stream(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
+    async def get_audio_stream(self, streamdetails: StreamDetails, seek_position: int = 0) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         url = API.audio_url(self._jellyfin_server.jellyfin, streamdetails.item_id)
 
