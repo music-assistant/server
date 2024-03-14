@@ -48,6 +48,9 @@ from music_assistant.common.models.media_items import (
     SearchResults,
     Track,
 )
+from music_assistant.server.helpers.audio import (
+    get_http_stream
+)
 from music_assistant.common.models.media_items import Album as JellyfinAlbum
 from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
@@ -812,7 +815,8 @@ class JellyfinProvider(MusicProvider):
         """Return the audio stream for the provider item."""
         url = API.audio_url(self._jellyfin_server.jellyfin, streamdetails.item_id)
 
-        timeout = ClientTimeout(total=0, connect=30, sock_read=600)
-        async with self.mass.http_session.get(url, timeout=timeout) as resp:
-            async for chunk in resp.content.iter_any():
+            async for chunk in get_http_stream(
+                self.mass, streamdetails.data, streamdetails, seek_position
+            ):
                 yield chunk
+
