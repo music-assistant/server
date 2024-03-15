@@ -407,6 +407,17 @@ class ChromecastProvider(PlayerProvider):
                 if exclude.lower() in cast_info.friendly_name.lower():
                     enabled_by_default = False
 
+            if cast_info.is_audio_group and cast_info.is_multichannel_group:
+                player_type = PlayerType.STEREO_PAIR
+                # a (recent) cast update broke sample rates > 48000 on cast groups/pairs
+                max_sample_rate = 48000
+            elif cast_info.is_audio_group:
+                player_type = PlayerType.GROUP
+                # a (recent) cast update broke sample rates > 48000 on cast groups/pairs
+                max_sample_rate = 48000
+            else:
+                player_type = PlayerType.PLAYER
+                max_sample_rate = 96000
             # Instantiate chromecast object
             castplayer = CastPlayer(
                 player_id,
@@ -418,7 +429,7 @@ class ChromecastProvider(PlayerProvider):
                 player=Player(
                     player_id=player_id,
                     provider=self.instance_id,
-                    type=(PlayerType.GROUP if cast_info.is_audio_group else PlayerType.PLAYER),
+                    type=player_type,
                     name=cast_info.friendly_name,
                     available=False,
                     powered=False,
@@ -434,7 +445,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.ENQUEUE_NEXT,
                         PlayerFeature.PAUSE,
                     ),
-                    max_sample_rate=96000,
+                    max_sample_rate=max_sample_rate,
                     supports_24bit=True,
                     enabled_by_default=enabled_by_default,
                 ),
@@ -479,7 +490,7 @@ class ChromecastProvider(PlayerProvider):
         )
         # handle stereo pairs
         if castplayer.cast_info.is_multichannel_group:
-            castplayer.player.type = PlayerType.PLAYER
+            castplayer.player.type = PlayerType.STEREO_PAIR
             castplayer.player.group_childs = set()
         # handle cast groups
         if castplayer.cast_info.is_audio_group and not castplayer.cast_info.is_multichannel_group:
