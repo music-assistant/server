@@ -348,11 +348,11 @@ class YoutubeMusicProvider(MusicProvider):
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
         # Add a try to prevent MA from stopping syncing whenever we fail a single playlist
         try:
-            playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
-        except KeyError as ke:
-            self.logger.warning(
-                "Could not load playlist: %s: %s", prov_playlist_id, ke
+            playlist_obj = await get_playlist(
+                prov_playlist_id=prov_playlist_id, headers=self._headers
             )
+        except KeyError as ke:
+            self.logger.warning("Could not load playlist: %s: %s", prov_playlist_id, ke)
             return
         if "tracks" not in playlist_obj:
             return
