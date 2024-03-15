@@ -5,7 +5,7 @@ aiodns>=3.0.0
 aiofiles==23.2.1
 aiohttp==3.9.3
 aiorun==2023.7.2
-aioslimproto==3.0.0
+aioslimproto==3.0.1
 aiosqlite==0.20.0
 async-upnp-client==0.38.2
 asyncio-throttle==1.0.2
