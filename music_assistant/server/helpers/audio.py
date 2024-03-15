@@ -102,7 +102,7 @@ async def crossfade_pcm_parts(
     async with AsyncProcess(args, True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
         if crossfade_data:
-            LOGGER.debug(
+            LOGGER.verbose(
                 "crossfaded 2 pcm chunks. fade_in_part: %s - "
                 "fade_out_part: %s - fade_length: %s seconds",
                 len(fade_in_part),
@@ -160,11 +160,11 @@ async def strip_silence(
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
-    if LOGGER.isEnabledFor(logging.DEBUG):
+    if LOGGER.isEnabledFor(5):
         pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
         seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
         location = "end" if reverse else "begin"
-        LOGGER.debug(
+        LOGGER.verbose(
             "stripped %s seconds of silence from %s of pcm audio. bytes stripped: %s",
             seconds_stripped,
             location,
@@ -185,25 +185,16 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
         item_name = f"{streamdetails.provider}/{streamdetails.item_id}"
         LOGGER.debug("Start analyzing EBU R128 loudness for %s", item_name)
         # calculate EBU R128 integrated loudness with ffmpeg
-        input_file = streamdetails.direct or "-"
-        proc_args = [
-            "ffmpeg",
-            "-protocol_whitelist",
-            "file,http,https,tcp,tls,crypto,pipe,fd",
-            "-t",
-            "600",  # limit to 10 minutes to prevent OOM
-            "-i",
-            input_file,
-            "-f",
-            streamdetails.audio_format.content_type,
-            "-af",
-            "loudnorm=print_format=json",
-            "-f",
-            "null",
-            "-",
-        ]
+        ffmpeg_args = await _get_ffmpeg_args(
+            input_format=streamdetails.audio_format,
+            output_format=streamdetails.audio_format,
+            filter_params=["loudnorm=print_format=json"],
+            extra_args=["-t", "600"],  # limit to 10 minutes to prevent OOM
+            input_path=streamdetails.direct or "-",
+            output_path="NULL",
+        )
         async with AsyncProcess(
-            proc_args,
+            ffmpeg_args,
             enable_stdin=streamdetails.direct is None,
             enable_stdout=False,
             enable_stderr=True,
@@ -432,14 +423,14 @@ async def get_media_stream(  # noqa: PLR0915
 
     async def writer() -> None:
         """Task that grabs the source audio and feeds it to ffmpeg."""
-        logger.debug("writer started for %s", streamdetails.uri)
+        logger.verbose("writer started for %s", streamdetails.uri)
         music_prov = mass.get_provider(streamdetails.provider)
         seek_pos = seek_position if streamdetails.can_seek else 0
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
         ffmpeg_proc.write_eof()
-        logger.debug("writer finished for %s", streamdetails.uri)
+        logger.verbose("writer finished for %s", streamdetails.uri)
 
     if streamdetails.direct is None:
         writer_task = asyncio.create_task(writer())
@@ -519,10 +510,12 @@ async def get_media_stream(  # noqa: PLR0915
         # use communicate to read stderr and wait for exit
         # read log for loudness measurement (or errors)
         _, stderr = await ffmpeg_proc.communicate()
+        logger.verbose(stderr.decode())
         if ffmpeg_proc.returncode != 0:
             # ffmpeg has a non zero returncode meaning trouble
-            logger.warning("STREAM ERROR on %s", streamdetails.uri)
+            logger.warning("stream error on %s", streamdetails.uri)
             logger.warning(stderr.decode())
+            finished = False
         elif loudness_details := _parse_loudnorm(stderr):
             required_seconds = 300 if streamdetails.media_type == MediaType.RADIO else 60
             if finished or seconds_streamed >= required_seconds:
@@ -531,8 +524,6 @@ async def get_media_stream(  # noqa: PLR0915
                 await mass.music.set_track_loudness(
                     streamdetails.item_id, streamdetails.provider, loudness_details
                 )
-        else:
-            logger.debug(stderr.decode())
 
         # report playback
         if finished or seconds_streamed > 30:
@@ -996,17 +987,22 @@ async def _get_ffmpeg_args(
     input_args += ["-i", input_path]
 
     # collect output args
-    output_args = [
-        "-acodec",
-        output_format.content_type.name.lower(),
-        "-f",
-        output_format.content_type.value,
-        "-ac",
-        str(output_format.channels),
-        "-ar",
-        str(output_format.sample_rate),
-        output_path,
-    ]
+    if output_path.upper() == "NULL":
+        output_args = ["-f", "null", "-"]
+    elif output_format.content_type == ContentType.UNKNOWN:
+        output_args = [output_path]
+    else:
+        output_args = [
+            "-acodec",
+            output_format.content_type.name.lower(),
+            "-f",
+            output_format.content_type.value,
+            "-ac",
+            str(output_format.channels),
+            "-ar",
+            str(output_format.sample_rate),
+            output_path,
+        ]
 
     # prefer libsoxr high quality resampler (if present) for sample rate conversions
     if input_format.sample_rate != output_format.sample_rate and libsoxr_support:

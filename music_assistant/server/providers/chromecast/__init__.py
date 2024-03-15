@@ -34,7 +34,13 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE, CONF_PLAYERS, MASS_LOGO_ONLINE
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_FLOW_MODE,
+    CONF_PLAYERS,
+    MASS_LOGO_ONLINE,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -149,7 +155,7 @@ class ChromecastProvider(PlayerProvider):
             self.mass.aiozc.zeroconf,
         )
         # set-up pychromecast logging
-        if self.log_level == "VERBOSE":
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("pychromecast").setLevel(logging.DEBUG)
         else:
             logging.getLogger("pychromecast").setLevel(self.logger.level + 10)

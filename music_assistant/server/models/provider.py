@@ -29,14 +29,12 @@ class Provider:
         self.config = config
         mass_logger = logging.getLogger(ROOT_LOGGER_NAME)
         self.logger = mass_logger.getChild(f"providers.{self.domain}")
-        self.log_level = log_level = config.get_value(CONF_LOG_LEVEL)
+        log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
-        else:
-            self.logger.setLevel("DEBUG" if log_level == "VERBOSE" else log_level)
+        elif logging.getLogger().level > self.logger.level:
             # if the root logger's level is higher, we need to adjust that too
-            if logging.getLogger().level > self.logger.level:
-                logging.getLogger().setLevel(self.logger.level)
+            logging.getLogger().setLevel(self.logger.level)
         self.logger.debug("Log level configured to %s", log_level)
         self.cache = mass.cache
         self.available = False

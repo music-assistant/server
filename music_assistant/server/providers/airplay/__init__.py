@@ -40,7 +40,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.player_queue import PlayerQueue
-from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -222,7 +222,7 @@ class AirplayStreamJob:
             extra_args += ["-password", device_password]
         if self.prov.log_level == "DEBUG":
             extra_args += ["-debug", "5"]
-        elif self.prov.log_level == "VERBOSE":
+        elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
 
         args = [
@@ -291,11 +291,10 @@ class AirplayStreamJob:
             with open(named_pipe, "w") as f:
                 f.write(command)
 
-        if self.prov.log_level == "VERBOSE":
-            self.airplay_player.logger.debug("sending command %s", command)
+        self.airplay_player.logger.verbose("sending command %s", command)
         await self.mass.create_task(send_data)
 
-    async def _log_watcher(self) -> None:  # noqa: PLR0915
+    async def _log_watcher(self) -> None:
         """Monitor stderr for the running CLIRaop process."""
         airplay_player = self.airplay_player
         mass_player = self.mass.players.get(airplay_player.player_id)
@@ -344,9 +343,8 @@ class AirplayStreamJob:
                 else:
                     logger.debug(line)
                 continue
-            # debug log everything else
-            if self.prov.log_level == "VERBOSE":
-                logger.debug(line)
+            # verbose log everything else
+            logger.verbose(line)
 
         # if we reach this point, the process exited
         logger.debug(

@@ -90,3 +90,4 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
+VERBOSE_LOG_LEVEL: Final[int] = 5

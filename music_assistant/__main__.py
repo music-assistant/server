@@ -17,7 +17,7 @@ from aiorun import run
 from colorlog import ColoredFormatter
 
 from music_assistant.common.helpers.json import json_loads
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import ROOT_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.server import MusicAssistant
 from music_assistant.server.helpers.logging import activate_log_queue_handler
 
@@ -26,6 +26,14 @@ FORMAT_TIME: Final = "%H:%M:%S"
 FORMAT_DATETIME: Final = f"{FORMAT_DATE} {FORMAT_TIME}"
 MAX_LOG_FILESIZE = 1000000 * 10  # 10 MB
 ALPINE_RELEASE_FILE = "/etc/alpine-release"
+
+
+class VerboseLogger(logging.Logger):
+    """Custom python logger with included verbose log level."""
+
+    def verbose(self, msg, *args, **kwargs):
+        """Log a verbose message."""
+        self.log(VERBOSE_LOG_LEVEL, msg, *args, **kwargs)
 
 
 def get_arguments():
@@ -68,6 +76,7 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
             datefmt=FORMAT_DATETIME,
             reset=True,
             log_colors={
+                "VERBOSE": "light_black",
                 "DEBUG": "cyan",
                 "INFO": "green",
                 "WARNING": "yellow",
@@ -89,10 +98,11 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     with suppress(OSError):
         file_handler.doRollover()
     file_handler.setFormatter(logging.Formatter(log_fmt, datefmt=FORMAT_DATETIME))
-    # file_handler.setLevel(logging.INFO)
 
     logger = logging.getLogger()
     logger.addHandler(file_handler)
+    logging.addLevelName(VERBOSE_LOG_LEVEL, "VERBOSE")
+    logging.setLoggerClass(VerboseLogger)
 
     # apply the configured global log level to the (root) music assistant logger
     logging.getLogger(ROOT_LOGGER_NAME).setLevel(level)
