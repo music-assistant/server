@@ -510,13 +510,13 @@ async def get_media_stream(  # noqa: PLR0915
         # use communicate to read stderr and wait for exit
         # read log for loudness measurement (or errors)
         _, stderr = await ffmpeg_proc.communicate()
-        logger.verbose(stderr.decode())
         if ffmpeg_proc.returncode != 0:
             # ffmpeg has a non zero returncode meaning trouble
             logger.warning("stream error on %s", streamdetails.uri)
             logger.warning(stderr.decode())
             finished = False
         elif loudness_details := _parse_loudnorm(stderr):
+            logger.verbose(stderr.decode())
             required_seconds = 300 if streamdetails.media_type == MediaType.RADIO else 60
             if finished or seconds_streamed >= required_seconds:
                 LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
@@ -524,6 +524,8 @@ async def get_media_stream(  # noqa: PLR0915
                 await mass.music.set_track_loudness(
                     streamdetails.item_id, streamdetails.provider, loudness_details
                 )
+        else:
+            logger.verbose(stderr.decode())
 
         # report playback
         if finished or seconds_streamed > 30:
@@ -759,7 +761,7 @@ async def get_ffmpeg_stream(
             # ffmpeg has a non zero returncode meaning trouble
             logger.warning("FFMPEG ERROR\n%s", stderr.decode())
         else:
-            logger.debug(stderr.decode())
+            logger.verbose(stderr.decode())
 
 
 async def check_audio_support() -> tuple[bool, bool, str]:

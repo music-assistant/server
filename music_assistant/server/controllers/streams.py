@@ -34,6 +34,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
+    ROOT_LOGGER_NAME,
     SILENCE_FILE,
 )
 from music_assistant.server.helpers.audio import (
@@ -319,6 +320,8 @@ class StreamsController(CoreController):
             version,
             "with libsoxr support" if libsoxr_support else "",
         )
+        # copy log level to audio module
+        logging.getLogger(f"{ROOT_LOGGER_NAME}.audio").setLevel(self.logger.level)
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)

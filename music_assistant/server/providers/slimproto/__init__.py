@@ -52,6 +52,7 @@ from music_assistant.constants import (
     CONF_PORT,
     CONF_SYNC_ADJUST,
     MASS_LOGO_ONLINE,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -228,7 +229,11 @@ class SlimprotoProvider(PlayerProvider):
         control_port = self.config.get_value(CONF_PORT)
         telnet_port = self.config.get_value(CONF_CLI_TELNET_PORT)
         json_port = self.config.get_value(CONF_CLI_JSON_PORT)
-        logging.getLogger("aioslimproto").setLevel(self.logger.level)
+        # silence aioslimproto logger a bit
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("aioslimproto").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("aioslimproto").setLevel(self.logger.level + 10)
         self.slimproto = SlimServer(
             cli_port=telnet_port or None,
             cli_port_json=json_port or None,
