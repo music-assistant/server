@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
-from aiohttp import ClientTimeout
 from jellyfin_apiclient_python import JellyfinClient
 from jellyfin_apiclient_python.api import API
 
@@ -48,14 +47,12 @@ from music_assistant.common.models.media_items import (
     SearchResults,
     Track,
 )
-from music_assistant.server.helpers.audio import (
-    get_http_stream
-)
 from music_assistant.common.models.media_items import Album as JellyfinAlbum
 from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
 from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.helpers.audio import get_http_stream
 
 if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
@@ -811,12 +808,11 @@ class JellyfinProvider(MusicProvider):
 
         return mime_type
 
-    async def get_audio_stream(self, streamdetails: StreamDetails, seek_position: int = 0) -> AsyncGenerator[bytes, None]:
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         url = API.audio_url(self._jellyfin_server.jellyfin, streamdetails.item_id)
 
-        async for chunk in get_http_stream(
-            self.mass, url, streamdetails, seek_position
-        ):
+        async for chunk in get_http_stream(self.mass, url, streamdetails, seek_position):
             yield chunk
-
