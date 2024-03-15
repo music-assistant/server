@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from mashumaro import DataClassDictMixin
 
@@ -18,6 +18,7 @@ from music_assistant.common.models.enums import (
     MediaType,
 )
 from music_assistant.common.models.errors import InvalidDataError
+from music_assistant.constants import GLOBAL_CACHE
 
 MetadataTypes = int | bool | str | list[str]
 
@@ -67,7 +68,7 @@ class AudioFormat(DataClassDictMixin):
         return self.output_format_str == other.output_format_str
 
 
-@dataclass(frozen=True, kw_only=True)
+@dataclass(kw_only=True)
 class ProviderMapping(DataClassDictMixin):
     """Model for a MediaItem's provider mapping details."""
 
@@ -86,6 +87,16 @@ class ProviderMapping(DataClassDictMixin):
     def quality(self) -> int:
         """Return quality score."""
         return self.audio_format.quality
+
+    def __post_init__(self):
+        """Call after init."""
+        # having items for unavailable providers can have all sorts
+        # of unpredictable results so ensure we have accurate availability status
+        if available_providers := GLOBAL_CACHE.get("available_providers"):
+            if TYPE_CHECKING:
+                available_providers = cast(set[str], available_providers)
+            if not available_providers.intersection({self.provider_domain, self.provider_instance}):
+                self.available = False
 
     def __hash__(self) -> int:
         """Return custom hash."""

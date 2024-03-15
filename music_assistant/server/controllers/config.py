@@ -34,6 +34,7 @@ from music_assistant.constants import (
     CONF_SERVER_ID,
     CONFIGURABLE_CORE_CONTROLLERS,
     ENCRYPT_SUFFIX,
+    GLOBAL_CACHE,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.util import get_provider_module
@@ -324,14 +325,13 @@ class ConfigController:
         self, provider: str | None = None, include_values: bool = False
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        available_providers = {x.instance_id for x in self.mass.providers}
         return [
             await self.get_player_config(raw_conf["player_id"])
             if include_values
             else PlayerConfig.parse([], raw_conf)
             for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
             # filter out unavailable providers
-            if raw_conf["provider"] in available_providers
+            if raw_conf["provider"] in GLOBAL_CACHE.get("available_providers", [])
             # optional provider filter
             and (provider in (None, raw_conf["provider"]))
         ]

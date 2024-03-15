@@ -44,6 +44,11 @@ class Provider:
         """Return the features supported by this Provider."""
         return ()
 
+    @property
+    def lookup_key(self) -> str:
+        """Return instance_id if multi_instance capable or domain otherwise."""
+        return self.instance_id if self.manifest.multi_instance else self.domain
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
 

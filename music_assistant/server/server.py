@@ -26,6 +26,7 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONFIGURABLE_CORE_CONTROLLERS,
+    GLOBAL_CACHE,
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
 )
@@ -431,6 +432,8 @@ class MusicAssistant:
         except TimeoutError as err:
             msg = f"Provider {domain} did not load within 30 seconds"
             raise SetupFailedError(msg) from err
+        finally:
+            self._update_available_providers_cache()
         # if we reach this point, the provider loaded successfully
         LOGGER.info(
             "Loaded %s provider %s",
@@ -468,6 +471,7 @@ class MusicAssistant:
                 LOGGER.warning("Error while unload provider %s: %s", provider.name, str(err))
             finally:
                 self._providers.pop(instance_id, None)
+                self._update_available_providers_cache()
                 self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:
@@ -647,3 +651,7 @@ class MusicAssistant:
         if exc_val:
             raise exc_val
         return exc_type
+
+    def _update_available_providers_cache(self) -> None:
+        """Update the global cache variable of loaded/available providers."""
+        GLOBAL_CACHE["available_providers"] = {x.lookup_key for x in self.providers}
