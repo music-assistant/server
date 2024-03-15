@@ -350,7 +350,7 @@ class YoutubeMusicProvider(MusicProvider):
         try:
             playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
         except KeyError as ke:
-            self.logger.warning(f"Could not load playlist: {prov_playlist_id}: {ke}")
+            self.logger.warning("Could not load playlist: %s: %s", prov_playlist_id, ke)
             return
         if "tracks" not in playlist_obj:
             return
