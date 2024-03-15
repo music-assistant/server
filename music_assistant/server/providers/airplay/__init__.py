@@ -220,7 +220,7 @@ class AirplayStreamJob:
             player_id, CONF_PASSWORD, None
         ):
             extra_args += ["-password", device_password]
-        if self.prov.log_level == "DEBUG":
+        if self.prov.logger.isEnabledFor(logging.DEBUG):
             extra_args += ["-debug", "5"]
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
@@ -821,11 +821,6 @@ class AirplayProvider(PlayerProvider):
         address = get_primary_ip_address(info)
         if address is None:
             return
-        # some guards if our info is valid/complete
-        if "md" not in info.decoded_properties:
-            return
-        if "et" not in info.decoded_properties:
-            return
         self.logger.debug("Discovered Airplay device %s on %s", display_name, address)
         self._players[player_id] = AirPlayPlayer(
             player_id, discovery_info=info, address=address, logger=self.logger.getChild(player_id)
@@ -886,7 +881,11 @@ class AirplayProvider(PlayerProvider):
                     break
 
             request = raw_request.decode("UTF-8")
-            headers_raw, body = request.split("\r\n\r\n", 1)
+            if "\r\n\r\n" in request:
+                headers_raw, body = request.split("\r\n\r\n", 1)
+            else:
+                headers_raw = request
+                body = ""
             headers_raw = headers_raw.split("\r\n")
             headers = {}
             for line in headers_raw[1:]:
