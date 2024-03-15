@@ -9,9 +9,10 @@ import os
 import subprocess
 import sys
 import threading
+import traceback
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
-from typing import Final
+from typing import Any, Final
 
 from aiorun import run
 from colorlog import ColoredFormatter
@@ -146,6 +147,30 @@ def _enable_posix_spawn() -> None:
     subprocess._USE_POSIX_SPAWN = os.path.exists(ALPINE_RELEASE_FILE)
 
 
+def _global_loop_exception_handler(_: Any, context: dict[str, Any]) -> None:
+    """Handle all exception inside the core loop."""
+    kwargs = {}
+    if exception := context.get("exception"):
+        kwargs["exc_info"] = (type(exception), exception, exception.__traceback__)
+
+    logger = logging.getLogger(__package__)
+    if source_traceback := context.get("source_traceback"):
+        stack_summary = "".join(traceback.format_list(source_traceback))
+        logger.error(
+            "Error doing job: %s: %s",
+            context["message"],
+            stack_summary,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return
+
+    logger.error(
+        "Error doing task: %s",
+        context["message"],
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
 def main() -> None:
     """Start MusicAssistant."""
     # parse arguments
@@ -182,13 +207,14 @@ def main() -> None:
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
+        loop.set_exception_handler(_global_loop_exception_handler)
         await mass.start()
 
     run(
         start_mass(),
         use_uvloop=enable_uvloop,
         shutdown_callback=on_shutdown,
-        executor_workers=64,
+        executor_workers=32,
     )
 
 
