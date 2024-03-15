@@ -9,7 +9,7 @@ import threading
 import time
 from dataclasses import dataclass
 from logging import Logger
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
 import pychromecast
@@ -38,7 +38,6 @@ from music_assistant.constants import (
     CONF_CROSSFADE,
     CONF_FLOW_MODE,
     CONF_PLAYERS,
-    MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -73,6 +72,9 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
 )
+
+DEFAULT_APP_ID = "CC1AD845"
+ALT_APP_ID = "46C1A819"
 
 
 # Monkey patch the Media controller here to store the queue items
@@ -127,7 +129,6 @@ class CastPlayer:
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
     active_group: str | None = None
-    current_queue_item_id: str | None = None
 
 
 class ChromecastProvider(PlayerProvider):
@@ -262,32 +263,13 @@ class ChromecastProvider(PlayerProvider):
             fade_in=fade_in,
             flow_mode=use_flow_mode,
         )
-        if use_flow_mode:
-            # In flow mode, all queue tracks are sent to the player as continuous stream.
-            # This comes at the cost of metadata (cast does not support ICY metadata).
-            cc_queue_items = [
-                self._create_cc_queue_item(None, url),
-                # add a special 'command' item to the queue
-                # this allows for on-player next buttons/commands to still work
-                self._create_cc_queue_item(
-                    None, self.mass.streams.get_command_url(queue_item.queue_id, "next")
-                ),
-            ]
-        else:
-            # handle normal playback using the chromecast queue to play items one by one
-            cc_queue_items = [
-                self._create_cc_queue_item(queue_item, url),
-            ]
         queuedata = {
-            "type": "QUEUE_LOAD",
-            "repeatMode": "REPEAT_OFF",  # handled by our queue controller
-            "shuffle": False,  # handled by our queue controller
-            "queueType": "PLAYLIST",
-            "startIndex": 0,  # Item index to play after this request or keep same item if undefined
-            "items": cc_queue_items,
+            "type": "LOAD",
+            "media": self._create_cc_media_item(queue_item, url),
         }
         # make sure that the media controller app is launched
-        await self._launch_app(castplayer)
+        app_id = ALT_APP_ID if use_flow_mode else DEFAULT_APP_ID
+        await self._launch_app(castplayer, app_id)
         # send queue info to the CC
         media_controller = castplayer.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, queuedata, True)
@@ -295,11 +277,15 @@ class ChromecastProvider(PlayerProvider):
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         castplayer = self.castplayers[player_id]
-        url = await self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-        )
+        if isinstance(queue_item, str):
+            url = self.mass.streams.get_command_url(queue_item, "next")
+            queue_item = None
+        else:
+            url = await self.mass.streams.resolve_stream_url(
+                player_id,
+                queue_item=queue_item,
+                output_codec=ContentType.FLAC,
+            )
         next_item_id = None
         status = castplayer.cc.media_controller.status
         # lookup position of current track in cast queue
@@ -314,15 +300,19 @@ class ChromecastProvider(PlayerProvider):
                 continue
             next_item_id = item["itemId"]
             # check if the next queue item isn't already queued
-            if (
-                item.get("media", {}).get("customData", {}).get("queue_item_id")
-                == queue_item.queue_item_id
-            ):
+            if item.get("media", {}).get("customData", {}).get("uri") == url:
                 return
         queuedata = {
             "type": "QUEUE_INSERT",
             "insertBefore": next_item_id,
-            "items": [self._create_cc_queue_item(queue_item, url)],
+            "items": [
+                {
+                    "autoplay": True,
+                    "startTime": 0,
+                    "preloadTime": 0,
+                    "media": self._create_cc_media_item(queue_item, url),
+                }
+            ],
         }
         media_controller = castplayer.cc.media_controller
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
@@ -356,6 +346,7 @@ class ChromecastProvider(PlayerProvider):
             return
         try:
             await asyncio.to_thread(castplayer.cc.media_controller.update_status)
+            await self.update_flow_metadata(castplayer)
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
 
@@ -574,10 +565,9 @@ class ChromecastProvider(PlayerProvider):
 
     ### Helpers / utils
 
-    async def _launch_app(self, castplayer: CastPlayer) -> None:
+    async def _launch_app(self, castplayer: CastPlayer, app_id: str = DEFAULT_APP_ID) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
-        app_id = pychromecast.config.APP_MEDIA_RECEIVER
 
         if castplayer.cc.app_id == app_id:
             return  # already active
@@ -589,8 +579,12 @@ class ChromecastProvider(PlayerProvider):
             # Quit the previous app before starting splash screen or media player
             if castplayer.cc.app_id is not None:
                 castplayer.cc.quit_app()
-            castplayer.logger.debug("Launching Default Media Receiver (%s) as active app.", app_id)
-            castplayer.cc.media_controller.launch(launched_callback)
+            castplayer.logger.debug("Launching App %s.", app_id)
+            castplayer.cc.socket_client.receiver_controller.launch_app(
+                app_id,
+                force_launch=True,
+                callback_function=launched_callback,
+            )
 
         await self.mass.loop.run_in_executor(None, launch)
         await event.wait()
@@ -604,31 +598,8 @@ class ChromecastProvider(PlayerProvider):
         castplayer.status_listener = None
         self.castplayers.pop(castplayer.player_id, None)
 
-    def _create_cc_queue_item(self, queue_item: QueueItem | None, stream_url: str):
-        """Create CC queue item from MA QueueItem."""
-        if queue_item is None:
-            # flow mode or other special type
-            return {
-                "autoplay": True,
-                "preloadTime": 10,
-                "startTime": 0,
-                "activeTrackIds": [],
-                "media": {
-                    "contentId": stream_url,
-                    "customData": {
-                        "uri": stream_url,
-                        "queue_item_id": stream_url,
-                    },
-                    "contentType": "audio/flac",
-                    "streamType": STREAM_TYPE_LIVE,
-                    "metadata": {
-                        "metadataType": 0,
-                        "title": "Music Assistant",
-                        "images": [{"url": MASS_LOGO_ONLINE}],
-                    },
-                    "duration": None,
-                },
-            }
+    def _create_cc_media_item(self, queue_item: QueueItem, stream_url: str) -> dict[str, Any]:
+        """Create CC media item from MA QueueItem."""
         duration = int(queue_item.duration) if queue_item.duration else None
         image_url = self.mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
         if queue_item.media_type == MediaType.TRACK and queue_item.media_item:
@@ -645,6 +616,16 @@ class ChromecastProvider(PlayerProvider):
                 "title": queue_item.media_item.name,
                 "images": [{"url": image_url}] if image_url else None,
             }
+        elif queue_item.streamdetails and queue_item.streamdetails.stream_title:
+            stream_type = STREAM_TYPE_LIVE
+            metadata = {
+                "metadataType": 3,
+                "songName": queue_item.streamdetails.stream_title.split(" - ")[-1],
+                "artist": queue_item.streamdetails.stream_title.split(" - ")[0],
+                "albumName": queue_item.name,
+                "images": [{"url": image_url}] if image_url else None,
+                "title": queue_item.streamdetails.stream_title.split(" - ")[-1],
+            }
         else:
             stream_type = STREAM_TYPE_LIVE
             metadata = {
@@ -653,20 +634,69 @@ class ChromecastProvider(PlayerProvider):
                 "images": [{"url": image_url}] if image_url else None,
             }
         return {
-            "autoplay": True,
-            "preloadTime": 10,
-            "playbackDuration": duration,
-            "startTime": 0,
-            "activeTrackIds": [],
-            "media": {
-                "contentId": stream_url,
-                "customData": {
-                    "uri": queue_item.uri,
-                    "queue_item_id": queue_item.queue_item_id,
-                },
-                "contentType": "audio/flac",
-                "streamType": stream_type,
-                "metadata": metadata,
-                "duration": duration,
+            "contentId": stream_url,
+            "customData": {
+                "uri": queue_item.uri,
+                "queue_item_id": queue_item.queue_item_id,
+                "deviceName": "Music Assistant",
             },
+            "contentType": "audio/flac",
+            "streamType": stream_type,
+            "metadata": metadata,
+            "duration": duration,
         }
+
+    async def update_flow_metadata(self, castplayer: CastPlayer) -> None:
+        """Update the metadata of a cast player running the flow stream."""
+        if not castplayer.player.powered:
+            return
+        if not castplayer.cc.media_controller.status.player_is_playing:
+            return
+        if castplayer.player.state != PlayerState.PLAYING:
+            return
+        if castplayer.cc.app_id != ALT_APP_ID:
+            return
+        queue = self.mass.player_queues.get_active_queue(castplayer.player_id)
+        if not (current_item := queue.current_item):
+            return
+        media_controller = castplayer.cc.media_controller
+        # update metadata of current item chromecast
+        if media_controller.status.media_custom_data["queue_item_id"] != current_item.queue_item_id:
+            cc_item = self._create_cc_media_item(current_item, "")
+            queuedata = {
+                "type": "PLAY",
+                "mediaSessionId": media_controller.status.media_session_id,
+                "customData": {
+                    "metadata": cc_item["metadata"],
+                },
+            }
+            self.mass.create_task(media_controller.send_message, queuedata, True)
+
+        if len(getattr(media_controller.status, "items", [])) < 2:
+            # In flow mode, all queue tracks are sent to the player as continuous stream.
+            # add a special 'command' item to the queue
+            # this allows for on-player next buttons/commands to still work
+            cmd_next_url = self.mass.streams.get_command_url(queue.queue_id, "next")
+            msg = {
+                "type": "QUEUE_INSERT",
+                "mediaSessionId": media_controller.status.media_session_id,
+                "items": [
+                    {
+                        "media": {
+                            "contentId": cmd_next_url,
+                            "customData": {
+                                "uri": cmd_next_url,
+                                "queue_item_id": cmd_next_url,
+                                "deviceName": "Music Assistant",
+                            },
+                            "contentType": "audio/flac",
+                            "streamType": STREAM_TYPE_LIVE,
+                            "metadata": {},
+                        },
+                        "autoplay": True,
+                        "startTime": 0,
+                        "preloadTime": 0,
+                    }
+                ],
+            }
+            self.mass.create_task(media_controller.send_message, msg, inc_session_id=True)

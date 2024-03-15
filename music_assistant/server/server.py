@@ -525,6 +525,7 @@ class MusicAssistant:
                 if not prov_conf.enabled:
                     continue
                 tg.create_task(load_provider(prov_conf))
+        self._update_available_providers_cache()
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""

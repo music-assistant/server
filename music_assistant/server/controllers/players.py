@@ -860,10 +860,10 @@ class PlayerController(CoreController):
                 # Poll player;
                 # - every 120 seconds if the player if not powered
                 # - every 30 seconds if the player is powered
-                # - every 10 seconds if the player is playing
+                # - every 5 seconds if the player is playing
                 if (
                     (player.powered and count % 30 == 0)
-                    or (player_playing and count % 10 == 0)
+                    or (player_playing and count % 5 == 0)
                     or count % 120 == 0
                 ) and (player_prov := self.get_player_provider(player_id)):
                     try:
