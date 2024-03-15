@@ -12,7 +12,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Coroutine
+    from collections.abc import AsyncGenerator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -37,9 +37,18 @@ class AsyncProcess:
         self._enable_stdin = enable_stdin
         self._enable_stdout = enable_stdout
         self._enable_stderr = enable_stderr
-        self._attached_task: asyncio.Task = None
-        self.closed = False
-        self.returncode: int | None = None
+
+    @property
+    def closed(self) -> bool:
+        """Return if the process was closed."""
+        return self.returncode is not None
+
+    @property
+    def returncode(self) -> int | None:
+        """Return the erturncode of the process."""
+        if self._proc is None:
+            return None
+        return self._proc.returncode
 
     async def __aenter__(self) -> AsyncProcess:
         """Enter context manager."""
@@ -119,37 +128,27 @@ class AsyncProcess:
             # already exited, race condition
             pass
 
-    async def close(self) -> None:
-        """Close/terminate the process."""
-        self.closed = True
-        if self._attached_task and not self._attached_task.done():
-            with suppress(asyncio.CancelledError):
-                self._attached_task.cancel()
+    async def close(self) -> int:
+        """Close/terminate the process and wait for exit."""
+        if self.returncode is not None:
+            return self.returncode
         # make sure the process is cleaned up
-        self.write_eof()
-        if self._proc.returncode is None:
-            try:
-                async with asyncio.timeout(10):
-                    await self.communicate()
-            except TimeoutError:
-                self._proc.kill()
-        await self.wait()
+        try:
+            async with asyncio.timeout(10):
+                await self.communicate()
+        except (TimeoutError, asyncio.CancelledError):
+            self._proc.terminate()
+        return await self.wait()
 
     async def wait(self) -> int:
         """Wait for the process and return the returncode."""
         if self.returncode is not None:
             return self.returncode
-        if self._proc.returncode is not None:
-            self.returncode = self._proc.returncode
-            return self.returncode
-        self.returncode = await self._proc.wait()
-        self.closed = True
-        return self.returncode
+        return await self._proc.wait()
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
         stdout, stderr = await self._proc.communicate(input_data)
-        self.returncode = self._proc.returncode
         return (stdout, stderr)
 
     async def read_stderr(self, n: int = -1) -> bytes:
@@ -160,11 +159,6 @@ class AsyncProcess:
         If EOF was received before any byte is read, this function returns empty byte object.
         """
         return await self._proc.stderr.read(n)
-
-    def attach_task(self, coro: Coroutine) -> asyncio.Task:
-        """Attach given coro func as reader/writer task to properly cancel it when needed."""
-        self._attached_task = task = asyncio.create_task(coro)
-        return task
 
 
 async def check_output(shell_cmd: str) -> tuple[int, bytes]:

@@ -22,7 +22,6 @@ from .provider import Provider
 if TYPE_CHECKING:
     from music_assistant.common.models.player import Player
     from music_assistant.common.models.queue_item import QueueItem
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
 
 
 # ruff: noqa: ARG001, ARG002
@@ -120,13 +119,6 @@ class PlayerProvider(Provider):
             - queue_item: The QueueItem that needs to be played on the player.
             - seek_position: Optional seek to this position.
             - fade_in: Optionally fade in the item at playback start.
-        """
-        raise NotImplementedError
-
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
         """
         raise NotImplementedError
 

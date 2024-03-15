@@ -612,7 +612,7 @@ class SpotifyProvider(MusicProvider):
                 if retries > 2:
                     # switch to ap workaround after 2 retries
                     self._ap_workaround = True
-            except asyncio.exceptions.TimeoutError:
+            except TimeoutError:
                 await asyncio.sleep(2)
         if tokeninfo and userinfo:
             self._auth_token = tokeninfo

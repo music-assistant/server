@@ -39,7 +39,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 CONF_SNAPCAST_SERVER_HOST = "snapcast_server_host"
@@ -268,6 +267,29 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
+        # TODO: can we handle 24 bits bit depth ?
+        pcm_format = AudioFormat(
+            content_type=ContentType.PCM_S16LE,
+            sample_rate=48000,
+            bit_depth=16,
+            channels=2,
+        )
+        # handle special case for UGP multi client stream
+        if stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id):
+            stream_job.expected_players.add(player_id)
+            audio_iterator = stream_job.subscribe(
+                player_id=player_id,
+                output_format=pcm_format,
+            )
+        else:
+            audio_iterator = self.mass.streams.get_flow_stream(
+                queue,
+                start_queue_item=queue_item,
+                pcm_format=pcm_format,
+                seek_position=seek_position,
+                fade_in=fade_in,
+            )
+
         async def _streamer() -> None:
             host = self.snapcast_server_host
             _, writer = await asyncio.open_connection(host, port)
@@ -278,71 +300,8 @@ class SnapCastProvider(PlayerProvider):
             player.state = PlayerState.PLAYING
             self._set_childs_state(player_id, PlayerState.PLAYING)
             self.mass.players.register_or_update(player)
-            # TODO: can we handle 24 bits bit depth ?
-            pcm_format = AudioFormat(
-                content_type=ContentType.PCM_S16LE,
-                sample_rate=48000,
-                bit_depth=16,
-                channels=2,
-            )
             try:
-                async for pcm_chunk in self.mass.streams.get_flow_stream(
-                    queue,
-                    start_queue_item=queue_item,
-                    pcm_format=pcm_format,
-                    seek_position=seek_position,
-                    fade_in=fade_in,
-                ):
-                    writer.write(pcm_chunk)
-                    await writer.drain()
-                # end of the stream reached
-                if writer.can_write_eof():
-                    writer.write_eof()
-                    await writer.drain()
-                # we need to wait a bit before removing the stream to ensure
-                # that all snapclients have consumed the audio
-                # https://github.com/music-assistant/hass-music-assistant/issues/1962
-                await asyncio.sleep(30)
-            finally:
-                if not writer.is_closing():
-                    writer.close()
-                await self._snapserver.stream_remove_stream(stream.identifier)
-                self.logger.debug("Closed connection to %s:%s", host, port)
-
-        # start streaming the queue (pcm) audio in a background task
-        self._stream_tasks[player_id] = asyncio.create_task(_streamer())
-
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        player = self.mass.players.get(player_id)
-        if player.synced_to:
-            msg = "A synced player cannot receive play commands directly"
-            raise RuntimeError(msg)
-        # stop any existing streams first
-        await self.cmd_stop(player_id)
-        if stream_job.pcm_format.bit_depth != 16 or stream_job.pcm_format.sample_rate != 48000:
-            # TODO: resample on the fly here ?
-            raise RuntimeError("Unsupported PCM format")
-        stream, port = await self._create_stream()
-        stream_job.expected_players.add(player_id)
-        snap_group = self._get_snapgroup(player_id)
-        await snap_group.set_stream(stream.identifier)
-
-        async def _streamer() -> None:
-            host = self.snapcast_server_host
-            _, writer = await asyncio.open_connection(host, port)
-            self.logger.debug("Opened connection to %s:%s", host, port)
-            player.current_item_id = f"flow/{stream_job.queue_id}"
-            player.elapsed_time = 0
-            player.elapsed_time_last_updated = time.time()
-            player.state = PlayerState.PLAYING
-            self._set_childs_state(player_id, PlayerState.PLAYING)
-            self.mass.players.register_or_update(player)
-            try:
-                async for pcm_chunk in stream_job.subscribe(player_id):
+                async for pcm_chunk in audio_iterator:
                     writer.write(pcm_chunk)
                     await writer.drain()
                 # end of the stream reached

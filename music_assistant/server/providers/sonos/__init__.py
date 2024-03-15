@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -46,7 +45,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -353,6 +351,7 @@ class SonosPlayerProvider(PlayerProvider):
             - fade_in: Optionally fade in the item at playback start.
         """
         url = await self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
             seek_position=seek_position,
@@ -367,32 +366,11 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_media command, it is synced to another player."
             )
             raise PlayerCommandFailed(msg)
-        metadata = create_didl_metadata(self.mass, url, queue_item)
-        await self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
-
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        url = stream_job.resolve_stream_url(player_id, ContentType.FLAC)
-        sonos_player = self.sonosplayers[player_id]
-        mass_player = self.mass.players.get(player_id)
-        if sonos_player.sync_coordinator:
-            # this should be already handled by the player manager, but just in case...
-            msg = (
-                f"Player {mass_player.display_name} can not "
-                "accept play_stream command, it is synced to another player."
-            )
-            raise PlayerCommandFailed(msg)
-        metadata = create_didl_metadata(self.mass, url, None)
-        # sonos players do not like our multi client stream
-        # add to the workaround players list
-        self.mass.streams.workaround_players.add(player_id)
-        await self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
-        # optimistically set this timestamp to help figure out elapsed time later
-        mass_player.elapsed_time = 0
-        mass_player.elapsed_time_last_updated = time.time()
+        await self.mass.create_task(
+            sonos_player.soco.play_uri,
+            url,
+            meta=create_didl_metadata(self.mass, url, queue_item),
+        )
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """
@@ -411,6 +389,7 @@ class SonosPlayerProvider(PlayerProvider):
         """
         sonos_player = self.sonosplayers[player_id]
         url = await self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )
