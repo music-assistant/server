@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Self, cast
 
 from mashumaro import DataClassDictMixin
 
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
 from music_assistant.common.models.enums import (
@@ -18,7 +19,6 @@ from music_assistant.common.models.enums import (
     MediaType,
 )
 from music_assistant.common.models.errors import InvalidDataError
-from music_assistant.constants import GLOBAL_CACHE
 
 MetadataTypes = int | bool | str | list[str]
 
@@ -92,7 +92,7 @@ class ProviderMapping(DataClassDictMixin):
         """Call after init."""
         # having items for unavailable providers can have all sorts
         # of unpredictable results so ensure we have accurate availability status
-        if available_providers := GLOBAL_CACHE.get("available_providers"):
+        if available_providers := get_global_cache_value("unique_providers"):
             if TYPE_CHECKING:
                 available_providers = cast(set[str], available_providers)
             if not available_providers.intersection({self.provider_domain, self.provider_instance}):

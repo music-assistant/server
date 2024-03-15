@@ -91,7 +91,3 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
 VERBOSE_LOG_LEVEL: Final[int] = 5
-
-# global cache - we use this on a few places (as limited as possible)
-# where we have no other options
-GLOBAL_CACHE: Final[dict] = {}

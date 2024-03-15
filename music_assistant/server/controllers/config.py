@@ -14,6 +14,7 @@ import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
@@ -34,7 +35,6 @@ from music_assistant.constants import (
     CONF_SERVER_ID,
     CONFIGURABLE_CORE_CONTROLLERS,
     ENCRYPT_SUFFIX,
-    GLOBAL_CACHE,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.util import get_provider_module
@@ -331,7 +331,7 @@ class ConfigController:
             else PlayerConfig.parse([], raw_conf)
             for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
             # filter out unavailable providers
-            if raw_conf["provider"] in GLOBAL_CACHE.get("available_providers", [])
+            if raw_conf["provider"] in get_global_cache_value("available_providers", [])
             # optional provider filter
             and (provider in (None, raw_conf["provider"]))
         ]
