@@ -821,7 +821,9 @@ class PlayerQueuesController(CoreController):
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
                 # that are not playable which will stop playback.
-                await get_stream_details(mass=self.mass, queue_item=next_item)
+                next_item.streamdetails = await get_stream_details(
+                    mass=self.mass, queue_item=next_item
+                )
                 # Lazy load the full MediaItem for the QueueItem, making sure to get the
                 # maximum quality of thumbs
                 next_item.media_item = await self.mass.music.get_item_by_uri(next_item.uri)

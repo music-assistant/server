@@ -86,7 +86,8 @@ class OpenSonicProvider(MusicProvider):
             appName="Music Assistant",
         )
         try:
-            if not self._conn.ping():
+            success = await self._run_async(self._conn.ping)
+            if not success:
                 msg = (
                     f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, "
                     "check your settings."

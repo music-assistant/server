@@ -60,6 +60,12 @@ class AudioFormat(DataClassDictMixin):
         """Return the PCM sample size."""
         return int(self.sample_rate * (self.bit_depth / 8) * self.channels)
 
+    def __eq__(self, other: AudioFormat) -> bool:
+        """Check equality of two items."""
+        if not other:
+            return False
+        return self.output_format_str == other.output_format_str
+
 
 @dataclass(frozen=True, kw_only=True)
 class ProviderMapping(DataClassDictMixin):

@@ -26,6 +26,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
 )
 from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -34,7 +35,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -177,12 +177,17 @@ class UniversalGroupProvider(PlayerProvider):
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
 
-        # create multi-client stream job
-        stream_job = await self.mass.streams.create_multi_client_stream_job(
+        # create a multi-client stream job - all (direct) child's of this UGP group
+        # will subscribe to this multi client queue stream
+        await self.mass.streams.create_multi_client_stream_job(
             player_id,
             start_queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
+        )
+        # create a fake queue item to forward to downstream play_media commands
+        ugp_queue_item = QueueItem(
+            player_id, queue_item_id="flow", name=group_player.display_name, duration=None
         )
 
         # forward the stream job to all group members
@@ -193,7 +198,7 @@ class UniversalGroupProvider(PlayerProvider):
                     member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
                     if member is None:
                         continue
-                tg.create_task(player_prov.play_stream(member.player_id, stream_job))
+                tg.create_task(player_prov.play_media(member.player_id, ugp_queue_item, 0, False))
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
