@@ -336,8 +336,8 @@ class AirplayStreamJob:
                 continue
             if "lost packet out of backlog" in line:
                 lost_packets += 1
-                if lost_packets == 10:
-                    logger.warning("Packet loss detected, resuming playback...")
+                if lost_packets == 30:
+                    logger.warning("Packet loss detected, restart playback...")
                     queue = self.mass.player_queues.get_active_queue(mass_player.player_id)
                     await self.mass.player_queues.resume(queue.queue_id)
                 else:
@@ -631,7 +631,7 @@ class AirplayProvider(PlayerProvider):
         # always stop existing stream first
         for airplay_player in self._get_sync_clients(player_id):
             if airplay_player.active_stream and airplay_player.active_stream.running:
-                self.mass.create_task(airplay_player.active_stream.stop(force=True))
+                await airplay_player.active_stream.stop(force=True)
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             sample_rate=44100,
@@ -889,6 +889,8 @@ class AirplayProvider(PlayerProvider):
             headers_raw = headers_raw.split("\r\n")
             headers = {}
             for line in headers_raw[1:]:
+                if ":" not in line:
+                    continue
                 x, y = line.split(":", 1)
                 headers[x.strip()] = y.strip()
             active_remote = headers.get("Active-Remote")
