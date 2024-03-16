@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import TYPE_CHECKING
 
+import requests
 from plexapi.gdm import GDM
 from plexapi.library import LibrarySection as PlexLibrarySection
 from plexapi.library import MusicSection as PlexMusicSection
@@ -15,7 +16,12 @@ if TYPE_CHECKING:
 
 
 async def get_libraries(
-    mass: MusicAssistant, auth_token: str, local_server_ip: str, local_server_port: str
+    mass: MusicAssistant,
+    auth_token: str,
+    local_server_ssl: bool,
+    local_server_ip: str,
+    local_server_port: str,
+    local_server_verify_cert: bool,
 ) -> list[str]:
     """
     Get all music libraries for all plex servers.
@@ -27,8 +33,13 @@ async def get_libraries(
     def _get_libraries():
         # create a listing of available music libraries on all servers
         all_libraries: list[str] = []
+        session = requests.Session()
+        session.verify = local_server_verify_cert
+        local_server_protocol = "https" if local_server_ssl else "http"
         plex_server: PlexServer = PlexServer(
-            f"http://{local_server_ip}:{local_server_port}", auth_token
+            f"{local_server_protocol}://{local_server_ip}:{local_server_port}",
+            auth_token,
+            session=session,
         )
         for media_section in plex_server.library.sections():
             media_section: PlexLibrarySection
