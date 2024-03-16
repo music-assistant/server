@@ -184,7 +184,6 @@ class UniversalGroupProvider(PlayerProvider):
             start_queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
-            auto_start=False,
         )
         # create a fake queue item to forward to downstream play_media commands
         ugp_queue_item = QueueItem(

@@ -92,7 +92,6 @@ class MultiClientQueueStreamJob:
         pcm_audio_source: AsyncGenerator[bytes, None],
         pcm_format: AudioFormat,
         expected_players: set[str],
-        auto_start: bool = True,
     ) -> None:
         """Initialize MultiClientQueueStreamJob instance."""
         self.mass = mass
@@ -100,12 +99,13 @@ class MultiClientQueueStreamJob:
         self.pcm_format = pcm_format
         self.expected_players = expected_players
         self.job_id = shortuuid.uuid()
-        self.auto_start = auto_start
+        self.allow_start = False
         self.bytes_streamed: int = 0
         self.logger = self.mass.streams.logger.getChild(f"stream_job.{self.job_id}")
         self._subscribed_players: dict[str, asyncio.Queue] = {}
         self._finished = asyncio.Event()
         self._audio_task: asyncio.Task | None = None
+        self._all_clients_connected = asyncio.Event()
 
     @property
     def finished(self) -> bool:
@@ -128,12 +128,7 @@ class MultiClientQueueStreamJob:
             return
         if self.finished:
             raise RuntimeError("Task is already finished")
-        self.logger.debug(
-            "Starting multi client stream job %s with %s out of %s connected clients",
-            self.job_id,
-            len(self._subscribed_players),
-            len(self.expected_players),
-        )
+        self.allow_start = True
         self._audio_task = asyncio.create_task(self._stream_job_runner())
 
     def stop(self) -> None:
@@ -194,13 +189,13 @@ class MultiClientQueueStreamJob:
 
             await asyncio.sleep(0.2)  # debounce
             if (
-                self.auto_start
+                self.allow_start
                 and not self.running
                 and len(self._subscribed_players) == len(self.expected_players)
             ):
                 # we reached the number of expected subscribers, set event
                 # so that chunks can be pushed
-                self.start()
+                self._all_clients_connected.set()
             # yield from queue until finished
             while not self._finished.is_set():
                 yield await queue.get()
@@ -216,6 +211,13 @@ class MultiClientQueueStreamJob:
 
     async def _stream_job_runner(self) -> None:
         """Feed audio chunks to StreamJob subscribers."""
+        await self._all_clients_connected.wait()
+        self.logger.debug(
+            "Starting multi client stream job %s with %s out of %s connected clients",
+            self.job_id,
+            len(self._subscribed_players),
+            len(self.expected_players),
+        )
         async for chunk in self.pcm_audio_source:
             async with asyncio.TaskGroup() as tg:
                 for listener_queue in list(self._subscribed_players.values()):
@@ -398,7 +400,6 @@ class StreamsController(CoreController):
         pcm_bit_depth: int = 24,
         pcm_sample_rate: int = 48000,
         expected_players: set[str] | None = None,
-        auto_start: bool = False,
     ) -> MultiClientQueueStreamJob:
         """
         Create a MultiClientQueueStreamJob for the given queue..
@@ -429,7 +430,6 @@ class StreamsController(CoreController):
             ),
             pcm_format=pcm_format,
             expected_players=expected_players or set(),
-            auto_start=auto_start,
         )
         return stream_job
 

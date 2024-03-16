@@ -691,7 +691,8 @@ class AirplayProvider(PlayerProvider):
                     )
                 airplay_player.active_stream = AirplayStreamJob(self, airplay_player)
                 tg.create_task(airplay_player.active_stream.start(start_ntp, audio_iterator))
-        stream_job.start()
+        if queue_item.queue_item_id != "flow":
+            stream_job.start()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
