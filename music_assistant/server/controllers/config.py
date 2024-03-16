@@ -14,6 +14,7 @@ import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
@@ -324,14 +325,13 @@ class ConfigController:
         self, provider: str | None = None, include_values: bool = False
     ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        available_providers = {x.instance_id for x in self.mass.providers}
         return [
             await self.get_player_config(raw_conf["player_id"])
             if include_values
             else PlayerConfig.parse([], raw_conf)
             for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
             # filter out unavailable providers
-            if raw_conf["provider"] in available_providers
+            if raw_conf["provider"] in get_global_cache_value("available_providers", [])
             # optional provider filter
             and (provider in (None, raw_conf["provider"]))
         ]

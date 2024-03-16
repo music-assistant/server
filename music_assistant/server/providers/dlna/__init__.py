@@ -39,7 +39,13 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_CROSSFADE, CONF_ENFORCE_MP3, CONF_FLOW_MODE, CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_ENFORCE_MP3,
+    CONF_FLOW_MODE,
+    CONF_PLAYERS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -144,7 +150,7 @@ def catch_request_errors(
         player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         dlna_player = self.dlnaplayers[player_id]
         dlna_player.last_command = time.time()
-        if self.log_level == "VERBOSE":
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             self.logger.debug(
                 "Handling command %s for player %s",
                 func.__name__,
@@ -157,7 +163,7 @@ def catch_request_errors(
             return await func(self, *args, **kwargs)
         except UpnpError as err:
             dlna_player.force_poll = True
-            if self.log_level == "VERBOSE":
+            if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
                 self.logger.exception("Error during call %s: %r", func.__name__, err)
             else:
                 self.logger.error("Error during call %s: %r", func.__name__, str(err))
@@ -276,7 +282,7 @@ class DLNAPlayerProvider(PlayerProvider):
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
         # silence the async_upnp_client logger
-        if self.log_level == "VERBOSE":
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
         else:
             logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)

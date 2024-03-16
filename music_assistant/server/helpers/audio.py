@@ -15,6 +15,10 @@ from typing import TYPE_CHECKING
 import aiofiles
 from aiohttp import ClientResponseError, ClientTimeout
 
+from music_assistant.common.helpers.global_cache import (
+    get_global_cache_value,
+    set_global_cache_values,
+)
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.common.models.errors import (
     AudioError,
@@ -32,6 +36,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.playlists import fetch_playlist
 
@@ -102,7 +107,8 @@ async def crossfade_pcm_parts(
     async with AsyncProcess(args, True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
         if crossfade_data:
-            LOGGER.debug(
+            LOGGER.log(
+                5,
                 "crossfaded 2 pcm chunks. fade_in_part: %s - "
                 "fade_out_part: %s - fade_length: %s seconds",
                 len(fade_in_part),
@@ -160,11 +166,12 @@ async def strip_silence(
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
-    if LOGGER.isEnabledFor(logging.DEBUG):
+    if LOGGER.isEnabledFor(5):
         pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
         seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
         location = "end" if reverse else "begin"
-        LOGGER.debug(
+        LOGGER.log(
+            5,
             "stripped %s seconds of silence from %s of pcm audio. bytes stripped: %s",
             seconds_stripped,
             location,
@@ -185,25 +192,16 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
         item_name = f"{streamdetails.provider}/{streamdetails.item_id}"
         LOGGER.debug("Start analyzing EBU R128 loudness for %s", item_name)
         # calculate EBU R128 integrated loudness with ffmpeg
-        input_file = streamdetails.direct or "-"
-        proc_args = [
-            "ffmpeg",
-            "-protocol_whitelist",
-            "file,http,https,tcp,tls,crypto,pipe,fd",
-            "-t",
-            "600",  # limit to 10 minutes to prevent OOM
-            "-i",
-            input_file,
-            "-f",
-            streamdetails.audio_format.content_type,
-            "-af",
-            "loudnorm=print_format=json",
-            "-f",
-            "null",
-            "-",
-        ]
+        ffmpeg_args = _get_ffmpeg_args(
+            input_format=streamdetails.audio_format,
+            output_format=streamdetails.audio_format,
+            filter_params=["loudnorm=print_format=json"],
+            extra_args=["-t", "600"],  # limit to 10 minutes to prevent OOM
+            input_path=streamdetails.direct or "-",
+            output_path="NULL",
+        )
         async with AsyncProcess(
-            proc_args,
+            ffmpeg_args,
             enable_stdin=streamdetails.direct is None,
             enable_stdout=False,
             enable_stderr=True,
@@ -413,7 +411,7 @@ async def get_media_stream(  # noqa: PLR0915
         filter_params.append(filter_rule)
     if fade_in:
         filter_params.append("afade=type=in:start_time=0:duration=3")
-    ffmpeg_args = await _get_ffmpeg_args(
+    ffmpeg_args = _get_ffmpeg_args(
         input_format=streamdetails.audio_format,
         output_format=pcm_format,
         filter_params=filter_params,
@@ -432,14 +430,14 @@ async def get_media_stream(  # noqa: PLR0915
 
     async def writer() -> None:
         """Task that grabs the source audio and feeds it to ffmpeg."""
-        logger.debug("writer started for %s", streamdetails.uri)
+        logger.log(VERBOSE_LOG_LEVEL, "writer started for %s", streamdetails.uri)
         music_prov = mass.get_provider(streamdetails.provider)
         seek_pos = seek_position if streamdetails.can_seek else 0
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
         ffmpeg_proc.write_eof()
-        logger.debug("writer finished for %s", streamdetails.uri)
+        logger.log(VERBOSE_LOG_LEVEL, "writer finished for %s", streamdetails.uri)
 
     if streamdetails.direct is None:
         writer_task = asyncio.create_task(writer())
@@ -521,9 +519,11 @@ async def get_media_stream(  # noqa: PLR0915
         _, stderr = await ffmpeg_proc.communicate()
         if ffmpeg_proc.returncode != 0:
             # ffmpeg has a non zero returncode meaning trouble
-            logger.warning("STREAM ERROR on %s", streamdetails.uri)
+            logger.warning("stream error on %s", streamdetails.uri)
             logger.warning(stderr.decode())
+            finished = False
         elif loudness_details := _parse_loudnorm(stderr):
+            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
             required_seconds = 300 if streamdetails.media_type == MediaType.RADIO else 60
             if finished or seconds_streamed >= required_seconds:
                 LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
@@ -532,7 +532,7 @@ async def get_media_stream(  # noqa: PLR0915
                     streamdetails.item_id, streamdetails.provider, loudness_details
                 )
         else:
-            logger.debug(stderr.decode())
+            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
 
         # report playback
         if finished or seconds_streamed > 30:
@@ -723,7 +723,7 @@ async def get_ffmpeg_stream(
             yield chunk
         return
 
-    ffmpeg_args = await _get_ffmpeg_args(
+    ffmpeg_args = _get_ffmpeg_args(
         input_format=input_format,
         output_format=output_format,
         filter_params=filter_params or [],
@@ -768,15 +768,11 @@ async def get_ffmpeg_stream(
             # ffmpeg has a non zero returncode meaning trouble
             logger.warning("FFMPEG ERROR\n%s", stderr.decode())
         else:
-            logger.debug(stderr.decode())
+            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
 
 
 async def check_audio_support() -> tuple[bool, bool, str]:
     """Check if ffmpeg is present (with/without libsoxr support)."""
-    cache_key = "audio_support_cache"
-    if cache := globals().get(cache_key):
-        return cache
-
     # check for FFmpeg presence
     returncode, output = await check_output("ffmpeg -version")
     ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
@@ -785,7 +781,8 @@ async def check_audio_support() -> tuple[bool, bool, str]:
     version = output.decode().split("ffmpeg version ")[1].split(" ")[0].split("-")[0]
     libsoxr_support = "enable-libsoxr" in output.decode()
     result = (ffmpeg_present, libsoxr_support, version)
-    globals()[cache_key] = result
+    # store in global cache for easy access by '_get_ffmpeg_args'
+    await set_global_cache_values({"ffmpeg_support": result})
     return result
 
 
@@ -932,7 +929,7 @@ def get_player_filter_params(
     return filter_params
 
 
-async def _get_ffmpeg_args(
+def _get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
@@ -941,7 +938,7 @@ async def _get_ffmpeg_args(
     output_path: str = "-",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
-    ffmpeg_present, libsoxr_support, version = await check_audio_support()
+    ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
 
     if not ffmpeg_present:
         msg = (
@@ -996,17 +993,22 @@ async def _get_ffmpeg_args(
     input_args += ["-i", input_path]
 
     # collect output args
-    output_args = [
-        "-acodec",
-        output_format.content_type.name.lower(),
-        "-f",
-        output_format.content_type.value,
-        "-ac",
-        str(output_format.channels),
-        "-ar",
-        str(output_format.sample_rate),
-        output_path,
-    ]
+    if output_path.upper() == "NULL":
+        output_args = ["-f", "null", "-"]
+    elif output_format.content_type == ContentType.UNKNOWN:
+        output_args = [output_path]
+    else:
+        output_args = [
+            "-acodec",
+            output_format.content_type.name.lower(),
+            "-f",
+            output_format.content_type.value,
+            "-ac",
+            str(output_format.channels),
+            "-ar",
+            str(output_format.sample_rate),
+            output_path,
+        ]
 
     # prefer libsoxr high quality resampler (if present) for sample rate conversions
     if input_format.sample_rate != output_format.sample_rate and libsoxr_support:

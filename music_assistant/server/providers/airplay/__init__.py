@@ -40,7 +40,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.player_queue import PlayerQueue
-from music_assistant.constants import CONF_SYNC_ADJUST
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -220,9 +220,9 @@ class AirplayStreamJob:
             player_id, CONF_PASSWORD, None
         ):
             extra_args += ["-password", device_password]
-        if self.prov.log_level == "DEBUG":
+        if self.prov.logger.isEnabledFor(logging.DEBUG):
             extra_args += ["-debug", "5"]
-        elif self.prov.log_level == "VERBOSE":
+        elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
 
         args = [
@@ -291,11 +291,10 @@ class AirplayStreamJob:
             with open(named_pipe, "w") as f:
                 f.write(command)
 
-        if self.prov.log_level == "VERBOSE":
-            self.airplay_player.logger.debug("sending command %s", command)
+        self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         await self.mass.create_task(send_data)
 
-    async def _log_watcher(self) -> None:  # noqa: PLR0915
+    async def _log_watcher(self) -> None:
         """Monitor stderr for the running CLIRaop process."""
         airplay_player = self.airplay_player
         mass_player = self.mass.players.get(airplay_player.player_id)
@@ -337,16 +336,15 @@ class AirplayStreamJob:
                 continue
             if "lost packet out of backlog" in line:
                 lost_packets += 1
-                if lost_packets == 10:
-                    logger.warning("Packet loss detected, resuming playback...")
+                if lost_packets == 30:
+                    logger.warning("Packet loss detected, restart playback...")
                     queue = self.mass.player_queues.get_active_queue(mass_player.player_id)
                     await self.mass.player_queues.resume(queue.queue_id)
                 else:
                     logger.debug(line)
                 continue
-            # debug log everything else
-            if self.prov.log_level == "VERBOSE":
-                logger.debug(line)
+            # verbose log everything else
+            logger.log(VERBOSE_LOG_LEVEL, line)
 
         # if we reach this point, the process exited
         logger.debug(
@@ -633,7 +631,7 @@ class AirplayProvider(PlayerProvider):
         # always stop existing stream first
         for airplay_player in self._get_sync_clients(player_id):
             if airplay_player.active_stream and airplay_player.active_stream.running:
-                self.mass.create_task(airplay_player.active_stream.stop(force=True))
+                await airplay_player.active_stream.stop(force=True)
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             sample_rate=44100,
@@ -693,6 +691,8 @@ class AirplayProvider(PlayerProvider):
                     )
                 airplay_player.active_stream = AirplayStreamJob(self, airplay_player)
                 tg.create_task(airplay_player.active_stream.start(start_ntp, audio_iterator))
+        if queue_item.queue_item_id != "flow":
+            stream_job.start()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
@@ -823,11 +823,6 @@ class AirplayProvider(PlayerProvider):
         address = get_primary_ip_address(info)
         if address is None:
             return
-        # some guards if our info is valid/complete
-        if "md" not in info.decoded_properties:
-            return
-        if "et" not in info.decoded_properties:
-            return
         self.logger.debug("Discovered Airplay device %s on %s", display_name, address)
         self._players[player_id] = AirPlayPlayer(
             player_id, discovery_info=info, address=address, logger=self.logger.getChild(player_id)
@@ -888,10 +883,16 @@ class AirplayProvider(PlayerProvider):
                     break
 
             request = raw_request.decode("UTF-8")
-            headers_raw, body = request.split("\r\n\r\n", 1)
+            if "\r\n\r\n" in request:
+                headers_raw, body = request.split("\r\n\r\n", 1)
+            else:
+                headers_raw = request
+                body = ""
             headers_raw = headers_raw.split("\r\n")
             headers = {}
             for line in headers_raw[1:]:
+                if ":" not in line:
+                    continue
                 x, y = line.split(":", 1)
                 headers[x.strip()] = y.strip()
             active_remote = headers.get("Active-Remote")

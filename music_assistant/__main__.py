@@ -9,15 +9,16 @@ import os
 import subprocess
 import sys
 import threading
+import traceback
 from contextlib import suppress
 from logging.handlers import RotatingFileHandler
-from typing import Final
+from typing import Any, Final
 
 from aiorun import run
 from colorlog import ColoredFormatter
 
 from music_assistant.common.helpers.json import json_loads
-from music_assistant.constants import ROOT_LOGGER_NAME
+from music_assistant.constants import ROOT_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.server import MusicAssistant
 from music_assistant.server.helpers.logging import activate_log_queue_handler
 
@@ -26,6 +27,14 @@ FORMAT_TIME: Final = "%H:%M:%S"
 FORMAT_DATETIME: Final = f"{FORMAT_DATE} {FORMAT_TIME}"
 MAX_LOG_FILESIZE = 1000000 * 10  # 10 MB
 ALPINE_RELEASE_FILE = "/etc/alpine-release"
+
+
+class VerboseLogger(logging.Logger):
+    """Custom python logger with included verbose log level."""
+
+    def verbose(self, msg, *args, **kwargs):
+        """Log a verbose message."""
+        self.log(VERBOSE_LOG_LEVEL, msg, *args, **kwargs)
 
 
 def get_arguments():
@@ -68,6 +77,7 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
             datefmt=FORMAT_DATETIME,
             reset=True,
             log_colors={
+                "VERBOSE": "light_black",
                 "DEBUG": "cyan",
                 "INFO": "green",
                 "WARNING": "yellow",
@@ -89,10 +99,11 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     with suppress(OSError):
         file_handler.doRollover()
     file_handler.setFormatter(logging.Formatter(log_fmt, datefmt=FORMAT_DATETIME))
-    # file_handler.setLevel(logging.INFO)
 
     logger = logging.getLogger()
     logger.addHandler(file_handler)
+    logging.addLevelName(VERBOSE_LOG_LEVEL, "VERBOSE")
+    logging.setLoggerClass(VerboseLogger)
 
     # apply the configured global log level to the (root) music assistant logger
     logging.getLogger(ROOT_LOGGER_NAME).setLevel(level)
@@ -136,6 +147,30 @@ def _enable_posix_spawn() -> None:
     subprocess._USE_POSIX_SPAWN = os.path.exists(ALPINE_RELEASE_FILE)
 
 
+def _global_loop_exception_handler(_: Any, context: dict[str, Any]) -> None:
+    """Handle all exception inside the core loop."""
+    kwargs = {}
+    if exception := context.get("exception"):
+        kwargs["exc_info"] = (type(exception), exception, exception.__traceback__)
+
+    logger = logging.getLogger(__package__)
+    if source_traceback := context.get("source_traceback"):
+        stack_summary = "".join(traceback.format_list(source_traceback))
+        logger.error(
+            "Error doing job: %s: %s",
+            context["message"],
+            stack_summary,
+            **kwargs,  # type: ignore[arg-type]
+        )
+        return
+
+    logger.error(
+        "Error doing task: %s",
+        context["message"],
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
 def main() -> None:
     """Start MusicAssistant."""
     # parse arguments
@@ -172,13 +207,14 @@ def main() -> None:
         activate_log_queue_handler()
         if dev_mode or log_level == "DEBUG":
             loop.set_debug(True)
+        loop.set_exception_handler(_global_loop_exception_handler)
         await mass.start()
 
     run(
         start_mass(),
         use_uvloop=enable_uvloop,
         shutdown_callback=on_shutdown,
-        executor_workers=64,
+        executor_workers=32,
     )
 
 

@@ -32,7 +32,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_CROSSFADE
+from music_assistant.constants import CONF_CROSSFADE, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -90,7 +90,7 @@ async def setup(
     zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
     prov = SonosPlayerProvider(mass, manifest, config)
     # set-up soco logging
-    if prov.log_level == "VERBOSE":
+    if prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logging.getLogger("soco").setLevel(logging.DEBUG)
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
     else:

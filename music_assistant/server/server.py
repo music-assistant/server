@@ -15,6 +15,7 @@ from aiohttp import ClientSession, TCPConnector
 from zeroconf import IPVersion, NonUniqueNameException, ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
+from music_assistant.common.helpers.global_cache import set_global_cache_values
 from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.enums import EventType, ProviderType
@@ -442,6 +443,7 @@ class MusicAssistant:
         self.create_task(provider.loaded_in_mass())
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+        await self._update_available_providers_cache()
         # if this is a music provider, start sync
         if provider.type == ProviderType.MUSIC:
             self.music.start_sync(providers=[provider.instance_id])
@@ -468,6 +470,7 @@ class MusicAssistant:
                 LOGGER.warning("Error while unload provider %s: %s", provider.name, str(err))
             finally:
                 self._providers.pop(instance_id, None)
+                await self._update_available_providers_cache()
                 self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:
@@ -647,3 +650,17 @@ class MusicAssistant:
         if exc_val:
             raise exc_val
         return exc_type
+
+    async def _update_available_providers_cache(self) -> None:
+        """Update the global cache variable of loaded/available providers."""
+        await set_global_cache_values(
+            {
+                "provider_domains": {x.domain for x in self.providers},
+                "provider_instance_ids": {x.instance_id for x in self.providers},
+                "available_providers": {
+                    *{x.domain for x in self.providers},
+                    *{x.instance_id for x in self.providers},
+                },
+                "unique_providers": {x.lookup_key for x in self.providers},
+            }
+        )

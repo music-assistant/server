@@ -52,6 +52,7 @@ from music_assistant.constants import (
     CONF_PORT,
     CONF_SYNC_ADJUST,
     MASS_LOGO_ONLINE,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -78,8 +79,8 @@ STATE_MAP = {
 REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
 
 # sync constants
-MIN_DEVIATION_ADJUST = 8  # 8 milliseconds
-MIN_REQ_PLAYPOINTS = 3  # we need at least 3 measurements
+MIN_DEVIATION_ADJUST = 6  # 6 milliseconds
+MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
 DEVIATION_JUMP_IGNORE = 2000  # ignore a sudden unrealistic jump
 MAX_SKIP_AHEAD_MS = 500  # 0.5 seconds
 
@@ -228,7 +229,11 @@ class SlimprotoProvider(PlayerProvider):
         control_port = self.config.get_value(CONF_PORT)
         telnet_port = self.config.get_value(CONF_CLI_TELNET_PORT)
         json_port = self.config.get_value(CONF_CLI_JSON_PORT)
-        logging.getLogger("aioslimproto").setLevel(self.logger.level)
+        # silence aioslimproto logger a bit
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("aioslimproto").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("aioslimproto").setLevel(self.logger.level + 10)
         self.slimproto = SlimServer(
             cli_port=telnet_port or None,
             cli_port_json=json_port or None,
@@ -358,7 +363,6 @@ class SlimprotoProvider(PlayerProvider):
                         self._handle_play_url(
                             slimplayer,
                             url=stream_job.resolve_stream_url(
-                                player_id,
                                 slimplayer.player_id,
                                 output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
                             ),
@@ -367,6 +371,8 @@ class SlimprotoProvider(PlayerProvider):
                             auto_play=False,
                         )
                     )
+            if queue_item.queue_item_id != "flow":
+                stream_job.start()
         else:
             # regular, single player playback
             slimplayer = self.slimproto.get_player(player_id)
