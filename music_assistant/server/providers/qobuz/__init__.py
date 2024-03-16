@@ -412,7 +412,7 @@ class QobuzProvider(MusicProvider):
             ),
             duration=streamdata["duration"],
             data=streamdata,  # we need these details for reporting playback
-            expires=time.time() + 3600,  # not sure about the real allowed value
+            expires=time.time() + 60,  # may not be cached
             direct=streamdata["url"],
         )
 
