@@ -263,7 +263,7 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
                 continue  # provider not available ?
             # prefer cache
             item_key = f"{music_prov.lookup_key}/{prov_media.item_id}"
-            cache_key = f"streamdetails_{item_key}"
+            cache_key = f"cached_streamdetails_{item_key}"
             if cache := await mass.cache.get(cache_key):
                 LOGGER.debug(f"Using cached streamdetails for {item_key}")
                 streamdetails = StreamDetails.from_dict(cache)
