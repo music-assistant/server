@@ -276,7 +276,9 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
                 # store streamdetails in cache
                 expiration = streamdetails.expires - time()
                 if expiration > 300:
-                    await mass.cache.set(cache_key, streamdetails.to_dict(), expiration - 60)
+                    await mass.cache.set(
+                        cache_key, streamdetails.to_dict(), expiration=expiration - 60
+                    )
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
             else:
