@@ -79,8 +79,8 @@ STATE_MAP = {
 REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
 
 # sync constants
-MIN_DEVIATION_ADJUST = 8  # 8 milliseconds
-MIN_REQ_PLAYPOINTS = 3  # we need at least 3 measurements
+MIN_DEVIATION_ADJUST = 6  # 6 milliseconds
+MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
 DEVIATION_JUMP_IGNORE = 2000  # ignore a sudden unrealistic jump
 MAX_SKIP_AHEAD_MS = 500  # 0.5 seconds
 
@@ -363,7 +363,7 @@ class SlimprotoProvider(PlayerProvider):
                         self._handle_play_url(
                             slimplayer,
                             url=stream_job.resolve_stream_url(
-                                player_id,
+                                slimplayer.player_id,
                                 output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
                             ),
                             queue_item=None,
@@ -371,7 +371,7 @@ class SlimprotoProvider(PlayerProvider):
                             auto_play=False,
                         )
                     )
-            if queue_item.queue_item_id == "flow":
+            if queue_item.queue_item_id != "flow":
                 stream_job.start()
         else:
             # regular, single player playback

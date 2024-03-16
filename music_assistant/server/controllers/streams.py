@@ -99,18 +99,18 @@ class MultiClientQueueStreamJob:
         self.pcm_format = pcm_format
         self.expected_players = expected_players
         self.job_id = shortuuid.uuid()
-        self.allow_start = False
         self.bytes_streamed: int = 0
         self.logger = self.mass.streams.logger.getChild(f"stream_job.{self.job_id}")
         self._subscribed_players: dict[str, asyncio.Queue] = {}
-        self._finished = asyncio.Event()
-        self._audio_task: asyncio.Task | None = None
-        self._all_clients_connected = asyncio.Event()
+        self._finished = False
+        self._running = False
+        self._allow_start = asyncio.Event()
+        self._audio_task = asyncio.create_task(self._stream_job_runner())
 
     @property
     def finished(self) -> bool:
         """Return if this StreamJob is finished."""
-        return self._finished.is_set() or self._audio_task and self._audio_task.done()
+        return self._finished or self._audio_task and self._audio_task.done()
 
     @property
     def pending(self) -> bool:
@@ -120,16 +120,13 @@ class MultiClientQueueStreamJob:
     @property
     def running(self) -> bool:
         """Return if this Job is running."""
-        return self._audio_task and not self._audio_task.done()
+        return self._running and self._audio_task and not self._audio_task.done()
 
     def start(self) -> None:
         """Start running (send audio chunks to connected players)."""
-        if self.running:
-            return
         if self.finished:
             raise RuntimeError("Task is already finished")
-        self.allow_start = True
-        self._audio_task = asyncio.create_task(self._stream_job_runner())
+        self._allow_start.set()
 
     def stop(self) -> None:
         """Stop running this job."""
@@ -137,7 +134,7 @@ class MultiClientQueueStreamJob:
             return
         if self._audio_task:
             self._audio_task.cancel()
-        self._finished.set()
+        self._finished = True
 
     def resolve_stream_url(self, child_player_id: str, output_codec: ContentType) -> str:
         """Resolve the childplayer specific stream URL to this streamjob."""
@@ -176,7 +173,7 @@ class MultiClientQueueStreamJob:
     async def _subscribe_pcm(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming (raw pcm) chunks on the queue."""
         try:
-            self._subscribed_players[player_id] = queue = asyncio.Queue(1)
+            self._subscribed_players[player_id] = queue = asyncio.Queue(2)
 
             if self.running:
                 # client subscribes while we're already started
@@ -187,17 +184,8 @@ class MultiClientQueueStreamJob:
             else:
                 self.logger.debug("Subscribed player %s", player_id)
 
-            await asyncio.sleep(0.2)  # debounce
-            if (
-                self.allow_start
-                and not self.running
-                and len(self._subscribed_players) == len(self.expected_players)
-            ):
-                # we reached the number of expected subscribers, set event
-                # so that chunks can be pushed
-                self._all_clients_connected.set()
             # yield from queue until finished
-            while not self._finished.is_set():
+            while not self._finished:
                 yield await queue.get()
         finally:
             if sub_queue := self._subscribed_players.pop(player_id, None):
@@ -211,7 +199,18 @@ class MultiClientQueueStreamJob:
 
     async def _stream_job_runner(self) -> None:
         """Feed audio chunks to StreamJob subscribers."""
-        await self._all_clients_connected.wait()
+        await self._allow_start.wait()
+        retries = 50
+        while retries:
+            retries -= 1
+            await asyncio.sleep(0.2)
+            if len(self._subscribed_players) != len(self.expected_players):
+                continue
+            await asyncio.sleep(0.2)
+            if len(self._subscribed_players) != len(self.expected_players):
+                continue
+            break
+
         self.logger.debug(
             "Starting multi client stream job %s with %s out of %s connected clients",
             self.job_id,
@@ -222,7 +221,7 @@ class MultiClientQueueStreamJob:
             async with asyncio.TaskGroup() as tg:
                 for listener_queue in list(self._subscribed_players.values()):
                     tg.create_task(listener_queue.put(chunk))
-        self._finished.set()
+        self._finished = True
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
