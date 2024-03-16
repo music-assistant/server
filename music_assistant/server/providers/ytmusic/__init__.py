@@ -299,7 +299,7 @@ class YoutubeMusicProvider(MusicProvider):
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
             track_obj["disc_number"] = 0
-            track_obj["track_number"] = idx
+            track_obj["track_number"] = track_obj.get("trackNumber", idx)
             try:
                 track = await self._parse_track(track_obj=track_obj)
             except InvalidDataError:
@@ -346,7 +346,14 @@ class YoutubeMusicProvider(MusicProvider):
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
-        playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
+        # Add a try to prevent MA from stopping syncing whenever we fail a single playlist
+        try:
+            playlist_obj = await get_playlist(
+                prov_playlist_id=prov_playlist_id, headers=self._headers
+            )
+        except KeyError as ke:
+            self.logger.warning("Could not load playlist: %s: %s", prov_playlist_id, ke)
+            return
         if "tracks" not in playlist_obj:
             return
         for index, track_obj in enumerate(playlist_obj["tracks"]):
