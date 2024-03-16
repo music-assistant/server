@@ -291,7 +291,7 @@ class AirplayStreamJob:
             with open(named_pipe, "w") as f:
                 f.write(command)
 
-        self.airplay_player.logger.verbose("sending command %s", command)
+        self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         await self.mass.create_task(send_data)
 
     async def _log_watcher(self) -> None:
@@ -344,7 +344,7 @@ class AirplayStreamJob:
                     logger.debug(line)
                 continue
             # verbose log everything else
-            logger.verbose(line)
+            logger.log(VERBOSE_LOG_LEVEL, line)
 
         # if we reach this point, the process exited
         logger.debug(
@@ -691,6 +691,7 @@ class AirplayProvider(PlayerProvider):
                     )
                 airplay_player.active_stream = AirplayStreamJob(self, airplay_player)
                 tg.create_task(airplay_player.active_stream.start(start_ntp, audio_iterator))
+        stream_job.start()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.

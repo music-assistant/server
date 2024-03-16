@@ -31,7 +31,7 @@ from music_assistant.common.models.api import (
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import InvalidCommand
-from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
+from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.server.helpers.audio import get_preview_stream
 from music_assistant.server.helpers.util import get_ips
@@ -259,7 +259,7 @@ class WebsocketClientHandler:
             self._logger.warning("Timeout preparing request from %s", request.remote)
             return wsock
 
-        self._logger.verbose("Connection from %s", request.remote)
+        self._logger.log(VERBOSE_LOG_LEVEL, "Connection from %s", request.remote)
         self._handle_task = asyncio.current_task()
         self._writer_task = asyncio.create_task(self._writer())
 
@@ -285,7 +285,7 @@ class WebsocketClientHandler:
                     disconnect_warn = "Received non-Text message."
                     break
 
-                self._logger.verbose("Received: %s", msg.data)
+                self._logger.log(VERBOSE_LOG_LEVEL, "Received: %s", msg.data)
 
                 try:
                     command_msg = CommandMessage.from_json(msg.data)
@@ -304,7 +304,7 @@ class WebsocketClientHandler:
         finally:
             # Handle connection shutting down.
             unsub_callback()
-            self._logger.verbose("Unsubscribed from events")
+            self._logger.log(VERBOSE_LOG_LEVEL, "Unsubscribed from events")
 
             try:
                 self._to_write.put_nowait(None)
@@ -316,7 +316,7 @@ class WebsocketClientHandler:
 
             finally:
                 if disconnect_warn is None:
-                    self._logger.verbose("Disconnected")
+                    self._logger.log(VERBOSE_LOG_LEVEL, "Disconnected")
                 else:
                     self._logger.warning("Disconnected: %s", disconnect_warn)
 
@@ -384,7 +384,7 @@ class WebsocketClientHandler:
                     message: str = process()
                 else:
                     message = process
-                self._logger.verbose("Writing: %s", message)
+                self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
                 await self.wsock.send_str(message)
 
     def _send_message(self, message: MessageType) -> None:

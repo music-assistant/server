@@ -36,6 +36,7 @@ from music_assistant.constants import (
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     ROOT_LOGGER_NAME,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.playlists import fetch_playlist
 
@@ -106,7 +107,8 @@ async def crossfade_pcm_parts(
     async with AsyncProcess(args, True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
         if crossfade_data:
-            LOGGER.verbose(
+            LOGGER.log(
+                5,
                 "crossfaded 2 pcm chunks. fade_in_part: %s - "
                 "fade_out_part: %s - fade_length: %s seconds",
                 len(fade_in_part),
@@ -168,7 +170,8 @@ async def strip_silence(
         pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
         seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
         location = "end" if reverse else "begin"
-        LOGGER.verbose(
+        LOGGER.log(
+            5,
             "stripped %s seconds of silence from %s of pcm audio. bytes stripped: %s",
             seconds_stripped,
             location,
@@ -427,14 +430,14 @@ async def get_media_stream(  # noqa: PLR0915
 
     async def writer() -> None:
         """Task that grabs the source audio and feeds it to ffmpeg."""
-        logger.verbose("writer started for %s", streamdetails.uri)
+        logger.log(VERBOSE_LOG_LEVEL, "writer started for %s", streamdetails.uri)
         music_prov = mass.get_provider(streamdetails.provider)
         seek_pos = seek_position if streamdetails.can_seek else 0
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
         ffmpeg_proc.write_eof()
-        logger.verbose("writer finished for %s", streamdetails.uri)
+        logger.log(VERBOSE_LOG_LEVEL, "writer finished for %s", streamdetails.uri)
 
     if streamdetails.direct is None:
         writer_task = asyncio.create_task(writer())
@@ -520,7 +523,7 @@ async def get_media_stream(  # noqa: PLR0915
             logger.warning(stderr.decode())
             finished = False
         elif loudness_details := _parse_loudnorm(stderr):
-            logger.verbose(stderr.decode())
+            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
             required_seconds = 300 if streamdetails.media_type == MediaType.RADIO else 60
             if finished or seconds_streamed >= required_seconds:
                 LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
@@ -529,7 +532,7 @@ async def get_media_stream(  # noqa: PLR0915
                     streamdetails.item_id, streamdetails.provider, loudness_details
                 )
         else:
-            logger.verbose(stderr.decode())
+            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
 
         # report playback
         if finished or seconds_streamed > 30:
@@ -765,7 +768,7 @@ async def get_ffmpeg_stream(
             # ffmpeg has a non zero returncode meaning trouble
             logger.warning("FFMPEG ERROR\n%s", stderr.decode())
         else:
-            logger.verbose(stderr.decode())
+            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
 
 
 async def check_audio_support() -> tuple[bool, bool, str]:

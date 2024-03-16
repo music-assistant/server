@@ -354,6 +354,7 @@ class SlimprotoProvider(PlayerProvider):
                 start_queue_item=queue_item,
                 seek_position=int(seek_position),
                 fade_in=fade_in,
+                auto_start=False,
             )
             # forward command to player and any connected sync members
             sync_clients = self._get_sync_clients(player_id)
@@ -364,7 +365,6 @@ class SlimprotoProvider(PlayerProvider):
                             slimplayer,
                             url=stream_job.resolve_stream_url(
                                 player_id,
-                                slimplayer.player_id,
                                 output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
                             ),
                             queue_item=None,
@@ -372,6 +372,7 @@ class SlimprotoProvider(PlayerProvider):
                             auto_play=False,
                         )
                     )
+            stream_job.start()
         else:
             # regular, single player playback
             slimplayer = self.slimproto.get_player(player_id)

@@ -34,9 +34,9 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
-    ROOT_LOGGER_NAME,
     SILENCE_FILE,
 )
+from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -321,7 +321,7 @@ class StreamsController(CoreController):
             "with libsoxr support" if libsoxr_support else "",
         )
         # copy log level to audio module
-        logging.getLogger(f"{ROOT_LOGGER_NAME}.audio").setLevel(self.logger.level)
+        AUDIO_LOGGER.setLevel(self.logger.level)
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -398,7 +398,7 @@ class StreamsController(CoreController):
         pcm_bit_depth: int = 24,
         pcm_sample_rate: int = 48000,
         expected_players: set[str] | None = None,
-        auto_start: bool = True,
+        auto_start: bool = False,
     ) -> MultiClientQueueStreamJob:
         """
         Create a MultiClientQueueStreamJob for the given queue..
@@ -848,6 +848,7 @@ class StreamsController(CoreController):
                 queue.display_name,
                 queue_track.streamdetails.seconds_streamed,
             )
+
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:
             yield last_fadeout_part

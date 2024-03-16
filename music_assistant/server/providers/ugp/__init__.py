@@ -179,11 +179,12 @@ class UniversalGroupProvider(PlayerProvider):
 
         # create a multi-client stream job - all (direct) child's of this UGP group
         # will subscribe to this multi client queue stream
-        await self.mass.streams.create_multi_client_stream_job(
+        stream_job = await self.mass.streams.create_multi_client_stream_job(
             player_id,
             start_queue_item=queue_item,
             seek_position=seek_position,
             fade_in=fade_in,
+            auto_start=False,
         )
         # create a fake queue item to forward to downstream play_media commands
         ugp_queue_item = QueueItem(
@@ -199,6 +200,7 @@ class UniversalGroupProvider(PlayerProvider):
                     if member is None:
                         continue
                 tg.create_task(player_prov.play_media(member.player_id, ugp_queue_item, 0, False))
+        stream_job.start()
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
