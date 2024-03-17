@@ -237,8 +237,8 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
 async def get_stream_details(
     mass: MusicAssistant,
     queue_item: QueueItem,
-    seek_position: int | None = None,
-    fade_in: bool | None = None,
+    seek_position: int = 0,
+    fade_in: bool = False,
 ) -> StreamDetails:
     """Get streamdetails for the given QueueItem.
 

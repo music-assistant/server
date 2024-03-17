@@ -597,15 +597,12 @@ class PlayerController(CoreController):
         self,
         player_id: str,
         url: str,
-        use_pre_announce: bool | None = None,
+        use_pre_announce: bool = False,
     ) -> None:
         """Handle playback of an announcement (url) on given player."""
         player = self.get(player_id, True)
         if player.announcement_in_progress:
             return
-        if use_pre_announce is None and "tts" in url:
-            # TODO: handle this in an HA or player setting
-            use_pre_announce = True
         try:
             # mark announcement_in_progress on player
             player.announcement_in_progress = True
