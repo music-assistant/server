@@ -16,3 +16,4 @@ venv/
 *.spec
 .history
 .idea
+.coverage
