@@ -10,6 +10,7 @@ ARG DEBIAN_VERSION="bookworm"
 #####################################################################
 FROM python:${PYTHON_VERSION}-{DEBIAN_VERSION}-slim as wheels-builder
 ARG TARGETPLATFORM
+ARG DEBIAN_VERSION
 
 # Install buildtime packages
 RUN set -x \
@@ -43,6 +44,7 @@ WORKDIR /app
 # Required to persist build arg
 ARG MASS_VERSION
 ARG TARGETPLATFORM
+ARG DEBIAN_VERSION
 
 RUN set -x \
     # add backports repo
