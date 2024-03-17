@@ -743,8 +743,10 @@ class PlayerQueuesController(CoreController):
         # determine if this queue is currently active for this player
         queue.active = player.powered and player.active_source == queue.queue_id
         if not queue.active:
+            # return early if the queue is not active
             queue.state = PlayerState.IDLE
-            self._prev_states.pop(queue_id, None)
+            if prev_state := self._prev_states.pop(queue_id, None):
+                self.signal_update(queue_id)
             return
         # update current item from player report
         if queue.flow_mode:
@@ -769,6 +771,7 @@ class PlayerQueuesController(CoreController):
             queue.current_item
             and queue.current_item.streamdetails
             and queue.current_item.streamdetails.seek_position
+            and player.state in (PlayerState.PLAYING, PlayerState.PAUSED)
             and not queue.flow_mode
         ):
             queue.elapsed_time += queue.current_item.streamdetails.seek_position
