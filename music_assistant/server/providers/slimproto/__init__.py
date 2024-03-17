@@ -325,19 +325,8 @@ class SlimprotoProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         # fix race condition where resync and play media are called at more or less the same time
         if self._resync_handle:
             self._resync_handle.cancel()
@@ -352,8 +341,6 @@ class SlimprotoProvider(PlayerProvider):
             stream_job = await self.mass.streams.create_multi_client_stream_job(
                 queue_id=queue_item.queue_id,
                 start_queue_item=queue_item,
-                seek_position=int(seek_position),
-                fade_in=fade_in,
             )
             # forward command to player and any connected sync members
             sync_clients = self._get_sync_clients(player_id)
@@ -384,8 +371,6 @@ class SlimprotoProvider(PlayerProvider):
                 # for now just hardcode flac as we assume that every (modern)
                 # slimproto based player can handle that just fine
                 output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-                seek_position=seek_position,
-                fade_in=fade_in,
                 flow_mode=False,
             )
             await self._handle_play_url(

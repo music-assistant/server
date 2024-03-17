@@ -1,6 +1,5 @@
 """Provides a simple global memory cache."""
 
-
 from __future__ import annotations
 
 import asyncio

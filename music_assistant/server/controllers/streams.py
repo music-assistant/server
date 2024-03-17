@@ -18,16 +18,22 @@ from typing import TYPE_CHECKING
 import shortuuid
 from aiohttp import web
 
-from music_assistant.common.helpers.util import empty_queue, get_ip, select_free_port
+from music_assistant.common.helpers.util import (
+    empty_queue,
+    get_ip,
+    select_free_port,
+    try_parse_bool,
+)
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
 )
 from music_assistant.common.models.enums import ConfigEntryType, ContentType, MediaType
-from music_assistant.common.models.errors import MediaNotFoundError, QueueEmpty
+from music_assistant.common.models.errors import QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.constants import (
+    ANNOUNCE_ALERT_FILE,
     CONF_BIND_IP,
     CONF_BIND_PORT,
     CONF_CROSSFADE,
@@ -254,6 +260,7 @@ class StreamsController(CoreController):
             "some player specific local control callbacks."
         )
         self.manifest.icon = "cast-audio"
+        self.announcements: dict[str, str] = {}
 
     @property
     def base_url(self) -> str:
@@ -351,6 +358,11 @@ class StreamsController(CoreController):
                     "/command/{queue_id}/{command}.mp3",
                     self.serve_command_request,
                 ),
+                (
+                    "*",
+                    "/announcement/{player_id}.{fmt}",
+                    self.serve_announcement_stream,
+                ),
             ],
         )
 
@@ -363,12 +375,13 @@ class StreamsController(CoreController):
         player_id: str,
         queue_item: QueueItem,
         output_codec: ContentType,
-        seek_position: int = 0,
-        fade_in: bool = False,
         flow_mode: bool = False,
     ) -> str:
         """Resolve the stream URL for the given QueueItem."""
         fmt = output_codec.value
+        # handle announcement item
+        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+            return queue_item.queue_item_id
         # handle request for multi client queue stream
         stream_job = self.multi_client_jobs.get(queue_item.queue_id)
         if queue_item.queue_item_id == "flow" or stream_job and stream_job.pending:
@@ -379,10 +392,6 @@ class StreamsController(CoreController):
         query_params = {}
         base_path = "flow" if flow_mode else "single"
         url = f"{self._server.base_url}/{base_path}/{queue_item.queue_id}/{queue_item.queue_item_id}.{fmt}"  # noqa: E501
-        if seek_position:
-            query_params["seek_position"] = str(seek_position)
-        if fade_in:
-            query_params["fade_in"] = "1"
         # we add a timestamp as basic checksum
         # most importantly this is to invalidate any caches
         # but also to handle edge cases such as single track repeat
@@ -394,8 +403,6 @@ class StreamsController(CoreController):
         self,
         queue_id: str,
         start_queue_item: QueueItem,
-        seek_position: int = 0,
-        fade_in: bool = False,
         pcm_bit_depth: int = 24,
         pcm_sample_rate: int = 48000,
         expected_players: set[str] | None = None,
@@ -424,8 +431,6 @@ class StreamsController(CoreController):
                 queue=queue,
                 start_queue_item=start_queue_item,
                 pcm_format=pcm_format,
-                seek_position=seek_position,
-                fade_in=fade_in,
             ),
             pcm_format=pcm_format,
             expected_players=expected_players or set(),
@@ -444,15 +449,9 @@ class StreamsController(CoreController):
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
-        try:
+        if queue_item.streamdetails is None:
+            # this should not happen, but just in case
             queue_item.streamdetails = await get_stream_details(self.mass, queue_item=queue_item)
-        except MediaNotFoundError:
-            raise web.HTTPNotFound(
-                reason=f"Unable to retrieve streamdetails for item: {queue_item}"
-            )
-        seek_position = int(request.query.get("seek_position", 0))
-        queue_item.streamdetails.seconds_skipped = seek_position
-        fade_in = bool(request.query.get("fade_in", 0))
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
@@ -460,7 +459,6 @@ class StreamsController(CoreController):
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
             default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
-
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
             **DEFAULT_STREAM_HEADERS,
@@ -496,8 +494,6 @@ class StreamsController(CoreController):
                 self.mass,
                 streamdetails=queue_item.streamdetails,
                 pcm_format=pcm_format,
-                seek_position=seek_position,
-                fade_in=fade_in,
             ),
             input_format=pcm_format,
             output_format=output_format,
@@ -520,8 +516,6 @@ class StreamsController(CoreController):
         start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
-        seek_position = int(request.query.get("seek_position", 0))
-        fade_in = bool(request.query.get("fade_in", 0))
         queue_player = self.mass.players.get(queue_id)
         # work out output format/details
         output_format = await self._get_output_format(
@@ -565,8 +559,6 @@ class StreamsController(CoreController):
                 queue=queue,
                 start_queue_item=start_queue_item,
                 pcm_format=pcm_format,
-                seek_position=seek_position,
-                fade_in=fade_in,
             ),
             input_format=pcm_format,
             output_format=output_format,
@@ -700,17 +692,94 @@ class StreamsController(CoreController):
             self.mass.create_task(self.mass.player_queues.next(queue_id))
         return web.FileResponse(SILENCE_FILE)
 
+    async def serve_announcement_stream(self, request: web.Request) -> web.Response:
+        """Stream announcement audio to a player."""
+        self._log_request(request)
+        player_id = request.match_info["player_id"]
+        player = self.mass.player_queues.get(player_id)
+        if not player:
+            raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
+        if player_id not in self.announcements:
+            raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
+        announcement = self.announcements[player_id]
+        use_pre_announce = try_parse_bool(request.query.get("pre_announce"))
+
+        # work out output format/details
+        fmt = request.match_info.get("fmt", announcement.rsplit(".")[-1])
+        audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
+        # prepare request, add some DLNA/UPNP compatible headers
+        headers = {
+            **DEFAULT_STREAM_HEADERS,
+            "Content-Type": f"audio/{audio_format.output_format_str}",
+        }
+        resp = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers=headers,
+        )
+        await resp.prepare(request)
+
+        # return early if this is not a GET request
+        if request.method != "GET":
+            return resp
+
+        # all checks passed, start streaming!
+        self.logger.debug(
+            "Start serving audio stream for Announcement %s to %s",
+            announcement,
+            player.display_name,
+        )
+        extra_args = []
+        filter_params = ["loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5"]
+        if use_pre_announce:
+            extra_args += [
+                "-i",
+                ANNOUNCE_ALERT_FILE,
+                "-filter_complex",
+                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5",
+            ]
+            filter_params = []
+
+        async for chunk in get_ffmpeg_stream(
+            audio_input=announcement,
+            input_format=audio_format,
+            output_format=audio_format,
+            extra_args=extra_args,
+            filter_params=filter_params,
+        ):
+            try:
+                await resp.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                break
+
+        self.logger.debug(
+            "Finished serving audio stream for Announcement %s to %s",
+            announcement,
+            player.display_name,
+        )
+
+        return resp
+
     def get_command_url(self, player_or_queue_id: str, command: str) -> str:
         """Get the url for the special command stream."""
         return f"{self.base_url}/command/{player_or_queue_id}/{command}.mp3"
+
+    def get_announcement_url(
+        self,
+        player_id: str,
+        announcement_url: str,
+        use_pre_announce: bool = False,
+        content_type: ContentType = ContentType.MP3,
+    ) -> str:
+        """Get the url for the special announcement stream."""
+        self.announcements[player_id] = announcement_url
+        return f"{self.base_url}/announcement/{player_id}.{content_type.value}?pre_announce={use_pre_announce}"  # noqa: E501
 
     async def get_flow_stream(
         self,
         queue: PlayerQueue,
         start_queue_item: QueueItem,
         pcm_format: AudioFormat,
-        seek_position: int = 0,
-        fade_in: bool = False,
     ) -> AsyncGenerator[bytes, None]:
         """Get a flow stream of all tracks in the queue as raw PCM audio."""
         # ruff: noqa: PLR0915
@@ -735,10 +804,12 @@ class StreamsController(CoreController):
             # get (next) queue item to stream
             if queue_track is None:
                 queue_track = start_queue_item
-                queue_track.streamdetails = await get_stream_details(self.mass, queue_track)
+                if queue_track.streamdetails is None:
+                    # this should not happen, but just in case
+                    queue_track.streamdetails = await get_stream_details(
+                        self.mass, queue_item=queue_track
+                    )
             else:
-                seek_position = 0
-                fade_in = False
                 try:
                     queue_track = await self.mass.player_queues.preload_next_item(queue.queue_id)
                 except QueueEmpty:
@@ -760,7 +831,6 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            queue_track.streamdetails.seconds_skipped = seek_position
             buffer_size = int(pcm_sample_size * 2)  # 2 seconds
             if use_crossfade:
                 buffer_size += crossfade_size
@@ -771,8 +841,6 @@ class StreamsController(CoreController):
                 self.mass,
                 queue_track.streamdetails,
                 pcm_format=pcm_format,
-                seek_position=seek_position,
-                fade_in=fade_in,
                 # strip silence from begin/end if track is being crossfaded
                 strip_silence_begin=use_crossfade,
                 strip_silence_end=use_crossfade,
@@ -837,7 +905,8 @@ class StreamsController(CoreController):
             # this also accounts for crossfade and silence stripping
             queue_track.streamdetails.seconds_streamed = bytes_written / pcm_sample_size
             queue_track.streamdetails.duration = (
-                seek_position + queue_track.streamdetails.seconds_streamed
+                queue_track.streamdetails.seconds_skipped
+                or 0 + queue_track.streamdetails.seconds_streamed
             )
             total_bytes_written += bytes_written
             self.logger.debug(

@@ -56,6 +56,8 @@ class QueueItem(DataClassDictMixin):
         """Return MediaType for this QueueItem (for convenience purposes)."""
         if self.media_item:
             return self.media_item.media_type
+        if self.streamdetails:
+            return self.streamdetails.media_type
         return MediaType.UNKNOWN
 
     @classmethod

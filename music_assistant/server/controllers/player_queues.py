@@ -215,6 +215,9 @@ class PlayerQueuesController(CoreController):
     @api_command("players/queue/shuffle")
     def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the the queue."""
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         queue = self._queues[queue_id]
         if queue.shuffle_enabled == shuffle_enabled:
             return  # no change
@@ -243,6 +246,9 @@ class PlayerQueuesController(CoreController):
     @api_command("players/queue/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         queue = self._queues[queue_id]
         if queue.repeat_mode == repeat_mode:
             return  # no change
@@ -267,7 +273,7 @@ class PlayerQueuesController(CoreController):
         """
         # ruff: noqa: PLR0915,PLR0912
         queue = self._queues[queue_id]
-        if queue.announcement_in_progress:
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
             LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
 
@@ -434,6 +440,9 @@ class PlayerQueuesController(CoreController):
         - pos_shift: move item x positions up if negative value
         - pos_shift:  move item to top of queue as next item if 0.
         """
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         queue = self._queues[queue_id]
         item_index = self.index_by_id(queue_id, queue_item_id)
         if item_index <= queue.index_in_buffer:
@@ -458,6 +467,9 @@ class PlayerQueuesController(CoreController):
     @api_command("players/queue/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         if isinstance(item_id_or_index, str):
             item_index = self.index_by_id(queue_id, item_id_or_index)
         else:
@@ -475,6 +487,9 @@ class PlayerQueuesController(CoreController):
     @api_command("players/queue/clear")
     def clear(self, queue_id: str) -> None:
         """Clear all items in the queue."""
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         queue = self._queues[queue_id]
         queue.radio_source = []
         if queue.state != PlayerState.IDLE:
@@ -492,8 +507,8 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if self._queues[queue_id].announcement_in_progress:
-            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
         # simply forward the command to underlying player
         await self.mass.players.cmd_stop(queue_id)
@@ -505,8 +520,8 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if self._queues[queue_id].announcement_in_progress:
-            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
         if self._queues[queue_id].state == PlayerState.PAUSED:
             # simply forward the command to underlying player
@@ -520,8 +535,8 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if self._queues[queue_id].announcement_in_progress:
-            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
             return
         player = self.mass.players.get(queue_id, True)
         if PlayerFeature.PAUSE not in player.supported_features:
@@ -548,6 +563,9 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the queue to handle the command.
         """
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         current_index = self._queues[queue_id].current_index
         next_index = self._get_next_index(queue_id, current_index, True)
         if next_index is None:
@@ -560,6 +578,9 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the queue to handle the command.
         """
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         current_index = self._queues[queue_id].current_index
         if current_index is None:
             return
@@ -572,6 +593,9 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         - seconds: number of seconds to skip in track. Use negative value to skip back.
         """
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         await self.seek(queue_id, self._queues[queue_id].elapsed_time + seconds)
 
     @api_command("players/queue/seek")
@@ -581,6 +605,9 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
+        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         queue = self._queues[queue_id]
         assert queue.current_item, "No item loaded"
         assert queue.current_item.media_item.media_type == MediaType.TRACK
@@ -637,9 +664,6 @@ class PlayerQueuesController(CoreController):
     ) -> None:
         """Play item at index (or item_id) X in queue."""
         queue = self._queues[queue_id]
-        if queue.announcement_in_progress:
-            LOGGER.warning("Ignore queue command for %s because an announcement is in progress.")
-            return
         if isinstance(index, str):
             index = self.index_by_id(queue_id, index)
         queue_item = self.get_item(queue_id, index)
@@ -650,11 +674,13 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
         queue.flow_mode = False  # reset
+        # get streamdetails - do this here to catch unavailable items early
+        queue_item.streamdetails = await get_stream_details(
+            self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
+        )
         await self.mass.players.play_media(
             player_id=queue_id,
             queue_item=queue_item,
-            seek_position=int(seek_position),
-            fade_in=fade_in,
         )
 
     # Interaction with player
@@ -703,6 +729,9 @@ class PlayerQueuesController(CoreController):
         if player.player_id not in self._queues:
             # race condition
             return
+        if player.announcement_in_progress:
+            # do nothing while the announcement is in progress
+            return
         queue_id = player.player_id
         player = self.mass.players.get(queue_id)
         queue = self._queues[queue_id]
@@ -721,26 +750,28 @@ class PlayerQueuesController(CoreController):
         if queue.flow_mode:
             # flow mode active, calculate current item
             queue.current_index, queue.elapsed_time = self.__get_queue_stream_index(queue, player)
+            queue.elapsed_time_last_updated = time.time()
         else:
             # queue is active and player has one of our tracks loaded, update state
             if item_id := self._parse_player_current_item_id(queue_id, player.current_item_id):
                 queue.current_index = self.index_by_id(queue_id, item_id)
-            queue.elapsed_time = int(player.corrected_elapsed_time)
+            if player.state == PlayerState.PLAYING:
+                queue.elapsed_time = int(player.corrected_elapsed_time)
+                queue.elapsed_time_last_updated = player.elapsed_time_last_updated
 
         # only update these attributes if the queue is active
         # and has an item loaded so we are able to resume it
         queue.state = player.state
-        queue.elapsed_time_last_updated = time.time()
         queue.current_item = self.get_item(queue_id, queue.current_index)
         queue.next_item = self._get_next_item(queue_id)
         # correct elapsed time when seeking
         if (
             queue.current_item
             and queue.current_item.streamdetails
-            and queue.current_item.streamdetails.seconds_skipped
+            and queue.current_item.streamdetails.seek_position
             and not queue.flow_mode
         ):
-            queue.elapsed_time += queue.current_item.streamdetails.seconds_skipped
+            queue.elapsed_time += queue.current_item.streamdetails.seek_position
 
         # basic throttle: do not send state changed events if queue did not actually change
         prev_state = self._prev_states.get(queue_id, {})
@@ -972,6 +1003,9 @@ class PlayerQueuesController(CoreController):
             return
         if prev_state.get("state") != PlayerState.PLAYING:
             return
+        if (player := self.mass.players.get(queue.queue_id)) and player.announcement_in_progress:
+            LOGGER.warning("Ignore queue command: An announcement is in progress")
+            return
         current_item = self.get_item(queue.queue_id, queue.current_index)
         if not current_item:
             return  # guard, just in case something bad happened
@@ -985,6 +1019,11 @@ class PlayerQueuesController(CoreController):
         seconds_remaining = int(duration - player.corrected_elapsed_time)
 
         async def _enqueue_next(index: int, supports_enqueue: bool = False) -> None:
+            if (
+                player := self.mass.players.get(queue.queue_id)
+            ) and player.announcement_in_progress:
+                LOGGER.warning("Ignore queue command: An announcement is in progress")
+                return
             with suppress(QueueEmpty):
                 next_item = await self.preload_next_item(queue.queue_id, index)
                 if supports_enqueue:

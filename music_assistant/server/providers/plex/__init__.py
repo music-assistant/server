@@ -760,9 +760,6 @@ class PlexProvider(MusicProvider):
             data=plex_track,
         )
 
-        if audio_stream.loudness:
-            stream_details.loudness = audio_stream.loudness
-
         if media_type != ContentType.M4A:
             stream_details.direct = self._plex_server.url(media_part.key, True)
             if audio_stream.samplingRate:

@@ -32,6 +32,7 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
+    MediaType,
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -41,7 +42,11 @@ from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
+from music_assistant.server.helpers.audio import (
+    get_ffmpeg_stream,
+    get_media_stream,
+    get_player_filter_params,
+)
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -288,7 +293,7 @@ class AirplayStreamJob:
             command += "\n"
 
         def send_data():
-            with open(named_pipe, "w") as f:
+            with suppress(BrokenPipeError), open(named_pipe, "w") as f:
                 f.write(command)
 
         self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
@@ -336,8 +341,8 @@ class AirplayStreamJob:
                 continue
             if "lost packet out of backlog" in line:
                 lost_packets += 1
-                if lost_packets == 30:
-                    logger.warning("Packet loss detected, restart playback...")
+                if lost_packets == 50:
+                    logger.warning("High packet loss detected, restart playback...")
                     queue = self.mass.player_queues.get_active_queue(mass_player.player_id)
                     await self.mass.player_queues.resume(queue.queue_id)
                 else:
@@ -351,7 +356,7 @@ class AirplayStreamJob:
             "CLIRaop process stopped with errorcode %s",
             self._cliraop_proc.returncode,
         )
-        if (
+        if not airplay_player.active_stream or (
             airplay_player.active_stream
             and airplay_player.active_stream.active_remote_id == self.active_remote_id
         ):
@@ -607,19 +612,8 @@ class AirplayProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
             # should not happen, but just in case
@@ -638,7 +632,9 @@ class AirplayProvider(PlayerProvider):
             bit_depth=16,
             channels=2,
         )
-
+        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+            # stream announcement url directly
+            stream_job = None
         if queue_item.queue_item_id == "flow":
             # handle special case for UGP multi client stream
             stream_job = self.mass.streams.multi_client_jobs.get(queue_item.queue_id)
@@ -647,8 +643,6 @@ class AirplayProvider(PlayerProvider):
             stream_job = await self.mass.streams.create_multi_client_stream_job(
                 queue_item.queue_id,
                 queue_item,
-                seek_position=seek_position,
-                fade_in=fade_in,
                 pcm_bit_depth=16,
                 pcm_sample_rate=44100,
             )
@@ -675,6 +669,11 @@ class AirplayProvider(PlayerProvider):
                         player_id=airplay_player.player_id,
                         output_format=pcm_format,
                     )
+                elif queue_item.media_type == MediaType.ANNOUNCEMENT:
+                    # stream announcement url directly
+                    audio_iterator = get_media_stream(
+                        self.mass, queue_item.streamdetails, pcm_format=pcm_format
+                    )
                 else:
                     queue = self.mass.player_queues.get_active_queue(queue_item.queue_id)
                     audio_iterator = get_ffmpeg_stream(
@@ -682,8 +681,6 @@ class AirplayProvider(PlayerProvider):
                             queue,
                             start_queue_item=queue_item,
                             pcm_format=pcm_format,
-                            seek_position=seek_position,
-                            fade_in=fade_in,
                         ),
                         input_format=pcm_format,
                         output_format=pcm_format,

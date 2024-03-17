@@ -289,3 +289,10 @@ def is_valid_uuid(uuid_to_test: str) -> bool:
     except ValueError:
         return False
     return str(uuid_obj) == uuid_to_test
+
+
+class classproperty(property):  # noqa: N801
+    """Implement class property for python3.11+."""
+
+    def __get__(self, cls, owner):  # noqa: D105
+        return classmethod(self.fget).__get__(None, owner)()
