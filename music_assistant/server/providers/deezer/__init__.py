@@ -615,7 +615,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         if hasattr(track, "artist"):
             artist = ItemMapping(
                 media_type=MediaType.ARTIST,
-                item_id=str(track.artist.id),
+                item_id=str(getattr(track.artist, 'id', track.artist.name)),
                 provider=self.instance_id,
                 name=track.artist.name,
             )
