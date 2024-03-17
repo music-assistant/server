@@ -1201,8 +1201,8 @@ class PlayerQueuesController(CoreController):
                     queue_index += 1
                 else:
                     # no more seconds left to divide, this is our track
-                    # account for any seeking by adding the skipped seconds
-                    track_sec_skipped = queue_track.streamdetails.seconds_skipped or 0
+                    # account for any seeking by adding the skipped/seeked seconds
+                    track_sec_skipped = queue_track.streamdetails.seek_position
                     track_time = elapsed_time_queue + track_sec_skipped - total_time
                     break
         return queue_index, track_time

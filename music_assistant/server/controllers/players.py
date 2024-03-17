@@ -1134,7 +1134,7 @@ class PlayerController(CoreController):
         prev_item_id = player.current_item_id
         # stop player if its currently playing
         if prev_state in (PlayerState.PLAYING, PlayerState.PAUSED):
-            self.logger.info(
+            self.logger.debug(
                 "Announcement to player %s - stop existing content (%s)...",
                 player.display_name,
                 prev_item_id,
@@ -1146,14 +1146,14 @@ class PlayerController(CoreController):
         # increase volume a bit
         temp_volume = int(min(75, prev_volume * 1.5))
         if temp_volume > prev_volume:
-            self.logger.info(
+            self.logger.debug(
                 "Announcement to player %s - setting temporary volume (%s)...",
                 player.display_name,
                 temp_volume,
             )
             await self.cmd_volume_set(player.player_id, temp_volume)
             # play the announcement
-            self.logger.info(
+            self.logger.debug(
                 "Announcement to player %s - playing the announcement on the player...",
                 player.display_name,
             )
@@ -1161,14 +1161,14 @@ class PlayerController(CoreController):
         # wait for the player to play
         with suppress(TimeoutError):
             await self.wait_for_state(player, PlayerState.PLAYING, 5)
-        self.logger.info(
+        self.logger.debug(
             "Announcement to player %s - waiting on the player to stop playing...",
             player.display_name,
         )
         # wait for the player to stop playing
         with suppress(TimeoutError):
             await self.wait_for_state(player, PlayerState.IDLE, 30)
-        self.logger.info(
+        self.logger.debug(
             "Announcement to player %s - restore previous state...", player.display_name
         )
         # restore volume
@@ -1183,7 +1183,7 @@ class PlayerController(CoreController):
             await self.mass.player_queues.resume(queue.queue_id, True)
         elif prev_state == PlayerState.PLAYING:
             # player was playing something else - try to resume that here
-            self.logger.info("Can not resume %s on %s", prev_item_id, player.display_name)
+            self.logger.warning("Can not resume %s on %s", prev_item_id, player.display_name)
             # TODO !!
 
     async def wait_for_state(

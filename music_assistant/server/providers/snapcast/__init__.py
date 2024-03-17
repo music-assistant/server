@@ -20,6 +20,7 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
+    MediaType,
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -28,6 +29,7 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.server.helpers.audio import get_media_stream
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -274,8 +276,13 @@ class SnapCastProvider(PlayerProvider):
             bit_depth=16,
             channels=2,
         )
-        # handle special case for UGP multi client stream
-        if stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id):
+        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+            # stream announcement url directly
+            audio_iterator = get_media_stream(
+                self.mass, queue_item.streamdetails, pcm_format=pcm_format
+            )
+        elif stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id):
+            # handle special case for UGP multi client stream
             stream_job.expected_players.add(player_id)
             audio_iterator = stream_job.subscribe(
                 player_id=player_id,

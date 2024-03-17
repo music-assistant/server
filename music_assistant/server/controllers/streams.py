@@ -49,7 +49,6 @@ from music_assistant.server.helpers.audio import (
     get_ffmpeg_stream,
     get_media_stream,
     get_player_filter_params,
-    get_stream_details,
 )
 from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
@@ -449,9 +448,8 @@ class StreamsController(CoreController):
         queue_item = self.mass.player_queues.get_item(queue_id, queue_item_id)
         if not queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {queue_item_id}")
-        if queue_item.streamdetails is None:
-            # this should not happen, but just in case
-            queue_item.streamdetails = await get_stream_details(self.mass, queue_item=queue_item)
+        if not queue_item.streamdetails:
+            raise web.HTTPNotFound(reason=f"No streamdetails for Queue item: {queue_item_id}")
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
@@ -804,16 +802,16 @@ class StreamsController(CoreController):
             # get (next) queue item to stream
             if queue_track is None:
                 queue_track = start_queue_item
-                if queue_track.streamdetails is None:
-                    # this should not happen, but just in case
-                    queue_track.streamdetails = await get_stream_details(
-                        self.mass, queue_item=queue_track
-                    )
             else:
                 try:
                     queue_track = await self.mass.player_queues.preload_next_item(queue.queue_id)
                 except QueueEmpty:
                     break
+
+            if queue_track.streamdetails is None:
+                raise RuntimeError(
+                    "No Streamdetails known for queue item %s", queue_track.queue_item_id
+                )
 
             self.logger.debug(
                 "Start Streaming queue track: %s (%s) for queue %s",

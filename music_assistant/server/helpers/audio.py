@@ -249,7 +249,9 @@ async def get_stream_details(
     if queue_item.streamdetails and (time() < queue_item.streamdetails.expires):
         LOGGER.debug(f"Using (pre)cached streamdetails from queue_item for {queue_item.uri}")
         # we already have (fresh) streamdetails stored on the queueitem, use these.
-        streamdetails = queue_item.streamdetails
+        # this happens for example while seeking in a track.
+        # we create a copy (using to/from dict) to ensure the one-time values are cleared
+        streamdetails = StreamDetails.from_dict(queue_item.streamdetails.to_dict())
     else:
         # always request the full item as there might be other qualities available
         full_item = await mass.music.get_item_by_uri(queue_item.uri)
@@ -293,10 +295,8 @@ async def get_stream_details(
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
-    if seek_position is not None:
-        streamdetails.seek_position = seek_position
-    if fade_in is not None:
-        streamdetails.fade_in = fade_in
+    streamdetails.seek_position = seek_position
+    streamdetails.fade_in = fade_in
     # handle volume normalization details
     if not streamdetails.loudness:
         streamdetails.loudness = await mass.music.get_track_loudness(
@@ -392,7 +392,6 @@ async def get_media_stream(  # noqa: PLR0915
     """
     logger = LOGGER.getChild("media_stream")
     bytes_sent = 0
-    streamdetails.seconds_streamed = 0
     streamdetails.seconds_skipped = streamdetails.seek_position
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     if is_radio or streamdetails.seek_position:
@@ -512,8 +511,6 @@ async def get_media_stream(  # noqa: PLR0915
     finally:
         seconds_streamed = bytes_sent / pcm_sample_size if bytes_sent else 0
         streamdetails.seconds_streamed = seconds_streamed
-        streamdetails.seek_position = 0
-        streamdetails.fade_in = False
         if finished:
             logger.debug(
                 "finished stream for: %s (%s seconds streamed)",
