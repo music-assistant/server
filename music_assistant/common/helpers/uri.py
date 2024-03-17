@@ -24,7 +24,7 @@ def parse_uri(uri: str) -> tuple[MediaType, str, str]:
             provider_instance_id_or_domain = "url"
             media_type = MediaType.UNKNOWN
             item_id = uri
-        elif "://" in uri:
+        elif "://" in uri and len(uri.split("/")) >= 4:
             # music assistant-style uri
             # provider://media_type/item_id
             provider_instance_id_or_domain = uri.split("://")[0]

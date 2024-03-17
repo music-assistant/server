@@ -32,6 +32,7 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
+    MediaType,
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -41,7 +42,11 @@ from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
+from music_assistant.server.helpers.audio import (
+    get_ffmpeg_stream,
+    get_media_stream,
+    get_player_filter_params,
+)
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -256,25 +261,19 @@ class AirplayStreamJob:
         self._log_reader_task = asyncio.create_task(self._log_watcher())
         self._audio_reader_task = asyncio.create_task(self._audio_reader())
 
-    async def stop(self, force=False):
+    async def stop(self):
         """Stop playback and cleanup."""
         if not self.running:
             return
-        await self.send_cli_command("ACTION=STOP")
-        self._stop_requested = True
-        if not force:
-            return
-        # stop background tasks
+        # always stop the audio feeder
         if self._audio_reader_task and not self._audio_reader_task.done():
             with suppress(asyncio.CancelledError):
                 self._audio_reader_task.cancel()
                 await self._audio_reader_task
-        if self._log_reader_task and not self._log_reader_task.done():
-            with suppress(asyncio.CancelledError):
-                self._log_reader_task.cancel()
-                await self._log_reader_task
+        await self.send_cli_command("ACTION=STOP")
+        self._stop_requested = True
         with suppress(TimeoutError):
-            await asyncio.wait_for(self._cliraop_proc.communicate(), 5)
+            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
         if self._cliraop_proc.returncode is None:
             self._cliraop_proc.kill()
 
@@ -288,7 +287,7 @@ class AirplayStreamJob:
             command += "\n"
 
         def send_data():
-            with open(named_pipe, "w") as f:
+            with suppress(BrokenPipeError), open(named_pipe, "w") as f:
                 f.write(command)
 
         self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
@@ -336,8 +335,8 @@ class AirplayStreamJob:
                 continue
             if "lost packet out of backlog" in line:
                 lost_packets += 1
-                if lost_packets == 30:
-                    logger.warning("Packet loss detected, restart playback...")
+                if lost_packets == 50:
+                    logger.warning("High packet loss detected, restart playback...")
                     queue = self.mass.player_queues.get_active_queue(mass_player.player_id)
                     await self.mass.player_queues.resume(queue.queue_id)
                 else:
@@ -351,7 +350,7 @@ class AirplayStreamJob:
             "CLIRaop process stopped with errorcode %s",
             self._cliraop_proc.returncode,
         )
-        if (
+        if not airplay_player.active_stream or (
             airplay_player.active_stream
             and airplay_player.active_stream.active_remote_id == self.active_remote_id
         ):
@@ -566,18 +565,11 @@ class AirplayProvider(PlayerProvider):
 
         - player_id: player_id of the player to handle the command.
         """
-
-        async def stop_player(airplay_player: AirPlayPlayer) -> None:
-            if airplay_player.active_stream:
-                await airplay_player.active_stream.stop(force=False)
-            mass_player = self.mass.players.get(airplay_player.player_id)
-            mass_player.state = PlayerState.IDLE
-            self.mass.players.update(airplay_player.player_id)
-
         # forward command to player and any connected sync members
         async with asyncio.TaskGroup() as tg:
             for airplay_player in self._get_sync_clients(player_id):
-                tg.create_task(stop_player(airplay_player))
+                if airplay_player.active_stream:
+                    tg.create_task(airplay_player.active_stream.stop())
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
@@ -607,19 +599,8 @@ class AirplayProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
             # should not happen, but just in case
@@ -631,15 +612,17 @@ class AirplayProvider(PlayerProvider):
         # always stop existing stream first
         for airplay_player in self._get_sync_clients(player_id):
             if airplay_player.active_stream and airplay_player.active_stream.running:
-                await airplay_player.active_stream.stop(force=True)
+                await airplay_player.active_stream.stop()
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             sample_rate=44100,
             bit_depth=16,
             channels=2,
         )
-
-        if queue_item.queue_item_id == "flow":
+        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+            # stream announcement url directly
+            stream_job = None
+        elif stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id):
             # handle special case for UGP multi client stream
             stream_job = self.mass.streams.multi_client_jobs.get(queue_item.queue_id)
         elif player.group_childs:
@@ -647,8 +630,6 @@ class AirplayProvider(PlayerProvider):
             stream_job = await self.mass.streams.create_multi_client_stream_job(
                 queue_item.queue_id,
                 queue_item,
-                seek_position=seek_position,
-                fade_in=fade_in,
                 pcm_bit_depth=16,
                 pcm_sample_rate=44100,
             )
@@ -675,6 +656,11 @@ class AirplayProvider(PlayerProvider):
                         player_id=airplay_player.player_id,
                         output_format=pcm_format,
                     )
+                elif queue_item.media_type == MediaType.ANNOUNCEMENT:
+                    # stream announcement url directly
+                    audio_iterator = get_media_stream(
+                        self.mass, queue_item.streamdetails, pcm_format=pcm_format
+                    )
                 else:
                     queue = self.mass.player_queues.get_active_queue(queue_item.queue_id)
                     audio_iterator = get_ffmpeg_stream(
@@ -682,8 +668,6 @@ class AirplayProvider(PlayerProvider):
                             queue,
                             start_queue_item=queue_item,
                             pcm_format=pcm_format,
-                            seek_position=seek_position,
-                            fade_in=fade_in,
                         ),
                         input_format=pcm_format,
                         output_format=pcm_format,

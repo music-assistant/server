@@ -36,7 +36,6 @@ class PlayerQueue(DataClassDictMixin):
     current_item: QueueItem | None = None
     next_item: QueueItem | None = None
     radio_source: list[MediaItemType] = field(default_factory=list)
-    announcement_in_progress: bool = False
     flow_mode: bool = False
     # flow_mode_start_index: index of the first item of the flow stream
     flow_mode_start_index: int = 0

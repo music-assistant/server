@@ -53,10 +53,11 @@ class StreamDetails(DataClassDictMixin):
     can_seek: bool = True
 
     # the fields below will be set/controlled by the streamcontroller
+    seek_position: int = 0
+    fade_in: bool = False
     loudness: LoudnessMeasurement | None = None
     queue_id: str | None = None
     seconds_streamed: float | None = None
-    seconds_skipped: float | None = None
     target_loudness: float | None = None
 
     def __str__(self) -> str:
@@ -67,7 +68,8 @@ class StreamDetails(DataClassDictMixin):
         """Execute action(s) on serialization."""
         d.pop("queue_id", None)
         d.pop("seconds_streamed", None)
-        d.pop("seconds_skipped", None)
+        d.pop("seek_position", None)
+        d.pop("fade_in", None)
         d.pop("target_loudness", None)
         return d
 

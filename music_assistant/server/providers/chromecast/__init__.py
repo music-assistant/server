@@ -238,19 +238,8 @@ class ChromecastProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         castplayer = self.castplayers[player_id]
         use_flow_mode = await self.mass.config.get_player_config_value(
             player_id, CONF_FLOW_MODE
@@ -259,8 +248,6 @@ class ChromecastProvider(PlayerProvider):
             player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
-            seek_position=seek_position,
-            fade_in=fade_in,
             flow_mode=use_flow_mode,
         )
         queuedata = {

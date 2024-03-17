@@ -234,17 +234,23 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
         analyze_jobs.discard(streamdetails.uri)
 
 
-async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> StreamDetails:
+async def get_stream_details(
+    mass: MusicAssistant,
+    queue_item: QueueItem,
+    seek_position: int = 0,
+    fade_in: bool = False,
+) -> StreamDetails:
     """Get streamdetails for the given QueueItem.
 
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
         param media_item: The QueueItem for which to request the streamdetails for.
     """
-    if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
-        LOGGER.debug(f"Using cached streamdetails from queue_item for {queue_item.uri}")
+    if queue_item.streamdetails and (time() < queue_item.streamdetails.expires):
+        LOGGER.debug(f"Using (pre)cached streamdetails from queue_item for {queue_item.uri}")
         # we already have (fresh) streamdetails stored on the queueitem, use these.
-        # make a copy to prevent we're altering an existing object and introduce race conditions.
+        # this happens for example while seeking in a track.
+        # we create a copy (using to/from dict) to ensure the one-time values are cleared
         streamdetails = StreamDetails.from_dict(queue_item.streamdetails.to_dict())
     else:
         # always request the full item as there might be other qualities available
@@ -288,12 +294,17 @@ async def get_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Str
 
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
+    # handle skip/fade_in details
+    streamdetails.seek_position = seek_position
+    streamdetails.fade_in = fade_in
     # handle volume normalization details
     if not streamdetails.loudness:
         streamdetails.loudness = await mass.music.get_track_loudness(
             streamdetails.item_id, streamdetails.provider
         )
-    if (
+    if streamdetails.target_loudness is not None:
+        streamdetails.target_loudness = streamdetails.target_loudness
+    elif (
         player_settings := await mass.config.get_player_config(streamdetails.queue_id)
     ) and player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
@@ -370,8 +381,6 @@ async def get_media_stream(  # noqa: PLR0915
     mass: MusicAssistant,
     streamdetails: StreamDetails,
     pcm_format: AudioFormat,
-    seek_position: int = 0,
-    fade_in: bool = False,
     strip_silence_begin: bool = False,
     strip_silence_end: bool = False,
 ) -> AsyncGenerator[tuple[bool, bytes], None]:
@@ -383,9 +392,9 @@ async def get_media_stream(  # noqa: PLR0915
     """
     logger = LOGGER.getChild("media_stream")
     bytes_sent = 0
-    streamdetails.seconds_skipped = seek_position
+    streamdetails.seconds_skipped = streamdetails.seek_position
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
-    if is_radio or seek_position:
+    if is_radio or streamdetails.seek_position:
         strip_silence_begin = False
     # chunk size = 2 seconds of pcm audio
     pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
@@ -397,7 +406,9 @@ async def get_media_stream(  # noqa: PLR0915
     # collect all arguments for ffmpeg
     filter_params = []
     extra_args = []
-    seek_pos = seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
+    seek_pos = (
+        streamdetails.seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
+    )
     if seek_pos:
         # only use ffmpeg seeking if the provider stream does not support seeking
         extra_args += ["-ss", str(seek_pos)]
@@ -411,7 +422,7 @@ async def get_media_stream(  # noqa: PLR0915
             filter_rule += f":measured_thresh={streamdetails.loudness.threshold}"
         filter_rule += ":print_format=json"
         filter_params.append(filter_rule)
-    if fade_in:
+    if streamdetails.fade_in:
         filter_params.append("afade=type=in:start_time=0:duration=3")
     ffmpeg_args = _get_ffmpeg_args(
         input_format=streamdetails.audio_format,
@@ -434,7 +445,7 @@ async def get_media_stream(  # noqa: PLR0915
         """Task that grabs the source audio and feeds it to ffmpeg."""
         logger.log(VERBOSE_LOG_LEVEL, "writer started for %s", streamdetails.uri)
         music_prov = mass.get_provider(streamdetails.provider)
-        seek_pos = seek_position if streamdetails.can_seek else 0
+        seek_pos = streamdetails.seek_position if streamdetails.can_seek else 0
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
@@ -507,7 +518,7 @@ async def get_media_stream(  # noqa: PLR0915
                 seconds_streamed,
             )
             # store accurate duration
-            streamdetails.duration = seek_position + seconds_streamed
+            streamdetails.duration = streamdetails.seek_position + seconds_streamed
         else:
             logger.debug(
                 "stream aborted for %s (%s seconds streamed)",

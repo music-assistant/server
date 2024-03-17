@@ -104,6 +104,9 @@ class Player(DataClassDictMixin):
     # and pass along freely
     extra_data: dict[str, Any] = field(default_factory=dict)
 
+    # announcement_in_progress boolean to indicate there's an announcement in progress.
+    announcement_in_progress: bool = False
+
     @property
     def corrected_elapsed_time(self) -> float:
         """Return the corrected/realtime elapsed time."""

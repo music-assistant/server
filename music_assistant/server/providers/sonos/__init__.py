@@ -17,6 +17,7 @@ import soco.config as soco_config
 from requests.exceptions import RequestException
 from soco import events_asyncio, zonegroupstate
 from soco.discovery import discover
+from sonos_websocket.exception import SonosWebsocketError
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
@@ -54,6 +55,7 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE_NEXT,
     PlayerFeature.PAUSE,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
 )
 
 CONF_NETWORK_SCAN = "network_scan"
@@ -337,25 +339,12 @@ class SonosPlayerProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         url = await self.mass.streams.resolve_stream_url(
             player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
-            seek_position=seek_position,
-            fade_in=fade_in,
         )
         sonos_player = self.sonosplayers[player_id]
         mass_player = self.mass.players.get(player_id)
@@ -409,6 +398,32 @@ class SonosPlayerProvider(PlayerProvider):
             await asyncio.to_thread(set_crossfade)
 
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
+
+    async def play_announcement(
+        self, player_id: str, announcement_url: str, use_pre_announce: bool = False
+    ) -> None:
+        """Handle (provider native) playback of an announcement on given player."""
+        if use_pre_announce:
+            announcement_url = self.mass.streams.get_announcement_url(
+                player_id, announcement_url, True
+            )
+        sonos_player = self.sonosplayers[player_id]
+        mass_player = self.mass.players.get(player_id)
+        temp_volume = int(min(75, mass_player.volume_level * 1.5))
+        self.logger.debug(
+            "Playing announcement %s using websocket audioclip on %s",
+            announcement_url,
+            sonos_player.zone_name,
+        )
+        try:
+            response, _ = await sonos_player.websocket.play_clip(
+                announcement_url,
+                volume=temp_volume,
+            )
+        except SonosWebsocketError as exc:
+            raise PlayerCommandFailed(f"Error when calling Sonos websocket: {exc}") from exc
+        if response["success"]:
+            return
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.
