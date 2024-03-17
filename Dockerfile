@@ -1,13 +1,14 @@
 # syntax=docker/dockerfile:1
 ARG TARGETPLATFORM
-ARG PYTHON_VERSION="3.11"
+ARG PYTHON_VERSION="3.12"
+ARG DEBIAN_VERSION="bookworm"
 
 #####################################################################
 #                                                                   #
 # Build Wheels                                                      #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-slim as wheels-builder
+FROM python:${PYTHON_VERSION}-{DEBIAN_VERSION}-slim as wheels-builder
 ARG TARGETPLATFORM
 
 # Install buildtime packages
@@ -36,7 +37,7 @@ RUN set -x \
 # Final Image                                                       #
 #                                                                   #
 #####################################################################
-FROM python:${PYTHON_VERSION}-slim AS final-build
+FROM python:${PYTHON_VERSION}-{DEBIAN_VERSION}-slim AS final-build
 WORKDIR /app
 
 # Required to persist build arg
@@ -44,6 +45,8 @@ ARG MASS_VERSION
 ARG TARGETPLATFORM
 
 RUN set -x \
+    # add backports repo
+    && sh -c 'echo "deb http://deb.debian.org/debian {DEBIAN_VERSION}-backports main" >> /etc/apt/sources.list' \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -58,6 +61,8 @@ RUN set -x \
         cifs-utils \
         libnfs-utils \
         libjemalloc2 \
+    # install snapcast server 0.27 from backports
+    && apt-get install -y --no-install-recommends -t {DEBIAN_VERSION}-backports snapserver \
     # cleanup
     && rm -rf /tmp/* \
     && rm -rf /var/lib/apt/lists/*
