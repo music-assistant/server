@@ -241,23 +241,8 @@ class SnapCastProvider(PlayerProvider):
         await self._get_snapgroup(player_id).set_stream("default")
         self._handle_update()
 
-    async def play_media(
-        self,
-        player_id: str,
-        queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
-    ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+    async def play_media(self, player_id: str, queue_item: QueueItem) -> None:
+        """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
             msg = "A synced player cannot receive play commands directly"
@@ -293,8 +278,6 @@ class SnapCastProvider(PlayerProvider):
                 queue,
                 start_queue_item=queue_item,
                 pcm_format=pcm_format,
-                seek_position=seek_position,
-                fade_in=fade_in,
             )
 
         async def _streamer() -> None:
