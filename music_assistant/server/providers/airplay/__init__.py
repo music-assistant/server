@@ -262,25 +262,34 @@ class AirplayStreamJob:
         self._log_reader_task = asyncio.create_task(self._log_watcher())
         self._audio_reader_task = asyncio.create_task(self._audio_reader())
 
-    async def stop(self):
+    async def stop(self, wait: bool = True):
         """Stop playback and cleanup."""
         if not self.running:
             return
-        # always stop the audio feeder
-        if self._audio_reader_task and not self._audio_reader_task.done():
-            with suppress(asyncio.CancelledError):
-                self._audio_reader_task.cancel()
-                await self._audio_reader_task
-        await self.send_cli_command("ACTION=STOP")
         self._stop_requested = True
-        with suppress(TimeoutError):
-            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
-        if self._cliraop_proc.returncode is None:
-            self._cliraop_proc.kill()
+        # send stop with cli command
+        await self.send_cli_command("ACTION=STOP")
+
+        async def wait_for_stop() -> None:
+            # always stop the audio feeder
+            if self._audio_reader_task and not self._audio_reader_task.done():
+                with suppress(asyncio.CancelledError):
+                    self._audio_reader_task.cancel()
+            # make sure stdin is drained (otherwise we'll deadlock)
+            if self._cliraop_proc and self._cliraop_proc.returncode is None:
+                if self._cliraop_proc.stdin.can_write_eof():
+                    self._cliraop_proc.stdin.write_eof()
+                with suppress(BrokenPipeError):
+                    await self._cliraop_proc.stdin.drain()
+            await asyncio.wait_for(self._cliraop_proc.wait(), 30)
+
+        task = self.mass.create_task(wait_for_stop())
+        if wait:
+            await task
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""
-        if not self.running:
+        if not (self._cliraop_proc and self._cliraop_proc.returncode is None):
             return
 
         named_pipe = f"/tmp/fifo-{self.active_remote_id}"  # noqa: S108
@@ -299,7 +308,6 @@ class AirplayStreamJob:
         airplay_player = self.airplay_player
         mass_player = self.mass.players.get(airplay_player.player_id)
         logger = airplay_player.logger
-        airplay_player.logger.debug("Starting log watcher task...")
         lost_packets = 0
         async for line in self._cliraop_proc.stderr:
             line = line.decode().strip()  # noqa: PLW2901
@@ -321,11 +329,6 @@ class AirplayStreamJob:
                 mass_player.state = PlayerState.PLAYING
                 self.mass.players.update(airplay_player.player_id)
                 continue
-            if "Stopped at" in line:
-                logger.debug("raop streaming stopped")
-                mass_player.state = PlayerState.IDLE
-                self.mass.players.update(airplay_player.player_id)
-                continue
             if "restarting w/o pause" in line:
                 # streaming has started
                 logger.debug("raop streaming started")
@@ -337,9 +340,9 @@ class AirplayStreamJob:
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 50:
-                    logger.warning("High packet loss detected, restart playback...")
+                    logger.warning("High packet loss detected, stopping playback...")
                     queue = self.mass.player_queues.get_active_queue(mass_player.player_id)
-                    await self.mass.player_queues.resume(queue.queue_id)
+                    await self.mass.player_queues.stop(queue.queue_id)
                 else:
                     logger.debug(line)
                 continue
@@ -351,10 +354,7 @@ class AirplayStreamJob:
             "CLIRaop process stopped with errorcode %s",
             self._cliraop_proc.returncode,
         )
-        if not airplay_player.active_stream or (
-            airplay_player.active_stream
-            and airplay_player.active_stream.active_remote_id == self.active_remote_id
-        ):
+        if airplay_player.active_stream == self:
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(airplay_player.player_id)
 
@@ -378,6 +378,8 @@ class AirplayStreamJob:
                 await self._cliraop_proc.stdin.drain()
             except (BrokenPipeError, ConnectionResetError):
                 break
+            if not self.running:
+                return
             # send metadata to player(s) if needed
             # NOTE: this must all be done in separate tasks to not disturb audio
             now = time.time()
@@ -407,6 +409,8 @@ class AirplayStreamJob:
 
     async def _send_metadata(self, queue: PlayerQueue) -> None:
         """Send metadata to player (and connected sync childs)."""
+        if not self.running:
+            return
         if not queue or not queue.current_item:
             return
         duration = min(queue.current_item.duration or 0, 3600)
@@ -445,6 +449,8 @@ class AirplayStreamJob:
 
     async def _send_progress(self, queue: PlayerQueue) -> None:
         """Send progress report to player (and connected sync childs)."""
+        if not self.running:
+            return
         if not queue or not queue.current_item:
             return
         progress = int(queue.corrected_elapsed_time)
@@ -613,7 +619,7 @@ class AirplayProvider(PlayerProvider):
         # always stop existing stream first
         for airplay_player in self._get_sync_clients(player_id):
             if airplay_player.active_stream and airplay_player.active_stream.running:
-                await airplay_player.active_stream.stop()
+                await airplay_player.active_stream.stop(wait=False)
         pcm_format = AudioFormat(
             content_type=ContentType.PCM_S16LE,
             sample_rate=44100,
