@@ -274,7 +274,7 @@ class StreamsController(CoreController):
         """Return all Config Entries for this core module (if any)."""
         default_ip = await get_ip()
         all_ips = await get_ips()
-        default_port = await select_free_port(8096, 9200)
+        default_port = await select_free_port(8097, 9200)
         return (
             ConfigEntry(
                 key=CONF_BIND_PORT,
