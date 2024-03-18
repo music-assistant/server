@@ -49,6 +49,7 @@ from music_assistant.server.helpers.audio import (
 )
 from music_assistant.server.helpers.process import check_output
 from music_assistant.server.models.player_provider import PlayerProvider
+from music_assistant.server.providers.ugp import UGP_PREFIX
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -622,9 +623,13 @@ class AirplayProvider(PlayerProvider):
         if queue_item.media_type == MediaType.ANNOUNCEMENT:
             # stream announcement url directly
             stream_job = None
-        elif stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id):
+        elif (
+            queue_item.queue_id.startswith(UGP_PREFIX)
+            and (stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id))
+            and stream_job.pending
+        ):
             # handle special case for UGP multi client stream
-            stream_job = self.mass.streams.multi_client_jobs.get(queue_item.queue_id)
+            pass
         elif player.group_childs:
             # create a new multi client flow stream
             stream_job = await self.mass.streams.create_multi_client_stream_job(

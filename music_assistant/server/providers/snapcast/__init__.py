@@ -31,6 +31,7 @@ from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.server.helpers.audio import get_media_stream
 from music_assistant.server.models.player_provider import PlayerProvider
+from music_assistant.server.providers.ugp import UGP_PREFIX
 
 if TYPE_CHECKING:
     from snapcast.control.group import Snapgroup
@@ -266,8 +267,13 @@ class SnapCastProvider(PlayerProvider):
             audio_iterator = get_media_stream(
                 self.mass, queue_item.streamdetails, pcm_format=pcm_format
             )
-        elif stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id):
+        elif (
+            queue_item.queue_id.startswith(UGP_PREFIX)
+            and (stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id))
+            and stream_job.pending
+        ):
             # handle special case for UGP multi client stream
+            stream_job = self.mass.streams.multi_client_jobs.get(queue_item.queue_id)
             stream_job.expected_players.add(player_id)
             audio_iterator = stream_job.subscribe(
                 player_id=player_id,
