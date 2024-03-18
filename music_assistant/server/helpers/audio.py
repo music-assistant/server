@@ -729,13 +729,6 @@ async def get_ffmpeg_stream(
     """
     logger = LOGGER.getChild("media_stream")
     use_stdin = not isinstance(audio_input, str)
-    if input_format == output_format and not filter_params and not chunk_size and use_stdin:
-        # edge case: input and output exactly the same, we can bypass ffmpeg
-        # return the raw input stream, no actions needed here
-        async for chunk in audio_input:
-            yield chunk
-        return
-
     ffmpeg_args = _get_ffmpeg_args(
         input_format=input_format,
         output_format=output_format,

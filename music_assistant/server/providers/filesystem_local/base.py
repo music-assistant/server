@@ -340,7 +340,7 @@ class FileSystemProviderBase(MusicProvider):
                 # continue if the item did not change (checksum still the same)
                 if item.checksum == prev_checksums.get(item.path):
                     continue
-
+                self.logger.debug("Processing: %s", item.path)
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)

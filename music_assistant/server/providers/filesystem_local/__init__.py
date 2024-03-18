@@ -116,8 +116,6 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self.base_path, path)
-        rel_path = get_relative_path(self.base_path, path)
-        self.logger.debug("Processing: %s", rel_path)
         entries = await asyncio.to_thread(os.scandir, abs_path)
         for entry in entries:
             if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):

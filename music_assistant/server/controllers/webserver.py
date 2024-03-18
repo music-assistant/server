@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Final
 from aiohttp import WSMsgType, web
 from music_assistant_frontend import where as locate_frontend
 
-from music_assistant.common.helpers.util import get_ip, select_free_port
+from music_assistant.common.helpers.util import get_ip
 from music_assistant.common.models.api import (
     ChunkedResultMessage,
     CommandMessage,
@@ -102,8 +102,7 @@ class WebserverController(CoreController):
         # HA supervisor not present: user is responsible for securing the webserver
         # we give the tools to do so by presenting config options
         all_ips = await get_ips()
-        default_port = await select_free_port(8095, 9200)
-        default_base_url = f"http://{default_publish_ip}:{default_port}"
+        default_base_url = f"http://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
         return (
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -117,7 +116,7 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
-                default_value=default_port,
+                default_value=DEFAULT_SERVER_PORT,
                 label="TCP Port",
                 description="The TCP port to run the webserver.",
             ),
