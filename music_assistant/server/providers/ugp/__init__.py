@@ -160,19 +160,8 @@ class UniversalGroupProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
@@ -182,8 +171,6 @@ class UniversalGroupProvider(PlayerProvider):
         stream_job = await self.mass.streams.create_multi_client_stream_job(
             player_id,
             start_queue_item=queue_item,
-            seek_position=seek_position,
-            fade_in=fade_in,
         )
         # create a fake queue item to forward to downstream play_media commands
         ugp_queue_item = QueueItem(
@@ -198,7 +185,7 @@ class UniversalGroupProvider(PlayerProvider):
                     member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
                     if member is None:
                         continue
-                tg.create_task(player_prov.play_media(member.player_id, ugp_queue_item, 0, False))
+                tg.create_task(player_prov.play_media(member.player_id, ugp_queue_item))
         stream_job.start()
 
     async def poll_player(self, player_id: str) -> None:
