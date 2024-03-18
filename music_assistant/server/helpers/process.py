@@ -133,11 +133,12 @@ class AsyncProcess:
         if self.returncode is not None:
             return self.returncode
         # make sure the process is cleaned up
+        self._proc.terminate()
         try:
             async with asyncio.timeout(10):
                 await self.communicate()
         except (TimeoutError, asyncio.CancelledError):
-            self._proc.terminate()
+            self._proc.kill()
         return await self.wait()
 
     async def wait(self) -> int:
@@ -151,14 +152,10 @@ class AsyncProcess:
         stdout, stderr = await self._proc.communicate(input_data)
         return (stdout, stderr)
 
-    async def read_stderr(self, n: int = -1) -> bytes:
-        """Read up to n bytes from the stderr stream.
-
-        If n is positive, this function try to read n bytes,
-        and may return less or equal bytes than requested, but at least one byte.
-        If EOF was received before any byte is read, this function returns empty byte object.
-        """
-        return await self._proc.stderr.read(n)
+    async def read_stderr(self) -> AsyncGenerator[bytes, None]:
+        """Read lines from the stderr stream."""
+        async for line in self._proc.stderr:
+            yield line
 
 
 async def check_output(shell_cmd: str) -> tuple[int, bytes]:
