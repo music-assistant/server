@@ -48,6 +48,10 @@ class AsyncProcess:
         self._enable_stdout = enable_stdout
         self._enable_stderr = enable_stderr
         self._close_called = False
+        self._stdin_lock = asyncio.Lock()
+        self._stdout_lock = asyncio.Lock()
+        self._stderr_lock = asyncio.Lock()
+        self._returncode: bool | None = None
 
     @property
     def closed(self) -> bool:
@@ -57,6 +61,8 @@ class AsyncProcess:
     @property
     def returncode(self) -> int | None:
         """Return the erturncode of the process."""
+        if self._returncode is not None:
+            return self._returncode
         if self.proc is None:
             return None
         return self.proc.returncode
@@ -74,6 +80,11 @@ class AsyncProcess:
     ) -> bool | None:
         """Exit context manager."""
         await self.close()
+        self._returncode = self.returncode
+        del self.proc
+        del self._stdin_lock
+        del self._stdout_lock
+        del self._returncode
 
     async def start(self) -> None:
         """Perform Async init of process."""
@@ -108,7 +119,8 @@ class AsyncProcess:
         if self.closed:
             return b""
         try:
-            return await self.proc.stdout.readexactly(n)
+            async with self._stdout_lock:
+                return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
 
@@ -121,27 +133,30 @@ class AsyncProcess:
         """
         if self.closed:
             return b""
-        return await self.proc.stdout.read(n)
+        async with self._stdout_lock:
+            return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
         if self.closed or self.proc.stdin.is_closing():
             return
-        self.proc.stdin.write(data)
-        if self.closed or self.proc.stdin.is_closing():
-            return
-        with suppress(BrokenPipeError):
-            await self.proc.stdin.drain()
+        async with self._stdin_lock:
+            self.proc.stdin.write(data)
+            if self.closed or self.proc.stdin.is_closing():
+                return
+            with suppress(BrokenPipeError):
+                await self.proc.stdin.drain()
 
-    def write_eof(self) -> None:
+    async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
         if not self._enable_stdin:
             return
         if self.closed or self.proc.stdin.is_closing():
             return
         try:
-            if self.proc.stdin.can_write_eof():
-                self.proc.stdin.write_eof()
+            async with self._stdin_lock:
+                if self.proc.stdin.can_write_eof():
+                    self.proc.stdin.write_eof()
         except (
             AttributeError,
             AssertionError,
@@ -183,15 +198,17 @@ class AsyncProcess:
         """Write bytes to process and read back results."""
         if self.closed:
             return (b"", b"")
-        stdout, stderr = await self.proc.communicate(input_data)
+        async with self._stdout_lock, self._stdin_lock, self._stderr_lock:
+            stdout, stderr = await self.proc.communicate(input_data)
         return (stdout, stderr)
 
     async def read_stderr(self) -> AsyncGenerator[bytes, None]:
         """Read lines from the stderr stream."""
-        async for line in self.proc.stderr:
-            if self.closed:
-                break
-            yield line
+        async with self._stderr_lock:
+            async for line in self.proc.stderr:
+                if self.closed:
+                    break
+                yield line
 
 
 async def check_output(shell_cmd: str) -> tuple[int, bytes]:

@@ -215,7 +215,7 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
                     if chunk_count == 600:
                         # safety guard: max (more or less) 10 minutes of audio may be analyzed!
                         break
-                ffmpeg_proc.write_eof()
+                await ffmpeg_proc.write_eof()
 
             _, stderr = await ffmpeg_proc.communicate()
             if loudness_details := _parse_loudnorm(stderr):
@@ -449,7 +449,7 @@ async def get_media_stream(  # noqa: PLR0915
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
-        ffmpeg_proc.write_eof()
+        await ffmpeg_proc.write_eof()
         logger.log(VERBOSE_LOG_LEVEL, "writer finished for %s", streamdetails.uri)
 
     if streamdetails.direct is None:
@@ -750,7 +750,7 @@ async def get_ffmpeg_stream(
             if ffmpeg_proc.closed:
                 return
             await ffmpeg_proc.write(chunk)
-        ffmpeg_proc.write_eof()
+        await ffmpeg_proc.write_eof()
 
     try:
         if not isinstance(audio_input, str):
@@ -830,7 +830,7 @@ async def get_preview_stream(
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, 30):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
-        ffmpeg_proc.write_eof()
+        await ffmpeg_proc.write_eof()
 
     if not streamdetails.direct:
         writer_task = asyncio.create_task(writer())
