@@ -192,7 +192,7 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
         item_name = f"{streamdetails.provider}/{streamdetails.item_id}"
         LOGGER.debug("Start analyzing EBU R128 loudness for %s", item_name)
         # calculate EBU R128 integrated loudness with ffmpeg
-        ffmpeg_args = _get_ffmpeg_args(
+        ffmpeg_args = get_ffmpeg_args(
             input_format=streamdetails.audio_format,
             output_format=streamdetails.audio_format,
             filter_params=["loudnorm=print_format=json"],
@@ -424,7 +424,7 @@ async def get_media_stream(  # noqa: PLR0915
         filter_params.append(filter_rule)
     if streamdetails.fade_in:
         filter_params.append("afade=type=in:start_time=0:duration=3")
-    ffmpeg_args = _get_ffmpeg_args(
+    ffmpeg_args = get_ffmpeg_args(
         input_format=streamdetails.audio_format,
         output_format=pcm_format,
         filter_params=filter_params,
@@ -727,9 +727,9 @@ async def get_ffmpeg_stream(
     Takes care of resampling and/or recoding if needed,
     according to player preferences.
     """
-    logger = LOGGER.getChild("media_stream")
+    logger = LOGGER.getChild("ffmpeg_stream")
     use_stdin = not isinstance(audio_input, str)
-    ffmpeg_args = _get_ffmpeg_args(
+    ffmpeg_args = get_ffmpeg_args(
         input_format=input_format,
         output_format=output_format,
         filter_params=filter_params or [],
@@ -768,7 +768,6 @@ async def get_ffmpeg_stream(
         if writer_task and not writer_task.done():
             writer_task.cancel()
         # use communicate to read stderr and wait for exit
-        # read log for loudness measurement (or errors)
         _, stderr = await ffmpeg_proc.communicate()
         if ffmpeg_proc.returncode != 0:
             # ffmpeg has a non zero returncode meaning trouble
@@ -787,7 +786,7 @@ async def check_audio_support() -> tuple[bool, bool, str]:
     version = output.decode().split("ffmpeg version ")[1].split(" ")[0].split("-")[0]
     libsoxr_support = "enable-libsoxr" in output.decode()
     result = (ffmpeg_present, libsoxr_support, version)
-    # store in global cache for easy access by '_get_ffmpeg_args'
+    # store in global cache for easy access by 'get_ffmpeg_args'
     await set_global_cache_values({"ffmpeg_support": result})
     return result
 
@@ -935,7 +934,7 @@ def get_player_filter_params(
     return filter_params
 
 
-def _get_ffmpeg_args(
+def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],

@@ -78,13 +78,14 @@ FLOW_MAX_BIT_DEPTH = 24
 
 
 class QueueStreamJob:
-    """Representation of a (multiclient) Audio Queue stream job/task.
+    """
+    Representation of a (multiclient) Audio stream job/task.
 
-    The whole idea here is that the queue stream audio can be sent to multiple
+    The whole idea here is that the (pcm) audio source can be sent to multiple
     players at once. For example for (slimproto/airplay) syncgroups and universal group.
-    all client players receive the exact same audio chunks from the source audio,
-    encoded and/or resampled to the player's preferences.
-    A StreamJob is tied to a Queue and streams the queue flow stream,
+
+    All client players receive the exact same audio chunks from the source audio,
+    then encoded and/or resampled to the player's preferences.
     In case a stream is restarted (e.g. when seeking),
     a new QueueStreamJob will be created.
     """
@@ -96,13 +97,12 @@ class QueueStreamJob:
         mass: MusicAssistant,
         pcm_audio_source: AsyncGenerator[bytes, None],
         pcm_format: AudioFormat,
-        expected_players: set[str],
     ) -> None:
         """Initialize QueueStreamJob instance."""
         self.mass = mass
         self.pcm_audio_source = pcm_audio_source
         self.pcm_format = pcm_format
-        self.expected_players = expected_players
+        self.expected_players: set[str] = set()
         self.job_id = shortuuid.uuid()
         self.bytes_streamed: int = 0
         self.logger = self.mass.streams.logger.getChild(f"stream_job.{self.job_id}")
@@ -352,7 +352,7 @@ class StreamsController(CoreController):
                 (
                     "*",
                     "/multi/{job_id}/{player_id}.{fmt}",
-                    self.serve_multi_subscriber_stream,
+                    self.serve_multi_subscriber_flow_stream,
                 ),
                 (
                     "*",
@@ -416,7 +416,6 @@ class StreamsController(CoreController):
         start_queue_item: QueueItem,
         pcm_bit_depth: int = 24,
         pcm_sample_rate: int = 48000,
-        expected_players: set[str] | None = None,
     ) -> QueueStreamJob:
         """
         Create a QueueStreamJob for the given queue..
@@ -444,7 +443,6 @@ class StreamsController(CoreController):
                 pcm_format=pcm_format,
             ),
             pcm_format=pcm_format,
-            expected_players=expected_players or set(),
         )
         return stream_job
 
@@ -607,7 +605,7 @@ class StreamsController(CoreController):
 
         return resp
 
-    async def serve_multi_subscriber_stream(self, request: web.Request) -> web.Response:
+    async def serve_multi_subscriber_flow_stream(self, request: web.Request) -> web.Response:
         """Stream Queue Flow audio to a child player within a multi subscriber setup."""
         self._log_request(request)
         job_id = request.match_info["job_id"]
