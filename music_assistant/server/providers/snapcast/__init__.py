@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import random
+import socket
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from snapcast.control import create_server
 from snapcast.control.client import Snapclient
+from zeroconf import NonUniqueNameException
+from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -136,6 +140,7 @@ class SnapCastProvider(PlayerProvider):
         self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stream_tasks = {}
+
         if self._use_builtin_server:
             # start our own builtin snapserver
             self._snapserver_started = asyncio.Event()
@@ -169,11 +174,17 @@ class SnapCastProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         for client in self._snapserver.clients:
             await self.cmd_stop(client.identifier)
-        await self._snapserver.stop()
-        self._snapserver_started.clear()
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
-        await asyncio.sleep(2)  # prevent race conditions when reloading
+        await asyncio.sleep(6)  # prevent race conditions when reloading
+        await self._snapserver.stop()
+        self._snapserver_started.clear()
+
+    def on_player_config_removed(self, player_id: str) -> None:
+        """Call (by config manager) when the configuration of a player is removed."""
+        super().on_player_config_removed(player_id)
+        if self._use_builtin_server:
+            self.mass.create_task(self._snapserver.delete_client(player_id))
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -416,6 +427,38 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError("Snapserver is already started!")
         logger = self.logger.getChild("snapserver")
         logger.info("Starting builtin Snapserver...")
+        # register the snapcast mdns services
+        for name, port in (
+            ("-http", 1780),
+            ("-jsonrpc", 1705),
+            ("-stream", 1704),
+            ("-tcp", 1705),
+            ("", 1704),
+        ):
+            zeroconf_type = f"_snapcast{name}._tcp.local."
+            try:
+                info = AsyncServiceInfo(
+                    zeroconf_type,
+                    name=f"Snapcast.{zeroconf_type}",
+                    properties={"is_mass": "true"},
+                    addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+                    port=port,
+                    server=f"{socket.gethostname()}",
+                )
+                attr_name = f"zc_service_set{name}"
+                if getattr(self, attr_name, None):
+                    await self.mass.aiozc.async_update_service(info)
+                else:
+                    await self.mass.aiozc.async_register_service(info, strict=False)
+                setattr(self, attr_name, True)
+            except NonUniqueNameException:
+                self.logger.debug(
+                    "Could not register mdns record for %s as its already in use", zeroconf_type
+                )
+            except Exception as err:
+                self.logger.exception(
+                    "Could not register mdns record for %s: %s", zeroconf_type, str(err)
+                )
         async with AsyncProcess(
             ["snapserver"], enable_stdin=False, enable_stdout=True, enable_stderr=False
         ) as snapserver_proc:
