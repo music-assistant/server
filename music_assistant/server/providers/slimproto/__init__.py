@@ -338,7 +338,7 @@ class SlimprotoProvider(PlayerProvider):
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
         if player.group_childs:
             # player has sync members, we need to start a multi slimplayer stream job
-            stream_job = await self.mass.streams.create_multi_client_stream_job(
+            stream_job = await self.mass.streams.create_stream_job(
                 queue_id=queue_item.queue_id,
                 start_queue_item=queue_item,
             )
@@ -682,9 +682,9 @@ class SlimprotoProvider(PlayerProvider):
             self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
             slimplayer.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
             slimplayer.signal_update()
-        elif event.data == "button jump_fwd":
+        elif event.data in ("button jump_fwd", "button fwd"):
             await self.mass.player_queues.next(queue.queue_id)
-        elif event.data == "button jump_rew":
+        elif event.data in ("button jump_rew", "button rew"):
             await self.mass.player_queues.previous(queue.queue_id)
         elif event.data.startswith("time "):
             # seek request

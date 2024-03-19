@@ -77,7 +77,7 @@ FLOW_MAX_BIT_DEPTH = 24
 # pylint:disable=too-many-locals
 
 
-class MultiClientQueueStreamJob:
+class QueueStreamJob:
     """Representation of a (multiclient) Audio Queue stream job/task.
 
     The whole idea here is that the queue stream audio can be sent to multiple
@@ -86,7 +86,7 @@ class MultiClientQueueStreamJob:
     encoded and/or resampled to the player's preferences.
     A StreamJob is tied to a Queue and streams the queue flow stream,
     In case a stream is restarted (e.g. when seeking),
-    a new MultiClientQueueStreamJob will be created.
+    a new QueueStreamJob will be created.
     """
 
     _audio_task: asyncio.Task | None = None
@@ -98,7 +98,7 @@ class MultiClientQueueStreamJob:
         pcm_format: AudioFormat,
         expected_players: set[str],
     ) -> None:
-        """Initialize MultiClientQueueStreamJob instance."""
+        """Initialize QueueStreamJob instance."""
         self.mass = mass
         self.pcm_audio_source = pcm_audio_source
         self.pcm_format = pcm_format
@@ -178,7 +178,7 @@ class MultiClientQueueStreamJob:
     async def _subscribe_pcm(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming (raw pcm) chunks on the queue."""
         try:
-            self._subscribed_players[player_id] = queue = asyncio.Queue(2)
+            self._subscribed_players[player_id] = queue = asyncio.Queue(10)
 
             if self.running:
                 # client subscribes while we're already started
@@ -261,7 +261,7 @@ class StreamsController(CoreController):
         """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger, enable_dynamic_routes=True)
-        self.multi_client_jobs: dict[str, MultiClientQueueStreamJob] = {}
+        self.multi_client_jobs: dict[str, QueueStreamJob] = {}
         self.register_dynamic_route = self._server.register_dynamic_route
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.manifest.name = "Streamserver"
@@ -410,16 +410,16 @@ class StreamsController(CoreController):
         url += "?" + urllib.parse.urlencode(query_params)
         return url
 
-    async def create_multi_client_stream_job(
+    async def create_stream_job(
         self,
         queue_id: str,
         start_queue_item: QueueItem,
         pcm_bit_depth: int = 24,
         pcm_sample_rate: int = 48000,
         expected_players: set[str] | None = None,
-    ) -> MultiClientQueueStreamJob:
+    ) -> QueueStreamJob:
         """
-        Create a MultiClientQueueStreamJob for the given queue..
+        Create a QueueStreamJob for the given queue..
 
         This is called by player/sync group implementations to start streaming
         the queue audio to multiple players at once.
@@ -436,7 +436,7 @@ class StreamsController(CoreController):
             bit_depth=pcm_bit_depth,
             channels=2,
         )
-        self.multi_client_jobs[queue_id] = stream_job = MultiClientQueueStreamJob(
+        self.multi_client_jobs[queue_id] = stream_job = QueueStreamJob(
             self.mass,
             pcm_audio_source=self.get_flow_stream(
                 queue=queue,

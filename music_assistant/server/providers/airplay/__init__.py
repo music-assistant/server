@@ -234,9 +234,7 @@ class AirplayStreamJob:
             "-port",
             str(self.airplay_player.discovery_info.port),
             "-wait",
-            str(2500 - sync_adjust),
-            "-latency",
-            "2000",
+            str(2000 - sync_adjust),
             "-volume",
             str(mass_player.volume_level),
             *extra_args,
@@ -612,7 +610,7 @@ class AirplayProvider(PlayerProvider):
             # create a new (multi client) flow stream
             # note that in case of an existing streamjob created by the UGP, it will return
             # the existing job here
-            stream_job = await self.mass.streams.create_multi_client_stream_job(
+            stream_job = await self.mass.streams.create_stream_job(
                 queue_item.queue_id,
                 queue_item,
                 pcm_bit_depth=16,

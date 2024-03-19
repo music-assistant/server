@@ -168,7 +168,7 @@ class UniversalGroupProvider(PlayerProvider):
 
         # create a multi-client stream job - all (direct) child's of this UGP group
         # will subscribe to this multi client queue stream
-        stream_job = await self.mass.streams.create_multi_client_stream_job(
+        stream_job = await self.mass.streams.create_stream_job(
             player_id,
             start_queue_item=queue_item,
         )
