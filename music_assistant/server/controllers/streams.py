@@ -178,7 +178,7 @@ class QueueStreamJob:
     async def _subscribe_pcm(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming (raw pcm) chunks on the queue."""
         try:
-            self._subscribed_players[player_id] = queue = asyncio.Queue(10)
+            self._subscribed_players[player_id] = queue = asyncio.Queue(2)
 
             if self.running:
                 # client subscribes while we're already started

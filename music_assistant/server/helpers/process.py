@@ -170,19 +170,18 @@ class AsyncProcess:
     async def close(self) -> int:
         """Close/terminate the process and wait for exit."""
         self._close_called = True
-        if self.returncode is not None:
-            return self.returncode
-        # make sure the process is cleaned up
-        try:
-            # we need to use communicate to ensure buffers are flushed
-            await asyncio.wait_for(self.proc.communicate(), 5)
-        except TimeoutError:
-            LOGGER.debug(
-                "Process with PID %s did not stop within 5 seconds. Sending terminate...",
-                self.proc.pid,
-            )
-            self.proc.terminate()
-            await self.proc.communicate()
+        if self.proc.returncode is None:
+            # make sure the process is cleaned up
+            try:
+                # we need to use communicate to ensure buffers are flushed
+                await asyncio.wait_for(self.proc.communicate(), 5)
+            except TimeoutError:
+                LOGGER.debug(
+                    "Process with PID %s did not stop within 5 seconds. Sending terminate...",
+                    self.proc.pid,
+                )
+                self.proc.terminate()
+                await self.proc.communicate()
         LOGGER.debug(
             "Process with PID %s stopped with returncode %s", self.proc.pid, self.proc.returncode
         )
