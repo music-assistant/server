@@ -647,9 +647,6 @@ class MusicAssistant:
     ) -> bool | None:
         """Exit context manager."""
         await self.stop()
-        if exc_val:
-            raise exc_val
-        return exc_type
 
     async def _update_available_providers_cache(self) -> None:
         """Update the global cache variable of loaded/available providers."""

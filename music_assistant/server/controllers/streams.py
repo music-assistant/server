@@ -223,9 +223,21 @@ class MultiClientQueueStreamJob:
             len(self.expected_players),
         )
         async for chunk in self.pcm_audio_source:
+            if len(self._subscribed_players) == 0:
+                break
             async with asyncio.TaskGroup() as tg:
                 for listener_queue in list(self._subscribed_players.values()):
                     tg.create_task(listener_queue.put(chunk))
+
+        self._finished = True
+        # write empty chunk to unblock queues
+        async with asyncio.TaskGroup() as tg:
+            for listener_queue in list(self._subscribed_players.values()):
+                tg.create_task(listener_queue.put(b""))
+        self.logger.debug(
+            "Finished multi client stream job %s",
+            self.job_id,
+        )
         self._finished = True
 
 
