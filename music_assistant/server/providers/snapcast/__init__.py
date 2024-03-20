@@ -339,24 +339,32 @@ class SnapCastProvider(PlayerProvider):
             player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
             player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
-            player.state = PlayerState.PLAYING
-            self._set_childs_state(player_id, PlayerState.PLAYING)
             self.mass.players.register_or_update(player)
+
+            def stream_callback(_stream) -> None:
+                player.state = PlayerState(stream.status)
+                self._set_childs_state(player_id, player.state)
+
+            stream.set_callback(stream_callback)
             try:
+                pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
                 async for pcm_chunk in audio_iterator:
                     writer.write(pcm_chunk)
                     await writer.drain()
+                    player.elapsed_time += len(pcm_chunk) / pcm_sample_size
+                    player.elapsed_time_last_updated = time.time()
                 # end of the stream reached
                 if writer.can_write_eof():
                     writer.write_eof()
                     await writer.drain()
-                # we need to wait a bit before removing the stream to ensure
-                # that all snapclients have consumed the audio
-                # https://github.com/music-assistant/hass-music-assistant/issues/1962
-                await asyncio.sleep(30)
+                # we need to wait a bit for the stream status to become idle
+                # to ensure that all snapclients have consumed the audio
+                await self.mass.players.wait_for_state(player, PlayerState.IDLE)
             finally:
                 if not writer.is_closing():
                     writer.close()
+                # there is no way to unsub ythe callback to we do this nasty
+                stream._callback_func = None
                 await self._snapserver.stream_remove_stream(stream.identifier)
                 self.logger.debug("Closed connection to %s:%s", host, port)
 
