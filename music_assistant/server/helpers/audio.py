@@ -935,6 +935,7 @@ def get_ffmpeg_args(
     extra_args: list[str],
     input_path: str = "-",
     output_path: str = "-",
+    loglevel: str = "info",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
     ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
@@ -955,7 +956,7 @@ def get_ffmpeg_args(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "info",
+        loglevel,
         "-ignore_unknown",
         "-protocol_whitelist",
         "file,http,https,tcp,tls,crypto,pipe,data,fd",

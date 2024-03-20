@@ -341,7 +341,7 @@ class SonosPlayerProvider(PlayerProvider):
         queue_item: QueueItem,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
             player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
@@ -377,7 +377,7 @@ class SonosPlayerProvider(PlayerProvider):
         This will NOT be called if flow mode is enabled on the queue.
         """
         sonos_player = self.sonosplayers[player_id]
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
             player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,

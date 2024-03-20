@@ -308,68 +308,59 @@ class SnapCastProvider(PlayerProvider):
             bit_depth=16,
             channels=2,
         )
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
-            # stream announcement url directly
-            audio_iterator = get_media_stream(
-                self.mass, queue_item.streamdetails, pcm_format=pcm_format
-            )
-        elif (
-            queue_item.queue_id.startswith(UGP_PREFIX)
-            and (stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id))
-            and stream_job.pending
-        ):
-            # handle special case for UGP multi client stream
-            stream_job = self.mass.streams.multi_client_jobs.get(queue_item.queue_id)
-            stream_job.expected_players.add(player_id)
-            audio_iterator = stream_job.subscribe(
-                player_id=player_id,
-                output_format=pcm_format,
-            )
+
+        if queue_item.queue_id.startswith(UGP_PREFIX):
+            # special case: we got forwarded a request from the UGP
+            # use the existing stream job that was already created by UGP
+            stream_job = self.mass.streams.stream_jobs[queue_item.queue_id]
         else:
-            audio_iterator = self.mass.streams.get_flow_stream(
-                queue,
-                start_queue_item=queue_item,
-                pcm_format=pcm_format,
+            if queue_item.media_type == MediaType.ANNOUNCEMENT:
+                # stream announcement url directly
+                audio_source = get_media_stream(
+                    self.mass, queue_item.streamdetails, pcm_format=pcm_format
+                )
+            else:
+                queue = self.mass.player_queues.get(queue_item.queue_id)
+                audio_source = self.mass.streams.get_flow_stream(
+                    queue, start_queue_item=queue_item, pcm_format=pcm_format
+                )
+            stream_job = self.mass.streams.create_stream_job(
+                queue_item.queue_id, pcm_audio_source=audio_source, pcm_format=pcm_format
             )
+        stream_job.expected_players.add(player_id)
 
         async def _streamer() -> None:
             host = self._snapcast_server_host
-            _, writer = await asyncio.open_connection(host, port)
-            self.logger.debug("Opened connection to %s:%s", host, port)
-            player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
-            player.elapsed_time = 0
-            player.elapsed_time_last_updated = time.time()
-            self.mass.players.register_or_update(player)
+            self.mass.players.update(player_id)
 
             def stream_callback(_stream) -> None:
                 player.state = PlayerState(stream.status)
+                if player.state == PlayerState.PLAYING:
+                    player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
+                    player.elapsed_time = 0
+                    player.elapsed_time_last_updated = time.time()
                 self._set_childs_state(player_id, player.state)
 
             stream.set_callback(stream_callback)
+            stream_path = f"tcp://{host}:{port}"
+            self.logger.debug("Start streaming to %s", stream_path)
             try:
-                pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-                async for pcm_chunk in audio_iterator:
-                    writer.write(pcm_chunk)
-                    await writer.drain()
-                    player.elapsed_time += len(pcm_chunk) / pcm_sample_size
-                    player.elapsed_time_last_updated = time.time()
-                # end of the stream reached
-                if writer.can_write_eof():
-                    writer.write_eof()
-                    await writer.drain()
+                await stream_job.stream_to_custom_output_path(
+                    player_id, pcm_format, f"tcp://{host}:{port}"
+                )
                 # we need to wait a bit for the stream status to become idle
                 # to ensure that all snapclients have consumed the audio
                 await self.mass.players.wait_for_state(player, PlayerState.IDLE)
             finally:
-                if not writer.is_closing():
-                    writer.close()
-                # there is no way to unsub ythe callback to we do this nasty
+                self.logger.debug("Finished streaming to %s", stream_path)
+                # there is no way to unsub the callback to we do this nasty
                 stream._callback_func = None
                 await self._snapserver.stream_remove_stream(stream.identifier)
-                self.logger.debug("Closed connection to %s:%s", host, port)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
+        if not queue_item.queue_id.startswith(UGP_PREFIX):
+            stream_job.start()
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""

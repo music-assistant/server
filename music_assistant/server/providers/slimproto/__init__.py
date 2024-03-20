@@ -44,6 +44,7 @@ from music_assistant.common.models.enums import (
     RepeatMode,
 )
 from music_assistant.common.models.errors import MusicAssistantError, SetupFailedError
+from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.constants import (
     CONF_CROSSFADE,
@@ -55,6 +56,7 @@ from music_assistant.constants import (
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
+from music_assistant.server.providers.ugp import UGP_PREFIX
 
 if TYPE_CHECKING:
     from aioslimproto.models import SlimEvent
@@ -337,17 +339,30 @@ class SlimprotoProvider(PlayerProvider):
         if player.synced_to:
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
+
         if player.group_childs:
-            # player has sync members, we need to start a multi slimplayer stream job
-            stream_job = await self.mass.streams.create_stream_job(
+            # player has sync members, we need to start a (multi-player) stream job
+            # to make sure that all clients receive the exact same audio
+            pcm_format = AudioFormat(
+                content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
+            )
+            queue = self.mass.player_queues.get(queue_item.queue_id)
+            stream_job = self.mass.streams.create_stream_job(
                 queue_id=queue_item.queue_id,
-                start_queue_item=queue_item,
+                pcm_audio_source=self.mass.streams.get_flow_stream(
+                    queue,
+                    start_queue_item=queue_item,
+                    pcm_format=pcm_format,
+                ),
+                pcm_format=pcm_format,
             )
             # forward command to player and any connected sync members
             sync_clients = self._get_sync_clients(player_id)
             async with asyncio.TaskGroup() as tg:
                 for slimplayer in sync_clients:
+                    enforce_mp3 = await self.mass.config.get_player_config_value(
+                        slimplayer.player_id, CONF_ENFORCE_MP3
+                    )
                     tg.create_task(
                         self._handle_play_url(
                             slimplayer,
@@ -360,18 +375,19 @@ class SlimprotoProvider(PlayerProvider):
                             auto_play=False,
                         )
                     )
-            if queue_item.queue_item_id != "flow":
+            if not queue_item.queue_id.startswith(UGP_PREFIX):
                 stream_job.start()
         else:
             # regular, single player playback
             slimplayer = self.slimproto.get_player(player_id)
             if not slimplayer:
                 return
-            url = await self.mass.streams.resolve_stream_url(
+            enforce_mp3 = await self.mass.config.get_player_config_value(
+                player_id, CONF_ENFORCE_MP3
+            )
+            url = self.mass.streams.resolve_stream_url(
                 player_id,
                 queue_item=queue_item,
-                # for now just hardcode flac as we assume that every (modern)
-                # slimproto based player can handle that just fine
                 output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
                 flow_mode=False,
             )
@@ -388,7 +404,7 @@ class SlimprotoProvider(PlayerProvider):
         if not (slimplayer := self.slimproto.get_player(player_id)):
             return
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
             player_id,
             queue_item=queue_item,
             output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
@@ -717,7 +733,7 @@ class SlimprotoProvider(PlayerProvider):
         sync_playpoints = self._sync_playpoints[slimplayer.player_id]
 
         active_queue = self.mass.player_queues.get_active_queue(slimplayer.player_id)
-        stream_job = self.mass.streams.multi_client_jobs.get(active_queue.queue_id)
+        stream_job = self.mass.streams.stream_jobs.get(active_queue.queue_id)
         if not stream_job:
             # should not happen, but just in case
             return
