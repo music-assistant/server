@@ -79,10 +79,10 @@ STATE_MAP = {
 REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
 
 # sync constants
-MIN_DEVIATION_ADJUST = 6  # 6 milliseconds
+MIN_DEVIATION_ADJUST = 8  # 5 milliseconds
 MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
-DEVIATION_JUMP_IGNORE = 2000  # ignore a sudden unrealistic jump
-MAX_SKIP_AHEAD_MS = 500  # 0.5 seconds
+DEVIATION_JUMP_IGNORE = 5000  # ignore a sudden unrealistic jump
+MAX_SKIP_AHEAD_MS = 800  # 0.8 seconds
 
 
 @dataclass
@@ -108,10 +108,10 @@ DEFAULT_VISUALIZATION = SlimVisualisationType.SPECTRUM_ANALYZER.value
 CONF_ENTRY_DISPLAY = ConfigEntry(
     key=CONF_DISPLAY,
     type=ConfigEntryType.BOOLEAN,
-    default_value=True,
+    default_value=False,
     required=False,
     label="Enable display support",
-    description="Enable/disable native display support on " "squeezebox or squeezelite32 hardware.",
+    description="Enable/disable native display support on squeezebox or squeezelite32 hardware.",
     advanced=True,
 )
 CONF_ENTRY_VISUALIZATION = ConfigEntry(
@@ -216,6 +216,7 @@ class SlimprotoProvider(PlayerProvider):
 
     slimproto: SlimServer
     _sync_playpoints: dict[str, deque[SyncPlayPoint]]
+    _do_not_resync_before: dict[str, float]
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -225,6 +226,7 @@ class SlimprotoProvider(PlayerProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._sync_playpoints = {}
+        self._do_not_resync_before = {}
         self._resync_handle: asyncio.TimerHandle | None = None
         control_port = self.config.get_value(CONF_PORT)
         telnet_port = self.config.get_value(CONF_CLI_TELNET_PORT)
@@ -721,6 +723,9 @@ class SlimprotoProvider(PlayerProvider):
             return
 
         now = time.time()
+        if now < self._do_not_resync_before[slimplayer.player_id]:
+            return
+
         last_playpoint = sync_playpoints[-1] if sync_playpoints else None
         if last_playpoint and (now - last_playpoint.timestamp) > 10:
             # last playpoint is too old, invalidate
@@ -741,7 +746,8 @@ class SlimprotoProvider(PlayerProvider):
         # we can now append the current playpoint to our list
         sync_playpoints.append(SyncPlayPoint(now, stream_job.job_id, diff))
 
-        if len(sync_playpoints) < MIN_REQ_PLAYPOINTS:
+        min_req_playpoints = 2 if sync_master.elapsed_seconds < 2 else MIN_REQ_PLAYPOINTS
+        if len(sync_playpoints) < min_req_playpoints:
             return
 
         # get the average diff
@@ -753,22 +759,20 @@ class SlimprotoProvider(PlayerProvider):
 
         # resync the player by skipping ahead or pause for x amount of (milli)seconds
         sync_playpoints.clear()
+        self._do_not_resync_before[player.player_id] = now + 5
         if avg_diff > MAX_SKIP_AHEAD_MS:
             # player lagging behind more than MAX_SKIP_AHEAD_MS,
             # we need to correct the sync_master
             self.logger.debug("%s resync: pauseFor %sms", sync_master.name, delta)
             self.mass.create_task(sync_master.pause_for(delta))
-            sync_master._elapsed_milliseconds -= delta
         elif avg_diff > 0:
             # handle player lagging behind, fix with skip_ahead
             self.logger.debug("%s resync: skipAhead %sms", player.display_name, delta)
             self.mass.create_task(slimplayer.skip_over(delta))
-            sync_master._elapsed_milliseconds += delta
         else:
             # handle player is drifting too far ahead, use pause_for to adjust
             self.logger.debug("%s resync: pauseFor %sms", player.display_name, delta)
             self.mass.create_task(slimplayer.pause_for(delta))
-            sync_master._elapsed_milliseconds -= delta
 
     async def _handle_buffer_ready(self, slimplayer: SlimClient) -> None:
         """Handle buffer ready event, player has buffered a (new) track.
@@ -799,12 +803,13 @@ class SlimprotoProvider(PlayerProvider):
         async with asyncio.TaskGroup() as tg:
             for _client in self._get_sync_clients(player.player_id):
                 self._sync_playpoints.setdefault(
-                    _client.player_id, deque(maxlen=MIN_REQ_PLAYPOINTS * 2)
+                    _client.player_id, deque(maxlen=MIN_REQ_PLAYPOINTS)
                 ).clear()
                 # NOTE: Officially you should do an unpause_at based on the player timestamp
                 # but I did not have any good results with that.
                 # Instead just start playback on all players and let the sync logic work out
                 # the delays etc.
+                self._do_not_resync_before[_client.player_id] = time.time() + 1
                 tg.create_task(_client.unpause_at(0))
 
     async def _handle_connected(self, slimplayer: SlimClient) -> None:
@@ -830,6 +835,7 @@ class SlimprotoProvider(PlayerProvider):
             init_volume = DEFAULT_PLAYER_VOLUME
             init_power = False
         await slimplayer.power(init_power)
+        await slimplayer.stop()
         await slimplayer.volume_set(init_volume)
 
     def _get_sync_clients(self, player_id: str) -> Iterator[SlimClient]:
