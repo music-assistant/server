@@ -18,12 +18,7 @@ from typing import TYPE_CHECKING
 import shortuuid
 from aiohttp import web
 
-from music_assistant.common.helpers.util import (
-    empty_queue,
-    get_ip,
-    select_free_port,
-    try_parse_bool,
-)
+from music_assistant.common.helpers.util import get_ip, select_free_port, try_parse_bool
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -46,10 +41,13 @@ from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
+    get_chunksize,
+    get_ffmpeg_args,
     get_ffmpeg_stream,
     get_media_stream,
     get_player_filter_params,
 )
+from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.helpers.util import get_ips
 from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
@@ -71,8 +69,8 @@ DEFAULT_STREAM_HEADERS = {
     "icy-name": "Music Assistant",
     "icy-pub": "0",
 }
-FLOW_MAX_SAMPLE_RATE = 96000
-FLOW_MAX_BIT_DEPTH = 24
+FLOW_DEFAULT_SAMPLE_RATE = 48000
+FLOW_DEFAULT_BIT_DEPTH = 24
 
 # pylint:disable=too-many-locals
 
@@ -106,7 +104,7 @@ class QueueStreamJob:
         self.job_id = shortuuid.uuid()
         self.bytes_streamed: int = 0
         self.logger = self.mass.streams.logger.getChild(f"stream_job.{self.job_id}")
-        self._subscribed_players: dict[str, asyncio.Queue] = {}
+        self._subscribed_players: dict[str, AsyncProcess] = {}
         self._finished = False
         self._running = False
         self._allow_start = asyncio.Event()
@@ -166,35 +164,37 @@ class QueueStreamJob:
         self, player_id: str, output_format: AudioFormat, chunk_size: int | None = None
     ) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate chunks on the queue encoded to given output format."""
-        async for chunk in get_ffmpeg_stream(
-            audio_input=self._subscribe_pcm(player_id),
+        if self.running:
+            # client subscribes while we're already started
+            # that will probably cause side effects but let it go
+            self.logger.warning(
+                "Player %s is joining while the stream is already started!", player_id
+            )
+        else:
+            self.logger.debug("Subscribed player %s", player_id)
+        ffmpeg_args = get_ffmpeg_args(
             input_format=self.pcm_format,
             output_format=output_format,
             filter_params=get_player_filter_params(self.mass, player_id),
-            chunk_size=chunk_size,
-        ):
-            yield chunk
-
-    async def _subscribe_pcm(self, player_id: str) -> AsyncGenerator[bytes, None]:
-        """Subscribe consumer and iterate incoming (raw pcm) chunks on the queue."""
+            extra_args=[],
+            input_path="-",
+            output_path="-",
+        )
         try:
-            self._subscribed_players[player_id] = queue = asyncio.Queue(2)
-
-            if self.running:
-                # client subscribes while we're already started
-                # that will probably cause side effects but let it go
-                self.logger.warning(
-                    "Player %s is joining while the stream is already started!", player_id
-                )
-            else:
-                self.logger.debug("Subscribed player %s", player_id)
-
-            # yield from queue until finished
-            while not self._finished:
-                yield await queue.get()
+            async with AsyncProcess(
+                ffmpeg_args, enable_stdin=True, enable_stdout=True, enable_stderr=False
+            ) as ffmpeg_proc:
+                self._subscribed_players[player_id] = ffmpeg_proc
+                # read final chunks from stdout
+                chunk_size = chunk_size or get_chunksize(output_format, 1)
+                async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
+                    try:
+                        yield chunk
+                    except (BrokenPipeError, ConnectionResetError):
+                        # race condition?
+                        break
         finally:
-            if sub_queue := self._subscribed_players.pop(player_id, None):
-                empty_queue(sub_queue)
+            self._subscribed_players.pop(player_id, None)
             self.logger.debug("Unsubscribed client %s", player_id)
             # check if this was the last subscriber and we should cancel
             await asyncio.sleep(2)
@@ -226,14 +226,15 @@ class QueueStreamJob:
             if len(self._subscribed_players) == 0:
                 break
             async with asyncio.TaskGroup() as tg:
-                for listener_queue in list(self._subscribed_players.values()):
-                    tg.create_task(listener_queue.put(chunk))
+                for listener in list(self._subscribed_players.values()):
+                    if not listener or listener.closed:
+                        continue
+                    tg.create_task(listener.write(chunk))
 
-        self._finished = True
-        # write empty chunk to unblock queues
+        # write eof at end of queue stream
         async with asyncio.TaskGroup() as tg:
-            for listener_queue in list(self._subscribed_players.values()):
-                tg.create_task(listener_queue.put(b""))
+            for listener in list(self._subscribed_players.values()):
+                tg.create_task(listener.write_eof())
         self.logger.debug(
             "Finished multi client stream job %s",
             self.job_id,
@@ -266,7 +267,7 @@ class StreamsController(CoreController):
         self.unregister_dynamic_route = self._server.unregister_dynamic_route
         self.manifest.name = "Streamserver"
         self.manifest.description = (
-            "Music Assistant's core server that is responsible for "
+            "Music Assistant's core controller that is responsible for "
             "streaming audio to players on the local network as well as "
             "some player specific local control callbacks."
         )
@@ -529,8 +530,8 @@ class StreamsController(CoreController):
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
             queue_player=queue_player,
-            default_sample_rate=FLOW_MAX_SAMPLE_RATE,
-            default_bit_depth=FLOW_MAX_BIT_DEPTH,
+            default_sample_rate=FLOW_DEFAULT_SAMPLE_RATE,
+            default_bit_depth=FLOW_DEFAULT_BIT_DEPTH,
         )
         # prepare request, add some DLNA/UPNP compatible headers
         enable_icy = request.headers.get("Icy-MetaData", "") == "1"
@@ -794,7 +795,6 @@ class StreamsController(CoreController):
         assert pcm_format.content_type.is_pcm()
         queue_track = None
         last_fadeout_part = b""
-        total_bytes_written = 0
         queue.flow_mode = True
         use_crossfade = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_CROSSFADE, False
@@ -855,6 +855,7 @@ class StreamsController(CoreController):
             ):
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
+                del chunk
                 if len(buffer) < buffer_size:
                     # buffer is not full enough, move on
                     continue
@@ -884,10 +885,9 @@ class StreamsController(CoreController):
 
                 #### OTHER: enough data in buffer, feed to output
                 else:
-                    chunk_size = len(chunk)
-                    yield buffer[:chunk_size]
-                    bytes_written += chunk_size
-                    buffer = buffer[chunk_size:]
+                    yield buffer[:pcm_sample_size]
+                    bytes_written += pcm_sample_size
+                    buffer = buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
             if last_fadeout_part:
@@ -906,28 +906,27 @@ class StreamsController(CoreController):
                 # no crossfade enabled, just yield the (entire) buffer last part
                 yield buffer
                 bytes_written += len(buffer)
-            # clear vars
-            buffer = b""
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
-            queue_track.streamdetails.seconds_streamed = bytes_written / pcm_sample_size
+            seconds_streamed = bytes_written / pcm_sample_size
+            queue_track.streamdetails.seconds_streamed = seconds_streamed
             queue_track.streamdetails.duration = (
-                queue_track.streamdetails.seconds_skipped
-                or 0 + queue_track.streamdetails.seconds_streamed
+                queue_track.streamdetails.seek_position + seconds_streamed
             )
-            total_bytes_written += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s - seconds streamed: %s",
                 queue_track.streamdetails.uri,
                 queue_track.name,
                 queue.display_name,
-                queue_track.streamdetails.seconds_streamed,
+                seconds_streamed,
             )
 
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:
             yield last_fadeout_part
+            del last_fadeout_part
+        del buffer
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     def _log_request(self, request: web.Request) -> None:

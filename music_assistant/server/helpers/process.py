@@ -102,21 +102,21 @@ class AsyncProcess:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
-            yield chunk
-            if len(chunk) < n:
+            if len(chunk) == 0:
                 break
+            yield chunk
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
-            if chunk == b"":
+            if len(chunk) == 0:
                 break
             yield chunk
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
-        if self.closed:
+        if self._close_called or self.proc.stdout.at_eof():
             return b""
         try:
             async with self._stdout_lock:
@@ -131,27 +131,31 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        if self.closed:
+        if self._close_called or self.proc.stdout.at_eof():
+            return b""
+        if self.proc.stdout.at_eof():
             return b""
         async with self._stdout_lock:
             return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self.closed or self.proc.stdin.is_closing():
+        if self._close_called or self.proc.stdin.is_closing():
             return
+        if not self.proc or self.proc.returncode is not None:
+            raise RuntimeError("Process not started or already exited")
         async with self._stdin_lock:
             self.proc.stdin.write(data)
-            if self.closed or self.proc.stdin.is_closing():
-                return
             with suppress(BrokenPipeError):
                 await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
         if not self._enable_stdin:
-            return
-        if self.closed or self.proc.stdin.is_closing():
+            raise RuntimeError("STDIN is not enabled")
+        if not self.proc or self.proc.returncode is not None:
+            raise RuntimeError("Process not started or already exited")
+        if self._close_called or self.proc.stdin.is_closing():
             return
         try:
             async with self._stdin_lock:

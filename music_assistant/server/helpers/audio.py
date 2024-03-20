@@ -392,7 +392,6 @@ async def get_media_stream(  # noqa: PLR0915
     """
     logger = LOGGER.getChild("media_stream")
     bytes_sent = 0
-    streamdetails.seconds_skipped = streamdetails.seek_position
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     if is_radio or streamdetails.seek_position:
         strip_silence_begin = False
@@ -400,7 +399,7 @@ async def get_media_stream(  # noqa: PLR0915
     pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
     chunk_size = pcm_sample_size * (1 if is_radio else 2)
     expected_chunks = int((streamdetails.duration or 0) / 2)
-    if expected_chunks < 60:
+    if expected_chunks < 10:
         strip_silence_end = False
 
     # collect all arguments for ffmpeg
@@ -485,11 +484,9 @@ async def get_media_stream(  # noqa: PLR0915
             if prev_chunk:
                 yield prev_chunk
                 bytes_sent += len(prev_chunk)
-
             prev_chunk = chunk
 
-        # all chunks received, strip silence of last part
-
+        # all chunks received, strip silence of last part if needed and yield remaining bytes
         if strip_silence_end and prev_chunk:
             final_chunk = await strip_silence(
                 mass,
@@ -500,9 +497,6 @@ async def get_media_stream(  # noqa: PLR0915
             )
         else:
             final_chunk = prev_chunk
-
-        # ensure the final chunk is sent
-        # its important this is done here at the end so we can catch errors first
         yield final_chunk
         bytes_sent += len(final_chunk)
         del final_chunk
