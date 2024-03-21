@@ -229,8 +229,35 @@ class SpotifyProvider(MusicProvider):
             if item and item["track"]["id"]:
                 yield await self._parse_track(item["track"])
 
+    async def _get_liked_songs_playlist(self) -> Playlist:
+        liked_songs = Playlist(
+            item_id="tracks",
+            provider=self.domain,
+            name="Liked Songs",  # TODO to be translated
+            owner="Me",  # TODO Get logged in user display name
+            provider_mappings={
+                ProviderMapping(
+                    item_id="tracks",
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url="https://open.spotify.com/collection/tracks",
+                )
+            },
+        )
+
+        liked_songs.is_editable = False  # TODO Editing requires special endpoints
+
+        liked_songs.metadata.images = [
+            MediaItemImage(
+                type=ImageType.THUMB, path="https://misc.scdn.co/liked-songs/liked-songs-64.png"
+            )
+        ]
+
+        return liked_songs
+
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
+        yield await self._get_liked_songs_playlist()
         for item in await self._get_all_items("me/playlists"):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
@@ -252,8 +279,11 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
-        return await self._parse_playlist(playlist_obj)
+        if prov_playlist_id == "tracks":
+            return await self._get_liked_songs_playlist()
+        else:
+            playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
+            return await self._parse_playlist(playlist_obj)
 
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
@@ -266,8 +296,11 @@ class SpotifyProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
+        uri = (
+            "me/tracks" if prov_playlist_id == "tracks" else f"playlists/{prov_playlist_id}/tracks"
+        )
         for item in await self._get_all_items(
-            f"playlists/{prov_playlist_id}/tracks",
+            uri,
         ):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
