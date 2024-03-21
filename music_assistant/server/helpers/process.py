@@ -36,10 +36,13 @@ class AsyncProcess:
 
     def __init__(
         self,
-        args: list[str],
+        args: list[str] | str,
         enable_stdin: bool = False,
         enable_stdout: bool = True,
         enable_stderr: bool = False,
+        custom_stdin: AsyncGenerator[bytes, None] | int | None = None,
+        custom_stdout: int | None = None,
+        name: str | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
         self.proc: asyncio.subprocess.Process | None = None
@@ -48,10 +51,17 @@ class AsyncProcess:
         self._enable_stdout = enable_stdout
         self._enable_stderr = enable_stderr
         self._close_called = False
-        self._stdin_lock = asyncio.Lock()
-        self._stdout_lock = asyncio.Lock()
-        self._stderr_lock = asyncio.Lock()
         self._returncode: bool | None = None
+        self._custom_stdout = custom_stdout
+        self._name = name
+        self.attached_tasks: list[asyncio.Task] = []
+        if isinstance(custom_stdin, int):
+            self._custom_stdin = custom_stdin
+        elif custom_stdin:
+            self.attached_tasks.append(asyncio.create_task(self._feed_stdin(custom_stdin)))
+        else:
+            self._custom_stdin = None
+        self._custom_stdout = custom_stdout
 
     @property
     def closed(self) -> bool:
@@ -81,22 +91,29 @@ class AsyncProcess:
         """Exit context manager."""
         await self.close()
         self._returncode = self.returncode
-        del self.proc
-        del self._stdin_lock
-        del self._stdout_lock
-        del self._returncode
 
     async def start(self) -> None:
         """Perform Async init of process."""
-        self.proc = await asyncio.create_subprocess_exec(
-            *self._args,
-            stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
-            stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
-            stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-            close_fds=True,
-        )
-        proc_name_simple = self._args[0].split(os.sep)[-1]
-        LOGGER.debug("Started %s with PID %s", proc_name_simple, self.proc.pid)
+        stdin = self._custom_stdin if self._custom_stdin is not None else asyncio.subprocess.PIPE
+        stdout = self._custom_stdout if self._custom_stdout is not None else asyncio.subprocess.PIPE
+        if isinstance(self._args, str):
+            proc_name_simple = self._args.split(" ")[0].split(os.sep)[-1]
+            self.proc = await asyncio.create_subprocess_shell(
+                self._args,
+                stdin=stdin if self._enable_stdin else None,
+                stdout=stdout if self._enable_stdout else None,
+                stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
+            )
+        else:
+            self.proc = await asyncio.create_subprocess_exec(
+                *self._args,
+                stdin=stdin if self._enable_stdin else None,
+                stdout=stdout if self._enable_stdout else None,
+                stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
+            )
+            proc_name_simple = self._args[0].split(os.sep)[-1]
+        self._name = self._name or proc_name_simple
+        LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
@@ -116,11 +133,8 @@ class AsyncProcess:
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
-        if self._close_called or self.proc.stdout.at_eof():
-            return b""
         try:
-            async with self._stdout_lock:
-                return await self.proc.stdout.readexactly(n)
+            return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
 
@@ -131,36 +145,21 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        if self._close_called or self.proc.stdout.at_eof():
-            return b""
-        if self.proc.stdout.at_eof():
-            return b""
-        async with self._stdout_lock:
-            return await self.proc.stdout.read(n)
+        return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self._close_called or self.proc.stdin.is_closing():
-            return
-        if not self.proc or self.proc.returncode is not None:
-            raise RuntimeError("Process not started or already exited")
-        async with self._stdin_lock:
-            self.proc.stdin.write(data)
-            with suppress(BrokenPipeError):
-                await self.proc.stdin.drain()
+        self.proc.stdin.write(data)
+        with suppress(BrokenPipeError, ConnectionResetError):
+            await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if not self._enable_stdin:
-            raise RuntimeError("STDIN is not enabled")
-        if not self.proc or self.proc.returncode is not None:
-            raise RuntimeError("Process not started or already exited")
         if self._close_called or self.proc.stdin.is_closing():
             return
         try:
-            async with self._stdin_lock:
-                if self.proc.stdin.can_write_eof():
-                    self.proc.stdin.write_eof()
+            if self.proc.stdin.can_write_eof():
+                self.proc.stdin.write_eof()
         except (
             AttributeError,
             AssertionError,
@@ -174,20 +173,28 @@ class AsyncProcess:
     async def close(self) -> int:
         """Close/terminate the process and wait for exit."""
         self._close_called = True
-        if self.proc.returncode is None:
+        for task in self.attached_tasks:
+            if not task.done():
+                with suppress(asyncio.CancelledError):
+                    task.cancel()
+                    await task
+        while self.proc.returncode is None:
             # make sure the process is cleaned up
             try:
                 # we need to use communicate to ensure buffers are flushed
-                await asyncio.wait_for(self.proc.communicate(), 5)
+                await asyncio.wait_for(self.proc.communicate(), 0.5)
             except TimeoutError:
                 LOGGER.debug(
-                    "Process with PID %s did not stop within 5 seconds. Sending terminate...",
+                    "Process %s with PID %s did not stop in time. Sending terminate...",
+                    self._name,
                     self.proc.pid,
                 )
                 self.proc.terminate()
-                await self.proc.communicate()
         LOGGER.debug(
-            "Process with PID %s stopped with returncode %s", self.proc.pid, self.proc.returncode
+            "Process %s with PID %s stopped with returncode %s",
+            self._name,
+            self.proc.pid,
+            self.proc.returncode,
         )
         return self.proc.returncode
 
@@ -199,19 +206,19 @@ class AsyncProcess:
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
-        if self.closed:
-            return (b"", b"")
-        async with self._stdout_lock, self._stdin_lock, self._stderr_lock:
-            stdout, stderr = await self.proc.communicate(input_data)
+        stdout, stderr = await self.proc.communicate(input_data)
         return (stdout, stderr)
 
     async def read_stderr(self) -> AsyncGenerator[bytes, None]:
         """Read lines from the stderr stream."""
-        async with self._stderr_lock:
-            async for line in self.proc.stderr:
-                if self.closed:
-                    break
-                yield line
+        async for line in self.proc.stderr:
+            yield line
+
+    async def _feed_stdin(self, custom_stdin: AsyncGenerator[bytes, None]) -> None:
+        """Feed stdin with chunks from an AsyncGenerator."""
+        async for chunk in custom_stdin:
+            await self.write(chunk)
+        await self.write_eof()
 
 
 async def check_output(shell_cmd: str) -> tuple[int, bytes]:
