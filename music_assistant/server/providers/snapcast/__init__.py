@@ -33,10 +33,10 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.constants import UGP_PREFIX
 from music_assistant.server.helpers.audio import get_media_stream
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
-from music_assistant.server.providers.ugp import UGP_PREFIX
 
 if TYPE_CHECKING:
     from snapcast.control.group import Snapgroup

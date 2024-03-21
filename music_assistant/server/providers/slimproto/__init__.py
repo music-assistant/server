@@ -53,10 +53,10 @@ from music_assistant.constants import (
     CONF_PORT,
     CONF_SYNC_ADJUST,
     MASS_LOGO_ONLINE,
+    UGP_PREFIX,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
-from music_assistant.server.providers.ugp import UGP_PREFIX
 
 if TYPE_CHECKING:
     from aioslimproto.models import SlimEvent

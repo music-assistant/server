@@ -133,9 +133,7 @@ class PlayerProvider(Provider):
         This will NOT be called if the player is using flow mode to playback the queue.
         """
 
-    async def play_announcement(
-        self, player_id: str, announcement_url: str, use_pre_announce: bool = False
-    ) -> None:
+    async def play_announcement(self, player_id: str, announcement_url: str) -> None:
         """Handle (provider native) playback of an announcement on given player."""
         # will only be called for players with PLAY_ANNOUNCEMENT feature set.
         raise NotImplementedError

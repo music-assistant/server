@@ -402,17 +402,11 @@ class SonosPlayerProvider(PlayerProvider):
 
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
 
-    async def play_announcement(
-        self, player_id: str, announcement_url: str, use_pre_announce: bool = False
-    ) -> None:
+    async def play_announcement(self, player_id: str, announcement_url: str) -> None:
         """Handle (provider native) playback of an announcement on given player."""
-        if use_pre_announce:
-            announcement_url = self.mass.streams.get_announcement_url(
-                player_id, announcement_url, True
-            )
         sonos_player = self.sonosplayers[player_id]
         mass_player = self.mass.players.get(player_id)
-        temp_volume = int(min(75, mass_player.volume_level * 1.5))
+        temp_volume = max(int(min(75, mass_player.volume_level) * 1.5), 15)
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",
             announcement_url,

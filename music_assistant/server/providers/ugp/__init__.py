@@ -29,7 +29,12 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_GROUP_MEMBERS,
+    SYNCGROUP_PREFIX,
+    UGP_PREFIX,
+)
 from music_assistant.server.controllers.streams import (
     FLOW_DEFAULT_BIT_DEPTH,
     FLOW_DEFAULT_SAMPLE_RATE,
@@ -43,8 +48,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-
-UGP_PREFIX = "ugp_"
 
 
 # ruff: noqa: ARG002
@@ -173,8 +176,6 @@ class UniversalGroupProvider(PlayerProvider):
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
-
-        await self.cmd_stop(player_id)
 
         # create a multi-client stream job - all (direct) child's of this UGP group
         # will subscribe to this multi client queue stream
