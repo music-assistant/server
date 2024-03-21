@@ -366,7 +366,7 @@ class AirplayStream:
         async for chunk in self.stream_job.iter_player_audio(
             self.airplay_player.player_id, AIRPLAY_PCM_FORMAT
         ):
-            if self._stop_requested:
+            if self._cliraop_proc.closed:
                 return
             await self._cliraop_proc.write(chunk)
             # send metadata to player(s) if needed

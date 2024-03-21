@@ -317,7 +317,7 @@ class MusicAssistant:
         if target is None:
             msg = "Target is missing"
             raise RuntimeError(msg)
-        if existing := self._tracked_tasks.get(task_id):
+        if task_id and (existing := self._tracked_tasks.get(task_id)):
             # prevent duplicate tasks if task_id is given and already present
             return existing
         if asyncio.iscoroutinefunction(target):
@@ -328,19 +328,25 @@ class MusicAssistant:
             task = target
         else:
             # assume normal callable (non coroutine or awaitable)
+            # that needs to be run in the executor
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
         def task_done_callback(_task: asyncio.Future | asyncio.Task) -> None:
             _task_id = task.task_id
             self._tracked_tasks.pop(_task_id)
-            # print unhandled exceptions
-            if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
-                task_name = _task.get_name() if hasattr(_task, "get_name") else _task
-                LOGGER.exception(
-                    "Exception in task %s - target: %s",
+            # log unhandled exceptions
+            if (
+                LOGGER.isEnabledFor(logging.DEBUG)
+                and not _task.cancelled()
+                and (err := _task.exception())
+            ):
+                task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
+                LOGGER.warning(
+                    "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),
-                    exc_info=task.exception(),
+                    str(err),
+                    exc_info=err if LOGGER.isEnabledFor(logging.DEBUG) else None,
                 )
 
         if task_id is None:
