@@ -236,7 +236,7 @@ class AirplayStream:
             "-port",
             str(self.airplay_player.discovery_info.port),
             "-wait",
-            str(2000 - sync_adjust),
+            str(3000 - sync_adjust),
             "-volume",
             str(mass_player.volume_level),
             *extra_args,
@@ -252,15 +252,25 @@ class AirplayStream:
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
 
+        # connect cliraop stdin with ffmpeg stdout using os pipes
+        read, write = os.pipe()
+        # launch ffmpeg, feeding (player specific) audio chunks on stdout
+        self._audio_reader_task = asyncio.create_task(
+            stream_job.stream_to_custom_output_path(
+                player_id=player_id, output_format=AIRPLAY_PCM_FORMAT, output_path=write
+            )
+        )
         self._cliraop_proc = AsyncProcess(
             cliraop_args,
             enable_stdin=True,
             enable_stdout=False,
             enable_stderr=True,
+            custom_stdin=read,
         )
         await self._cliraop_proc.start()
         self._log_reader_task = asyncio.create_task(self._log_watcher())
-        self._audio_reader_task = asyncio.create_task(self._audio_reader())
+
+        # self._audio_reader_task = asyncio.create_task(self._audio_reader())
 
     async def stop(self, wait: bool = True):
         """Stop playback and cleanup."""
@@ -303,36 +313,48 @@ class AirplayStream:
         """Monitor stderr for the running CLIRaop process."""
         airplay_player = self.airplay_player
         mass_player = self.mass.players.get(airplay_player.player_id)
+        queue = self.mass.player_queues.get_active_queue(mass_player.active_source)
         logger = airplay_player.logger
         lost_packets = 0
+        prev_metadata_checksum: str = ""
+        prev_progress_report: float = 0
         async for line in self._cliraop_proc.read_stderr():
             line = line.decode().strip()  # noqa: PLW2901
             if not line:
                 continue
             if "elapsed milliseconds:" in line:
-                # do not log this line, its too verbose
+                # this is received more or less every second while playing
                 millis = int(line.split("elapsed milliseconds: ")[1])
                 mass_player.elapsed_time = millis / 1000
                 mass_player.elapsed_time_last_updated = time.time()
-                continue
+                # send metadata to player(s) if needed
+                # NOTE: this must all be done in separate tasks to not disturb audio
+                now = time.time()
+                if queue and queue.current_item and queue.current_item.streamdetails:
+                    metadata_checksum = (
+                        queue.current_item.streamdetails.stream_title
+                        or queue.current_item.queue_item_id
+                    )
+                    if prev_metadata_checksum != metadata_checksum:
+                        prev_metadata_checksum = metadata_checksum
+                        prev_progress_report = now
+                        self.mass.create_task(self._send_metadata(queue))
+                    # send the progress report every 5 seconds
+                    elif now - prev_progress_report >= 5:
+                        prev_progress_report = now
+                        self.mass.create_task(self._send_progress(queue))
             if "set pause" in line or "Pause at" in line:
-                logger.debug("raop streaming paused")
                 mass_player.state = PlayerState.PAUSED
                 self.mass.players.update(airplay_player.player_id)
-                continue
             if "Restarted at" in line or "restarting w/ pause" in line:
-                logger.debug("raop streaming restarted after pause")
                 mass_player.state = PlayerState.PLAYING
                 self.mass.players.update(airplay_player.player_id)
-                continue
             if "restarting w/o pause" in line:
                 # streaming has started
-                logger.debug("raop streaming started")
                 mass_player.state = PlayerState.PLAYING
                 mass_player.elapsed_time = 0
                 mass_player.elapsed_time_last_updated = time.time()
                 self.mass.players.update(airplay_player.player_id)
-                continue
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 50:
@@ -341,57 +363,13 @@ class AirplayStream:
                     await self.mass.player_queues.stop(queue.queue_id)
                 else:
                     logger.debug(line)
-                continue
-            # verbose log everything else
+
             logger.log(VERBOSE_LOG_LEVEL, line)
 
         # if we reach this point, the process exited
         if airplay_player.active_stream == self:
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(airplay_player.player_id)
-
-    async def _audio_reader(self) -> None:
-        """Send audio chunks to the cliraop process."""
-        logger = self.airplay_player.logger
-        mass_player = self.mass.players.get(self.airplay_player.player_id, True)
-        queue = self.mass.player_queues.get_active_queue(mass_player.active_source)
-        logger.debug(
-            "Starting RAOP stream for Queue %s to %s",
-            queue.display_name,
-            mass_player.display_name,
-        )
-        prev_metadata_checksum: str = ""
-        prev_progress_report: float = 0
-
-        async for chunk in self.stream_job.iter_player_audio(
-            self.airplay_player.player_id, AIRPLAY_PCM_FORMAT
-        ):
-            if self._stop_requested:
-                return
-            await self._cliraop_proc.write(chunk)
-            # send metadata to player(s) if needed
-            # NOTE: this must all be done in separate tasks to not disturb audio
-            now = time.time()
-            if queue and queue.current_item and queue.current_item.streamdetails:
-                metadata_checksum = (
-                    queue.current_item.streamdetails.stream_title
-                    or queue.current_item.queue_item_id
-                )
-                if prev_metadata_checksum != metadata_checksum:
-                    prev_metadata_checksum = metadata_checksum
-                    prev_progress_report = now
-                    self.mass.create_task(self._send_metadata(queue))
-                # send the progress report every 5 seconds
-                elif now - prev_progress_report >= 5:
-                    prev_progress_report = now
-                    self.mass.create_task(self._send_progress(queue))
-        # send EOF
-        await self._cliraop_proc.write_eof()
-        logger.debug(
-            "Finished RAOP stream for Queue %s to %s",
-            queue.display_name,
-            mass_player.display_name,
-        )
 
     async def _send_metadata(self, queue: PlayerQueue) -> None:
         """Send metadata to player (and connected sync childs)."""
