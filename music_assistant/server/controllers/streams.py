@@ -13,6 +13,7 @@ import logging
 import time
 import urllib.parse
 from collections.abc import AsyncGenerator
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import shortuuid
@@ -151,8 +152,9 @@ class QueueStreamJob:
             self._audio_task.cancel()
         if not self._finished:
             # we need to make sure that we close the async generator
-            task = asyncio.create_task(self.pcm_audio_source.__anext__())
-            task.cancel()
+            with suppress(StopAsyncIteration):
+                task = asyncio.create_task(self.pcm_audio_source.__anext__())
+                task.cancel()
         self._finished = True
         for sub_queue in self.subscribed_players.values():
             empty_queue(sub_queue)
