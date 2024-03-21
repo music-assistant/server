@@ -13,7 +13,7 @@ from time import time
 from typing import TYPE_CHECKING
 
 import aiofiles
-from aiohttp import ClientResponseError, ClientTimeout
+from aiohttp import ClientError, ClientResponseError, ClientTimeout
 
 from music_assistant.common.helpers.global_cache import (
     get_global_cache_value,
@@ -544,36 +544,49 @@ async def get_radio_stream(
     """Get radio audio stream from HTTP, including metadata retrieval."""
     headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
     timeout = ClientTimeout(total=0, connect=30, sock_read=60)
-    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
-        headers = resp.headers
-        meta_int = int(headers.get("icy-metaint", "0"))
-        # stream with ICY Metadata
-        if meta_int:
-            LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
-            while True:
-                try:
-                    audio_chunk = await resp.content.readexactly(meta_int)
-                    yield audio_chunk
-                    meta_byte = await resp.content.readexactly(1)
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                except asyncio.exceptions.IncompleteReadError:
-                    break
-                if not meta_data:
-                    continue
-                meta_data = meta_data.rstrip(b"\0")
-                stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                if not stream_title:
-                    continue
-                stream_title = stream_title.group(1).decode()
-                if stream_title != streamdetails.stream_title:
-                    streamdetails.stream_title = stream_title
-        # Regular HTTP stream
-        else:
-            LOGGER.debug("Start streaming radio without ICY metadata from url %s", url)
-            async for chunk in resp.content.iter_any():
-                yield chunk
-        LOGGER.debug("Finished streaming radio from url %s", url)
+    retries = 5
+    while retries:
+        try:
+            async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
+                headers = resp.headers
+                meta_int = int(headers.get("icy-metaint", "0"))
+                # stream with ICY Metadata
+                if meta_int:
+                    LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
+                    while True:
+                        try:
+                            audio_chunk = await resp.content.readexactly(meta_int)
+                            yield audio_chunk
+                            meta_byte = await resp.content.readexactly(1)
+                            meta_length = ord(meta_byte) * 16
+                            meta_data = await resp.content.readexactly(meta_length)
+                        except asyncio.exceptions.IncompleteReadError:
+                            break
+                        if not meta_data:
+                            continue
+                        meta_data = meta_data.rstrip(b"\0")
+                        stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+                        if not stream_title:
+                            continue
+                        stream_title = stream_title.group(1).decode()
+                        if stream_title != streamdetails.stream_title:
+                            streamdetails.stream_title = stream_title
+                # Regular HTTP stream
+                else:
+                    LOGGER.debug("Start streaming radio without ICY metadata from url %s", url)
+                    async for chunk in resp.content.iter_any():
+                        yield chunk
+                LOGGER.debug("Finished streaming radio from url %s", url)
+        except ClientError as err:
+            LOGGER.warning(
+                "Error while streaming radio %s: %s",
+                url,
+                str(err),
+                exc_info=err if LOGGER.isEnabledFor(logging.DEBUG) else None,
+            )
+            if retries == 0:
+                raise
+            retries -= 1
 
 
 async def get_http_stream(
