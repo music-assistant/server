@@ -9,6 +9,16 @@ Developer docs
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.
 
 ## 🚀 Setting up your development environment
+
+### Using Devcontainer/Codespace
+* Using Codespace: Create/open your Codespace, and wait for the creation
+* Using VSCode Dev Container locally: `Dev Containers: Open Folder in Container...`, select the root of the project, and wait for the creation
+* Once VSCode has loaded, after a few seconds a terminal should pop with `Running postCreateCommand...`. Wait for the dependencies to install. You can monitor it with `Codespaces: View Creation Log`
+* Select the right Python interpreter with `Python: Select Interpreter`, and choose `./.venv/bin/python`
+* Hit (Fn +) F5 to start Music Assistant locally
+* Go to the `PORTS` tab in the bottom panel, open the `Forwarded Address` for the port `8095` to access the pre-compiled UI of Music Assistant 🎉
+
+### Manually
 With this repository cloned locally, execute the following commands in a terminal from the root of your repository:
 * `python -m venv .venv` (create a new separate virtual environment to nicely separate the project dependencies)
 * `source .venv/bin/activate` (activate the virtual environment)
