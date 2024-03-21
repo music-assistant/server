@@ -54,6 +54,8 @@ MEDIA_TYPE_NONE: Final = ""
 
 SUPPORTED_COLLECTION_TYPES: Final = [COLLECTION_TYPE_MUSIC]
 
+SUPPORTED_CONTAINER_FORMATS: Final = "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,m4a,m4b,dsf,opus,wv"
+
 PLAYABLE_ITEM_TYPES: Final = [ITEM_TYPE_AUDIO]
 
 
