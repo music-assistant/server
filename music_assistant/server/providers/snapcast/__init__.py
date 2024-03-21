@@ -177,7 +177,7 @@ class SnapCastProvider(PlayerProvider):
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
         await asyncio.sleep(6)  # prevent race conditions when reloading
-        await self._snapserver.stop()
+        self._snapserver.stop()
         self._snapserver_started.clear()
 
     def on_player_config_removed(self, player_id: str) -> None:
