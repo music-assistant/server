@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
     SILENCE_FILE,
+    UGP_PREFIX,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
@@ -103,6 +104,7 @@ class QueueStreamJob:
         self.mass = mass
         self.pcm_audio_source = pcm_audio_source
         self.pcm_format = pcm_format
+        self.auto_start = auto_start
         self.expected_players: set[str] = set()
         self.job_id = shortuuid.uuid()
         self.bytes_streamed: int = 0
@@ -112,8 +114,6 @@ class QueueStreamJob:
         self._running = False
         self.allow_start = asyncio.Event()
         self._audio_task = asyncio.create_task(self._stream_job_runner())
-        if auto_start:
-            self.allow_start.set()
 
     @property
     def finished(self) -> bool:
@@ -233,6 +233,8 @@ class QueueStreamJob:
         try:
             self._subscribed_players[player_id] = ffmpeg_proc
             self.logger.debug("Subscribed player %s", player_id)
+            if self.auto_start and len(self._subscribed_players) == len(self.expected_players):
+                self.allow_start.set()
             yield self
         finally:
             self._subscribed_players.pop(player_id, None)
@@ -427,9 +429,14 @@ class StreamsController(CoreController):
         if queue_item.media_type == MediaType.ANNOUNCEMENT:
             return queue_item.queue_item_id
         # handle request for (multi client) queue flow stream
-        if queue_item.queue_item_id in ("flow", queue_item.queue_id) or flow_mode:
-            # note: this will return an existing streamjonb if that was already created
-            # e.g. in case of universal group player
+        if queue_item.queue_id.startswith(UGP_PREFIX):
+            # special case: we got forwarded a request from a Universal Group Player
+            # use the existing stream job that was already created by UGP
+            stream_job = self.mass.streams.stream_jobs[queue_item.queue_id]
+            return stream_job.resolve_stream_url(player_id, output_codec)
+
+        if flow_mode:
+            # create a new flow mode stream job session
             pcm_format = AudioFormat(
                 content_type=ContentType.from_bit_depth(24),
                 sample_rate=FLOW_DEFAULT_SAMPLE_RATE,
@@ -475,9 +482,7 @@ class StreamsController(CoreController):
         This is called by player/sync group implementations to start streaming
         the queue audio to multiple players at once.
         """
-        if existing_job := self.stream_jobs.get(queue_id, None):
-            if existing_job.pending:
-                return existing_job
+        if existing_job := self.stream_jobs.pop(queue_id, None):
             # cleanup existing job first
             existing_job.stop()
         self.stream_jobs[queue_id] = stream_job = QueueStreamJob(

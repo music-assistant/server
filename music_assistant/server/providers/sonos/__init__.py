@@ -406,7 +406,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle (provider native) playback of an announcement on given player."""
         sonos_player = self.sonosplayers[player_id]
         mass_player = self.mass.players.get(player_id)
-        temp_volume = int(min(75, mass_player.volume_level * 1.5))
+        temp_volume = max(int(min(75, mass_player.volume_level) * 1.5), 15)
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",
             announcement_url,

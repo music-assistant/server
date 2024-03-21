@@ -1142,7 +1142,7 @@ class PlayerController(CoreController):
             with suppress(TimeoutError):
                 await self.wait_for_state(player, PlayerState.IDLE, 5)
         # increase volume a bit
-        temp_volume = int(min(75, prev_volume * 1.5))
+        temp_volume = max(int(min(75, prev_volume) * 1.5), 15)
         if temp_volume > prev_volume:
             self.logger.debug(
                 "Announcement to player %s - setting temporary volume (%s)...",
