@@ -5,5 +5,8 @@
   },
   "features": {
   },
-  "postCreateCommand": "./.devcontainer/post-create.sh"
+  "postCreateCommand": "./.devcontainer/post-create.sh",
+  "forwardPorts": [
+    8095
+  ]
 }
