@@ -64,11 +64,12 @@ if TYPE_CHECKING:
 DEFAULT_STREAM_HEADERS = {
     "transferMode.dlna.org": "Streaming",
     "contentFeatures.dlna.org": "DLNA.ORG_OP=00;DLNA.ORG_CI=0;DLNA.ORG_FLAGS=0d500000000000000000000000000000",  # noqa: E501
-    "Cache-Control": "no-cache",
+    "Cache-Control": "no-cache,must-revalidate",
+    "Pragma": "no-cache",
     "Connection": "close",
     "Accept-Ranges": "none",
-    "icy-name": "Music Assistant",
-    "icy-pub": "0",
+    "Icy-Name": "Music Assistant",
+    "Icy-Url": "https://music-assistant.io",
 }
 FLOW_DEFAULT_SAMPLE_RATE = 48000
 FLOW_DEFAULT_BIT_DEPTH = 24
@@ -122,7 +123,7 @@ class QueueStreamJob:
     @property
     def pending(self) -> bool:
         """Return if this Job is pending start."""
-        return not self.finished and not self._audio_task
+        return not self.finished and not self.running
 
     @property
     def running(self) -> bool:
@@ -137,9 +138,7 @@ class QueueStreamJob:
 
     def stop(self) -> None:
         """Stop running this job."""
-        if self._audio_task and self._audio_task.done():
-            return
-        if self._audio_task:
+        if self._audio_task and not self._audio_task.done():
             self._audio_task.cancel()
         self._finished = True
 
@@ -239,7 +238,7 @@ class QueueStreamJob:
             self._subscribed_players.pop(player_id, None)
             self.logger.debug("Unsubscribed client %s", player_id)
             # check if this was the last subscriber and we should cancel
-            await asyncio.sleep(2)
+            await asyncio.sleep(5)
             if len(self._subscribed_players) == 0 and not self.finished:
                 self.logger.debug("Cleaning up, all clients disappeared...")
                 self.stop()
@@ -250,7 +249,7 @@ class QueueStreamJob:
         retries = 50
         while retries:
             retries -= 1
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.1)
             if len(self._subscribed_players) != len(self.expected_players):
                 continue
             await asyncio.sleep(0.2)
