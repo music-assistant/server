@@ -95,6 +95,7 @@ from .const import (
     ITEM_TYPE_ARTIST,
     ITEM_TYPE_AUDIO,
     MAX_IMAGE_WIDTH,
+    SUPPORTED_CONTAINER_FORMATS,
     USER_APP_NAME,
 )
 
@@ -812,7 +813,9 @@ class JellyfinProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        url = API.audio_url(self._jellyfin_server.jellyfin, streamdetails.item_id, SUPPORTED_CONTAINER_FORMATS)
+        url = API.audio_url(
+            self._jellyfin_server.jellyfin, streamdetails.item_id, SUPPORTED_CONTAINER_FORMATS
+        )
 
         async for chunk in get_http_stream(self.mass, url, streamdetails, seek_position):
             yield chunk
