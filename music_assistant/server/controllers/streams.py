@@ -13,13 +13,17 @@ import logging
 import time
 import urllib.parse
 from collections.abc import AsyncGenerator
-from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING
 
 import shortuuid
 from aiohttp import web
 
-from music_assistant.common.helpers.util import get_ip, select_free_port, try_parse_bool
+from music_assistant.common.helpers.util import (
+    empty_queue,
+    get_ip,
+    select_free_port,
+    try_parse_bool,
+)
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -85,8 +89,8 @@ class QueueStreamJob:
     The whole idea here is that the (pcm) audio source can be sent to multiple
     players at once. For example for (slimproto/airplay) syncgroups and universal group.
 
-    All client players receive the exact same audio chunks from the source audio,
-    then encoded and/or resampled to the player's preferences.
+    All client players receive the exact same PCM audio chunks from the source audio,
+    which then can be optionally encoded and/or resampled to the player's preferences.
     In case a stream is restarted (e.g. when seeking),
     a new QueueStreamJob will be created.
     """
@@ -107,11 +111,11 @@ class QueueStreamJob:
         self.expected_players: set[str] = set()
         self.job_id = shortuuid.uuid()
         self.bytes_streamed: int = 0
-        self.logger = self.mass.streams.logger.getChild(f"stream_job.{self.job_id}")
-        self.subscribed_players: dict[str, AsyncProcess] = {}
+        self.logger = self.mass.streams.logger
+        self.subscribed_players: dict[str, asyncio.Queue[bytes]] = {}
         self._finished = False
         self.allow_start = auto_start
-        self._all_clients_present = asyncio.Event()
+        self._all_clients_connected = asyncio.Event()
         self._audio_task = asyncio.create_task(self._stream_job_runner())
 
     @property
@@ -122,13 +126,15 @@ class QueueStreamJob:
     @property
     def pending(self) -> bool:
         """Return if this Job is pending start."""
-        return not self.finished and not self._all_clients_present.is_set()
+        return not self.finished and not self._all_clients_connected.is_set()
 
     @property
     def running(self) -> bool:
         """Return if this Job is running."""
         return (
-            self._all_clients_present.is_set() and self._audio_task and not self._audio_task.done()
+            self._all_clients_connected.is_set()
+            and self._audio_task
+            and not self._audio_task.done()
         )
 
     def start(self) -> None:
@@ -137,13 +143,19 @@ class QueueStreamJob:
             raise RuntimeError("Task is already finished")
         self.allow_start = True
         if self.expected_players and len(self.subscribed_players) >= len(self.expected_players):
-            self._all_clients_present.set()
+            self._all_clients_connected.set()
 
     def stop(self) -> None:
         """Stop running this job."""
         if self._audio_task and not self._audio_task.done():
             self._audio_task.cancel()
+        if not self._finished:
+            # we need to make sure that we close the async generator
+            task = asyncio.create_task(self.pcm_audio_source.__anext__())
+            task.cancel()
         self._finished = True
+        for sub_queue in self.subscribed_players.values():
+            empty_queue(sub_queue)
 
     def resolve_stream_url(self, player_id: str, output_codec: ContentType) -> str:
         """Resolve the childplayer specific stream URL to this streamjob."""
@@ -170,32 +182,14 @@ class QueueStreamJob:
         self, player_id: str, output_format: AudioFormat, chunk_size: int | None = None
     ) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate player-specific audio."""
-        ffmpeg_args = get_ffmpeg_args(
+        async for chunk in get_ffmpeg_stream(
+            audio_input=self.subscribe(player_id),
             input_format=self.pcm_format,
             output_format=output_format,
             filter_params=get_player_filter_params(self.mass, player_id),
-            extra_args=[],
-            input_path="-",
-            output_path="-",
-            loglevel="info" if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet",
-        )
-        # launch ffmpeg process with player specific settings
-        # the stream_job_runner will start pushing pcm chunks to the stdin
-        # we then read the players-specific (encoded) output chunks
-        # from ffmpeg stdout and yield them
-        async with AsyncProcess(
-            ffmpeg_args, enable_stdin=True, enable_stdout=True, enable_stderr=False
-        ) as ffmpeg_proc, self.subscribe(player_id, ffmpeg_proc):
-            # read final chunks from ffmpeg's stdout
-            iterator = (
-                ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
-            )
-            async for chunk in iterator:
-                try:
-                    yield chunk
-                except (BrokenPipeError, ConnectionResetError):
-                    # race condition?
-                    break
+            chunk_size=chunk_size,
+        ):
+            yield chunk
 
     async def stream_to_custom_output_path(
         self, player_id: str, output_format: AudioFormat, output_path: str | int
@@ -219,63 +213,92 @@ class QueueStreamJob:
             enable_stdin=True,
             enable_stdout=custom_file_pointer,
             enable_stderr=False,
-        ) as ffmpeg_proc, self.subscribe(player_id, ffmpeg_proc):
+            custom_stdin=self.subscribe(player_id),
+            custom_stdout=output_path if custom_file_pointer else None,
+            name="ffmpeg_custom_output_path",
+        ) as ffmpeg_proc:
             # we simply wait for the process to exit
             await ffmpeg_proc.wait()
 
-    @asynccontextmanager
-    async def subscribe(
-        self, player_id: str, ffmpeg_proc: AsyncProcess
-    ) -> AsyncGenerator[QueueStreamJob]:
-        """Subscribe consumer's (output) ffmpeg process."""
-        if self.running:
-            # client subscribes while we're already started
-            # that will probably cause side effects but let it go
-            self.logger.warning(
-                "Player %s is joining while the stream is already started!", player_id
-            )
+    async def subscribe(self, player_id: str) -> AsyncGenerator[bytes, None]:
+        """Subscribe consumer and iterate incoming chunks on the queue."""
         try:
-            self.subscribed_players[player_id] = ffmpeg_proc
-            self.logger.debug("Subscribed player %s", player_id)
+            self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
+
+            if self._all_clients_connected.is_set():
+                # client subscribes while we're already started
+                self.logger.warning(
+                    "Client %s is joining while the stream is already started", player_id
+                )
+
+            self.logger.debug("Subscribed client %s", player_id)
+
             if (
-                self.allow_start
-                and self.expected_players
-                and len(self.subscribed_players) >= len(self.expected_players)
+                self.expected_players
+                and self.allow_start
+                and len(self.subscribed_players) == len(self.expected_players)
             ):
-                self._all_clients_present.set()
-            yield self
+                # we reached the number of expected subscribers, set event
+                # so that chunks can be pushed
+                self._all_clients_connected.set()
+
+            # keep reading audio chunks from the queue until we receive an empty one
+            while True:
+                chunk = await sub_queue.get()
+                if chunk == b"":
+                    # EOF chunk received
+                    break
+                yield chunk
         finally:
             self.subscribed_players.pop(player_id, None)
             self.logger.debug("Unsubscribed client %s", player_id)
             # check if this was the last subscriber and we should cancel
-            await asyncio.sleep(5)
-            if len(self.subscribed_players) == 0 and not self.finished:
+            await asyncio.sleep(2)
+            if len(self.subscribed_players) == 0 and self._audio_task and not self.finished:
                 self.logger.debug("Cleaning up, all clients disappeared...")
                 self.stop()
 
+    async def _put_chunk(self, chunk: bytes) -> None:
+        """Put chunk of data to all subscribers."""
+        async with asyncio.TaskGroup() as tg:
+            for sub_queue in list(self.subscribed_players.values()):
+                # put this chunk on the player's subqueue
+                tg.create_task(sub_queue.put(chunk))
+        self.bytes_streamed += len(chunk)
+
     async def _stream_job_runner(self) -> None:
         """Feed audio chunks to StreamJob subscribers."""
-        await self._all_clients_present.wait()
-        self.logger.debug(
-            "Starting stream job %s with %s out of %s connected clients",
-            self.job_id,
-            len(self.subscribed_players),
-            len(self.expected_players),
-        )
+        chunk_num = 0
         async for chunk in self.pcm_audio_source:
-            num_subscribers = len(self.subscribed_players)
-            if num_subscribers == 0:
-                break
-            async with asyncio.TaskGroup() as tg:
-                for ffmpeg_proc in list(self.subscribed_players.values()):
-                    tg.create_task(ffmpeg_proc.write(chunk))
+            chunk_num += 1
+            if chunk_num == 1:
+                # wait until all expected clients are connected
+                try:
+                    async with asyncio.timeout(10):
+                        await self._all_clients_connected.wait()
+                except TimeoutError:
+                    if len(self.subscribed_players) == 0:
+                        self.logger.exception(
+                            "Abort multi client stream job  %s: "
+                            "client(s) did not connect within timeout",
+                            self.job_id,
+                        )
+                        break
+                    # not all clients connected but timeout expired, set flag and move on
+                    # with all clients that did connect
+                    self._all_clients_connected.set()
+                else:
+                    self.logger.debug(
+                        "Starting queue stream job %s with %s (out of %s) connected clients",
+                        self.job_id,
+                        len(self.subscribed_players),
+                        len(self.expected_players),
+                    )
 
-        # write EOF at end of queue stream
-        async with asyncio.TaskGroup() as tg:
-            for ffmpeg_proc in list(self.subscribed_players.values()):
-                tg.create_task(ffmpeg_proc.write_eof())
-        self.logger.debug("Finished stream job %s", self.job_id)
-        self._finished = True
+            await self._put_chunk(chunk)
+
+        # mark EOF with empty chunk
+        await self._put_chunk(b"")
 
 
 def parse_pcm_info(content_type: str) -> tuple[int, int, int]:
@@ -617,6 +640,8 @@ class StreamsController(CoreController):
                 "to the same stream, playback may be disturbed!",
                 player_id,
             )
+        elif "rincon" in player_id.lower():
+            await asyncio.sleep(0.1)
 
         # all checks passed, start streaming!
         self.logger.debug(
@@ -924,7 +949,6 @@ class StreamsController(CoreController):
             if content_type == ContentType.PCM:
                 # resolve generic pcm type
                 content_type = ContentType.from_bit_depth(output_bit_depth)
-
         else:
             output_sample_rate = min(default_sample_rate, queue_player.max_sample_rate)
             player_max_bit_depth = 24 if queue_player.supports_24bit else 16
