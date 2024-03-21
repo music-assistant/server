@@ -29,6 +29,7 @@ from music_assistant.constants import (
     CONFIGURABLE_CORE_CONTROLLERS,
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
@@ -627,7 +628,13 @@ class MusicAssistant:
                 await info.async_request(zeroconf, 3000)
             await prov.on_mdns_service_state_change(name, state_change, info)
 
-        LOGGER.debug(f"Service {name} of type {service_type} state changed: {state_change}")
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
+            "Service %s of type %s state changed: %s",
+            name,
+            service_type,
+            state_change,
+        )
         for prov in self._providers.values():
             if not prov.manifest.mdns_discovery:
                 continue
@@ -647,9 +654,6 @@ class MusicAssistant:
     ) -> bool | None:
         """Exit context manager."""
         await self.stop()
-        if exc_val:
-            raise exc_val
-        return exc_type
 
     async def _update_available_providers_cache(self) -> None:
         """Update the global cache variable of loaded/available providers."""

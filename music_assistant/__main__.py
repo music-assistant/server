@@ -29,14 +29,6 @@ MAX_LOG_FILESIZE = 1000000 * 10  # 10 MB
 ALPINE_RELEASE_FILE = "/etc/alpine-release"
 
 
-class VerboseLogger(logging.Logger):
-    """Custom python logger with included verbose log level."""
-
-    def verbose(self, msg, *args, **kwargs):
-        """Log a verbose message."""
-        self.log(VERBOSE_LOG_LEVEL, msg, *args, **kwargs)
-
-
 def get_arguments():
     """Arguments handling."""
     parser = argparse.ArgumentParser(description="MusicAssistant")
@@ -103,7 +95,6 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logger = logging.getLogger()
     logger.addHandler(file_handler)
     logging.addLevelName(VERBOSE_LOG_LEVEL, "VERBOSE")
-    logging.setLoggerClass(VerboseLogger)
 
     # apply the configured global log level to the (root) music assistant logger
     logging.getLogger(ROOT_LOGGER_NAME).setLevel(level)

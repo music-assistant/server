@@ -192,7 +192,7 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
         item_name = f"{streamdetails.provider}/{streamdetails.item_id}"
         LOGGER.debug("Start analyzing EBU R128 loudness for %s", item_name)
         # calculate EBU R128 integrated loudness with ffmpeg
-        ffmpeg_args = _get_ffmpeg_args(
+        ffmpeg_args = get_ffmpeg_args(
             input_format=streamdetails.audio_format,
             output_format=streamdetails.audio_format,
             filter_params=["loudnorm=print_format=json"],
@@ -215,7 +215,7 @@ async def analyze_loudness(mass: MusicAssistant, streamdetails: StreamDetails) -
                     if chunk_count == 600:
                         # safety guard: max (more or less) 10 minutes of audio may be analyzed!
                         break
-                ffmpeg_proc.write_eof()
+                await ffmpeg_proc.write_eof()
 
             _, stderr = await ffmpeg_proc.communicate()
             if loudness_details := _parse_loudnorm(stderr):
@@ -392,7 +392,6 @@ async def get_media_stream(  # noqa: PLR0915
     """
     logger = LOGGER.getChild("media_stream")
     bytes_sent = 0
-    streamdetails.seconds_skipped = streamdetails.seek_position
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     if is_radio or streamdetails.seek_position:
         strip_silence_begin = False
@@ -400,7 +399,7 @@ async def get_media_stream(  # noqa: PLR0915
     pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
     chunk_size = pcm_sample_size * (1 if is_radio else 2)
     expected_chunks = int((streamdetails.duration or 0) / 2)
-    if expected_chunks < 60:
+    if expected_chunks < 10:
         strip_silence_end = False
 
     # collect all arguments for ffmpeg
@@ -424,7 +423,7 @@ async def get_media_stream(  # noqa: PLR0915
         filter_params.append(filter_rule)
     if streamdetails.fade_in:
         filter_params.append("afade=type=in:start_time=0:duration=3")
-    ffmpeg_args = _get_ffmpeg_args(
+    ffmpeg_args = get_ffmpeg_args(
         input_format=streamdetails.audio_format,
         output_format=pcm_format,
         filter_params=filter_params,
@@ -449,7 +448,7 @@ async def get_media_stream(  # noqa: PLR0915
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
-        ffmpeg_proc.write_eof()
+        await ffmpeg_proc.write_eof()
         logger.log(VERBOSE_LOG_LEVEL, "writer finished for %s", streamdetails.uri)
 
     if streamdetails.direct is None:
@@ -485,11 +484,9 @@ async def get_media_stream(  # noqa: PLR0915
             if prev_chunk:
                 yield prev_chunk
                 bytes_sent += len(prev_chunk)
-
             prev_chunk = chunk
 
-        # all chunks received, strip silence of last part
-
+        # all chunks received, strip silence of last part if needed and yield remaining bytes
         if strip_silence_end and prev_chunk:
             final_chunk = await strip_silence(
                 mass,
@@ -500,9 +497,6 @@ async def get_media_stream(  # noqa: PLR0915
             )
         else:
             final_chunk = prev_chunk
-
-        # ensure the final chunk is sent
-        # its important this is done here at the end so we can catch errors first
         yield final_chunk
         bytes_sent += len(final_chunk)
         del final_chunk
@@ -727,9 +721,9 @@ async def get_ffmpeg_stream(
     Takes care of resampling and/or recoding if needed,
     according to player preferences.
     """
-    logger = LOGGER.getChild("media_stream")
+    logger = LOGGER.getChild("ffmpeg_stream")
     use_stdin = not isinstance(audio_input, str)
-    ffmpeg_args = _get_ffmpeg_args(
+    ffmpeg_args = get_ffmpeg_args(
         input_format=input_format,
         output_format=output_format,
         filter_params=filter_params or [],
@@ -750,7 +744,7 @@ async def get_ffmpeg_stream(
             if ffmpeg_proc.closed:
                 return
             await ffmpeg_proc.write(chunk)
-        ffmpeg_proc.write_eof()
+        await ffmpeg_proc.write_eof()
 
     try:
         if not isinstance(audio_input, str):
@@ -768,7 +762,6 @@ async def get_ffmpeg_stream(
         if writer_task and not writer_task.done():
             writer_task.cancel()
         # use communicate to read stderr and wait for exit
-        # read log for loudness measurement (or errors)
         _, stderr = await ffmpeg_proc.communicate()
         if ffmpeg_proc.returncode != 0:
             # ffmpeg has a non zero returncode meaning trouble
@@ -787,7 +780,7 @@ async def check_audio_support() -> tuple[bool, bool, str]:
     version = output.decode().split("ffmpeg version ")[1].split(" ")[0].split("-")[0]
     libsoxr_support = "enable-libsoxr" in output.decode()
     result = (ffmpeg_present, libsoxr_support, version)
-    # store in global cache for easy access by '_get_ffmpeg_args'
+    # store in global cache for easy access by 'get_ffmpeg_args'
     await set_global_cache_values({"ffmpeg_support": result})
     return result
 
@@ -830,7 +823,7 @@ async def get_preview_stream(
         async for audio_chunk in music_prov.get_audio_stream(streamdetails, 30):
             await ffmpeg_proc.write(audio_chunk)
         # write eof when last packet is received
-        ffmpeg_proc.write_eof()
+        await ffmpeg_proc.write_eof()
 
     if not streamdetails.direct:
         writer_task = asyncio.create_task(writer())
@@ -935,13 +928,14 @@ def get_player_filter_params(
     return filter_params
 
 
-def _get_ffmpeg_args(
+def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
     extra_args: list[str],
     input_path: str = "-",
     output_path: str = "-",
+    loglevel: str = "info",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
     ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
@@ -962,7 +956,7 @@ def _get_ffmpeg_args(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "info",
+        loglevel,
         "-ignore_unknown",
         "-protocol_whitelist",
         "file,http,https,tcp,tls,crypto,pipe,data,fd",

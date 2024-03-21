@@ -20,14 +20,20 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
+    ContentType,
     PlayerFeature,
     PlayerState,
     PlayerType,
     ProviderFeature,
 )
+from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.server.controllers.streams import (
+    FLOW_DEFAULT_BIT_DEPTH,
+    FLOW_DEFAULT_SAMPLE_RATE,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -138,6 +144,8 @@ class UniversalGroupProvider(PlayerProvider):
                 if member.state == PlayerState.IDLE:
                     continue
                 tg.create_task(self.mass.players.cmd_stop(member.player_id))
+        if existing := self.mass.streams.stream_jobs.pop(player_id, None):
+            existing.stop()
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
@@ -166,11 +174,22 @@ class UniversalGroupProvider(PlayerProvider):
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
 
+        await self.cmd_stop(player_id)
+
         # create a multi-client stream job - all (direct) child's of this UGP group
         # will subscribe to this multi client queue stream
-        stream_job = await self.mass.streams.create_multi_client_stream_job(
-            player_id,
-            start_queue_item=queue_item,
+        pcm_format = AudioFormat(
+            content_type=ContentType.from_bit_depth(FLOW_DEFAULT_BIT_DEPTH),
+            sample_rate=FLOW_DEFAULT_SAMPLE_RATE,
+            bit_depth=FLOW_DEFAULT_BIT_DEPTH,
+        )
+        queue = self.mass.player_queues.get(player_id)
+        stream_job = self.mass.streams.create_stream_job(
+            queue.queue_id,
+            pcm_audio_source=self.mass.streams.get_flow_stream(
+                queue=queue, start_queue_item=queue_item, pcm_format=pcm_format
+            ),
+            pcm_format=pcm_format,
         )
         # create a fake queue item to forward to downstream play_media commands
         ugp_queue_item = QueueItem(

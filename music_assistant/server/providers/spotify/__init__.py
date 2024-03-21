@@ -402,7 +402,7 @@ class SpotifyProvider(MusicProvider):
             # retry with ap-port set to invalid value, which will force fallback
             args += ["--ap-port", "12345"]
             async with AsyncProcess(args) as librespot_proc:
-                async for chunk in librespot_proc.iter_any(64000):
+                async for chunk in librespot_proc.iter_any():
                     yield chunk
             self._ap_workaround = True
 

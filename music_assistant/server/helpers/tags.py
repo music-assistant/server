@@ -451,7 +451,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
             if ffmpeg_proc.closed:
                 break
             await ffmpeg_proc.write(chunk)
-        ffmpeg_proc.write_eof()
+        await ffmpeg_proc.write_eof()
 
     # feed the file contents to the process stdin
     if file_path == "-":

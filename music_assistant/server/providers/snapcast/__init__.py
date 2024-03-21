@@ -4,13 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import random
+import socket
 import time
 from contextlib import suppress
 from typing import TYPE_CHECKING, cast
 
 from snapcast.control import create_server
 from snapcast.control.client import Snapclient
+from zeroconf import NonUniqueNameException
+from zeroconf.asyncio import AsyncServiceInfo
 
+from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -136,6 +140,7 @@ class SnapCastProvider(PlayerProvider):
         self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         self._stream_tasks = {}
+
         if self._use_builtin_server:
             # start our own builtin snapserver
             self._snapserver_started = asyncio.Event()
@@ -169,11 +174,17 @@ class SnapCastProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         for client in self._snapserver.clients:
             await self.cmd_stop(client.identifier)
-        await self._snapserver.stop()
-        self._snapserver_started.clear()
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
-        await asyncio.sleep(2)  # prevent race conditions when reloading
+        await asyncio.sleep(6)  # prevent race conditions when reloading
+        await self._snapserver.stop()
+        self._snapserver_started.clear()
+
+    def on_player_config_removed(self, player_id: str) -> None:
+        """Call (by config manager) when the configuration of a player is removed."""
+        super().on_player_config_removed(player_id)
+        if self._use_builtin_server:
+            self.mass.create_task(self._snapserver.delete_client(player_id))
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -297,60 +308,59 @@ class SnapCastProvider(PlayerProvider):
             bit_depth=16,
             channels=2,
         )
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
-            # stream announcement url directly
-            audio_iterator = get_media_stream(
-                self.mass, queue_item.streamdetails, pcm_format=pcm_format
-            )
-        elif (
-            queue_item.queue_id.startswith(UGP_PREFIX)
-            and (stream_job := self.mass.streams.multi_client_jobs.get(queue_item.queue_id))
-            and stream_job.pending
-        ):
-            # handle special case for UGP multi client stream
-            stream_job = self.mass.streams.multi_client_jobs.get(queue_item.queue_id)
-            stream_job.expected_players.add(player_id)
-            audio_iterator = stream_job.subscribe(
-                player_id=player_id,
-                output_format=pcm_format,
-            )
+
+        if queue_item.queue_id.startswith(UGP_PREFIX):
+            # special case: we got forwarded a request from the UGP
+            # use the existing stream job that was already created by UGP
+            stream_job = self.mass.streams.stream_jobs[queue_item.queue_id]
         else:
-            audio_iterator = self.mass.streams.get_flow_stream(
-                queue,
-                start_queue_item=queue_item,
-                pcm_format=pcm_format,
+            if queue_item.media_type == MediaType.ANNOUNCEMENT:
+                # stream announcement url directly
+                audio_source = get_media_stream(
+                    self.mass, queue_item.streamdetails, pcm_format=pcm_format
+                )
+            else:
+                queue = self.mass.player_queues.get(queue_item.queue_id)
+                audio_source = self.mass.streams.get_flow_stream(
+                    queue, start_queue_item=queue_item, pcm_format=pcm_format
+                )
+            stream_job = self.mass.streams.create_stream_job(
+                queue_item.queue_id, pcm_audio_source=audio_source, pcm_format=pcm_format
             )
+        stream_job.expected_players.add(player_id)
 
         async def _streamer() -> None:
             host = self._snapcast_server_host
-            _, writer = await asyncio.open_connection(host, port)
-            self.logger.debug("Opened connection to %s:%s", host, port)
-            player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
-            player.elapsed_time = 0
-            player.elapsed_time_last_updated = time.time()
-            player.state = PlayerState.PLAYING
-            self._set_childs_state(player_id, PlayerState.PLAYING)
-            self.mass.players.register_or_update(player)
+            self.mass.players.update(player_id)
+
+            def stream_callback(_stream) -> None:
+                player.state = PlayerState(stream.status)
+                if player.state == PlayerState.PLAYING:
+                    player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
+                    player.elapsed_time = 0
+                    player.elapsed_time_last_updated = time.time()
+                self._set_childs_state(player_id, player.state)
+
+            stream.set_callback(stream_callback)
+            stream_path = f"tcp://{host}:{port}"
+            self.logger.debug("Start streaming to %s", stream_path)
             try:
-                async for pcm_chunk in audio_iterator:
-                    writer.write(pcm_chunk)
-                    await writer.drain()
-                # end of the stream reached
-                if writer.can_write_eof():
-                    writer.write_eof()
-                    await writer.drain()
-                # we need to wait a bit before removing the stream to ensure
-                # that all snapclients have consumed the audio
-                # https://github.com/music-assistant/hass-music-assistant/issues/1962
-                await asyncio.sleep(30)
+                await stream_job.stream_to_custom_output_path(
+                    player_id, pcm_format, f"tcp://{host}:{port}"
+                )
+                # we need to wait a bit for the stream status to become idle
+                # to ensure that all snapclients have consumed the audio
+                await self.mass.players.wait_for_state(player, PlayerState.IDLE)
             finally:
-                if not writer.is_closing():
-                    writer.close()
+                self.logger.debug("Finished streaming to %s", stream_path)
+                # there is no way to unsub the callback to we do this nasty
+                stream._callback_func = None
                 await self._snapserver.stream_remove_stream(stream.identifier)
-                self.logger.debug("Closed connection to %s:%s", host, port)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
+        if not queue_item.queue_id.startswith(UGP_PREFIX):
+            stream_job.start()
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
@@ -416,6 +426,38 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError("Snapserver is already started!")
         logger = self.logger.getChild("snapserver")
         logger.info("Starting builtin Snapserver...")
+        # register the snapcast mdns services
+        for name, port in (
+            ("-http", 1780),
+            ("-jsonrpc", 1705),
+            ("-stream", 1704),
+            ("-tcp", 1705),
+            ("", 1704),
+        ):
+            zeroconf_type = f"_snapcast{name}._tcp.local."
+            try:
+                info = AsyncServiceInfo(
+                    zeroconf_type,
+                    name=f"Snapcast.{zeroconf_type}",
+                    properties={"is_mass": "true"},
+                    addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+                    port=port,
+                    server=f"{socket.gethostname()}",
+                )
+                attr_name = f"zc_service_set{name}"
+                if getattr(self, attr_name, None):
+                    await self.mass.aiozc.async_update_service(info)
+                else:
+                    await self.mass.aiozc.async_register_service(info, strict=False)
+                setattr(self, attr_name, True)
+            except NonUniqueNameException:
+                self.logger.debug(
+                    "Could not register mdns record for %s as its already in use", zeroconf_type
+                )
+            except Exception as err:
+                self.logger.exception(
+                    "Could not register mdns record for %s: %s", zeroconf_type, str(err)
+                )
         async with AsyncProcess(
             ["snapserver"], enable_stdin=False, enable_stdout=True, enable_stderr=False
         ) as snapserver_proc:

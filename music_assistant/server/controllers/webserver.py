@@ -163,13 +163,13 @@ class WebserverController(CoreController):
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # start the webserver
+        default_publish_ip = await get_ip()
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor the webserver is secured by HA ingress
             # we only start the webserver on the internal docker network and ingress connects
             # to that internally and exposes the webUI securely
             # if a user also wants to expose a the webserver non securely on his internal
             # network he/she should explicitly do so (and know the risks)
-            default_publish_ip = await get_ip()
             self.publish_port = DEFAULT_SERVER_PORT
             if config.get_value(CONF_EXPOSE_SERVER):
                 bind_ip = "0.0.0.0"
@@ -183,7 +183,8 @@ class WebserverController(CoreController):
         else:
             base_url = config.get_value(CONF_BASE_URL)
             self.publish_port = config.get_value(CONF_BIND_PORT)
-            self.publish_ip = bind_ip = config.get_value(CONF_BIND_IP)
+            self.publish_ip = default_publish_ip
+            bind_ip = config.get_value(CONF_BIND_IP)
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=self.publish_port,

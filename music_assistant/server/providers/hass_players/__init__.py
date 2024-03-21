@@ -253,7 +253,7 @@ class HomeAssistantPlayers(PlayerProvider):
         """Handle PLAY MEDIA on given player."""
         use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
             player_id,
             queue_item=queue_item,
             output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
@@ -288,7 +288,7 @@ class HomeAssistantPlayers(PlayerProvider):
         This will NOT be called if the end of the queue is reached (and repeat disabled).
         This will NOT be called if the player is using flow mode to playback the queue.
         """
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
             player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,

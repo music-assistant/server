@@ -9,11 +9,7 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.client.exceptions import (
-    ConnectionClosed,
-    InvalidServerVersion,
-    InvalidState,
-)
+from music_assistant.client.exceptions import ConnectionClosed, InvalidServerVersion, InvalidState
 from music_assistant.common.models.api import (
     ChunkedResultMessage,
     CommandMessage,
@@ -299,9 +295,12 @@ class MusicAssistantClient:
         return self
 
     async def __aexit__(
-        self, exc_type: Exception, exc_value: str, traceback: TracebackType
-    ) -> None:
-        """Disconnect from the server and exit."""
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        """Exit context manager."""
         await self.disconnect()
 
     def __repr__(self) -> str:
