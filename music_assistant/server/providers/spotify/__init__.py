@@ -733,9 +733,12 @@ class SpotifyProvider(MusicProvider):
         if tokeninfo is None:
             tokeninfo = await self.login()
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
-        async with self._throttler, self.mass.http_session.get(
-            url, headers=headers, params=kwargs, ssl=True, timeout=120
-        ) as response:
+        async with (
+            self._throttler,
+            self.mass.http_session.get(
+                url, headers=headers, params=kwargs, ssl=True, timeout=120
+            ) as response,
+        ):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])

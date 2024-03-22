@@ -53,7 +53,7 @@ test = [
   "pytest==8.1.1",
   "pytest-aiohttp==1.0.5",
   "pytest-cov==4.1.0",
-  "ruff==0.2.2",
+  "ruff==0.3.3",
   "safety==3.0.1",
 ]
 

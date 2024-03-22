@@ -1,4 +1,5 @@
 """Models for providers and plugins in the MA ecosystem."""
+
 from __future__ import annotations
 
 import asyncio
