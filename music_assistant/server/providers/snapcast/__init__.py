@@ -448,7 +448,7 @@ class SnapCastProvider(PlayerProvider):
                     zeroconf_type,
                     name=f"Snapcast.{zeroconf_type}",
                     properties={"is_mass": "true"},
-                    addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+                    addresses=[await get_ip_pton(self.mass.streams.publish_ip)],
                     port=port,
                     server=f"{socket.gethostname()}.local",
                 )
