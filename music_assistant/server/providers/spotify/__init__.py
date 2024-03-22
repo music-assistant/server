@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
 
 CACHE_DIR = gettempdir()
+LIKED_SONGS_FAKE_PLAYLIST_ID = "liked_songs"
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -231,13 +232,13 @@ class SpotifyProvider(MusicProvider):
 
     async def _get_liked_songs_playlist(self) -> Playlist:
         liked_songs = Playlist(
-            item_id="tracks",
+            item_id=LIKED_SONGS_FAKE_PLAYLIST_ID,
             provider=self.domain,
             name="Liked Songs",  # TODO to be translated
             owner="Me",  # TODO Get logged in user display name
             provider_mappings={
                 ProviderMapping(
-                    item_id="tracks",
+                    item_id=LIKED_SONGS_FAKE_PLAYLIST_ID,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url="https://open.spotify.com/collection/tracks",
@@ -279,7 +280,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        if prov_playlist_id == "tracks":
+        if prov_playlist_id == LIKED_SONGS_FAKE_PLAYLIST_ID:
             return await self._get_liked_songs_playlist()
 
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
@@ -297,7 +298,9 @@ class SpotifyProvider(MusicProvider):
         """Get all playlist tracks for given playlist id."""
         count = 1
         uri = (
-            "me/tracks" if prov_playlist_id == "tracks" else f"playlists/{prov_playlist_id}/tracks"
+            "me/tracks"
+            if prov_playlist_id == LIKED_SONGS_FAKE_PLAYLIST_ID
+            else f"playlists/{prov_playlist_id}/tracks"
         )
         for item in await self._get_all_items(
             uri,
