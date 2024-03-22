@@ -37,7 +37,7 @@ from music_assistant.constants import (
     ENCRYPT_SUFFIX,
 )
 from music_assistant.server.helpers.api import api_command
-from music_assistant.server.helpers.util import get_provider_module
+from music_assistant.server.helpers.util import load_provider_module
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -231,7 +231,7 @@ class ConfigController:
         # lookup provider manifest and module
         for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
-                prov_mod = await get_provider_module(provider_domain)
+                prov_mod = await load_provider_module(provider_domain, prov.requirements)
                 break
         else:
             msg = f"Unknown provider domain: {provider_domain}"

@@ -43,9 +43,8 @@ from music_assistant.server.helpers.api import APICommandHandler, api_command
 from music_assistant.server.helpers.images import get_icon_string
 from music_assistant.server.helpers.util import (
     get_package_version,
-    get_provider_module,
-    install_package,
     is_hass_supervisor,
+    load_provider_module,
 )
 
 from .models import ProviderInstanceType
@@ -432,7 +431,7 @@ class MusicAssistant:
                 raise SetupFailedError(msg)
 
         # try to setup the module
-        prov_mod = await get_provider_module(domain)
+        prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         try:
             async with asyncio.timeout(30):
                 provider = await prov_mod.setup(self, prov_manifest, conf)
@@ -556,15 +555,6 @@ class MusicAssistant:
                         icon_path = os.path.join(provider_path, "icon_dark.svg")
                         if os.path.isfile(icon_path):
                             provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
-                    # try to load the module
-                    try:
-                        await get_provider_module(provider_manifest.domain)
-                    except ImportError:
-                        # install requirements
-                        for requirement in provider_manifest.requirements:
-                            await install_package(requirement)
-                        # try loading the provider again to be safe
-                        await get_provider_module(provider_manifest.domain)
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
                 except Exception as exc:  # pylint: disable=broad-except
