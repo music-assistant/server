@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
 
 CACHE_DIR = gettempdir()
-LIKED_SONGS_FAKE_PLAYLIST_ID = "liked_songs"
+LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -230,15 +230,18 @@ class SpotifyProvider(MusicProvider):
             if item and item["track"]["id"]:
                 yield await self._parse_track(item["track"])
 
+    def _get_liked_songs_playlist_id(self) -> str:
+        return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
+
     async def _get_liked_songs_playlist(self) -> Playlist:
         liked_songs = Playlist(
-            item_id=LIKED_SONGS_FAKE_PLAYLIST_ID,
+            item_id=self._get_liked_songs_playlist_id(),
             provider=self.domain,
             name="Liked Songs",  # TODO to be translated
             owner="Me",  # TODO Get logged in user display name
             provider_mappings={
                 ProviderMapping(
-                    item_id=LIKED_SONGS_FAKE_PLAYLIST_ID,
+                    item_id=self._get_liked_songs_playlist_id(),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url="https://open.spotify.com/collection/tracks",
@@ -282,7 +285,7 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        if prov_playlist_id == LIKED_SONGS_FAKE_PLAYLIST_ID:
+        if prov_playlist_id == self._get_liked_songs_playlist_id():
             return await self._get_liked_songs_playlist()
 
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
@@ -301,7 +304,7 @@ class SpotifyProvider(MusicProvider):
         count = 1
         uri = (
             "me/tracks"
-            if prov_playlist_id == LIKED_SONGS_FAKE_PLAYLIST_ID
+            if prov_playlist_id == self._get_liked_songs_playlist_id()
             else f"playlists/{prov_playlist_id}/tracks"
         )
         for item in await self._get_all_items(
