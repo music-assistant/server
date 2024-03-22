@@ -439,7 +439,6 @@ class StreamsController(CoreController):
 
     def resolve_stream_url(
         self,
-        player_id: str,
         queue_item: QueueItem,
         output_codec: ContentType,
         flow_mode: bool = False,
@@ -448,7 +447,12 @@ class StreamsController(CoreController):
         fmt = output_codec.value
         # handle announcement item
         if queue_item.media_type == MediaType.ANNOUNCEMENT:
-            return queue_item.queue_item_id
+            return self.get_announcement_url(
+                player_id=queue_item.queue_id,
+                announcement_url=queue_item.streamdetails.data["url"],
+                use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
+                content_type=output_codec,
+            )
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
             fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"
@@ -669,11 +673,11 @@ class StreamsController(CoreController):
             raise web.HTTPNotFound(reason=f"Unknown Player: {player_id}")
         if player_id not in self.announcements:
             raise web.HTTPNotFound(reason=f"No pending announcements for Player: {player_id}")
-        announcement = self.announcements[player_id]
+        announcement_url = self.announcements[player_id]
         use_pre_announce = try_parse_bool(request.query.get("pre_announce"))
 
         # work out output format/details
-        fmt = request.match_info.get("fmt", announcement.rsplit(".")[-1])
+        fmt = request.match_info.get("fmt", announcement_url.rsplit(".")[-1])
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -694,26 +698,13 @@ class StreamsController(CoreController):
         # all checks passed, start streaming!
         self.logger.debug(
             "Start serving audio stream for Announcement %s to %s",
-            announcement,
+            announcement_url,
             player.display_name,
         )
-        extra_args = []
-        filter_params = ["loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5"]
-        if use_pre_announce:
-            extra_args += [
-                "-i",
-                ANNOUNCE_ALERT_FILE,
-                "-filter_complex",
-                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5",
-            ]
-            filter_params = []
-
-        async for chunk in get_ffmpeg_stream(
-            audio_input=announcement,
-            input_format=audio_format,
+        async for chunk in self.get_announcement_stream(
+            announcement_url=announcement_url,
             output_format=audio_format,
-            extra_args=extra_args,
-            filter_params=filter_params,
+            use_pre_announce=use_pre_announce,
         ):
             try:
                 await resp.write(chunk)
@@ -722,7 +713,7 @@ class StreamsController(CoreController):
 
         self.logger.debug(
             "Finished serving audio stream for Announcement %s to %s",
-            announcement,
+            announcement_url,
             player.display_name,
         )
 
@@ -887,6 +878,32 @@ class StreamsController(CoreController):
             del last_fadeout_part
         del buffer
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
+
+    async def get_announcement_stream(
+        self, announcement_url: str, output_format: AudioFormat, use_pre_announce: bool = False
+    ) -> AsyncGenerator[bytes, None]:
+        """Get the special announcement stream."""
+        # work out output format/details
+        fmt = announcement_url.rsplit(".")[-1]
+        audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
+        extra_args = []
+        filter_params = ["loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5"]
+        if use_pre_announce:
+            extra_args += [
+                "-i",
+                ANNOUNCE_ALERT_FILE,
+                "-filter_complex",
+                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5",
+            ]
+            filter_params = []
+        async for chunk in get_ffmpeg_stream(
+            audio_input=announcement_url,
+            input_format=audio_format,
+            output_format=output_format,
+            extra_args=extra_args,
+            filter_params=filter_params,
+        ):
+            yield chunk
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

@@ -243,7 +243,6 @@ class ChromecastProvider(PlayerProvider):
         castplayer = self.castplayers[player_id]
         use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
         url = self.mass.streams.resolve_stream_url(
-            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
             flow_mode=use_flow_mode,
@@ -268,7 +267,6 @@ class ChromecastProvider(PlayerProvider):
             queue_item = None
         else:
             url = self.mass.streams.resolve_stream_url(
-                player_id,
                 queue_item=queue_item,
                 output_codec=ContentType.FLAC,
             )

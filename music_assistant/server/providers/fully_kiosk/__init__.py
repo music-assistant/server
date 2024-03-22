@@ -187,7 +187,6 @@ class FullyKioskProvider(PlayerProvider):
         player = self.mass.players.get(player_id)
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
         url = self.mass.streams.resolve_stream_url(
-            player_id,
             queue_item=queue_item,
             output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
             flow_mode=True,

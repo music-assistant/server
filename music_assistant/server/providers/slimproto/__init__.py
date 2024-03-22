@@ -367,7 +367,6 @@ class SlimprotoProvider(PlayerProvider):
                         self._handle_play_url(
                             slimplayer,
                             url=stream_job.resolve_stream_url(
-                                slimplayer.player_id,
                                 output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
                             ),
                             queue_item=None,
@@ -386,7 +385,6 @@ class SlimprotoProvider(PlayerProvider):
                 player_id, CONF_ENFORCE_MP3
             )
             url = self.mass.streams.resolve_stream_url(
-                player_id,
                 queue_item=queue_item,
                 output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
                 flow_mode=False,
@@ -405,7 +403,6 @@ class SlimprotoProvider(PlayerProvider):
             return
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
         url = self.mass.streams.resolve_stream_url(
-            player_id,
             queue_item=queue_item,
             output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
             flow_mode=False,
