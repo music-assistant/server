@@ -281,9 +281,9 @@ class SpotifyProvider(MusicProvider):
         """Get full playlist details by id."""
         if prov_playlist_id == "tracks":
             return await self._get_liked_songs_playlist()
-        else:
-            playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
-            return await self._parse_playlist(playlist_obj)
+
+        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
+        return await self._parse_playlist(playlist_obj)
 
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
