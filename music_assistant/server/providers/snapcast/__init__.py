@@ -136,9 +136,14 @@ class SnapCastProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
-        self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
+        if self._use_builtin_server:
+            self._snapcast_server_host = "127.0.0.1"
+            self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
+        else:
+            self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
+            self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
+
         self._stream_tasks = {}
 
         if self._use_builtin_server:
@@ -442,7 +447,7 @@ class SnapCastProvider(PlayerProvider):
                     properties={"is_mass": "true"},
                     addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
                     port=port,
-                    server=f"{socket.gethostname()}",
+                    server=f"{socket.gethostname()}.local",
                 )
                 attr_name = f"zc_service_set{name}"
                 if getattr(self, attr_name, None):
@@ -458,8 +463,18 @@ class SnapCastProvider(PlayerProvider):
                 self.logger.exception(
                     "Could not register mdns record for %s: %s", zeroconf_type, str(err)
                 )
+        args = [
+            "snapserver",
+            # config settings taken from
+            # https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf
+            f"--server.datadir={self.mass.storage_path}",
+            "--http.enabled=true",
+            "--http.port=1780",
+            "--tcp.enabled=true",
+            "--tcp.port=1705",
+        ]
         async with AsyncProcess(
-            ["snapserver"], enable_stdin=False, enable_stdout=True, enable_stderr=False
+            args, enable_stdin=False, enable_stdout=True, enable_stderr=False
         ) as snapserver_proc:
             # keep reading from stderr until exit
             async for data in snapserver_proc.iter_any():
