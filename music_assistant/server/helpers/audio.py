@@ -859,14 +859,18 @@ def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
-    extra_args: list[str],
+    extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
-    loglevel: str = "info",
+    loglevel: str | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
+    if loglevel is None:
+        loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet"
+    if extra_args is None:
+        extra_args = []
+    extra_args += ["-bufsize", "32M"]
     ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
-
     if not ffmpeg_present:
         msg = (
             "FFmpeg binary is missing from system."

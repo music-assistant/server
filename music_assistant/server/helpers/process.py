@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 from contextlib import suppress
+from signal import SIGINT
 from types import TracebackType
 from typing import TYPE_CHECKING
 
@@ -98,8 +99,6 @@ class AsyncProcess:
             stdin=stdin if self._enable_stdin else None,
             stdout=stdout if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-            limit=4000000,
-            pipesize=256000,
         )
         LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
@@ -167,12 +166,21 @@ class AsyncProcess:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        if self.proc.returncode is None:
+            # always first try to send sigint signal to try clean shutdown
+            # for example ffmpeg needs this to cleanly shutdown and not lock on pipes
+            self.proc.send_signal(SIGINT)
+            # allow the process a little bit of time to respond to the signal
+            await asyncio.sleep(0.1)
+
         # send communicate until we exited
         while self.proc.returncode is None:
-            # make sure the process is cleaned up
+            # make sure the process is really cleaned up.
+            # especially with pipes this can cause deadlocks if not properly guarded
+            # we need to use communicate to ensure buffers are flushed
+            # we do that with sending communicate
             try:
-                # we need to use communicate to ensure buffers are flushed
-                await asyncio.wait_for(self.proc.communicate(), 10)
+                await asyncio.wait_for(self.proc.communicate(), 2)
             except TimeoutError:
                 LOGGER.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
@@ -180,7 +188,6 @@ class AsyncProcess:
                     self.proc.pid,
                 )
                 self.proc.terminate()
-                await asyncio.sleep(0.5)
         LOGGER.debug(
             "Process %s with PID %s stopped with returncode %s",
             self._name,
