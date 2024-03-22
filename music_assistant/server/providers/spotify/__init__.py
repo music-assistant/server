@@ -254,6 +254,8 @@ class SpotifyProvider(MusicProvider):
             )
         ]
 
+        liked_songs.metadata.checksum = str(time.time())
+
         return liked_songs
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
