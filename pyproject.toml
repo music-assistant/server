@@ -62,6 +62,7 @@ mass = "music_assistant.__main__:main"
 
 [tool.codespell]
 ignore-words-list = "provid,hass,followings,childs"
+skip = "*.js"
 
 [tool.setuptools]
 include-package-data = true
