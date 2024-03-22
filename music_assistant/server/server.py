@@ -15,6 +15,7 @@ from aiohttp import ClientSession, TCPConnector
 from zeroconf import IPVersion, NonUniqueNameException, ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 
+from music_assistant.common.helpers.global_cache import set_global_cache_values
 from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.enums import EventType, ProviderType
@@ -28,6 +29,7 @@ from music_assistant.constants import (
     CONFIGURABLE_CORE_CONTROLLERS,
     MIN_SCHEMA_VERSION,
     ROOT_LOGGER_NAME,
+    VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.controllers.cache import CacheController
 from music_assistant.server.controllers.config import ConfigController
@@ -41,9 +43,8 @@ from music_assistant.server.helpers.api import APICommandHandler, api_command
 from music_assistant.server.helpers.images import get_icon_string
 from music_assistant.server.helpers.util import (
     get_package_version,
-    get_provider_module,
-    install_package,
     is_hass_supervisor,
+    load_provider_module,
 )
 
 from .models import ProviderInstanceType
@@ -315,7 +316,7 @@ class MusicAssistant:
         if target is None:
             msg = "Target is missing"
             raise RuntimeError(msg)
-        if existing := self._tracked_tasks.get(task_id):
+        if task_id and (existing := self._tracked_tasks.get(task_id)):
             # prevent duplicate tasks if task_id is given and already present
             return existing
         if asyncio.iscoroutinefunction(target):
@@ -326,19 +327,25 @@ class MusicAssistant:
             task = target
         else:
             # assume normal callable (non coroutine or awaitable)
+            # that needs to be run in the executor
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
         def task_done_callback(_task: asyncio.Future | asyncio.Task) -> None:
             _task_id = task.task_id
             self._tracked_tasks.pop(_task_id)
-            # print unhandled exceptions
-            if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
-                task_name = _task.get_name() if hasattr(_task, "get_name") else _task
-                LOGGER.exception(
-                    "Exception in task %s - target: %s",
+            # log unhandled exceptions
+            if (
+                LOGGER.isEnabledFor(logging.DEBUG)
+                and not _task.cancelled()
+                and (err := _task.exception())
+            ):
+                task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
+                LOGGER.warning(
+                    "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),
-                    exc_info=task.exception(),
+                    str(err),
+                    exc_info=err if LOGGER.isEnabledFor(logging.DEBUG) else None,
                 )
 
         if task_id is None:
@@ -424,7 +431,7 @@ class MusicAssistant:
                 raise SetupFailedError(msg)
 
         # try to setup the module
-        prov_mod = await get_provider_module(domain)
+        prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         try:
             async with asyncio.timeout(30):
                 provider = await prov_mod.setup(self, prov_manifest, conf)
@@ -442,6 +449,7 @@ class MusicAssistant:
         self.create_task(provider.loaded_in_mass())
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+        await self._update_available_providers_cache()
         # if this is a music provider, start sync
         if provider.type == ProviderType.MUSIC:
             self.music.start_sync(providers=[provider.instance_id])
@@ -468,6 +476,7 @@ class MusicAssistant:
                 LOGGER.warning("Error while unload provider %s: %s", provider.name, str(err))
             finally:
                 self._providers.pop(instance_id, None)
+                await self._update_available_providers_cache()
                 self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:
@@ -515,7 +524,7 @@ class MusicAssistant:
                 self.config.set(f"{CONF_PROVIDERS}/{prov_conf.instance_id}/last_error", str(exc))
 
         # load all configured (and enabled) providers
-        prov_configs = await self.config.get_provider_configs()
+        prov_configs = await self.config.get_provider_configs(include_values=True)
         async with asyncio.TaskGroup() as tg:
             for prov_conf in prov_configs:
                 if not prov_conf.enabled:
@@ -546,15 +555,6 @@ class MusicAssistant:
                         icon_path = os.path.join(provider_path, "icon_dark.svg")
                         if os.path.isfile(icon_path):
                             provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
-                    # try to load the module
-                    try:
-                        await get_provider_module(provider_manifest.domain)
-                    except ImportError:
-                        # install requirements
-                        for requirement in provider_manifest.requirements:
-                            await install_package(requirement)
-                        # try loading the provider again to be safe
-                        await get_provider_module(provider_manifest.domain)
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
                 except Exception as exc:  # pylint: disable=broad-except
@@ -624,7 +624,13 @@ class MusicAssistant:
                 await info.async_request(zeroconf, 3000)
             await prov.on_mdns_service_state_change(name, state_change, info)
 
-        LOGGER.debug(f"Service {name} of type {service_type} state changed: {state_change}")
+        LOGGER.log(
+            VERBOSE_LOG_LEVEL,
+            "Service %s of type %s state changed: %s",
+            name,
+            service_type,
+            state_change,
+        )
         for prov in self._providers.values():
             if not prov.manifest.mdns_discovery:
                 continue
@@ -644,6 +650,17 @@ class MusicAssistant:
     ) -> bool | None:
         """Exit context manager."""
         await self.stop()
-        if exc_val:
-            raise exc_val
-        return exc_type
+
+    async def _update_available_providers_cache(self) -> None:
+        """Update the global cache variable of loaded/available providers."""
+        await set_global_cache_values(
+            {
+                "provider_domains": {x.domain for x in self.providers},
+                "provider_instance_ids": {x.instance_id for x in self.providers},
+                "available_providers": {
+                    *{x.domain for x in self.providers},
+                    *{x.instance_id for x in self.providers},
+                },
+                "unique_providers": {x.lookup_key for x in self.providers},
+            }
+        )

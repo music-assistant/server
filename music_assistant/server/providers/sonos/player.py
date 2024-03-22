@@ -32,6 +32,7 @@ from music_assistant.common.helpers.datetime import utc
 from music_assistant.common.models.enums import PlayerFeature, PlayerState
 from music_assistant.common.models.errors import PlayerCommandFailed
 from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.constants import VERBOSE_LOG_LEVEL
 
 from .helpers import SonosUpdateError, soco_error
 
@@ -255,7 +256,7 @@ class SonosPlayer:
                 ]
                 if not subscriptions:
                     return
-                self.logger.debug("Creating subscriptions for %s", self.zone_name)
+                self.logger.log(VERBOSE_LOG_LEVEL, "Creating subscriptions for %s", self.zone_name)
                 results = await asyncio.gather(*subscriptions, return_exceptions=True)
                 for result in results:
                     self.log_subscription_result(result, "Creating subscription", logging.WARNING)
@@ -271,7 +272,7 @@ class SonosPlayer:
         """Cancel all subscriptions."""
         if not self._subscriptions:
             return
-        self.logger.debug("Unsubscribing from events for %s", self.zone_name)
+        self.logger.log(VERBOSE_LOG_LEVEL, "Unsubscribing from events for %s", self.zone_name)
         results = await asyncio.gather(
             *(subscription.unsubscribe() for subscription in self._subscriptions),
             return_exceptions=True,
@@ -284,7 +285,7 @@ class SonosPlayer:
         """Validate availability of the speaker based on recent activity."""
         if not self.should_poll:
             return
-        self.logger.debug("Polling player for availability...")
+        self.logger.log(VERBOSE_LOG_LEVEL, "Polling player for availability...")
         try:
             await asyncio.to_thread(self.ping)
             self._speaker_activity("ping")
@@ -301,7 +302,7 @@ class SonosPlayer:
         """Handle updated IP of a Sonos player (NOT async friendly)."""
         if self.available:
             return
-        self.logger.info(
+        self.logger.debug(
             "Player IP-address changed from %s to %s", self.soco.ip_address, ip_address
         )
         try:
@@ -427,7 +428,8 @@ class SonosPlayer:
         if av_transport_uri == current_track_uri and av_transport_uri.startswith("x-rincon:"):
             new_coordinator_uid = av_transport_uri.split(":")[-1]
             if new_coordinator_speaker := self.sonos_prov.sonosplayers.get(new_coordinator_uid):
-                self.logger.debug(
+                self.logger.log(
+                    5,
                     "Media update coordinator (%s) received for %s",
                     new_coordinator_speaker.zone_name,
                     self.zone_name,
@@ -828,7 +830,7 @@ class SonosPlayer:
                 return
             self._resub_cooldown_expires_at = None
 
-        self.logger.debug("Activity on %s from %s", self.zone_name, source)
+        self.logger.log(VERBOSE_LOG_LEVEL, "Activity on %s from %s", self.zone_name, source)
         self._last_activity = time.monotonic()
         was_available = self.available
         self.available = True

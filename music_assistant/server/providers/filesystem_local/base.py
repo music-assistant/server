@@ -40,9 +40,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import VARIOUS_ARTISTS_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
@@ -340,7 +340,7 @@ class FileSystemProviderBase(MusicProvider):
                 # continue if the item did not change (checksum still the same)
                 if item.checksum == prev_checksums.get(item.path):
                     continue
-
+                self.logger.debug("Processing: %s", item.path)
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
                     track = await self._parse_track(item)

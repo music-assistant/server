@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import time
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
@@ -18,6 +17,7 @@ import soco.config as soco_config
 from requests.exceptions import RequestException
 from soco import events_asyncio, zonegroupstate
 from soco.discovery import discover
+from sonos_websocket.exception import SonosWebsocketError
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
@@ -33,7 +33,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_CROSSFADE
+from music_assistant.constants import CONF_CROSSFADE, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -46,7 +46,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 
@@ -56,6 +55,7 @@ PLAYER_FEATURES = (
     PlayerFeature.VOLUME_SET,
     PlayerFeature.ENQUEUE_NEXT,
     PlayerFeature.PAUSE,
+    PlayerFeature.PLAY_ANNOUNCEMENT,
 )
 
 CONF_NETWORK_SCAN = "network_scan"
@@ -92,7 +92,7 @@ async def setup(
     zonegroupstate.EVENT_CACHE_TIMEOUT = SUBSCRIPTION_TIMEOUT
     prov = SonosPlayerProvider(mass, manifest, config)
     # set-up soco logging
-    if prov.log_level == "VERBOSE":
+    if prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logging.getLogger("soco").setLevel(logging.DEBUG)
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
     else:
@@ -339,25 +339,8 @@ class SonosPlayerProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
-        url = await self.mass.streams.resolve_stream_url(
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-            seek_position=seek_position,
-            fade_in=fade_in,
-        )
+        """Handle PLAY MEDIA on given player."""
         sonos_player = self.sonosplayers[player_id]
         mass_player = self.mass.players.get(player_id)
         if sonos_player.sync_coordinator:
@@ -367,32 +350,15 @@ class SonosPlayerProvider(PlayerProvider):
                 "accept play_media command, it is synced to another player."
             )
             raise PlayerCommandFailed(msg)
-        metadata = create_didl_metadata(self.mass, url, queue_item)
-        await self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
 
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        url = stream_job.resolve_stream_url(player_id, ContentType.FLAC)
-        sonos_player = self.sonosplayers[player_id]
-        mass_player = self.mass.players.get(player_id)
-        if sonos_player.sync_coordinator:
-            # this should be already handled by the player manager, but just in case...
-            msg = (
-                f"Player {mass_player.display_name} can not "
-                "accept play_stream command, it is synced to another player."
-            )
-            raise PlayerCommandFailed(msg)
-        metadata = create_didl_metadata(self.mass, url, None)
-        # sonos players do not like our multi client stream
-        # add to the workaround players list
-        self.mass.streams.workaround_players.add(player_id)
-        await self.mass.create_task(sonos_player.soco.play_uri, url, meta=metadata)
-        # optimistically set this timestamp to help figure out elapsed time later
-        mass_player.elapsed_time = 0
-        mass_player.elapsed_time_last_updated = time.time()
+        url = self.mass.streams.resolve_stream_url(
+            player_id,
+            queue_item=queue_item,
+            output_codec=ContentType.FLAC,
+        )
+        self.mass.create_task(
+            sonos_player.soco.play_uri, url, meta=create_didl_metadata(self.mass, url, queue_item)
+        )
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """
@@ -410,7 +376,8 @@ class SonosPlayerProvider(PlayerProvider):
         This will NOT be called if flow mode is enabled on the queue.
         """
         sonos_player = self.sonosplayers[player_id]
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )
@@ -430,6 +397,26 @@ class SonosPlayerProvider(PlayerProvider):
             await asyncio.to_thread(set_crossfade)
 
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
+
+    async def play_announcement(self, player_id: str, announcement_url: str) -> None:
+        """Handle (provider native) playback of an announcement on given player."""
+        sonos_player = self.sonosplayers[player_id]
+        mass_player = self.mass.players.get(player_id)
+        temp_volume = max(int(min(75, mass_player.volume_level) * 1.5), 15)
+        self.logger.debug(
+            "Playing announcement %s using websocket audioclip on %s",
+            announcement_url,
+            sonos_player.zone_name,
+        )
+        try:
+            response, _ = await sonos_player.websocket.play_clip(
+                announcement_url,
+                volume=temp_volume,
+            )
+        except SonosWebsocketError as exc:
+            raise PlayerCommandFailed(f"Error when calling Sonos websocket: {exc}") from exc
+        if response["success"]:
+            return
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates.

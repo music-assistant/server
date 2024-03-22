@@ -12,7 +12,6 @@ from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Callable, Coroutine
 
-from aiohttp import ClientTimeout
 from jellyfin_apiclient_python import JellyfinClient
 from jellyfin_apiclient_python.api import API
 
@@ -46,13 +45,14 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
 from music_assistant.common.models.media_items import Album as JellyfinAlbum
 from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
 from music_assistant.common.models.media_items import Track as JellyfinTrack
+from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.helpers.audio import get_http_stream
 
 if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
@@ -95,6 +95,7 @@ from .const import (
     ITEM_TYPE_ARTIST,
     ITEM_TYPE_AUDIO,
     MAX_IMAGE_WIDTH,
+    SUPPORTED_CONTAINER_FORMATS,
     USER_APP_NAME,
 )
 
@@ -808,11 +809,13 @@ class JellyfinProvider(MusicProvider):
 
         return mime_type
 
-    async def get_audio_stream(self, streamdetails: StreamDetails) -> AsyncGenerator[bytes, None]:
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        url = API.audio_url(self._jellyfin_server.jellyfin, streamdetails.item_id)
+        url = API.audio_url(
+            self._jellyfin_server.jellyfin, streamdetails.item_id, SUPPORTED_CONTAINER_FORMATS
+        )
 
-        timeout = ClientTimeout(total=0, connect=30, sock_read=600)
-        async with self.mass.http_session.get(url, timeout=timeout) as resp:
-            async for chunk in resp.content.iter_any():
-                yield chunk
+        async for chunk in get_http_stream(self.mass, url, streamdetails, seek_position):
+            yield chunk

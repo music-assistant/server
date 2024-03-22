@@ -15,10 +15,10 @@ jobs:
       - name: Get tag
         id: vars
         run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-      - name: Set up Python 3.10
+      - name: Set up Python 3.11
         uses: actions/setup-python@v5.0.0
         with:
-          python-version: "3.10"
+          python-version: "3.11"
       - name: Install build
         run: >-
           pip install build tomli tomli-w
@@ -39,12 +39,12 @@ jobs:
         run: >-
           python3 -m build
       - name: Publish release to PyPI
-        uses: pypa/gh-action-pypi-publish@v1.8.12
+        uses: pypa/gh-action-pypi-publish@v1.8.14
         with:
           user: __token__
           password: ${{ secrets.PYPI_TOKEN }}
       - name: Wait for PyPI
-        run: sleep 120
+        run: sleep 300
 
   build-and-push-container-image:
     name: Builds and pushes the Music Assistant Server container to ghcr.io
@@ -53,18 +53,15 @@ jobs:
       packages: write
     needs: build-and-publish-pypi
     steps:
-      - name: Sleep for 60 seconds (to prevent race condition with the pypi upload)
-        run: sleep 60s
-        shell: bash
       - uses: actions/checkout@v4
       - name: Log in to the GitHub container registry
-        uses: docker/login-action@v3.0.0
+        uses: docker/login-action@v3.1.0
         with:
           registry: ghcr.io
           username: ${{ github.repository_owner }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3.1.0
+        uses: docker/setup-buildx-action@v3.2.0
       - name: Version number for tags
         id: tags
         shell: bash
@@ -87,7 +84,7 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server
 
       - name: Build and Push images
-        uses: docker/build-push-action@v5.1.0
+        uses: docker/build-push-action@v5.3.0
         with:
           context: .
           platforms: linux/amd64,linux/arm64

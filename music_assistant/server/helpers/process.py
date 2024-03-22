@@ -1,18 +1,22 @@
-"""Implementation of a (truly) non blocking subprocess.
+"""
+AsyncProcess.
 
-The subprocess implementation in asyncio can (still) sometimes cause deadlocks,
-even when properly handling reading/writes from different tasks.
+Wrapper around asyncio subprocess to help with using pipe streams and
+taking care of properly closing the process in case of exit (on both success and failures),
+without deadlocking.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import os
 from contextlib import suppress
+from types import TracebackType
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator, Coroutine
+    from collections.abc import AsyncGenerator
 
 LOGGER = logging.getLogger(__name__)
 
@@ -22,63 +26,103 @@ DEFAULT_CHUNKSIZE = 128000
 
 
 class AsyncProcess:
-    """Implementation of a (truly) non blocking subprocess."""
+    """
+    AsyncProcess.
+
+    Wrapper around asyncio subprocess to help with using pipe streams and
+    taking care of properly closing the process in case of exit (on both success and failures),
+    without deadlocking.
+    """
 
     def __init__(
         self,
-        args: list,
+        args: list[str],
         enable_stdin: bool = False,
         enable_stdout: bool = True,
         enable_stderr: bool = False,
+        custom_stdin: AsyncGenerator[bytes, None] | int | None = None,
+        custom_stdout: int | None = None,
+        name: str | None = None,
     ) -> None:
-        """Initialize."""
-        self._proc = None
+        """Initialize AsyncProcess."""
+        self.proc: asyncio.subprocess.Process | None = None
         self._args = args
         self._enable_stdin = enable_stdin
         self._enable_stdout = enable_stdout
         self._enable_stderr = enable_stderr
-        self._attached_task: asyncio.Task = None
-        self.closed = False
+        self._close_called = False
+        self._returncode: bool | None = None
+        self._name = name or self._args[0].split(os.sep)[-1]
+        self.attached_tasks: list[asyncio.Task] = []
+        self._custom_stdin = custom_stdin
+        if not isinstance(custom_stdin, int | None):
+            self._custom_stdin = None
+            self.attached_tasks.append(asyncio.create_task(self._feed_stdin(custom_stdin)))
+        self._custom_stdout = custom_stdout
+
+    @property
+    def closed(self) -> bool:
+        """Return if the process was closed."""
+        return self._close_called or self.returncode is not None
+
+    @property
+    def returncode(self) -> int | None:
+        """Return the erturncode of the process."""
+        if self._returncode is not None:
+            return self._returncode
+        if self.proc is None:
+            return None
+        return self.proc.returncode
 
     async def __aenter__(self) -> AsyncProcess:
         """Enter context manager."""
         await self.start()
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         """Exit context manager."""
         await self.close()
+        self._returncode = self.returncode
 
     async def start(self) -> None:
         """Perform Async init of process."""
-        self._proc = await asyncio.create_subprocess_exec(
+        stdin = self._custom_stdin if self._custom_stdin is not None else asyncio.subprocess.PIPE
+        stdout = self._custom_stdout if self._custom_stdout is not None else asyncio.subprocess.PIPE
+        self.proc = await asyncio.create_subprocess_exec(
             *self._args,
-            stdin=asyncio.subprocess.PIPE if self._enable_stdin else None,
-            stdout=asyncio.subprocess.PIPE if self._enable_stdout else None,
+            stdin=stdin if self._enable_stdin else None,
+            stdout=stdout if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-            close_fds=True,
+            limit=4000000,
+            pipesize=256000,
         )
+        LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
-            yield chunk
-            if len(chunk) < n:
+            if len(chunk) == 0:
                 break
+            yield chunk
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
-            if chunk == b"":
+            if len(chunk) == 0:
                 break
             yield chunk
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
         try:
-            return await self._proc.stdout.readexactly(n)
+            return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
 
@@ -89,25 +133,21 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        return await self._proc.stdout.read(n)
+        return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self.closed or self._proc.stdin.is_closing():
-            return
-        self._proc.stdin.write(data)
-        with suppress(BrokenPipeError):
-            await self._proc.stdin.drain()
+        if self._close_called or self.proc.stdin.is_closing():
+            raise asyncio.CancelledError("write called while process already done")
+        self.proc.stdin.write(data)
+        with suppress(BrokenPipeError, ConnectionResetError):
+            await self.proc.stdin.drain()
 
-    def write_eof(self) -> None:
+    async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if not self._enable_stdin:
-            return
-        if self.closed or self._proc.stdin.is_closing():
-            return
         try:
-            if self._proc.stdin.can_write_eof():
-                self._proc.stdin.write_eof()
+            if self.proc.stdin.can_write_eof():
+                self.proc.stdin.write_eof()
         except (
             AttributeError,
             AssertionError,
@@ -118,38 +158,66 @@ class AsyncProcess:
             # already exited, race condition
             pass
 
-    async def close(self) -> None:
-        """Close/terminate the process."""
-        self.closed = True
-        if self._attached_task and not self._attached_task.done():
-            with suppress(asyncio.CancelledError):
-                self._attached_task.cancel()
-        # make sure the process is cleaned up
-        self.write_eof()
-        if self._proc.returncode is None:
+    async def close(self) -> int:
+        """Close/terminate the process and wait for exit."""
+        self._close_called = True
+        # close any/all attached (writer) tasks
+        for task in self.attached_tasks:
+            if not task.done():
+                task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await task
+        # send communicate until we exited
+        while self.proc.returncode is None:
+            # make sure the process is cleaned up
             try:
-                async with asyncio.timeout(10):
-                    await self._proc.communicate()
+                # we need to use communicate to ensure buffers are flushed
+                await asyncio.wait_for(self.proc.communicate(), 10)
             except TimeoutError:
-                self._proc.kill()
-        await self.wait()
+                LOGGER.debug(
+                    "Process %s with PID %s did not stop in time. Sending terminate...",
+                    self._name,
+                    self.proc.pid,
+                )
+                self.proc.terminate()
+                await asyncio.sleep(0.5)
+        LOGGER.debug(
+            "Process %s with PID %s stopped with returncode %s",
+            self._name,
+            self.proc.pid,
+            self.proc.returncode,
+        )
+        return self.proc.returncode
 
     async def wait(self) -> int:
         """Wait for the process and return the returncode."""
-        if self._proc.returncode is not None:
-            return self._proc.returncode
-        exitcode = await self._proc.wait()
-        self.closed = True
-        return exitcode
+        if self.returncode is not None:
+            return self.returncode
+        return await self.proc.wait()
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
-        return await self._proc.communicate(input_data)
+        stdout, stderr = await self.proc.communicate(input_data)
+        return (stdout, stderr)
 
-    def attach_task(self, coro: Coroutine) -> asyncio.Task:
-        """Attach given coro func as reader/writer task to properly cancel it when needed."""
-        self._attached_task = task = asyncio.create_task(coro)
-        return task
+    async def read_stderr(self) -> AsyncGenerator[bytes, None]:
+        """Read lines from the stderr stream."""
+        async for line in self.proc.stderr:
+            yield line
+
+    async def _feed_stdin(self, custom_stdin: AsyncGenerator[bytes, None]) -> None:
+        """Feed stdin with chunks from an AsyncGenerator."""
+        try:
+            async for chunk in custom_stdin:
+                if self._close_called or self.proc.stdin.is_closing():
+                    return
+                await self.write(chunk)
+            await self.write_eof()
+        except asyncio.CancelledError:
+            # make sure the stdin generator is also properly closed
+            # by propagating a cancellederror within
+            task = asyncio.create_task(custom_stdin.__anext__())
+            task.cancel()
 
 
 async def check_output(shell_cmd: str) -> tuple[int, bytes]:

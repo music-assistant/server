@@ -20,8 +20,8 @@ from music_assistant.common.models.media_items import (
     ProviderMapping,
     Radio,
     SearchResults,
-    StreamDetails,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 

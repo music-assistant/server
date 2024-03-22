@@ -10,7 +10,7 @@ from http.cookies import BaseCookie, Morsel
 from aiohttp import ClientSession
 from yarl import URL
 
-from music_assistant.common.models.media_items import StreamDetails
+from music_assistant.common.models.streamdetails import StreamDetails
 
 USER_AGENT_HEADER = (
     "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) "

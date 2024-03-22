@@ -15,6 +15,7 @@ from music_assistant.constants import (
     CONF_AUTO_PLAY,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
+    CONF_ENFORCE_MP3,
     CONF_EQ_BASS,
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
@@ -22,6 +23,7 @@ from music_assistant.constants import (
     CONF_HIDE_PLAYER,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
+    CONF_SYNC_ADJUST,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     SECURE_STRING_SUBSTITUTE,
@@ -342,7 +344,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     key=CONF_VOLUME_NORMALIZATION_TARGET,
     type=ConfigEntryType.INTEGER,
-    range=(-30, 0),
+    range=(-70, -5),
     default_value=-17,
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
@@ -406,5 +408,29 @@ CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Hide this player in the user interface",
     default_value=False,
+    advanced=True,
+)
+
+CONF_ENTRY_ENFORCE_MP3 = ConfigEntry(
+    key=CONF_ENFORCE_MP3,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enforce (lossy) mp3 stream",
+    default_value=False,
+    description="By default, Music Assistant sends lossless, high quality audio "
+    "to all players. Some players can not deal with that and require the stream to be packed "
+    "into a lossy mp3 codec. \n\n "
+    "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
+    advanced=True,
+)
+
+CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
+    key=CONF_SYNC_ADJUST,
+    type=ConfigEntryType.INTEGER,
+    range=(-500, 500),
+    default_value=0,
+    label="Audio synchronization delay correction",
+    description="If this player is playing audio synced with other players "
+    "and you always hear the audio too early or late on this player, "
+    "you can shift the audio a bit.",
     advanced=True,
 )

@@ -22,7 +22,6 @@ from .provider import Provider
 if TYPE_CHECKING:
     from music_assistant.common.models.player import Player
     from music_assistant.common.models.queue_item import QueueItem
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
 
 
 # ruff: noqa: ARG001, ARG002
@@ -108,8 +107,6 @@ class PlayerProvider(Provider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
         """Handle PLAY MEDIA on given player.
 
@@ -118,15 +115,6 @@ class PlayerProvider(Provider):
 
             - player_id: player_id of the player to handle the command.
             - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
-        raise NotImplementedError
-
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
         """
         raise NotImplementedError
 
@@ -144,6 +132,11 @@ class PlayerProvider(Provider):
         This will NOT be called if the end of the queue is reached (and repeat disabled).
         This will NOT be called if the player is using flow mode to playback the queue.
         """
+
+    async def play_announcement(self, player_id: str, announcement_url: str) -> None:
+        """Handle (provider native) playback of an announcement on given player."""
+        # will only be called for players with PLAY_ANNOUNCEMENT feature set.
+        raise NotImplementedError
 
     async def cmd_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player.

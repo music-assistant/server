@@ -29,9 +29,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
@@ -412,9 +412,8 @@ class QobuzProvider(MusicProvider):
             ),
             duration=streamdata["duration"],
             data=streamdata,  # we need these details for reporting playback
-            expires=time.time() + 3600,  # not sure about the real allowed value
+            expires=time.time() + 60,  # may not be cached
             direct=streamdata["url"],
-            callback=self._report_playback_stopped,
         )
 
     async def _report_playback_started(self, streamdata: dict) -> None:
@@ -445,14 +444,14 @@ class QobuzProvider(MusicProvider):
         ]
         await self._post_data("track/reportStreamingStart", data=events)
 
-    async def _report_playback_stopped(self, streamdetails: StreamDetails) -> None:
-        """Report playback stop to qobuz."""
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
         user_id = self._user_auth_info["user"]["id"]
         await self._get_data(
             "/track/reportStreamingEnd",
             user_id=user_id,
             track_id=str(streamdetails.item_id),
-            duration=try_parse_int(streamdetails.seconds_streamed),
+            duration=try_parse_int(seconds_streamed),
         )
 
     async def _parse_artist(self, artist_obj: dict):

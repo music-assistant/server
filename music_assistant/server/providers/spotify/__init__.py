@@ -12,7 +12,6 @@ from json.decoder import JSONDecodeError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any
 
-import aiohttp
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.json import json_loads
@@ -34,9 +33,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 
 # pylint: disable=no-name-in-module
@@ -119,10 +118,12 @@ class SpotifyProvider(MusicProvider):
     _auth_token: str | None = None
     _sp_user: str | None = None
     _librespot_bin: str | None = None
+    # rate limiter needs to be specified on provider-level,
+    # so make it an instance attribute
+    _throttler = Throttler(rate_limit=1, period=1)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._throttler = Throttler(rate_limit=1, period=1)
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
         # try to get a token, raise if that fails
@@ -171,33 +172,31 @@ class SpotifyProvider(MusicProvider):
             searchtypes.append("playlist")
         searchtype = ",".join(searchtypes)
         search_query = search_query.replace("'", "")
-        if searchresult := await self._get_data(
-            "search", q=search_query, type=searchtype, limit=limit
-        ):
-            if "artists" in searchresult:
-                result.artists += [
-                    await self._parse_artist(item)
-                    for item in searchresult["artists"]["items"]
-                    if (item and item["id"])
-                ]
-            if "albums" in searchresult:
-                result.albums += [
-                    await self._parse_album(item)
-                    for item in searchresult["albums"]["items"]
-                    if (item and item["id"])
-                ]
-            if "tracks" in searchresult:
-                result.tracks += [
-                    await self._parse_track(item)
-                    for item in searchresult["tracks"]["items"]
-                    if (item and item["id"])
-                ]
-            if "playlists" in searchresult:
-                result.playlists += [
-                    await self._parse_playlist(item)
-                    for item in searchresult["playlists"]["items"]
-                    if (item and item["id"])
-                ]
+        searchresult = await self._get_data("search", q=search_query, type=searchtype, limit=limit)
+        if "artists" in searchresult:
+            result.artists += [
+                await self._parse_artist(item)
+                for item in searchresult["artists"]["items"]
+                if (item and item["id"])
+            ]
+        if "albums" in searchresult:
+            result.albums += [
+                await self._parse_album(item)
+                for item in searchresult["albums"]["items"]
+                if (item and item["id"])
+            ]
+        if "tracks" in searchresult:
+            result.tracks += [
+                await self._parse_track(item)
+                for item in searchresult["tracks"]["items"]
+                if (item and item["id"])
+            ]
+        if "playlists" in searchresult:
+            result.playlists += [
+                await self._parse_playlist(item)
+                for item in searchresult["playlists"]["items"]
+                if (item and item["id"])
+            ]
         return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -239,35 +238,29 @@ class SpotifyProvider(MusicProvider):
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._get_data(f"artists/{prov_artist_id}")
-        return await self._parse_artist(artist_obj) if artist_obj else None
+        return await self._parse_artist(artist_obj)
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        if album_obj := await self._get_data(f"albums/{prov_album_id}"):
-            return await self._parse_album(album_obj)
-        msg = f"Item {prov_album_id} not found"
-        raise MediaNotFoundError(msg)
+        album_obj = await self._get_data(f"albums/{prov_album_id}")
+        return await self._parse_album(album_obj)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        if track_obj := await self._get_data(f"tracks/{prov_track_id}"):
-            return await self._parse_track(track_obj)
-        msg = f"Item {prov_track_id} not found"
-        raise MediaNotFoundError(msg)
+        track_obj = await self._get_data(f"tracks/{prov_track_id}")
+        return await self._parse_track(track_obj)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        if playlist_obj := await self._get_data(f"playlists/{prov_playlist_id}"):
-            return await self._parse_playlist(playlist_obj)
-        msg = f"Item {prov_playlist_id} not found"
-        raise MediaNotFoundError(msg)
+        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
+        return await self._parse_playlist(playlist_obj)
 
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
         return [
             await self._parse_track(item)
             for item in await self._get_all_items(f"albums/{prov_album_id}/tracks")
-            if (item and item["id"])
+            if item["id"]
         ]
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
@@ -364,11 +357,6 @@ class SpotifyProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         # make sure a valid track is requested.
         track = await self.get_track(item_id)
-        if not track:
-            msg = f"track {item_id} not found"
-            raise MediaNotFoundError(msg)
-        # make sure that the token is still valid by just requesting it
-        await self.login()
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
@@ -376,6 +364,9 @@ class SpotifyProvider(MusicProvider):
                 content_type=ContentType.OGG,
             ),
             duration=track.duration,
+            # these streamdetails may be cached for a long time,
+            # as there is no time sensitive info in them
+            expires=time.time() + 30 * 24 * 3600,
         )
 
     async def get_audio_stream(
@@ -411,7 +402,7 @@ class SpotifyProvider(MusicProvider):
             # retry with ap-port set to invalid value, which will force fallback
             args += ["--ap-port", "12345"]
             async with AsyncProcess(args) as librespot_proc:
-                async for chunk in librespot_proc.iter_any(64000):
+                async for chunk in librespot_proc.iter_any():
                     yield chunk
             self._ap_workaround = True
 
@@ -612,7 +603,7 @@ class SpotifyProvider(MusicProvider):
                 if retries > 2:
                     # switch to ap workaround after 2 retries
                     self._ap_workaround = True
-            except asyncio.exceptions.TimeoutError:
+            except TimeoutError:
                 await asyncio.sleep(2)
         if tokeninfo and userinfo:
             self._auth_token = tokeninfo
@@ -733,74 +724,87 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
-    async def _get_data(self, endpoint, tokeninfo: dict | None = None, **kwargs):
+    async def _get_data(self, endpoint, **kwargs) -> dict[str, Any]:
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         kwargs["market"] = "from_token"
         kwargs["country"] = "from_token"
+        tokeninfo = kwargs.pop("tokeninfo", None)
         if tokeninfo is None:
             tokeninfo = await self.login()
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
-        async with self._throttler:
-            time_start = time.time()
-            result = None
-            try:
-                async with self.mass.http_session.get(
-                    url, headers=headers, params=kwargs, ssl=False, timeout=120
-                ) as response:
-                    # get text before json so we can log the body in case of errors
-                    result = await response.text()
-                    result = json_loads(result)
-                    if "error" in result or ("status" in result and "error" in result["status"]):
-                        self.logger.error("%s - %s", endpoint, result)
-                        return None
-            except (
-                aiohttp.ContentTypeError,
-                JSONDecodeError,
-            ):
-                self.logger.error("Error while processing %s: %s", endpoint, result)
-                return None
-            self.logger.debug(
-                "Processing GET/%s took %s seconds",
-                endpoint,
-                round(time.time() - time_start, 2),
-            )
-            return result
+        async with self._throttler, self.mass.http_session.get(
+            url, headers=headers, params=kwargs, ssl=True, timeout=120
+        ) as response:
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._get_data(endpoint, **kwargs)
+            # handle temporary server error
+            if response.status == 503:
+                self.logger.debug(
+                    "Request to %s failed with 503 error, retrying in 30 seconds...",
+                    endpoint,
+                )
+                await asyncio.sleep(30)
+                return await self._get_data(endpoint, **kwargs)
+            # handle 404 not found, convert to MediaNotFoundError
+            if response.status == 404:
+                raise MediaNotFoundError(f"{endpoint} not found")
+            response.raise_for_status()
+            return await response.json(loads=json_loads)
 
-    async def _delete_data(self, endpoint, data=None, **kwargs):
+    async def _delete_data(self, endpoint, data=None, **kwargs) -> str:
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
-        if not token:
-            return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.delete(
             url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._delete_data(endpoint, data=data, **kwargs)
+            response.raise_for_status()
             return await response.text()
 
-    async def _put_data(self, endpoint, data=None, **kwargs):
+    async def _put_data(self, endpoint, data=None, **kwargs) -> str:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
-        if not token:
-            return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.put(
             url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._put_data(endpoint, data=data, **kwargs)
+            response.raise_for_status()
             return await response.text()
 
-    async def _post_data(self, endpoint, data=None, **kwargs):
+    async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
-        if not token:
-            return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.post(
             url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._post_data(endpoint, data=data, **kwargs)
+            response.raise_for_status()
             return await response.text()
 
     async def get_librespot_binary(self):

@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, fields
-from time import time
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any, Self, cast
 
 from mashumaro import DataClassDictMixin
 
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.uri import create_uri
 from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
 from music_assistant.common.models.enums import (
@@ -36,7 +36,12 @@ class AudioFormat(DataClassDictMixin):
 
     def __post_init__(self):
         """Execute actions after init."""
-        if not self.output_format_str:
+        if not self.output_format_str and self.content_type.is_pcm():
+            self.output_format_str = (
+                f"pcm;codec=pcm;rate={self.sample_rate};"
+                f"bitrate={self.bit_depth};channels={self.channels}"
+            )
+        elif not self.output_format_str:
             self.output_format_str = self.content_type.value
 
     @property
@@ -56,8 +61,14 @@ class AudioFormat(DataClassDictMixin):
         """Return the PCM sample size."""
         return int(self.sample_rate * (self.bit_depth / 8) * self.channels)
 
+    def __eq__(self, other: AudioFormat) -> bool:
+        """Check equality of two items."""
+        if not other:
+            return False
+        return self.output_format_str == other.output_format_str
 
-@dataclass(frozen=True, kw_only=True)
+
+@dataclass(kw_only=True)
 class ProviderMapping(DataClassDictMixin):
     """Model for a MediaItem's provider mapping details."""
 
@@ -76,6 +87,16 @@ class ProviderMapping(DataClassDictMixin):
     def quality(self) -> int:
         """Return quality score."""
         return self.audio_format.quality
+
+    def __post_init__(self):
+        """Call after init."""
+        # having items for unavailable providers can have all sorts
+        # of unpredictable results so ensure we have accurate availability status
+        if available_providers := get_global_cache_value("unique_providers"):
+            if TYPE_CHECKING:
+                available_providers = cast(set[str], available_providers)
+            if not available_providers.intersection({self.provider_domain, self.provider_instance}):
+                self.available = False
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -467,64 +488,3 @@ def media_from_dict(media_item: dict) -> MediaItemType:
     if media_item["media_type"] == "radio":
         return Radio.from_dict(media_item)
     return MediaItem.from_dict(media_item)
-
-
-@dataclass(kw_only=True)
-class StreamDetails(DataClassDictMixin):
-    """Model for streamdetails."""
-
-    # NOTE: the actual provider/itemid of the streamdetails may differ
-    # from the connected media_item due to track linking etc.
-    # the streamdetails are only used to provide details about the content
-    # that is going to be streamed.
-
-    # mandatory fields
-    provider: str
-    item_id: str
-    audio_format: AudioFormat
-    media_type: MediaType = MediaType.TRACK
-
-    # stream_title: radio streams can optionally set this field
-    stream_title: str | None = None
-    # duration of the item to stream, copied from media_item if omitted
-    duration: int | None = None
-    # total size in bytes of the item, calculated at eof when omitted
-    size: int | None = None
-    # expires: timestamp this streamdetails expire
-    expires: float = time() + 3600
-    # data: provider specific data (not exposed externally)
-    data: Any = None
-    # if the url/file is supported by ffmpeg directly, use direct stream
-    direct: str | None = None
-    # bool to indicate that the providers 'get_audio_stream' supports seeking of the item
-    can_seek: bool = True
-    # callback: optional callback function (or coroutine) to call when the stream completes.
-    # needed for streaming provivders to report what is playing
-    # receives the streamdetails as only argument from which to grab
-    # details such as seconds_streamed.
-    callback: Any = None
-
-    # the fields below will be set/controlled by the streamcontroller
-    queue_id: str | None = None
-    seconds_streamed: float | None = None
-    seconds_skipped: float | None = None
-    gain_correct: float | None = None
-    loudness: float | None = None
-
-    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
-        """Exclude internal fields from dict."""
-        d.pop("data")
-        d.pop("direct")
-        d.pop("expires")
-        d.pop("queue_id")
-        d.pop("callback")
-        return d
-
-    def __str__(self) -> str:
-        """Return pretty printable string of object."""
-        return self.uri
-
-    @property
-    def uri(self) -> str:
-        """Return uri representation of item."""
-        return f"{self.provider}://{self.media_type.value}/{self.item_id}"
