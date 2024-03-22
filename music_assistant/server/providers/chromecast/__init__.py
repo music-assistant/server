@@ -241,9 +241,7 @@ class ChromecastProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         castplayer = self.castplayers[player_id]
-        use_flow_mode = await self.mass.config.get_player_config_value(
-            player_id, CONF_FLOW_MODE
-        ) or await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
+        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
         url = self.mass.streams.resolve_stream_url(
             player_id,
             queue_item=queue_item,
@@ -254,6 +252,7 @@ class ChromecastProvider(PlayerProvider):
             "type": "LOAD",
             "media": self._create_cc_media_item(queue_item, url),
         }
+
         # make sure that the media controller app is launched
         app_id = ALT_APP_ID if use_flow_mode else DEFAULT_APP_ID
         await self._launch_app(castplayer, app_id)
