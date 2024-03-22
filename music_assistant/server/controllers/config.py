@@ -666,10 +666,9 @@ class ConfigController:
         """Load data from persistent storage."""
         assert not self._data, "Already loaded"
 
-        for filename in self.filename, f"{self.filename}.backup":
+        for filename in (self.filename, f"{self.filename}.backup"):
             try:
-                _filename = os.path.join(self.mass.storage_path, filename)
-                async with aiofiles.open(_filename, "r", encoding="utf-8") as _file:
+                async with aiofiles.open(filename, "r", encoding="utf-8") as _file:
                     self._data = json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
                     return
