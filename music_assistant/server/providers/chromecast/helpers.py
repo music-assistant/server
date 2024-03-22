@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import urllib.error
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from typing import TYPE_CHECKING, Self
 from uuid import UUID
 
@@ -50,11 +50,11 @@ class ChromecastInfo:
     @classmethod
     def from_cast_info(cls: Self, cast_info: CastInfo) -> Self:
         """Instantiate ChromecastInfo from CastInfo."""
-        return cls(**cast_info._asdict())
+        return cls(**asdict(cast_info))
 
     def update(self, cast_info: CastInfo) -> None:
         """Update ChromecastInfo from CastInfo."""
-        for key, value in cast_info._asdict().items():
+        for key, value in asdict(cast_info).items():
             if not value:
                 continue
             setattr(self, key, value)
@@ -205,9 +205,11 @@ class CastStatusListener:
             "%s got new media_status for group: %s", self.castplayer.player.display_name, group_uuid
         )
 
-    def load_media_failed(self, item, error_code) -> None:
+    def load_media_failed(self, queue_item_id, error_code) -> None:
         """Call when media failed to load."""
-        self.prov.logger.warning("Load media failed: %s - error code: %s", item, error_code)
+        self.prov.logger.warning(
+            "Load media failed: %s - error code: %s", queue_item_id, error_code
+        )
 
     def invalidate(self) -> None:
         """
