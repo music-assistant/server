@@ -259,7 +259,7 @@ class ChromecastProvider(PlayerProvider):
         await self._launch_app(castplayer, app_id)
         # send queue info to the CC
         media_controller = castplayer.cc.media_controller
-        await asyncio.to_thread(media_controller.send_message, queuedata, True)
+        await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
@@ -303,7 +303,7 @@ class ChromecastProvider(PlayerProvider):
         }
         media_controller = castplayer.cc.media_controller
         queuedata["mediaSessionId"] = media_controller.status.media_session_id
-        self.mass.create_task(media_controller.send_message, queuedata, inc_session_id=True)
+        self.mass.create_task(media_controller.send_message, data=queuedata, inc_session_id=True)
         self.logger.debug(
             "Enqued next track (%s) to player %s",
             queue_item.name if queue_item else url,
@@ -559,7 +559,7 @@ class ChromecastProvider(PlayerProvider):
         if castplayer.cc.app_id == app_id:
             return  # already active
 
-        def launched_callback() -> None:
+        def launched_callback(success: bool, response: dict[str, Any] | None) -> None:
             self.mass.loop.call_soon_threadsafe(event.set)
 
         def launch() -> None:
@@ -657,7 +657,9 @@ class ChromecastProvider(PlayerProvider):
                     "metadata": cc_item["metadata"],
                 },
             }
-            self.mass.create_task(media_controller.send_message, queuedata, True)
+            self.mass.create_task(
+                media_controller.send_message, data=queuedata, inc_session_id=True
+            )
 
         if len(getattr(media_controller.status, "items", [])) < 2:
             # In flow mode, all queue tracks are sent to the player as continuous stream.
@@ -686,4 +688,4 @@ class ChromecastProvider(PlayerProvider):
                     }
                 ],
             }
-            self.mass.create_task(media_controller.send_message, msg, inc_session_id=True)
+            self.mass.create_task(media_controller.send_message, data=msg, inc_session_id=True)
