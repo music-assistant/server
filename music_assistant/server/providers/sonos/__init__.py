@@ -352,6 +352,7 @@ class SonosPlayerProvider(PlayerProvider):
             raise PlayerCommandFailed(msg)
 
         url = self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )
@@ -376,6 +377,7 @@ class SonosPlayerProvider(PlayerProvider):
         """
         sonos_player = self.sonosplayers[player_id]
         url = self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )

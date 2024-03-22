@@ -181,11 +181,14 @@ def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
 class AirplayStream:
     """Object that holds the details of a stream job."""
 
-    def __init__(self, prov: AirplayProvider, airplay_player: AirPlayPlayer) -> None:
+    def __init__(
+        self, prov: AirplayProvider, airplay_player: AirPlayPlayer, input_format: AudioFormat
+    ) -> None:
         """Initialize AirplayStream."""
         self.prov = prov
         self.mass = prov.mass
         self.airplay_player = airplay_player
+        self.input_format = input_format
         # always generate a new active remote id to prevent race conditions
         # with the named pipe used to send audio
         self.active_remote_id: str = str(randint(1000, 8000))
@@ -260,7 +263,7 @@ class AirplayStream:
         # when there are no player specific filters or extras but in this case
         # ffmpeg serves as a small buffer towards the realtime cliraop streamer
         ffmpeg_args = get_ffmpeg_args(
-            input_format=AIRPLAY_PCM_FORMAT,
+            input_format=self.input_format,
             output_format=AIRPLAY_PCM_FORMAT,
             filter_params=get_player_filter_params(self.mass, player_id),
         )
@@ -610,9 +613,13 @@ class AirplayProvider(PlayerProvider):
         if queue_item.queue_id.startswith(UGP_PREFIX):
             # special case: we got forwarded a request from the UGP
             # use the existing stream job that was already created by UGP
-            raise NotImplementedError  # TODO: implement UGP support
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
+            stream_job.expected_players.add(player_id)
+            input_format = stream_job.pcm_format
+            audio_source = stream_job.subscribe(player_id)
+        elif queue_item.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
+            input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
                 queue_item.streamdetails.data["url"],
                 pcm_format=AIRPLAY_PCM_FORMAT,
@@ -620,13 +627,14 @@ class AirplayProvider(PlayerProvider):
             )
         else:
             queue = self.mass.player_queues.get(queue_item.queue_id)
+            input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_flow_stream(
                 queue, start_queue_item=queue_item, pcm_format=AIRPLAY_PCM_FORMAT
             )
-        self.mass.create_task(self._handle_stream_audio, player_id, audio_source)
+        self.mass.create_task(self._handle_stream_audio, player_id, audio_source, input_format)
 
     async def _handle_stream_audio(
-        self, player_id: str, audio_source: AsyncGenerator[bytes, None]
+        self, player_id: str, audio_source: AsyncGenerator[bytes, None], input_format: AudioFormat
     ) -> None:
         """Handle streaming of audio to one or more airplay players."""
         # Python is not suitable for realtime audio streaming so we do the actual streaming
@@ -641,7 +649,9 @@ class AirplayProvider(PlayerProvider):
         # setup Raop process for player and its sync childs
         async with asyncio.TaskGroup() as tg:
             for airplay_player in self._get_sync_clients(player_id):
-                airplay_player.active_stream = AirplayStream(self, airplay_player)
+                airplay_player.active_stream = AirplayStream(
+                    self, airplay_player, input_format=input_format
+                )
                 tg.create_task(airplay_player.active_stream.start(start_ntp))
 
         async for chunk in audio_source:

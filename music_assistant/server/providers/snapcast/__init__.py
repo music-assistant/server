@@ -64,6 +64,15 @@ DEFAULT_SNAPSERVER_PORT = 1705
 SNAPWEB_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 
 
+DEFAULT_SNAPCAST_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE,
+    sample_rate=48000,
+    # TODO: can we handle 24 bits bit depth ?
+    bit_depth=16,
+    channels=2,
+)
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -309,29 +318,26 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
-        # TODO: can we handle 24 bits bit depth ?
-        snapcast_format = AudioFormat(
-            content_type=ContentType.PCM_S16LE,
-            sample_rate=48000,
-            bit_depth=16,
-            channels=2,
-        )
-
         if queue_item.queue_id.startswith(UGP_PREFIX):
             # special case: we got forwarded a request from the UGP
             # use the existing stream job that was already created by UGP
-            raise NotImplementedError  # TODO: implement UGP support
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
+            stream_job.expected_players.add(player_id)
+            input_format = stream_job.pcm_format
+            audio_source = stream_job.subscribe(player_id)
+        elif queue_item.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
+            input_format = DEFAULT_SNAPCAST_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
                 queue_item.streamdetails.data["url"],
-                pcm_format=snapcast_format,
+                pcm_format=DEFAULT_SNAPCAST_FORMAT,
                 use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
             )
         else:
             queue = self.mass.player_queues.get(queue_item.queue_id)
+            input_format = DEFAULT_SNAPCAST_FORMAT
             audio_source = self.mass.streams.get_flow_stream(
-                queue, start_queue_item=queue_item, pcm_format=snapcast_format
+                queue, start_queue_item=queue_item, pcm_format=DEFAULT_SNAPCAST_FORMAT
             )
 
         async def _streamer() -> None:
@@ -350,8 +356,8 @@ class SnapCastProvider(PlayerProvider):
             stream_path = f"tcp://{host}:{port}"
             self.logger.debug("Start streaming to %s", stream_path)
             ffmpeg_args = get_ffmpeg_args(
-                input_format=snapcast_format,
-                output_format=snapcast_format,
+                input_format=input_format,
+                output_format=DEFAULT_SNAPCAST_FORMAT,
                 filter_params=get_player_filter_params(self.mass, player_id),
                 output_path=f"tcp://{host}:{port}",
             )

@@ -20,13 +20,11 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerState,
     PlayerType,
     ProviderFeature,
 )
-from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import (
@@ -34,10 +32,6 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     SYNCGROUP_PREFIX,
     UGP_PREFIX,
-)
-from music_assistant.server.controllers.streams import (
-    FLOW_DEFAULT_BIT_DEPTH,
-    FLOW_DEFAULT_SAMPLE_RATE,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -179,22 +173,17 @@ class UniversalGroupProvider(PlayerProvider):
 
         # create a multi-client stream job - all (direct) child's of this UGP group
         # will subscribe to this multi client queue stream
-        pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(FLOW_DEFAULT_BIT_DEPTH),
-            sample_rate=FLOW_DEFAULT_SAMPLE_RATE,
-            bit_depth=FLOW_DEFAULT_BIT_DEPTH,
-        )
         queue = self.mass.player_queues.get(player_id)
-        stream_job = self.mass.streams.create_stream_job(
+        stream_job = self.mass.streams.create_multi_client_stream_job(
             queue.queue_id,
-            pcm_audio_source=self.mass.streams.get_flow_stream(
-                queue=queue, start_queue_item=queue_item, pcm_format=pcm_format
-            ),
-            pcm_format=pcm_format,
+            start_queue_item=queue_item,
         )
         # create a fake queue item to forward to downstream play_media commands
         ugp_queue_item = QueueItem(
-            player_id, queue_item_id="flow", name=group_player.display_name, duration=None
+            player_id,
+            queue_item_id=stream_job.job_id,
+            name="Music Assistant",
+            duration=None,
         )
 
         # forward the stream job to all group members
@@ -206,7 +195,6 @@ class UniversalGroupProvider(PlayerProvider):
                     if member is None:
                         continue
                 tg.create_task(player_prov.play_media(member.player_id, ugp_queue_item))
-        stream_job.start()
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
