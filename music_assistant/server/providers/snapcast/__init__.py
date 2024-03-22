@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import random
 import socket
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from snapcast.control import create_server
 from snapcast.control.client import Snapclient
@@ -59,6 +60,8 @@ SNAP_STREAM_STATUS_MAP = {
     "unknown": PlayerState.IDLE,
 }
 DEFAULT_SNAPSERVER_PORT = 1705
+
+SNAPWEB_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
 
 
 async def setup(
@@ -179,10 +182,10 @@ class SnapCastProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         for client in self._snapserver.clients:
             await self.cmd_stop(client.identifier)
+        self._snapserver.stop()
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
-        await asyncio.sleep(6)  # prevent race conditions when reloading
-        self._snapserver.stop()
+        await asyncio.sleep(10)  # prevent race conditions when reloading
         self._snapserver_started.clear()
 
     def on_player_config_removed(self, player_id: str) -> None:
@@ -470,6 +473,7 @@ class SnapCastProvider(PlayerProvider):
             f"--server.datadir={self.mass.storage_path}",
             "--http.enabled=true",
             "--http.port=1780",
+            f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp.enabled=true",
             "--tcp.port=1705",
         ]
