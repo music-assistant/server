@@ -30,6 +30,7 @@ HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
 
 async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
+    LOGGER.debug("Installing python package %s", package)
     cmd = f"python3 -m pip install --find-links {HA_WHEELS} {package}"
     proc = await asyncio.create_subprocess_shell(
         cmd, stderr=asyncio.subprocess.STDOUT, stdout=asyncio.subprocess.PIPE
@@ -91,13 +92,32 @@ async def is_hass_supervisor() -> bool:
     return await asyncio.to_thread(_check)
 
 
-async def get_provider_module(domain: str) -> ProviderModuleType:
-    """Return module for given provider domain."""
+async def load_provider_module(domain: str, requirements: list[str]) -> ProviderModuleType:
+    """Return module for given provider domain and make sure the requirements are met."""
 
     @lru_cache
     def _get_provider_module(domain: str) -> ProviderModuleType:
         return importlib.import_module(f".{domain}", "music_assistant.server.providers")
 
+    # ensure module requirements are met
+    for requirement in requirements:
+        if "==" not in requirement:
+            # we should really get rid of unpinned requirements
+            continue
+        package_name, version = requirement.split("==", 1)
+        installed_version = await get_package_version(package_name)
+        if installed_version != version:
+            await install_package(requirement)
+
+    # try to load the module
+    try:
+        return await asyncio.to_thread(_get_provider_module, domain)
+    except ImportError:
+        # (re)install ALL requirements
+        for requirement in requirements:
+            await install_package(requirement)
+    # try loading the provider again to be safe
+    # this will fail if something else is wrong (as it should)
     return await asyncio.to_thread(_get_provider_module, domain)
 
 

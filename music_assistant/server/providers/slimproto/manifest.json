@@ -7,7 +7,7 @@
     "@music-assistant"
   ],
   "requirements": [
-    "aioslimproto==3.0.0"
+    "aioslimproto==3.0.1"
   ],
   "documentation": "https://music-assistant.io/player-support/slimproto/",
   "multi_instance": false,

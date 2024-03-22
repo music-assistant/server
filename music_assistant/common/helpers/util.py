@@ -151,11 +151,10 @@ async def get_ip():
     return await asyncio.to_thread(_get_ip)
 
 
-async def select_free_port(range_start: int, range_end: int) -> int:
-    """Automatically find available port within range."""
+async def is_port_in_use(port: int) -> bool:
+    """Check if port is in use."""
 
-    def is_port_in_use(port: int) -> bool:
-        """Check if port is in use."""
+    def _is_port_in_use() -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
             try:
                 _sock.bind(("0.0.0.0", port))
@@ -163,14 +162,16 @@ async def select_free_port(range_start: int, range_end: int) -> int:
                 return True
         return False
 
-    def _select_free_port():
-        for port in range(range_start, range_end):
-            if not is_port_in_use(port):
-                return port
-        msg = "No free port available"
-        raise OSError(msg)
+    return await asyncio.to_thread(_is_port_in_use)
 
-    return await asyncio.to_thread(_select_free_port)
+
+async def select_free_port(range_start: int, range_end: int) -> int:
+    """Automatically find available port within range."""
+    for port in range(range_start, range_end):
+        if not await is_port_in_use(port):
+            return port
+    msg = "No free port available"
+    raise OSError(msg)
 
 
 async def get_ip_from_host(dns_name: str) -> str | None:
@@ -289,3 +290,10 @@ def is_valid_uuid(uuid_to_test: str) -> bool:
     except ValueError:
         return False
     return str(uuid_obj) == uuid_to_test
+
+
+class classproperty(property):  # noqa: N801
+    """Implement class property for python3.11+."""
+
+    def __get__(self, cls, owner):  # noqa: D105
+        return classmethod(self.fget).__get__(None, owner)()

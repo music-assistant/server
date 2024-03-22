@@ -19,8 +19,8 @@ from music_assistant.common.models.media_items import (
     MediaType,
     ProviderMapping,
     Radio,
-    StreamDetails,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
 from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.helpers.tags import parse_tags

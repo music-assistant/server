@@ -5,7 +5,7 @@ aiodns>=3.0.0
 aiofiles==23.2.1
 aiohttp==3.9.3
 aiorun==2023.7.2
-aioslimproto==3.0.0
+aioslimproto==3.0.1
 aiosqlite==0.20.0
 async-upnp-client==0.38.2
 asyncio-throttle==1.0.2
@@ -32,12 +32,12 @@ python-fullykiosk==0.0.12
 python-slugify==8.0.4
 radios==0.3.0
 shortuuid==1.0.12
-snapcast-mod==2.4.3
+snapcast==2.3.6
 soco==0.30.2
 sonos-websocket==0.1.3
 tidalapi==0.7.4
 unidecode==1.3.8
 uvloop==0.19.0
 xmltodict==0.13.0
-ytmusicapi==1.5.3
+ytmusicapi==1.6.0
 zeroconf==0.131.0

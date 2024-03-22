@@ -68,11 +68,8 @@ class CoreController:
             log_level = self.mass.config.get_raw_core_config_value(
                 self.domain, CONF_LOG_LEVEL, "GLOBAL"
             )
-        self.log_level = log_level
         if log_level == "GLOBAL":
             self.logger.setLevel(mass_logger.level)
-        else:
-            self.logger.setLevel("DEBUG" if log_level == "VERBOSE" else log_level)
+        elif logging.getLogger().level > self.logger.level:
             # if the root logger's level is higher, we need to adjust that too
-            if logging.getLogger().level > self.logger.level:
-                logging.getLogger().setLevel(self.logger.level)
+            logging.getLogger().setLevel(self.logger.level)

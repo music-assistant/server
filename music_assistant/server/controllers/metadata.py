@@ -16,7 +16,7 @@ import aiofiles
 from aiohttp import web
 
 from music_assistant.common.models.enums import ImageType, MediaType, ProviderFeature, ProviderType
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -357,6 +357,8 @@ class MetaDataController(CoreController):
         image_format: str = "png",
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
+        if provider != "url" and not self.mass.get_provider(provider):
+            raise ProviderUnavailableError
         thumbnail = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
         )
@@ -371,10 +373,11 @@ class MetaDataController(CoreController):
         provider = request.query.get("provider", "url")
         size = int(request.query.get("size", "0"))
         image_format = request.query.get("fmt", "png")
+        if provider != "url" and not self.mass.get_provider(provider):
+            return web.Response(status=404)
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote(path)
-
         with suppress(FileNotFoundError):
             image_data = await self.get_thumbnail(
                 path, size=size, provider=provider, image_format=image_format

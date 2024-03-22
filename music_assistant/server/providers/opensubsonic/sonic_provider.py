@@ -29,9 +29,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_PATH,
@@ -65,6 +65,7 @@ class OpenSonicProvider(MusicProvider):
 
     _conn: SonicConnection = None
     _enable_podcasts: bool = True
+    _seek_support: bool = False
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
@@ -85,7 +86,8 @@ class OpenSonicProvider(MusicProvider):
             appName="Music Assistant",
         )
         try:
-            if not self._conn.ping():
+            success = await self._run_async(self._conn.ping)
+            if not success:
                 msg = (
                     f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, "
                     "check your settings."
@@ -97,6 +99,17 @@ class OpenSonicProvider(MusicProvider):
             )
             raise LoginFailed(msg) from e
         self._enable_podcasts = self.config.get_value(CONF_ENABLE_PODCASTS)
+        try:
+            ret = await self._run_async(self._conn.getOpenSubsonicExtensions)
+            extensions = ret["openSubsonicExtensions"]
+            for entry in extensions:
+                if entry["name"] == "transcodeOffset":
+                    self._seek_support = True
+                    break
+        except OSError:
+            logging.getLogger("libopensonic").info(
+                "Server does not support transcodeOffset, seeking in player provider"
+            )
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -639,7 +652,7 @@ class OpenSonicProvider(MusicProvider):
         )
         return [self._parse_track(entry) for entry in songs]
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get the details needed to process a specified track."""
         try:
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, item_id)
@@ -656,16 +669,17 @@ class OpenSonicProvider(MusicProvider):
         return StreamDetails(
             item_id=sonic_song.id,
             provider=self.instance_id,
+            can_seek=self._seek_support,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
-            callback=self._report_playback_stopped,
         )
 
     async def _report_playback_started(self, item_id: str) -> None:
         await self._run_async(self._conn.scrobble, sid=item_id, submission=False)
 
-    async def _report_playback_stopped(self, streamdetails: StreamDetails) -> None:
-        if streamdetails.seconds_streamed >= streamdetails.duration / 2:
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+        if seconds_streamed >= streamdetails.duration / 2:
             await self._run_async(self._conn.scrobble, sid=streamdetails.item_id, submission=True)
 
     async def get_audio_stream(

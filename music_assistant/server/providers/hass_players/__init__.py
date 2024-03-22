@@ -44,7 +44,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.hass import HomeAssistant as HomeAssistantProvider
 
@@ -250,26 +249,14 @@ class HomeAssistantPlayers(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            seek_position=seek_position,
-            fade_in=fade_in,
             flow_mode=use_flow_mode,
         )
         await self.hass_prov.hass.call_service(
@@ -287,25 +274,6 @@ class HomeAssistantPlayers(PlayerProvider):
             player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
 
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        output_codec = ContentType.MP3 if enforce_mp3 else ContentType.FLAC
-        url = stream_job.resolve_stream_url(player_id, output_codec)
-        await self.hass_prov.hass.call_service(
-            domain="media_player",
-            service="play_media",
-            service_data={
-                "media_content_id": url,
-                "media_content_type": "music",
-                "enqueue": "replace",
-            },
-            target={"entity_id": player_id},
-        )
-
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """
         Handle enqueuing of the next queue item on the player.
@@ -320,7 +288,8 @@ class HomeAssistantPlayers(PlayerProvider):
         This will NOT be called if the end of the queue is reached (and repeat disabled).
         This will NOT be called if the player is using flow mode to playback the queue.
         """
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )

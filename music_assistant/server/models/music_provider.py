@@ -16,9 +16,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     Radio,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 
 from .provider import Provider
 
@@ -48,6 +48,11 @@ class MusicProvider(Provider):
         Setting this to False will query all instances of this provider for search and lookups.
         """
         return True
+
+    @property
+    def lookup_key(self) -> str:
+        """Return domain if streaming_provider or instance_id otherwise."""
+        return self.domain if self.is_streaming_provider else self.instance_id
 
     async def search(
         self,
@@ -239,7 +244,7 @@ class MusicProvider(Provider):
         if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
             raise NotImplementedError
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError
 
@@ -249,6 +254,9 @@ class MusicProvider(Provider):
         """Return the audio stream for the provider item."""
         if streamdetails.direct is None:
             raise NotImplementedError
+
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
 
     async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
         """

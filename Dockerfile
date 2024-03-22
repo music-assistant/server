@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 ARG TARGETPLATFORM
-ARG PYTHON_VERSION="3.11"
+ARG PYTHON_VERSION="3.12"
 
 #####################################################################
 #                                                                   #
@@ -44,6 +44,8 @@ ARG MASS_VERSION
 ARG TARGETPLATFORM
 
 RUN set -x \
+    # add bookworm backports repo
+    && sh -c 'echo "deb http://deb.debian.org/debian bookworm-backports main" >> /etc/apt/sources.list' \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -58,6 +60,8 @@ RUN set -x \
         cifs-utils \
         libnfs-utils \
         libjemalloc2 \
+    # install snapcast server 0.27 from bookworm backports
+    && apt-get install -y --no-install-recommends -t bookworm-backports snapserver \
     # cleanup
     && rm -rf /tmp/* \
     && rm -rf /var/lib/apt/lists/*
