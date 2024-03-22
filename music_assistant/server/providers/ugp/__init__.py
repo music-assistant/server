@@ -141,7 +141,7 @@ class UniversalGroupProvider(PlayerProvider):
                 if member.state == PlayerState.IDLE:
                     continue
                 tg.create_task(self.mass.players.cmd_stop(member.player_id))
-        if existing := self.mass.streams.stream_jobs.pop(player_id, None):
+        if existing := self.mass.streams.multi_client_jobs.pop(player_id, None):
             existing.stop()
 
     async def cmd_play(self, player_id: str) -> None:

@@ -719,7 +719,7 @@ class SlimprotoProvider(PlayerProvider):
         sync_playpoints = self._sync_playpoints[slimplayer.player_id]
 
         active_queue = self.mass.player_queues.get_active_queue(slimplayer.player_id)
-        stream_job = self.mass.streams.stream_jobs.get(active_queue.queue_id)
+        stream_job = self.mass.streams.multi_client_jobs.get(active_queue.queue_id)
         if not stream_job:
             # should not happen, but just in case
             return

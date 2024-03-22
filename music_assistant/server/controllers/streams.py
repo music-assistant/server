@@ -107,7 +107,6 @@ class MultiClientStreamJob:
         self._all_clients_connected = asyncio.Event()
         self.logger = stream_controller.logger.getChild("streamjob")
         self._finished: bool = False
-        self.workaround_players_seen: set[str] = set()
         # start running the audio task in the background
         self._audio_task = asyncio.create_task(self._stream_job_runner())
 
@@ -160,15 +159,26 @@ class MultiClientStreamJob:
 
     async def subscribe(self, player_id: str) -> AsyncGenerator[bytes, None]:
         """Subscribe consumer and iterate incoming chunks on the queue."""
-        if (
-            player_id in self.stream_controller.workaround_players
-            and player_id not in self.workaround_players_seen
-        ):
-            self.workaround_players_seen.add(player_id)
-            yield b""
-            return
-
         try:
+            # some players (e.g. dlna, sonos) misbehave and do multiple GET requests
+            # to the stream in an attempt to get the audio details such as duration
+            # which is a bit pointless for our duration-less queue stream
+            # and it completely messes with the subscription logic
+            if player_id in self.subscribed_players:
+                self.logger.warning(
+                    "Player %s is making multiple requests "
+                    "to the same stream, playback may be disturbed!",
+                    player_id,
+                )
+                player_id = f"{player_id}_{shortuuid.random(4)}"
+            elif self._all_clients_connected.is_set():
+                # client subscribes while we're already started - that is going to be messy for sure
+                self.logger.warning(
+                    "Player %s is is joining while the stream is already started, "
+                    "playback may be disturbed!",
+                    player_id,
+                )
+
             self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
 
             if self._all_clients_connected.is_set():
@@ -180,6 +190,7 @@ class MultiClientStreamJob:
             if len(self.subscribed_players) == len(self.expected_players):
                 # we reached the number of expected subscribers, set event
                 # so that chunks can be pushed
+                await asyncio.sleep(0.2)
                 self._all_clients_connected.set()
 
             # keep reading audio chunks from the queue until we receive an empty one
@@ -276,7 +287,6 @@ class StreamsController(CoreController):
             "some player specific local control callbacks."
         )
         self.manifest.icon = "cast-audio"
-        self.workaround_players: set[str] = set()
         self.announcements: dict[str, str] = {}
 
     @property
@@ -435,7 +445,10 @@ class StreamsController(CoreController):
         the queue audio to multiple players at once.
         """
         if existing_job := self.multi_client_jobs.pop(queue_id, None):
-            if queue_id.startswith(UGP_PREFIX):
+            if (
+                queue_id.startswith(UGP_PREFIX)
+                and existing_job.job_id == start_queue_item.queue_item_id
+            ):
                 return existing_job
             # cleanup existing job first
             if not existing_job.finished:
@@ -655,18 +668,6 @@ class StreamsController(CoreController):
         # return early if this is not a GET request
         if request.method != "GET":
             return resp
-
-        # some players (e.g. dlna, sonos) misbehave and do multiple GET requests
-        # to the stream in an attempt to get the audio details such as duration
-        # which is a bit pointless for our duration-less queue stream
-        # and it completely messes with the subscription logic
-        if child_player_id in streamjob.subscribed_players:
-            self.logger.warning(
-                "Player %s is making multiple requests "
-                "to the same stream, playback may be disturbed!",
-                child_player_id,
-            )
-            self.workaround_players.add(child_player_id)
 
         # all checks passed, start streaming!
         self.logger.debug(
