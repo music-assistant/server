@@ -107,6 +107,7 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 
     sys.excepthook = lambda *args: logging.getLogger(None).exception(
         "Uncaught exception",

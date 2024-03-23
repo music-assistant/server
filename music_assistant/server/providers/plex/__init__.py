@@ -239,7 +239,6 @@ class PlexProvider(MusicProvider):
         """Set up the music provider by connecting to the server."""
         # silence loggers
         logging.getLogger("plexapi").setLevel(self.logger.level + 10)
-        logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
         _, library_name = self.config.get_value(CONF_LIBRARY_ID).split(" / ", 1)
 
         def connect() -> PlexServer:
