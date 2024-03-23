@@ -177,7 +177,7 @@ class SpotifyProvider(MusicProvider):
             result.artists += [
                 await self._parse_artist(item)
                 for item in searchresult["artists"]["items"]
-                if (item and item["id"])
+                if (item and item["id"] and item["name"])
             ]
         if "albums" in searchresult:
             result.albums += [
@@ -411,7 +411,7 @@ class SpotifyProvider(MusicProvider):
         artist = Artist(
             item_id=artist_obj["id"],
             provider=self.domain,
-            name=artist_obj["name"],
+            name=artist_obj["name"] or artist_obj["id"],
             provider_mappings={
                 ProviderMapping(
                     item_id=artist_obj["id"],
@@ -455,6 +455,8 @@ class SpotifyProvider(MusicProvider):
             album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
 
         for artist_obj in album_obj["artists"]:
+            if not artist_obj.get("name") or not artist_obj.get("id"):
+                continue
             album.artists.append(await self._parse_artist(artist_obj))
 
         with contextlib.suppress(ValueError):
@@ -523,6 +525,8 @@ class SpotifyProvider(MusicProvider):
         if artist:
             track.artists.append(artist)
         for track_artist in track_obj.get("artists", []):
+            if not track_artist.get("name") or not track_artist.get("id"):
+                continue
             artist = await self._parse_artist(track_artist)
             if artist and artist.item_id not in {x.item_id for x in track.artists}:
                 track.artists.append(artist)

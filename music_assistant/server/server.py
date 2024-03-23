@@ -124,10 +124,10 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         LOGGER.info(
-            "Starting Music Assistant Server (%s) version %s - uvloop: %s",
+            "Starting Music Assistant Server (%s) version %s - HA add-on: %s",
             self.server_id,
             self.version,
-            "uvloop" in str(self.loop),
+            self.running_as_hass_addon,
         )
         # setup other core controllers
         self.cache = CacheController(self)

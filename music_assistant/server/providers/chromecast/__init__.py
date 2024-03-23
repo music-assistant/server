@@ -420,8 +420,8 @@ class ChromecastProvider(PlayerProvider):
                     # originally/officially cast supports 96k sample rate
                     # but it seems a (recent?) update broke this
                     # for now use 48k as max sample rate to play safe
-                    max_sample_rate=48000,
-                    supports_24bit=True,
+                    max_sample_rate=44100 if cast_info.is_audio_group else 48000,
+                    supports_24bit=not cast_info.is_audio_group,
                     enabled_by_default=enabled_by_default,
                 ),
                 logger=self.logger.getChild(cast_info.friendly_name),

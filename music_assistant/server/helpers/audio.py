@@ -373,6 +373,7 @@ async def get_media_stream(  # noqa: PLR0915
         filter_params=filter_params,
         extra_args=extra_args,
         input_path=streamdetails.direct or "-",
+        loglevel="info",  # needed for loudness measurement
     )
 
     finished = False
@@ -381,23 +382,17 @@ async def get_media_stream(  # noqa: PLR0915
         ffmpeg_args,
         enable_stdin=streamdetails.direct is None,
         enable_stderr=True,
+        custom_stdin=mass.get_provider(streamdetails.provider).get_audio_stream(
+            streamdetails,
+            seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
+        )
+        if not streamdetails.direct
+        else None,
         name="ffmpeg_media_stream",
     )
     await ffmpeg_proc.start()
     logger = LOGGER.getChild("media_stream")
     logger.debug("start media stream for: %s", streamdetails.uri)
-
-    async def writer() -> None:
-        """Task that grabs the source audio and feeds it to ffmpeg."""
-        music_prov = mass.get_provider(streamdetails.provider)
-        seek_pos = streamdetails.seek_position if streamdetails.can_seek else 0
-        async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
-            await ffmpeg_proc.write(audio_chunk)
-        # write eof when last packet is received
-        await ffmpeg_proc.write_eof()
-
-    if streamdetails.direct is None:
-        ffmpeg_proc.attached_tasks.append(asyncio.create_task(writer()))
 
     # get pcm chunks from stdout
     # we always stay one chunk behind to properly detect end of chunks
@@ -450,31 +445,28 @@ async def get_media_stream(  # noqa: PLR0915
     finally:
         seconds_streamed = bytes_sent / pcm_sample_size if bytes_sent else 0
         streamdetails.seconds_streamed = seconds_streamed
+        state_str = "finished" if finished else "aborted"
+        logger.debug(
+            "stream %s for: %s (%s seconds streamed)",
+            state_str,
+            streamdetails.uri,
+            seconds_streamed,
+        )
+        # store accurate duration
         if finished:
-            logger.debug(
-                "finished stream for: %s (%s seconds streamed)",
-                streamdetails.uri,
-                seconds_streamed,
-            )
-            # store accurate duration
             streamdetails.duration = streamdetails.seek_position + seconds_streamed
-        else:
-            logger.debug(
-                "stream aborted for %s (%s seconds streamed)",
-                streamdetails.uri,
-                seconds_streamed,
-            )
 
         # use communicate to read stderr and wait for exit
         # read log for loudness measurement (or errors)
-        _, stderr = await ffmpeg_proc.communicate()
-        if ffmpeg_proc.returncode != 0:
-            # ffmpeg has a non zero returncode meaning trouble
+        try:
+            _, stderr = await asyncio.wait_for(ffmpeg_proc.communicate(), 5)
+        except TimeoutError:
+            stderr = b""
+            # ensure to send close here so we terminate and cleanup the process
+            await ffmpeg_proc.close()
+        if ffmpeg_proc.returncode != 0 and not bytes_sent:
             logger.warning("stream error on %s", streamdetails.uri)
-            logger.warning(stderr.decode())
-            finished = False
-        elif loudness_details := _parse_loudnorm(stderr):
-            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
+        elif stderr and (loudness_details := _parse_loudnorm(stderr)):
             required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
             if finished or (seconds_streamed >= required_seconds):
                 LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
@@ -482,7 +474,7 @@ async def get_media_stream(  # noqa: PLR0915
                 await mass.music.set_track_loudness(
                     streamdetails.item_id, streamdetails.provider, loudness_details
                 )
-        else:
+        elif stderr:
             logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
 
         # report playback
@@ -859,14 +851,18 @@ def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
-    extra_args: list[str],
+    extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
-    loglevel: str = "info",
+    loglevel: str | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
+    if loglevel is None:
+        loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet"
+    if extra_args is None:
+        extra_args = []
+    extra_args += ["-bufsize", "32M"]
     ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
-
     if not ffmpeg_present:
         msg = (
             "FFmpeg binary is missing from system."

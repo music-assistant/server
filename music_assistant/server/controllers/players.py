@@ -603,12 +603,6 @@ class PlayerController(CoreController):
         player = self.get(player_id, True)
         if player.announcement_in_progress:
             return
-        # use stream server to host announcement on local network
-        # this ensures playback on all players, including ones that do not
-        # like https hosts and it also offers the pre-announce 'bell'
-        announcement_url = self.mass.streams.get_announcement_url(
-            player.player_id, url, use_pre_announce=use_pre_announce
-        )
         try:
             # mark announcement_in_progress on player
             player.announcement_in_progress = True
@@ -621,10 +615,16 @@ class PlayerController(CoreController):
             # check for native announce support
             if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
                 if prov := self.mass.get_provider(player.provider):
+                    # use stream server to host announcement on local network
+                    # this ensures playback on all players, including ones that do not
+                    # like https hosts and it also offers the pre-announce 'bell'
+                    announcement_url = self.mass.streams.get_announcement_url(
+                        player.player_id, url, use_pre_announce=use_pre_announce
+                    )
                     await prov.play_announcement(player_id, announcement_url)
                     return
             # use fallback/default implementation
-            await self._play_announcement(player, announcement_url)
+            await self._play_announcement(player, url, use_pre_announce)
         finally:
             player.announcement_in_progress = False
 
@@ -1078,11 +1078,7 @@ class PlayerController(CoreController):
             # if a child player turned ON while the group player is on, we need to resync/resume
             self.mass.create_task(self._sync_syncgroup(group_player.player_id))
 
-    async def _play_announcement(
-        self,
-        player: Player,
-        announcement_url: str,
-    ) -> None:
+    async def _play_announcement(self, player: Player, url: str, use_pre_announce: bool) -> None:
         """Handle (default/fallback) implementation of the play announcement feature.
 
         This default implementation will;
@@ -1099,28 +1095,28 @@ class PlayerController(CoreController):
         """
         if player.synced_to:
             # redirect to sync master if player is group child
-            self.mass.create_task(self.play_announcement(player.synced_to, announcement_url))
+            self.mass.create_task(self.play_announcement(player.synced_to, url))
             return
         if active_group := self._get_active_player_group(player):
-            # redirect to group player if playergroup is atcive
-            self.mass.create_task(self.play_announcement(active_group.player_id, announcement_url))
+            # redirect to group player if playergroup is active
+            self.mass.create_task(self.play_announcement(active_group.player_id, url))
             return
         # create a queue item for the announcement so
         # we can send a regular play-media call downstream
         queue_item = QueueItem(
             queue_id=player.player_id,
-            queue_item_id=announcement_url,
+            queue_item_id=url,
             name="Announcement",
             duration=None,
             streamdetails=StreamDetails(
                 provider="url",
-                item_id=announcement_url,
+                item_id=url,
                 audio_format=AudioFormat(
-                    content_type=ContentType.try_parse(announcement_url),
+                    content_type=ContentType.try_parse(url),
                 ),
                 media_type=MediaType.ANNOUNCEMENT,
-                direct=announcement_url,
-                data=announcement_url,
+                direct=url,
+                data={"url": url, "use_pre_announce": use_pre_announce},
                 target_loudness=-10,
             ),
         )
