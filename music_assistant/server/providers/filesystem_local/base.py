@@ -493,13 +493,13 @@ class FileSystemProviderBase(MusicProvider):
             playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
 
             if ext in ("m3u", "m3u8"):
-                playlist_lines = await parse_m3u(playlist_data)
+                playlist_lines = parse_m3u(playlist_data)
             else:
-                playlist_lines = await parse_pls(playlist_data)
+                playlist_lines = parse_pls(playlist_data)
 
-            for line_no, playlist_line in enumerate(playlist_lines, 1):
+            for line_no, playlist_line in enumerate(playlist_lines, 0):
                 if media_item := await self._parse_playlist_line(
-                    playlist_line, os.path.dirname(prov_playlist_id), line_no
+                    playlist_line.path, os.path.dirname(prov_playlist_id), line_no
                 ):
                     yield media_item
 
@@ -564,7 +564,6 @@ class FileSystemProviderBase(MusicProvider):
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
-        cur_lines = []
         _, ext = prov_playlist_id.rsplit(".", 1)
 
         # get playlist file contents
@@ -573,18 +572,20 @@ class FileSystemProviderBase(MusicProvider):
             playlist_data += chunk
         encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
         playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
-
+        # get current contents first
         if ext in ("m3u", "m3u8"):
-            playlist_lines = await parse_m3u(playlist_data)
+            playlist_items = parse_m3u(playlist_data)
         else:
-            playlist_lines = await parse_pls(playlist_data)
+            playlist_items = parse_pls(playlist_data)
+        # remove items by index
+        for i in sorted(positions_to_remove, reverse=True):
+            del playlist_items[i]
 
-        for line_no, playlist_line in enumerate(playlist_lines, 1):
-            if line_no not in positions_to_remove:
-                cur_lines.append(playlist_line)
-
-        new_playlist_data = "\n".join(cur_lines)
-        # write playlist file (always in utf-8)
+        # build new playlist data
+        new_playlist_data = "#EXTM3U\n"
+        for item in playlist_items:
+            new_playlist_data.append(f"#EXTINF:{item.length or 0},{item.title}\n")
+            new_playlist_data.append(f"{item.path}\n")
         await self.write_file_content(prov_playlist_id, new_playlist_data.encode("utf-8"))
 
     async def create_playlist(self, name: str) -> Playlist:
@@ -593,7 +594,7 @@ class FileSystemProviderBase(MusicProvider):
         # as creating a new (empty) file with the m3u extension...
         # filename = await self.resolve(f"{name}.m3u")
         filename = f"{name}.m3u"
-        await self.write_file_content(filename, b"")
+        await self.write_file_content(filename, b"#EXTM3U\n")
         return await self.get_playlist(filename)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
