@@ -22,7 +22,6 @@ from music_assistant.server.helpers.audio import (
     get_radio_stream,
     resolve_radio_stream,
 )
-from music_assistant.server.helpers.playlists import fetch_playlist
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -160,35 +159,19 @@ class URLProvider(MusicProvider):
     async def _get_media_info(
         self, item_id_or_url: str, force_refresh: bool = False
     ) -> tuple[str, str, AudioTags]:
-        """Retrieve (cached) mediainfo for url."""
-        # check if the radio stream is not a playlist
-        if item_id_or_url.endswith(("m3u8", "m3u", "pls")):
-            playlist = await fetch_playlist(self.mass, item_id_or_url)
-            url = playlist[0]
-            item_id = item_id_or_url
-            self._full_url[item_id] = url
-        else:
-            url = self._full_url.get(item_id_or_url, item_id_or_url)
-            item_id = item_id_or_url
-        cache_key = f"{self.instance_id}.media_info.{item_id}"
-        # do we have some cached info for this url ?
-        cached_info = await self.mass.cache.get(cache_key)
-        if cached_info and not force_refresh:
-            media_info = AudioTags.parse(cached_info)
-        else:
-            # parse info with ffprobe (and store in cache)
-            media_info = await parse_tags(url)
-            if "authSig" in url:
-                media_info.has_cover_image = False
-            await self.mass.cache.set(cache_key, media_info.raw)
-        return (item_id, url, media_info)
+        """Retrieve mediainfo for url."""
+        # handle http redirects and (HLS) playlists
+        resolved_url, _, _ = await resolve_radio_stream(self.mass, item_id_or_url)
+        # parse info with ffprobe
+        media_info = await parse_tags(resolved_url)
+        if "authSig" in item_id_or_url:
+            media_info.has_cover_image = False
+        return (item_id_or_url, resolved_url, media_info)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         item_id, url, media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration
-        if is_radio:
-            url, supports_icy = await resolve_radio_stream(self.mass, url)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -198,7 +181,7 @@ class URLProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
             ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            direct=None if is_radio and supports_icy else url,
+            direct=None if is_radio else url,
             data=url,
         )
 

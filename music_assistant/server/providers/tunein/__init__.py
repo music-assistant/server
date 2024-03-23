@@ -22,7 +22,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
+from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -234,8 +234,6 @@ class TuneInProvider(MusicProvider):
         for stream in stream_info["body"]:
             if stream["media_type"] != media_type:
                 continue
-            # check if the radio stream is not a playlist
-            url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream["url"])
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -243,9 +241,8 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                 ),
                 media_type=MediaType.RADIO,
-                data=url_resolved,
-                expires=time() + 24 * 3600,
-                direct=url_resolved if not supports_icy else None,
+                data=stream["url"],
+                expires=time() + 3600,
             )
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
