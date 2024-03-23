@@ -48,6 +48,7 @@ from music_assistant.server.helpers.audio import (
     get_ffmpeg_args,
     get_ffmpeg_stream,
     get_player_filter_params,
+    get_radio_stream,
     parse_loudnorm,
     strip_silence,
 )
@@ -990,12 +991,27 @@ class StreamsController(CoreController):
             filter_params.append(filter_rule)
         if streamdetails.fade_in:
             filter_params.append("afade=type=in:start_time=0:duration=3")
+
+        if is_radio and streamdetails.direct and streamdetails.direct.startswith("http"):
+            # ensure we use the radio streamer for radio items
+            audio_source_iterator = get_radio_stream(self.mass, streamdetails.direct, streamdetails)
+            input_path = "-"
+        elif streamdetails.direct:
+            audio_source_iterator = None
+            input_path = streamdetails.direct
+        else:
+            audio_source_iterator = self.mass.get_provider(streamdetails.provider).get_audio_stream(
+                streamdetails,
+                seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
+            )
+            input_path = "-"
+
         ffmpeg_args = get_ffmpeg_args(
             input_format=streamdetails.audio_format,
             output_format=pcm_format,
             filter_params=filter_params,
             extra_args=extra_args,
-            input_path=streamdetails.direct or "-",
+            input_path=input_path,
             loglevel="info",  # needed for loudness measurement
         )
 
@@ -1005,12 +1021,7 @@ class StreamsController(CoreController):
             ffmpeg_args,
             enable_stdin=streamdetails.direct is None,
             enable_stderr=True,
-            custom_stdin=self.mass.get_provider(streamdetails.provider).get_audio_stream(
-                streamdetails,
-                seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
-            )
-            if not streamdetails.direct
-            else None,
+            custom_stdin=audio_source_iterator,
             name="ffmpeg_media_stream",
         )
         await ffmpeg_proc.start()
