@@ -60,6 +60,7 @@ class AsyncProcess:
             self._custom_stdin = None
             self.attached_tasks.append(asyncio.create_task(self._feed_stdin(custom_stdin)))
         self._custom_stdout = custom_stdout
+        self._stderr_locked = asyncio.Lock()
 
     @property
     def closed(self) -> bool:
@@ -166,6 +167,7 @@ class AsyncProcess:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+
         if self.proc.returncode is None:
             # always first try to send sigint signal to try clean shutdown
             # for example ffmpeg needs this to cleanly shutdown and not lock on pipes
@@ -179,8 +181,13 @@ class AsyncProcess:
             # especially with pipes this can cause deadlocks if not properly guarded
             # we need to use communicate to ensure buffers are flushed
             # we do that with sending communicate
+            if self._enable_stdin and not self.proc.stdin.is_closing():
+                self.proc.stdin.close()
             try:
-                await asyncio.wait_for(self.proc.communicate(), 2)
+                if self.proc.stdout and self._stderr_locked.locked():
+                    await asyncio.wait_for(self.proc.stdout.read(), 5)
+                else:
+                    await asyncio.wait_for(self.proc.communicate(), 5)
             except TimeoutError:
                 LOGGER.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
@@ -207,10 +214,11 @@ class AsyncProcess:
         stdout, stderr = await self.proc.communicate(input_data)
         return (stdout, stderr)
 
-    async def read_stderr(self) -> AsyncGenerator[bytes, None]:
-        """Read lines from the stderr stream."""
-        async for line in self.proc.stderr:
-            yield line
+    async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
+        """Iterate lines from the stderr stream."""
+        async with self._stderr_locked:
+            async for line in self.proc.stderr:
+                yield line
 
     async def _feed_stdin(self, custom_stdin: AsyncGenerator[bytes, None]) -> None:
         """Feed stdin with chunks from an AsyncGenerator."""
