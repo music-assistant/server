@@ -96,7 +96,7 @@ async def setup(
         logging.getLogger("soco").setLevel(logging.DEBUG)
         logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
     else:
-        logging.getLogger("pychromecast").setLevel(prov.logger.level + 10)
+        logging.getLogger("soco").setLevel(prov.logger.level + 10)
         logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
     await prov.handle_async_init()
     return prov
