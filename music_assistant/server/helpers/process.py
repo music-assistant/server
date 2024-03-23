@@ -235,12 +235,19 @@ class AsyncProcess:
             task.cancel()
 
 
-async def check_output(shell_cmd: str) -> tuple[int, bytes]:
-    """Run shell subprocess and return output."""
-    proc = await asyncio.create_subprocess_shell(
-        shell_cmd,
-        stderr=asyncio.subprocess.STDOUT,
-        stdout=asyncio.subprocess.PIPE,
-    )
+async def check_output(args: str | list[str]) -> tuple[int, bytes]:
+    """Run subprocess and return output."""
+    if isinstance(args, str):
+        proc = await asyncio.create_subprocess_shell(
+            args,
+            stderr=asyncio.subprocess.STDOUT,
+            stdout=asyncio.subprocess.PIPE,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stderr=asyncio.subprocess.STDOUT,
+            stdout=asyncio.subprocess.PIPE,
+        )
     stdout, _ = await proc.communicate()
     return (proc.returncode, stdout)
