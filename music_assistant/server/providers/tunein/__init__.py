@@ -226,7 +226,8 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType.UNKNOWN,
                 ),
                 media_type=MediaType.RADIO,
-                data=item_id,
+                direct=item_id,
+                expires=time() + 3600,
             )
         stream_item_id, media_type = item_id.split("--", 1)
         stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)

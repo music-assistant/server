@@ -199,6 +199,7 @@ class URLProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
             ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
+            direct=item_id if is_radio else None,
             data=item_id,
         )
 
