@@ -1019,7 +1019,7 @@ class StreamsController(CoreController):
 
         ffmpeg_proc = AsyncProcess(
             ffmpeg_args,
-            enable_stdin=streamdetails.direct is None,
+            enable_stdin=audio_source_iterator is not None,
             enable_stderr=True,
             custom_stdin=audio_source_iterator,
             name="ffmpeg_media_stream",
