@@ -458,7 +458,6 @@ class StreamsController(CoreController):
                 return existing_job
             # cleanup existing job first
             if not existing_job.finished:
-                self.logger.warning("Detected existing (running) stream job for queue %s", queue_id)
                 existing_job.stop()
         self.multi_client_jobs[queue_id] = stream_job = MultiClientStreamJob(
             self,
