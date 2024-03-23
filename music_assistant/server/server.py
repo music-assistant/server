@@ -43,9 +43,8 @@ from music_assistant.server.helpers.api import APICommandHandler, api_command
 from music_assistant.server.helpers.images import get_icon_string
 from music_assistant.server.helpers.util import (
     get_package_version,
-    get_provider_module,
-    install_package,
     is_hass_supervisor,
+    load_provider_module,
 )
 
 from .models import ProviderInstanceType
@@ -125,10 +124,10 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         LOGGER.info(
-            "Starting Music Assistant Server (%s) version %s - uvloop: %s",
+            "Starting Music Assistant Server (%s) version %s - HA add-on: %s",
             self.server_id,
             self.version,
-            "uvloop" in str(self.loop),
+            self.running_as_hass_addon,
         )
         # setup other core controllers
         self.cache = CacheController(self)
@@ -317,7 +316,7 @@ class MusicAssistant:
         if target is None:
             msg = "Target is missing"
             raise RuntimeError(msg)
-        if existing := self._tracked_tasks.get(task_id):
+        if task_id and (existing := self._tracked_tasks.get(task_id)):
             # prevent duplicate tasks if task_id is given and already present
             return existing
         if asyncio.iscoroutinefunction(target):
@@ -328,19 +327,25 @@ class MusicAssistant:
             task = target
         else:
             # assume normal callable (non coroutine or awaitable)
+            # that needs to be run in the executor
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
         def task_done_callback(_task: asyncio.Future | asyncio.Task) -> None:
             _task_id = task.task_id
             self._tracked_tasks.pop(_task_id)
-            # print unhandled exceptions
-            if LOGGER.isEnabledFor(logging.DEBUG) and not _task.cancelled() and _task.exception():
-                task_name = _task.get_name() if hasattr(_task, "get_name") else _task
-                LOGGER.exception(
-                    "Exception in task %s - target: %s",
+            # log unhandled exceptions
+            if (
+                LOGGER.isEnabledFor(logging.DEBUG)
+                and not _task.cancelled()
+                and (err := _task.exception())
+            ):
+                task_name = _task.get_name() if hasattr(_task, "get_name") else str(_task)
+                LOGGER.warning(
+                    "Exception in task %s - target: %s: %s",
                     task_name,
                     str(target),
-                    exc_info=task.exception(),
+                    str(err),
+                    exc_info=err if LOGGER.isEnabledFor(logging.DEBUG) else None,
                 )
 
         if task_id is None:
@@ -426,7 +431,7 @@ class MusicAssistant:
                 raise SetupFailedError(msg)
 
         # try to setup the module
-        prov_mod = await get_provider_module(domain)
+        prov_mod = await load_provider_module(domain, prov_manifest.requirements)
         try:
             async with asyncio.timeout(30):
                 provider = await prov_mod.setup(self, prov_manifest, conf)
@@ -550,15 +555,6 @@ class MusicAssistant:
                         icon_path = os.path.join(provider_path, "icon_dark.svg")
                         if os.path.isfile(icon_path):
                             provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
-                    # try to load the module
-                    try:
-                        await get_provider_module(provider_manifest.domain)
-                    except ImportError:
-                        # install requirements
-                        for requirement in provider_manifest.requirements:
-                            await install_package(requirement)
-                        # try loading the provider again to be safe
-                        await get_provider_module(provider_manifest.domain)
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
                 except Exception as exc:  # pylint: disable=broad-except

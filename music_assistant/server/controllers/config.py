@@ -37,7 +37,7 @@ from music_assistant.constants import (
     ENCRYPT_SUFFIX,
 )
 from music_assistant.server.helpers.api import api_command
-from music_assistant.server.helpers.util import get_provider_module
+from music_assistant.server.helpers.util import load_provider_module
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -231,7 +231,7 @@ class ConfigController:
         # lookup provider manifest and module
         for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
-                prov_mod = await get_provider_module(provider_domain)
+                prov_mod = await load_provider_module(provider_domain, prov.requirements)
                 break
         else:
             msg = f"Unknown provider domain: {provider_domain}"
@@ -666,10 +666,9 @@ class ConfigController:
         """Load data from persistent storage."""
         assert not self._data, "Already loaded"
 
-        for filename in self.filename, f"{self.filename}.backup":
+        for filename in (self.filename, f"{self.filename}.backup"):
             try:
-                _filename = os.path.join(self.mass.storage_path, filename)
-                async with aiofiles.open(_filename, "r", encoding="utf-8") as _file:
+                async with aiofiles.open(filename, "r", encoding="utf-8") as _file:
                     self._data = json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
                     return

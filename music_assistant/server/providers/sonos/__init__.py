@@ -36,7 +36,6 @@ from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.constants import CONF_CROSSFADE, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
-from music_assistant.server.providers.ugp import UGP_PREFIX
 
 from .player import SonosPlayer
 
@@ -352,16 +351,13 @@ class SonosPlayerProvider(PlayerProvider):
             )
             raise PlayerCommandFailed(msg)
 
-        is_flow_stream = queue_item.queue_item_id == "flow" or queue_item.queue_id.startswith(
-            UGP_PREFIX
-        )
         url = self.mass.streams.resolve_stream_url(
-            player_id, queue_item=queue_item, output_codec=ContentType.FLAC
+            player_id,
+            queue_item=queue_item,
+            output_codec=ContentType.FLAC,
         )
         self.mass.create_task(
-            sonos_player.soco.play_uri,
-            url,
-            meta=create_didl_metadata(self.mass, url, None if is_flow_stream else queue_item),
+            sonos_player.soco.play_uri, url, meta=create_didl_metadata(self.mass, url, queue_item)
         )
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:

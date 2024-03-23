@@ -335,7 +335,6 @@ async def get_media_stream(  # noqa: PLR0915
     Other than stripping silence at end and beginning and optional
     volume normalization this is the pure, unaltered audio data as PCM chunks.
     """
-    logger = LOGGER.getChild("media_stream")
     bytes_sent = 0
     is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
     if is_radio or streamdetails.seek_position:
@@ -374,30 +373,26 @@ async def get_media_stream(  # noqa: PLR0915
         filter_params=filter_params,
         extra_args=extra_args,
         input_path=streamdetails.direct or "-",
+        loglevel="info",  # needed for loudness measurement
     )
 
     finished = False
-    logger.debug("start media stream for: %s", streamdetails.uri)
 
-    writer_task: asyncio.Task | None = None
     ffmpeg_proc = AsyncProcess(
-        ffmpeg_args, enable_stdin=streamdetails.direct is None, enable_stderr=True
+        ffmpeg_args,
+        enable_stdin=streamdetails.direct is None,
+        enable_stderr=True,
+        custom_stdin=mass.get_provider(streamdetails.provider).get_audio_stream(
+            streamdetails,
+            seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
+        )
+        if not streamdetails.direct
+        else None,
+        name="ffmpeg_media_stream",
     )
     await ffmpeg_proc.start()
-
-    async def writer() -> None:
-        """Task that grabs the source audio and feeds it to ffmpeg."""
-        logger.log(VERBOSE_LOG_LEVEL, "writer started for %s", streamdetails.uri)
-        music_prov = mass.get_provider(streamdetails.provider)
-        seek_pos = streamdetails.seek_position if streamdetails.can_seek else 0
-        async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
-            await ffmpeg_proc.write(audio_chunk)
-        # write eof when last packet is received
-        await ffmpeg_proc.write_eof()
-        logger.log(VERBOSE_LOG_LEVEL, "writer finished for %s", streamdetails.uri)
-
-    if streamdetails.direct is None:
-        writer_task = asyncio.create_task(writer())
+    logger = LOGGER.getChild("media_stream")
+    logger.debug("start media stream for: %s", streamdetails.uri)
 
     # get pcm chunks from stdout
     # we always stay one chunk behind to properly detect end of chunks
@@ -450,32 +445,28 @@ async def get_media_stream(  # noqa: PLR0915
     finally:
         seconds_streamed = bytes_sent / pcm_sample_size if bytes_sent else 0
         streamdetails.seconds_streamed = seconds_streamed
+        state_str = "finished" if finished else "aborted"
+        logger.debug(
+            "stream %s for: %s (%s seconds streamed)",
+            state_str,
+            streamdetails.uri,
+            seconds_streamed,
+        )
+        # store accurate duration
         if finished:
-            logger.debug(
-                "finished stream for: %s (%s seconds streamed)",
-                streamdetails.uri,
-                seconds_streamed,
-            )
-            # store accurate duration
             streamdetails.duration = streamdetails.seek_position + seconds_streamed
-        else:
-            logger.debug(
-                "stream aborted for %s (%s seconds streamed)",
-                streamdetails.uri,
-                seconds_streamed,
-            )
-        if writer_task and not writer_task.done():
-            writer_task.cancel()
+
         # use communicate to read stderr and wait for exit
         # read log for loudness measurement (or errors)
-        _, stderr = await ffmpeg_proc.communicate()
-        if ffmpeg_proc.returncode != 0:
-            # ffmpeg has a non zero returncode meaning trouble
+        try:
+            _, stderr = await asyncio.wait_for(ffmpeg_proc.communicate(), 5)
+        except TimeoutError:
+            stderr = b""
+            # ensure to send close here so we terminate and cleanup the process
+            await ffmpeg_proc.close()
+        if ffmpeg_proc.returncode != 0 and not bytes_sent:
             logger.warning("stream error on %s", streamdetails.uri)
-            logger.warning(stderr.decode())
-            finished = False
-        elif loudness_details := _parse_loudnorm(stderr):
-            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
+        elif stderr and (loudness_details := _parse_loudnorm(stderr)):
             required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
             if finished or (seconds_streamed >= required_seconds):
                 LOGGER.debug("Loudness measurement for %s: %s", streamdetails.uri, loudness_details)
@@ -483,7 +474,7 @@ async def get_media_stream(  # noqa: PLR0915
                 await mass.music.set_track_loudness(
                     streamdetails.item_id, streamdetails.provider, loudness_details
                 )
-        else:
+        elif stderr:
             logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
 
         # report playback
@@ -674,7 +665,6 @@ async def get_ffmpeg_stream(
     Takes care of resampling and/or recoding if needed,
     according to player preferences.
     """
-    logger = LOGGER.getChild("ffmpeg_stream")
     use_stdin = not isinstance(audio_input, str)
     ffmpeg_args = get_ffmpeg_args(
         input_format=input_format,
@@ -683,44 +673,20 @@ async def get_ffmpeg_stream(
         extra_args=extra_args or [],
         input_path="-" if use_stdin else audio_input,
         output_path="-",
+        loglevel="info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet",
     )
-
-    writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(
-        ffmpeg_args, enable_stdin=use_stdin, enable_stdout=True, enable_stderr=True
-    )
-    await ffmpeg_proc.start()
-
-    # feed stdin with pcm audio chunks from origin
-    async def writer() -> None:
-        async for chunk in audio_input:
-            if ffmpeg_proc.closed:
-                return
-            await ffmpeg_proc.write(chunk)
-        await ffmpeg_proc.write_eof()
-
-    try:
-        if not isinstance(audio_input, str):
-            writer_task = asyncio.create_task(writer())
-
+    async with AsyncProcess(
+        ffmpeg_args,
+        enable_stdin=use_stdin,
+        enable_stdout=True,
+        enable_stderr=False,
+        custom_stdin=audio_input if use_stdin else None,
+        name="player_ffmpeg_stream",
+    ) as ffmpeg_proc:
         # read final chunks from stdout
         chunk_size = chunk_size or get_chunksize(output_format, 1)
         async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
-            try:
-                yield chunk
-            except (BrokenPipeError, ConnectionResetError):
-                # race condition
-                break
-    finally:
-        if writer_task and not writer_task.done():
-            writer_task.cancel()
-        # use communicate to read stderr and wait for exit
-        _, stderr = await ffmpeg_proc.communicate()
-        if ffmpeg_proc.returncode != 0:
-            # ffmpeg has a non zero returncode meaning trouble
-            logger.warning("FFMPEG ERROR\n%s", stderr.decode())
-        else:
-            logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
+            yield chunk
 
 
 async def check_audio_support() -> tuple[bool, bool, str]:
@@ -885,14 +851,18 @@ def get_ffmpeg_args(
     input_format: AudioFormat,
     output_format: AudioFormat,
     filter_params: list[str],
-    extra_args: list[str],
+    extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
-    loglevel: str = "info",
+    loglevel: str | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
+    if loglevel is None:
+        loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet"
+    if extra_args is None:
+        extra_args = []
+    extra_args += ["-bufsize", "32M"]
     ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
-
     if not ffmpeg_present:
         msg = (
             "FFmpeg binary is missing from system."

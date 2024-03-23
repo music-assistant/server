@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import pathlib
 import random
 import socket
 import time
 from contextlib import suppress
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Final, cast
 
 from snapcast.control import create_server
 from snapcast.control.client import Snapclient
@@ -34,7 +35,7 @@ from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.constants import UGP_PREFIX
-from music_assistant.server.helpers.audio import get_media_stream
+from music_assistant.server.helpers.audio import get_ffmpeg_args, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -59,6 +60,17 @@ SNAP_STREAM_STATUS_MAP = {
     "unknown": PlayerState.IDLE,
 }
 DEFAULT_SNAPSERVER_PORT = 1705
+
+SNAPWEB_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
+
+
+DEFAULT_SNAPCAST_FORMAT = AudioFormat(
+    content_type=ContentType.PCM_S16LE,
+    sample_rate=48000,
+    # TODO: can we handle 24 bits bit depth ?
+    bit_depth=16,
+    channels=2,
+)
 
 
 async def setup(
@@ -136,9 +148,14 @@ class SnapCastProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
-        self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
+        if self._use_builtin_server:
+            self._snapcast_server_host = "127.0.0.1"
+            self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
+        else:
+            self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
+            self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
+
         self._stream_tasks = {}
 
         if self._use_builtin_server:
@@ -174,10 +191,10 @@ class SnapCastProvider(PlayerProvider):
         """Handle close/cleanup of the provider."""
         for client in self._snapserver.clients:
             await self.cmd_stop(client.identifier)
+        self._snapserver.stop()
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
-        await asyncio.sleep(6)  # prevent race conditions when reloading
-        self._snapserver.stop()
+        await asyncio.sleep(10)  # prevent race conditions when reloading
         self._snapserver_started.clear()
 
     def on_player_config_removed(self, player_id: str) -> None:
@@ -301,33 +318,27 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
-        # TODO: can we handle 24 bits bit depth ?
-        pcm_format = AudioFormat(
-            content_type=ContentType.PCM_S16LE,
-            sample_rate=48000,
-            bit_depth=16,
-            channels=2,
-        )
-
         if queue_item.queue_id.startswith(UGP_PREFIX):
             # special case: we got forwarded a request from the UGP
             # use the existing stream job that was already created by UGP
-            stream_job = self.mass.streams.stream_jobs[queue_item.queue_id]
-        else:
-            if queue_item.media_type == MediaType.ANNOUNCEMENT:
-                # stream announcement url directly
-                audio_source = get_media_stream(
-                    self.mass, queue_item.streamdetails, pcm_format=pcm_format
-                )
-            else:
-                queue = self.mass.player_queues.get(queue_item.queue_id)
-                audio_source = self.mass.streams.get_flow_stream(
-                    queue, start_queue_item=queue_item, pcm_format=pcm_format
-                )
-            stream_job = self.mass.streams.create_stream_job(
-                queue_item.queue_id, pcm_audio_source=audio_source, pcm_format=pcm_format
+            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
+            stream_job.expected_players.add(player_id)
+            input_format = stream_job.pcm_format
+            audio_source = stream_job.subscribe(player_id)
+        elif queue_item.media_type == MediaType.ANNOUNCEMENT:
+            # special case: stream announcement
+            input_format = DEFAULT_SNAPCAST_FORMAT
+            audio_source = self.mass.streams.get_announcement_stream(
+                queue_item.streamdetails.data["url"],
+                pcm_format=DEFAULT_SNAPCAST_FORMAT,
+                use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
             )
-        stream_job.expected_players.add(player_id)
+        else:
+            queue = self.mass.player_queues.get(queue_item.queue_id)
+            input_format = DEFAULT_SNAPCAST_FORMAT
+            audio_source = self.mass.streams.get_flow_stream(
+                queue, start_queue_item=queue_item, pcm_format=DEFAULT_SNAPCAST_FORMAT
+            )
 
         async def _streamer() -> None:
             host = self._snapcast_server_host
@@ -344,23 +355,35 @@ class SnapCastProvider(PlayerProvider):
             stream.set_callback(stream_callback)
             stream_path = f"tcp://{host}:{port}"
             self.logger.debug("Start streaming to %s", stream_path)
+            ffmpeg_args = get_ffmpeg_args(
+                input_format=input_format,
+                output_format=DEFAULT_SNAPCAST_FORMAT,
+                filter_params=get_player_filter_params(self.mass, player_id),
+                output_path=f"tcp://{host}:{port}",
+            )
             try:
-                await stream_job.stream_to_custom_output_path(
-                    player_id, pcm_format, f"tcp://{host}:{port}"
-                )
-                # we need to wait a bit for the stream status to become idle
-                # to ensure that all snapclients have consumed the audio
-                await self.mass.players.wait_for_state(player, PlayerState.IDLE)
+                async with AsyncProcess(
+                    ffmpeg_args,
+                    enable_stdin=True,
+                    enable_stdout=False,
+                    enable_stderr=False,
+                    name="snapcast_ffmpeg",
+                ) as ffmpeg_proc:
+                    async for chunk in audio_source:
+                        await ffmpeg_proc.write(chunk)
+                    await ffmpeg_proc.write_eof()
+                    # we need to wait a bit for the stream status to become idle
+                    # to ensure that all snapclients have consumed the audio
+                    await self.mass.players.wait_for_state(player, PlayerState.IDLE)
             finally:
                 self.logger.debug("Finished streaming to %s", stream_path)
                 # there is no way to unsub the callback to we do this nasty
                 stream._callback_func = None
-                await self._snapserver.stream_remove_stream(stream.identifier)
+                with suppress(TypeError, KeyError, AttributeError):
+                    await self._snapserver.stream_remove_stream(stream.identifier)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
-        if not queue_item.queue_id.startswith(UGP_PREFIX):
-            stream_job.start()
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
@@ -440,9 +463,9 @@ class SnapCastProvider(PlayerProvider):
                     zeroconf_type,
                     name=f"Snapcast.{zeroconf_type}",
                     properties={"is_mass": "true"},
-                    addresses=[await get_ip_pton(self.mass.webserver.publish_ip)],
+                    addresses=[await get_ip_pton(self.mass.streams.publish_ip)],
                     port=port,
-                    server=f"{socket.gethostname()}",
+                    server=f"{socket.gethostname()}.local",
                 )
                 attr_name = f"zc_service_set{name}"
                 if getattr(self, attr_name, None):
@@ -458,8 +481,19 @@ class SnapCastProvider(PlayerProvider):
                 self.logger.exception(
                     "Could not register mdns record for %s: %s", zeroconf_type, str(err)
                 )
+        args = [
+            "snapserver",
+            # config settings taken from
+            # https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf
+            f"--server.datadir={self.mass.storage_path}",
+            "--http.enabled=true",
+            "--http.port=1780",
+            f"--http.doc_root={SNAPWEB_DIR}",
+            "--tcp.enabled=true",
+            "--tcp.port=1705",
+        ]
         async with AsyncProcess(
-            ["snapserver"], enable_stdin=False, enable_stdout=True, enable_stderr=False
+            args, enable_stdin=False, enable_stdout=True, enable_stderr=False
         ) as snapserver_proc:
             # keep reading from stderr until exit
             async for data in snapserver_proc.iter_any():

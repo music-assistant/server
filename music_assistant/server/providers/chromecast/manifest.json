@@ -7,7 +7,7 @@
     "@music-assistant"
   ],
   "requirements": [
-    "PyChromecast==13.1.0"
+    "PyChromecast==14.0.1"
   ],
   "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
