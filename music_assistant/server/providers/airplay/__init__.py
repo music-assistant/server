@@ -344,7 +344,7 @@ class AirplayStream:
         lost_packets = 0
         prev_metadata_checksum: str = ""
         prev_progress_report: float = 0
-        async for line in self._cliraop_proc.read_stderr():
+        async for line in self._cliraop_proc.iter_stderr():
             line = line.decode().strip()  # noqa: PLW2901
             if not line:
                 continue

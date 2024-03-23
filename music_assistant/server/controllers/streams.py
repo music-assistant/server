@@ -14,7 +14,7 @@ import time
 import urllib.parse
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 import shortuuid
 from aiohttp import web
@@ -26,7 +26,7 @@ from music_assistant.common.models.config_entries import (
     ConfigValueType,
 )
 from music_assistant.common.models.enums import ConfigEntryType, ContentType, MediaType
-from music_assistant.common.models.errors import QueueEmpty
+from music_assistant.common.models.errors import AudioError, QueueEmpty
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
@@ -957,7 +957,7 @@ class StreamsController(CoreController):
         Other than stripping silence at end and beginning and optional
         volume normalization this is the pure, unaltered audio data as PCM chunks.
         """
-        bytes_sent = 0
+        logger = self.logger.getChild("media_stream")
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
         if is_radio or streamdetails.seek_position:
             strip_silence_begin = False
@@ -1015,24 +1015,80 @@ class StreamsController(CoreController):
             loglevel="info",  # needed for loudness measurement
         )
 
-        finished = False
+        async def log_reader(ffmpeg_proc: AsyncProcess, state_data: dict[str, Any]):
+            # To prevent stderr locking up, we must keep reading it
+            stderr_data = ""
+            async for line in ffmpeg_proc.iter_stderr():
+                line = line.decode().strip()  # noqa: PLW2901
+                if not line:
+                    continue
+                if stderr_data or "loudnorm" in line:
+                    stderr_data += line
+                else:
+                    self.logger.log(VERBOSE_LOG_LEVEL, line)
 
-        ffmpeg_proc = AsyncProcess(
+            # if we reach this point, the process is finished (finish or aborted)
+            if ffmpeg_proc.returncode == 0:
+                await state_data["finished"].wait()
+            finished = ffmpeg_proc.returncode == 0 and state_data["finished"].is_set()
+            bytes_sent = state_data["bytes_sent"]
+            seconds_streamed = bytes_sent / pcm_sample_size if bytes_sent else 0
+            streamdetails.seconds_streamed = seconds_streamed
+            state_str = "finished" if finished else "aborted"
+            logger.debug(
+                "stream %s for: %s (%s seconds streamed, exitcode %s)",
+                state_str,
+                streamdetails.uri,
+                seconds_streamed,
+                ffmpeg_proc.returncode,
+            )
+            # store accurate duration
+            if finished:
+                streamdetails.duration = streamdetails.seek_position + seconds_streamed
+
+            # parse loudnorm data if we have that collected
+            if stderr_data and (loudness_details := parse_loudnorm(stderr_data)):
+                required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
+                if finished or (seconds_streamed >= required_seconds):
+                    logger.debug(
+                        "Loudness measurement for %s: %s", streamdetails.uri, loudness_details
+                    )
+                    streamdetails.loudness = loudness_details
+                    await self.mass.music.set_track_loudness(
+                        streamdetails.item_id, streamdetails.provider, loudness_details
+                    )
+
+            # report playback
+            if finished or seconds_streamed > 30:
+                self.mass.create_task(
+                    self.mass.music.mark_item_played(
+                        streamdetails.media_type, streamdetails.item_id, streamdetails.provider
+                    )
+                )
+                if music_prov := self.mass.get_provider(streamdetails.provider):
+                    self.mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
+
+            # cleanup
+            del state_data
+            del ffmpeg_proc
+
+        async with AsyncProcess(
             ffmpeg_args,
             enable_stdin=audio_source_iterator is not None,
             enable_stderr=True,
             custom_stdin=audio_source_iterator,
             name="ffmpeg_media_stream",
-        )
-        await ffmpeg_proc.start()
-        self.logger.debug("start media stream for: %s", streamdetails.uri)
+        ) as ffmpeg_proc:
+            state_data = {"finished": asyncio.Event(), "bytes_sent": 0}
+            logger.debug("start media stream for: %s", streamdetails.uri)
 
-        # get pcm chunks from stdout
-        # we always stay one chunk behind to properly detect end of chunks
-        # so we can strip silence at the beginning and end of a track
-        prev_chunk = b""
-        chunk_num = 0
-        try:
+            self.mass.create_task(log_reader(ffmpeg_proc, state_data))
+
+            # get pcm chunks from stdout
+            # we always stay one chunk behind to properly detect end of chunks
+            # so we can strip silence at the beginning and end of a track
+            prev_chunk = b""
+            chunk_num = 0
             async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
                 chunk_num += 1
                 if strip_silence_begin and chunk_num == 2:
@@ -1044,7 +1100,7 @@ class StreamsController(CoreController):
                         bit_depth=pcm_format.bit_depth,
                     )
                     yield stripped_audio
-                    bytes_sent += len(stripped_audio)
+                    state_data["bytes_sent"] += len(stripped_audio)
                     prev_chunk = b""
                     del stripped_audio
                     continue
@@ -1056,8 +1112,15 @@ class StreamsController(CoreController):
                 # middle part of the track, send previous chunk and collect current chunk
                 if prev_chunk:
                     yield prev_chunk
-                    bytes_sent += len(prev_chunk)
+                    state_data["bytes_sent"] += len(prev_chunk)
+
+                # collect this chunk for next round
                 prev_chunk = chunk
+
+            # we did not receive any data, somethinh wet wrong
+            # raise here to prevent an endless loop elsewhere
+            if state_data["bytes_sent"] == 0:
+                raise AudioError("stream error on %s", streamdetails.uri)
 
             # all chunks received, strip silence of last part if needed and yield remaining bytes
             if strip_silence_end and prev_chunk:
@@ -1070,57 +1133,13 @@ class StreamsController(CoreController):
                 )
             else:
                 final_chunk = prev_chunk
+
+            # yield final chunk to output
             yield final_chunk
-            bytes_sent += len(final_chunk)
+            state_data["bytes_sent"] += len(final_chunk)
+            state_data["finished"].set()
             del final_chunk
             del prev_chunk
-            finished = True
-        finally:
-            seconds_streamed = bytes_sent / pcm_sample_size if bytes_sent else 0
-            streamdetails.seconds_streamed = seconds_streamed
-            state_str = "finished" if finished else "aborted"
-            self.logger.debug(
-                "stream %s for: %s (%s seconds streamed)",
-                state_str,
-                streamdetails.uri,
-                seconds_streamed,
-            )
-            # store accurate duration
-            if finished:
-                streamdetails.duration = streamdetails.seek_position + seconds_streamed
-
-            # use communicate to read stderr and wait for exit
-            # read log for loudness measurement (or errors)
-            try:
-                _, stderr = await asyncio.wait_for(ffmpeg_proc.communicate(), 5)
-            except TimeoutError:
-                stderr = b""
-                # ensure to send close here so we terminate and cleanup the process
-                await ffmpeg_proc.close()
-            if ffmpeg_proc.returncode != 0 and not bytes_sent:
-                self.logger.warning("stream error on %s", streamdetails.uri)
-            elif stderr and (loudness_details := parse_loudnorm(stderr)):
-                required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
-                if finished or (seconds_streamed >= required_seconds):
-                    self.logger.debug(
-                        "Loudness measurement for %s: %s", streamdetails.uri, loudness_details
-                    )
-                    streamdetails.loudness = loudness_details
-                    await self.mass.music.set_track_loudness(
-                        streamdetails.item_id, streamdetails.provider, loudness_details
-                    )
-            elif stderr:
-                self.logger.log(VERBOSE_LOG_LEVEL, stderr.decode())
-
-            # report playback
-            if finished or seconds_streamed > 30:
-                self.mass.create_task(
-                    self.mass.music.mark_item_played(
-                        streamdetails.media_type, streamdetails.item_id, streamdetails.provider
-                    )
-                )
-                if music_prov := self.mass.get_provider(streamdetails.provider):
-                    self.mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

@@ -894,6 +894,7 @@ def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
         return None
     stderr_data = stderr_data.split("[Parsed_loudnorm_")[1]
     stderr_data = stderr_data.rsplit("]")[-1].strip()
+    stderr_data = stderr_data.rsplit("}")[0].strip() + "}"
     try:
         loudness_data = json_loads(stderr_data)
     except JSON_DECODE_EXCEPTIONS:
