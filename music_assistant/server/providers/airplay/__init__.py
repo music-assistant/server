@@ -508,6 +508,8 @@ class AirplayProvider(PlayerProvider):
         # handle removed player
         if state_change == ServiceStateChange.Removed:
             if mass_player := self.mass.players.get(player_id):
+                if not mass_player.available:
+                    return
                 # the player has become unavailable
                 self.logger.info("Player offline: %s", display_name)
                 mass_player.available = False
@@ -518,7 +520,7 @@ class AirplayProvider(PlayerProvider):
             if mass_player := self.mass.players.get(player_id):
                 cur_address = get_primary_ip_address(info)
                 if cur_address and cur_address != airplay_player.address:
-                    airplay_player.logger.info(
+                    airplay_player.logger.debug(
                         "Address updated from %s to %s", airplay_player.address, cur_address
                     )
                     airplay_player.address = cur_address
