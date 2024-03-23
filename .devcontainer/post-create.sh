@@ -1,5 +1,6 @@
 #! /usr/bin/env bash
 
+
 if [ ! -d .venv ]
 then
   python -m venv .venv
