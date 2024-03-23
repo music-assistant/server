@@ -6,6 +6,7 @@ import os
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Artist,
     AudioFormat,
@@ -74,11 +75,25 @@ class URLProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
+        # always prefer db item for existing items to not overwrite user customizations
+        db_item = await self.mass.music.tracks.get_library_item_by_prov_id(
+            prov_track_id, self.instance_id
+        )
+        if db_item is None and not prov_track_id.startswith("http"):
+            msg = f"Track not found: {prov_track_id}"
+            raise MediaNotFoundError(msg)
         return await self.parse_item(prov_track_id)
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        return await self.parse_item(prov_radio_id, force_radio=True)
+        # always prefer db item for existing items to not overwrite user customizations
+        db_item = await self.mass.music.radio.get_library_item_by_prov_id(
+            prov_radio_id, self.instance_id
+        )
+        if db_item is None and not prov_radio_id.startswith("http"):
+            msg = f"Radio not found: {prov_radio_id}"
+            raise MediaNotFoundError(msg)
+        return await self.parse_item(prov_radio_id)
 
     async def get_artist(self, prov_artist_id: str) -> Track:
         """Get full artist details by id."""
@@ -112,16 +127,16 @@ class URLProvider(MusicProvider):
 
     async def parse_item(
         self,
-        item_id_or_url: str,
+        url: str,
         force_refresh: bool = False,
         force_radio: bool = False,
     ) -> Track | Radio:
         """Parse plain URL to MediaItem of type Radio or Track."""
-        item_id, url, media_info = await self._get_media_info(item_id_or_url, force_refresh)
+        media_info = await self._get_media_info(url, force_refresh)
         is_radio = media_info.get("icy-name") or not media_info.duration
         provider_mappings = {
             ProviderMapping(
-                item_id=item_id,
+                item_id=url,
                 provider_domain=self.domain,
                 provider_instance=self.instance_id,
                 audio_format=AudioFormat(
@@ -135,14 +150,14 @@ class URLProvider(MusicProvider):
         if is_radio or force_radio:
             # treat as radio
             media_item = Radio(
-                item_id=item_id,
+                item_id=url,
                 provider=self.domain,
                 name=media_info.get("icy-name") or media_info.title,
                 provider_mappings=provider_mappings,
             )
         else:
             media_item = Track(
-                item_id=item_id,
+                item_id=url,
                 provider=self.domain,
                 name=media_info.title,
                 duration=int(media_info.duration or 0),
@@ -156,21 +171,24 @@ class URLProvider(MusicProvider):
             ]
         return media_item
 
-    async def _get_media_info(
-        self, item_id_or_url: str, force_refresh: bool = False
-    ) -> tuple[str, str, AudioTags]:
+    async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
-        # handle http redirects and (HLS) playlists
-        resolved_url, _, _ = await resolve_radio_stream(self.mass, item_id_or_url)
-        # parse info with ffprobe
+        # do we have some cached info for this url ?
+        cache_key = f"{self.instance_id}.media_info.{url}"
+        cached_info = await self.mass.cache.get(cache_key)
+        if cached_info and not force_refresh:
+            return AudioTags.parse(cached_info)
+        # parse info with ffprobe (and store in cache)
+        resolved_url, _, _ = await resolve_radio_stream(self.mass, url)
         media_info = await parse_tags(resolved_url)
-        if "authSig" in item_id_or_url:
+        if "authSig" in url:
             media_info.has_cover_image = False
-        return (item_id_or_url, resolved_url, media_info)
+        await self.mass.cache.set(cache_key, media_info.raw)
+        return media_info
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
-        item_id, url, media_info = await self._get_media_info(item_id)
+        media_info = await self._get_media_info(item_id)
         is_radio = media_info.get("icy-name") or not media_info.duration
         return StreamDetails(
             provider=self.instance_id,
@@ -181,8 +199,7 @@ class URLProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
             ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            direct=None if is_radio else url,
-            data=url,
+            data=item_id,
         )
 
     async def get_audio_stream(

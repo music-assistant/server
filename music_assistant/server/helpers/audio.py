@@ -393,7 +393,7 @@ async def get_radio_stream(
                 async for chunk in get_http_stream(mass, resolved_url, streamdetails):
                     yield chunk
         except ClientError:
-            LOGGER.warning("Streaming radio %s failed, retrying...")
+            LOGGER.warning("Streaming radio %s failed, retrying...", streamdetails.uri)
             if retries >= 5:
                 raise
             await asyncio.sleep(1 * retries)
