@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.audio")
 # pylint:disable=consider-using-f-string,too-many-locals,too-many-statements
+# ruff: noqa: PLR0915
 
 VLC_HEADERS = {"User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
 VLC_HEADERS_ICY = {**VLC_HEADERS, "Icy-MetaData": "1"}
@@ -335,7 +336,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     - bool uf the URL represents a HLS stream/playlist.
     """
     base_url = url.split("?")[0]
-    cache_key = f"resolved_radio_{base_url}"
+    cache_key = f"resolved_radio_{url}"
     if cache := await mass.cache.get(cache_key):
         return cache
     is_hls = False
@@ -380,7 +381,7 @@ async def get_radio_stream(
     """Get radio audio stream from HTTP, including metadata retrieval."""
     resolved_url, supports_icy, is_hls = await resolve_radio_stream(mass, url)
     retries = 0
-    while retries:
+    while True:
         try:
             retries += 1
             if is_hls:  # special HLS stream
@@ -477,7 +478,7 @@ async def get_hls_stream(
                     # path is relative, stitch it together
                     base_path = substream_url.rsplit("/", 1)[0]
                     chunk_item_url = base_path + "/" + chunk_item.path
-                if chunk_item.title:
+                if chunk_item.title and chunk_item.title != "no desc":
                     streamdetails.stream_title = chunk_item.title
                     metadata_found = True
                 # prevent that we play this chunk again if we loop through
@@ -493,17 +494,18 @@ async def get_hls_stream(
     LOGGER.debug(
         "Start streaming HLS stream for url %s (selected substream %s)", url, substream_url
     )
-    # let ffmpeg deal with the hassle of stitching together the chunks
-    output_format = (
-        AudioFormat(content_type=ContentType.FLAC)
-        if streamdetails.audio_format.content_type == ContentType.UNKNOWN
-        else streamdetails.audio_format
-    )
+
+    input_format = streamdetails.audio_format
+    output_format = streamdetails.audio_format
+    if streamdetails.audio_format.content_type == ContentType.UNKNOWN:
+        streamdetails.audio_format = AudioFormat(content_type=ContentType.AAC)
+        output_format = AudioFormat(content_type=ContentType.FLAC)
+
     try:
         metadata_task = asyncio.create_task(watch_metadata())
         async for chunk in get_ffmpeg_stream(
             audio_input=substream_url,
-            input_format=streamdetails.audio_format,
+            input_format=input_format,
             output_format=output_format,
         ):
             yield chunk
