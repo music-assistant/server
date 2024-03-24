@@ -100,10 +100,6 @@ class AsyncProcess:
             stdin=stdin if self._enable_stdin else None,
             stdout=stdout if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-            # setting the buffer limit somewhat high because we're working with large (PCM)
-            # audio chunks sent between (ffmpeg) processes. We'd rather consume a bit
-            # more memory than cpu cycles.
-            limit=1024000,
         )
         LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
@@ -223,8 +219,7 @@ class AsyncProcess:
         while not self.closed:
             try:
                 async with self._stderr_locked:
-                    async for line in self.proc.stderr:
-                        yield line
+                    yield await self.proc.stderr.readline()
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
                 # this may happen with ffmpeg during a long (radio) stream where progress
