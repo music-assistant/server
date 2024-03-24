@@ -12,7 +12,7 @@ from time import time
 from typing import TYPE_CHECKING
 
 import aiofiles
-from aiohttp import ClientError, ClientResponseError, ClientTimeout
+from aiohttp import ClientResponseError, ClientTimeout
 
 from music_assistant.common.helpers.global_cache import (
     get_global_cache_value,
@@ -380,24 +380,19 @@ async def get_radio_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
     resolved_url, supports_icy, is_hls = await resolve_radio_stream(mass, url)
-    retries = 0
-    while True:
-        try:
-            retries += 1
-            if is_hls:  # special HLS stream
-                async for chunk in get_hls_stream(mass, resolved_url, streamdetails):
-                    yield chunk
-            elif supports_icy:  # http stream supports icy metadata
-                async for chunk in get_icy_stream(mass, resolved_url, streamdetails):
-                    yield chunk
-            else:  # generic http stream (without icy metadata)
-                async for chunk in get_http_stream(mass, resolved_url, streamdetails):
-                    yield chunk
-        except ClientError:
-            LOGGER.warning("Streaming radio %s failed, retrying...", streamdetails.uri)
-            if retries >= 5:
-                raise
-            await asyncio.sleep(1 * retries)
+    # handle special HLS stream
+    if is_hls:
+        async for chunk in get_hls_stream(mass, resolved_url, streamdetails):
+            yield chunk
+        return
+    # handle http stream supports icy metadata
+    if supports_icy:
+        async for chunk in get_icy_stream(mass, resolved_url, streamdetails):
+            yield chunk
+        return
+    # generic http stream (without icy metadata)
+    async for chunk in get_http_stream(mass, resolved_url, streamdetails):
+        yield chunk
 
 
 async def get_icy_stream(
@@ -495,18 +490,16 @@ async def get_hls_stream(
         "Start streaming HLS stream for url %s (selected substream %s)", url, substream_url
     )
 
-    input_format = streamdetails.audio_format
-    output_format = streamdetails.audio_format
     if streamdetails.audio_format.content_type == ContentType.UNKNOWN:
         streamdetails.audio_format = AudioFormat(content_type=ContentType.AAC)
-        output_format = AudioFormat(content_type=ContentType.FLAC)
 
     try:
         metadata_task = asyncio.create_task(watch_metadata())
         async for chunk in get_ffmpeg_stream(
             audio_input=substream_url,
-            input_format=input_format,
-            output_format=output_format,
+            input_format=streamdetails.audio_format,
+            # we need a self-explaining codec but not loose data from re-encoding
+            output_format=AudioFormat(content_type=ContentType.FLAC),
         ):
             yield chunk
     finally:
@@ -625,7 +618,7 @@ async def get_ffmpeg_stream(
         enable_stdout=True,
         enable_stderr=False,
         custom_stdin=audio_input if use_stdin else None,
-        name="player_ffmpeg_stream",
+        name="ffmpeg_stream",
     ) as ffmpeg_proc:
         # read final chunks from stdout
         chunk_size = chunk_size or get_chunksize(output_format, 1)
@@ -852,15 +845,18 @@ def get_ffmpeg_args(
                 "-reconnect_on_http_error",
                 "5xx",
             ]
-    if input_format.content_type != ContentType.UNKNOWN:
-        input_args += ["-f", input_format.content_type.value]
+    if input_format.content_type.is_pcm():
+        input_args += [
+            "-acodec",
+            input_format.content_type.name.lower(),
+            "-f",
+            input_format.content_type.value,
+        ]
     input_args += ["-i", input_path]
 
     # collect output args
     if output_path.upper() == "NULL":
         output_args = ["-f", "null", "-"]
-    elif output_format.content_type == ContentType.UNKNOWN:
-        output_args = [output_path]
     else:
         output_args = [
             "-acodec",
