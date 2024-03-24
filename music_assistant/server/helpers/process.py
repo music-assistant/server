@@ -100,6 +100,10 @@ class AsyncProcess:
             stdin=stdin if self._enable_stdin else None,
             stdout=stdout if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
+            # setting the buffer limit is important to prevent exceeding the limit
+            # when reading lines from stderr (e.g. with long running ffmpeg process)
+            # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
+            limit=1024 * 1000,
         )
         LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
@@ -216,9 +220,17 @@ class AsyncProcess:
 
     async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
         """Iterate lines from the stderr stream."""
-        async with self._stderr_locked:
-            async for line in self.proc.stderr:
-                yield line
+        while True:
+            try:
+                async with self._stderr_locked:
+                    async for line in self.proc.stderr:
+                        yield line
+            except ValueError as err:
+                # we're waiting for a line (separator found), but the line was too big
+                # NOTE: this consumes the line that was too big
+                if "chunk exceed the limit" in str(err):
+                    continue
+                raise
 
     async def _feed_stdin(self, custom_stdin: AsyncGenerator[bytes, None]) -> None:
         """Feed stdin with chunks from an AsyncGenerator."""
