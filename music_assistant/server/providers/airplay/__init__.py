@@ -199,7 +199,7 @@ class AirplayStream:
         self._cliraop_proc: AsyncProcess | None = None
         self._ffmpeg_proc: AsyncProcess | None = None
         self._stop_requested = False
-        self.buffer = asyncio.Queue(5)
+        self.buffer = asyncio.Queue(1)
 
     @property
     def running(self) -> bool:
@@ -267,6 +267,7 @@ class AirplayStream:
             input_format=self.input_format,
             output_format=AIRPLAY_PCM_FORMAT,
             filter_params=get_player_filter_params(self.mass, player_id),
+            extra_input_args=["rtbufsize", "8M"],
         )
 
         async def get_chunks() -> AsyncGenerator[bytes, None]:
@@ -386,8 +387,10 @@ class AirplayStream:
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:
-                    logger.warning("High packet loss detected, stopping playback...")
+                    logger.error("High packet loss detected, stopping playback...")
                     await self.stop(False)
+                elif lost_packets % 10 == 0:
+                    logger.warning("Packet loss detected!")
 
             logger.log(VERBOSE_LOG_LEVEL, line)
 
@@ -643,7 +646,7 @@ class AirplayProvider(PlayerProvider):
         """Handle streaming of audio to one or more airplay players."""
         # Python is not suitable for realtime audio streaming so we do the actual streaming
         # of (RAOP) audio using a small executable written in C based on libraop to do the actual
-        # timestamped playback, whicj reads pcm audio from stdin
+        # timestamped playback, which reads pcm audio from stdin
         # and we can send some interactive commands using a named pipe.
 
         # get current ntp before we start

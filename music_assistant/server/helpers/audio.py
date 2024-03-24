@@ -799,13 +799,13 @@ def get_ffmpeg_args(
     input_path: str = "-",
     output_path: str = "-",
     loglevel: str | None = None,
+    extra_input_args: list[str] | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
     if loglevel is None:
         loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet"
     if extra_args is None:
         extra_args = []
-    extra_args += ["-bufsize", "32M"]
     ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
     if not ffmpeg_present:
         msg = (
@@ -857,6 +857,8 @@ def get_ffmpeg_args(
             ]
     if input_format.content_type != ContentType.UNKNOWN:
         input_args += ["-f", input_format.content_type.value]
+    if extra_input_args:
+        input_args += extra_input_args
     input_args += ["-i", input_path]
 
     # collect output args

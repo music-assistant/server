@@ -968,7 +968,7 @@ class StreamsController(CoreController):
             strip_silence_end = False
 
         # collect all arguments for ffmpeg
-        filter_params = []
+        filter_params = ["realtime=speed=1.2"]  # prevent players players buffering too much ahead
         extra_args = []
         seek_pos = (
             streamdetails.seek_position
