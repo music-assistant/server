@@ -100,10 +100,6 @@ class AsyncProcess:
             stdin=stdin if self._enable_stdin else None,
             stdout=stdout if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-            # setting the buffer limit somewhat high because we're working with large (PCM)
-            # audio chunks sent between (ffmpeg) processes. We'd rather consume a bit
-            # more memory than cpu cycles.
-            limit=4194304,
         )
         LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 

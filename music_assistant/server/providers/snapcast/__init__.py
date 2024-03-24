@@ -360,6 +360,7 @@ class SnapCastProvider(PlayerProvider):
                 output_format=DEFAULT_SNAPCAST_FORMAT,
                 filter_params=get_player_filter_params(self.mass, player_id),
                 output_path=f"tcp://{host}:{port}",
+                loglevel="fatal",
             )
             try:
                 async with AsyncProcess(

@@ -608,7 +608,7 @@ async def get_ffmpeg_stream(
     according to player preferences.
     """
     if loglevel is None:
-        loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet"
+        loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "fatal"
     use_stdin = not isinstance(audio_input, str)
     ffmpeg_args = get_ffmpeg_args(
         input_format=input_format,
@@ -662,7 +662,7 @@ async def get_preview_stream(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "info",
+        "quiet",
         "-ignore_unknown",
     ]
     if streamdetails.direct:
@@ -798,12 +798,9 @@ def get_ffmpeg_args(
     extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
-    loglevel: str | None = None,
-    extra_input_args: list[str] | None = None,
+    loglevel: str = "info",
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
-    if loglevel is None:
-        loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "quiet"
     if extra_args is None:
         extra_args = []
     ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
@@ -857,8 +854,6 @@ def get_ffmpeg_args(
             ]
     if input_format.content_type != ContentType.UNKNOWN:
         input_args += ["-f", input_format.content_type.value]
-    if extra_input_args:
-        input_args += extra_input_args
     input_args += ["-i", input_path]
 
     # collect output args
