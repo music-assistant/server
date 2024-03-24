@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, Optional, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from asyncio_throttle import Throttler
 from tidalapi import Album as TidalAlbum
@@ -98,9 +98,7 @@ async def setup(
     return prov
 
 
-async def tidal_code_login(
-    auth_helper: AuthenticationHelper, quality: str
-) -> TidalSession:
+async def tidal_code_login(auth_helper: AuthenticationHelper, quality: str) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
 
     def inner() -> TidalSession:
@@ -129,9 +127,7 @@ async def get_config_entries(
     """
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
-        async with AuthenticationHelper(
-            mass, cast(str, values["session_id"])
-        ) as auth_helper:
+        async with AuthenticationHelper(mass, cast(str, values["session_id"])) as auth_helper:
             quality: str | int | float | list[str] | list[int] | None = (
                 values.get(CONF_QUALITY) if values else None
             )
@@ -158,12 +154,8 @@ async def get_config_entries(
             required=True,
             description="The Tidal Quality you wish to use",
             options=(
-                ConfigValueOption(
-                    title=TidalQuality.low_96k, value=TidalQuality.low_96k
-                ),
-                ConfigValueOption(
-                    title=TidalQuality.low_320k, value=TidalQuality.low_320k
-                ),
+                ConfigValueOption(title=TidalQuality.low_96k, value=TidalQuality.low_96k),
+                ConfigValueOption(title=TidalQuality.low_320k, value=TidalQuality.low_320k),
                 ConfigValueOption(
                     title=TidalQuality.high_lossless,
                     value=TidalQuality.high_lossless,
@@ -260,17 +252,13 @@ class TidalProvider(MusicProvider):
         parsed_results = SearchResults()
         if results["artists"]:
             for artist in results["artists"]:
-                parsed_results.artists.append(
-                    await self._parse_artist(artist_obj=artist)
-                )
+                parsed_results.artists.append(await self._parse_artist(artist_obj=artist))
         if results["albums"]:
             for album in results["albums"]:
                 parsed_results.albums.append(await self._parse_album(album_obj=album))
         if results["playlists"]:
             for playlist in results["playlists"]:
-                parsed_results.playlists.append(
-                    await self._parse_playlist(playlist_obj=playlist)
-                )
+                parsed_results.playlists.append(await self._parse_playlist(playlist_obj=playlist))
         if results["tracks"]:
             for track in results["tracks"]:
                 parsed_results.tracks.append(await self._parse_track(track_obj=track))
@@ -326,9 +314,7 @@ class TidalProvider(MusicProvider):
                             "track_number": track_obj.track_num,
                         },
                     )
-                    for track_obj in await get_album_tracks(
-                        tidal_session, prov_album_id
-                    )
+                    for track_obj in await get_album_tracks(tidal_session, prov_album_id)
                 ],
             )
 
@@ -367,17 +353,13 @@ class TidalProvider(MusicProvider):
             )
             yield track
 
-    async def get_similar_tracks(
-        self, prov_track_id: str, limit: int = 25
-    ) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
         async with self._throttler:
             return [
                 await self._parse_track(track_obj=track)
-                for track in await get_similar_tracks(
-                    tidal_session, prov_track_id, limit
-                )
+                for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
             ]
 
     async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
@@ -402,9 +384,7 @@ class TidalProvider(MusicProvider):
             add=False,
         )
 
-    async def add_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: list[str]
-    ) -> None:
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         tidal_session = await self._get_tidal_session()
         return await add_remove_playlist_tracks(
@@ -496,9 +476,7 @@ class TidalProvider(MusicProvider):
                 full_details=True,
             )
 
-    def get_item_mapping(
-        self, media_type: MediaType, key: str, name: str
-    ) -> ItemMapping:
+    def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
         return ItemMapping(
             media_type=media_type,
@@ -521,9 +499,7 @@ class TidalProvider(MusicProvider):
             quality=self.config.get_value(CONF_QUALITY),
             access_token=str(self.config.get_value(CONF_AUTH_TOKEN)),
             refresh_token=str(self.config.get_value(CONF_REFRESH_TOKEN)),
-            expiry_time=datetime.fromisoformat(
-                str(self.config.get_value(CONF_EXPIRY_TIME))
-            ),
+            expiry_time=datetime.fromisoformat(str(self.config.get_value(CONF_EXPIRY_TIME))),
         )
         await self.mass.config.set_provider_config_value(
             self.config.instance_id,
@@ -555,18 +531,14 @@ class TidalProvider(MusicProvider):
         def inner() -> TidalSession:
             config = TidalConfig(quality=quality, item_limit=10000, alac=False)
             session = TidalSession(config=config)
-            session.load_oauth_session(
-                token_type, access_token, refresh_token, expiry_time
-            )
+            session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
             return session
 
         return await asyncio.to_thread(inner)
 
     # Parsers
 
-    async def _parse_artist(
-        self, artist_obj: TidalArtist, full_details: bool = False
-    ) -> Artist:
+    async def _parse_artist(self, artist_obj: TidalArtist, full_details: bool = False) -> Artist:
         """Parse tidal artist object to generic layout."""
         artist_id = artist_obj.id
         artist = Artist(
@@ -597,9 +569,7 @@ class TidalProvider(MusicProvider):
 
         return artist
 
-    async def _parse_album(
-        self, album_obj: TidalAlbum, full_details: bool = False
-    ) -> Album:
+    async def _parse_album(self, album_obj: TidalAlbum, full_details: bool = False) -> Album:
         """Parse tidal album object to generic layout."""
         name = album_obj.name
         version = album_obj.version or ""
@@ -715,9 +685,7 @@ class TidalProvider(MusicProvider):
             except Exception:
                 self.logger.info(f"Track {track_obj.id} has no available lyrics")
             try:
-                image_url = await self._get_track_image_url(
-                    track_obj, width=1080, height=720
-                )
+                image_url = await self._get_track_image_url(track_obj, width=1080, height=720)
                 track.metadata.images = [
                     MediaItemImage(
                         type=ImageType.THUMB,
@@ -736,9 +704,7 @@ class TidalProvider(MusicProvider):
                         )
                     ]
                 except Exception:
-                    self.logger.info(
-                        f"Album  {track_obj.album.id} for Track {track_obj.id} has no available picture"
-                    )
+                    self.logger.info(f"Album {track_obj.album.id} has no available picture")
 
         return track
 
@@ -817,9 +783,7 @@ class TidalProvider(MusicProvider):
                 if asyncio.iscoroutinefunction(func):
                     chunk = await func(*args, **kwargs, offset=offset)
                 else:
-                    chunk = await asyncio.to_thread(
-                        func, *args, **kwargs, offset=offset
-                    )
+                    chunk = await asyncio.to_thread(func, *args, **kwargs, offset=offset)
                 offset += len(chunk)
                 for item in chunk:
                     yield item
