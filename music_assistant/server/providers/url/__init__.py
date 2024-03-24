@@ -152,14 +152,14 @@ class URLProvider(MusicProvider):
             media_item = Radio(
                 item_id=url,
                 provider=self.domain,
-                name=media_info.get("icy-name") or media_info.title,
+                name=media_info.get("icy-name") or url,
                 provider_mappings=provider_mappings,
             )
         else:
             media_item = Track(
                 item_id=url,
                 provider=self.domain,
-                name=media_info.title,
+                name=media_info.title or url,
                 duration=int(media_info.duration or 0),
                 artists=[await self.get_artist(artist) for artist in media_info.artists],
                 provider_mappings=provider_mappings,
