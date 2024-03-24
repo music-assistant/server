@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import datetime, timedelta
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Optional, cast
 
 from asyncio_throttle import Throttler
 from tidalapi import Album as TidalAlbum
@@ -708,13 +708,16 @@ class TidalProvider(MusicProvider):
         track.metadata.popularity = track_obj.popularity
         track.metadata.copyright = track_obj.copyright
         if full_details:
+            image_url = None
             try:
                 if lyrics_obj := await self._get_lyrics(track_obj):
                     track.metadata.lyrics = lyrics_obj.text
             except Exception:
                 self.logger.info(f"Track {track_obj.id} has no available lyrics")
             try:
-                image_url = await self._get_image_url(track_obj, width=1080, height=720)
+                image_url = await self._get_track_image_url(
+                    track_obj, width=1080, height=720
+                )
                 track.metadata.images = [
                     MediaItemImage(
                         type=ImageType.THUMB,
@@ -723,6 +726,19 @@ class TidalProvider(MusicProvider):
                 ]
             except Exception:
                 self.logger.info(f"Track {track_obj.id} has no available picture")
+            if image_url is None:
+                try:
+                    image_url = await self._get_image_url(track_obj.album, size=1280)
+                    track_obj.album.metadata.images = [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=image_url,
+                        )
+                    ]
+                except Exception:
+                    self.logger.info(
+                        f"Album  {track_obj.album.id} for Track {track_obj.id} has no available picture"
+                    )
 
         return track
 
@@ -767,18 +783,21 @@ class TidalProvider(MusicProvider):
         return playlist
 
     async def _get_image_url(
-        self,
-        item: TidalArtist | TidalAlbum | TidalPlaylist | TidalTrack,
-        size: int,
-        width: int,
-        height: int,
+        self, item: TidalArtist | TidalAlbum | TidalPlaylist, size: int = 0
     ) -> str:
         def inner() -> str:
-            if isinstance(TidalTrack):
-                image_url: str = item.image(width, height)
-            else:
-                image_url: str = item.image(size)
-            return image_url
+            return item.image(size)
+
+        return await asyncio.to_thread(inner)
+
+    async def _get_track_image_url(
+        self,
+        item: TidalTrack,
+        width: int = 0,
+        height: int = 0,
+    ) -> str:
+        def inner() -> str:
+            return item.image(width, height)
 
         return await asyncio.to_thread(inner)
 
