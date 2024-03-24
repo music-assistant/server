@@ -102,7 +102,7 @@ async def tidal_code_login(auth_helper: AuthenticationHelper, quality: str) -> T
     """Async wrapper around the tidalapi Session function."""
 
     def inner() -> TidalSession:
-        config = TidalConfig(quality=TidalQuality[quality], item_limit=10000, alac=False)
+        config = TidalConfig(quality=quality, item_limit=10000, alac=False)
         session = TidalSession(config=config)
         login, future = session.login_oauth()
         auth_helper.send_url(f"https://{login.verification_uri_complete}")
@@ -154,19 +154,15 @@ async def get_config_entries(
             required=True,
             description="The Tidal Quality you wish to use",
             options=(
+                ConfigValueOption(title=TidalQuality.low_96k, value=TidalQuality.low_96k),
+                ConfigValueOption(title=TidalQuality.low_320k, value=TidalQuality.low_320k),
                 ConfigValueOption(
-                    title=TidalQuality.low_96k.value, value=TidalQuality.low_96k.name
+                    title=TidalQuality.high_lossless,
+                    value=TidalQuality.high_lossless,
                 ),
-                ConfigValueOption(
-                    title=TidalQuality.low_320k.value, value=TidalQuality.low_320k.name
-                ),
-                ConfigValueOption(
-                    title=TidalQuality.high_lossless.value,
-                    value=TidalQuality.high_lossless.name,
-                ),
-                ConfigValueOption(title=TidalQuality.hi_res.value, value=TidalQuality.hi_res.name),
+                ConfigValueOption(title=TidalQuality.hi_res, value=TidalQuality.hi_res),
             ),
-            default_value=TidalQuality.high_lossless.name,
+            default_value=TidalQuality.high_lossless,
             value=values.get(CONF_QUALITY) if values else None,
         ),
         ConfigEntry(
@@ -525,7 +521,7 @@ class TidalProvider(MusicProvider):
     async def _load_tidal_session(
         self,
         token_type: str,
-        quality: TidalQuality,
+        quality: str,
         access_token: str,
         refresh_token: str,
         expiry_time: datetime | None = None,
@@ -533,7 +529,7 @@ class TidalProvider(MusicProvider):
         """Load the tidalapi Session."""
 
         def inner() -> TidalSession:
-            config = TidalConfig(quality=TidalQuality[quality], item_limit=10000, alac=False)
+            config = TidalConfig(quality=quality, item_limit=10000, alac=False)
             session = TidalSession(config=config)
             session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
             return session
@@ -786,5 +782,5 @@ class TidalProvider(MusicProvider):
 
     def _is_hi_res(self, track_obj: TidalTrack) -> bool:
         """Check if track is hi-res."""
-        hi_res: bool = track_obj.audio_quality.value == "HI_RES"
+        hi_res: bool = track_obj.audio_quality == "HI_RES"
         return hi_res

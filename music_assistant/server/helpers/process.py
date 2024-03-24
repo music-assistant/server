@@ -222,9 +222,13 @@ class AsyncProcess:
                     yield await self.proc.stderr.readline()
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
+                # this may happen with ffmpeg during a long (radio) stream where progress
+                # gets outputted to the stderr but no newline
+                # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
                 # NOTE: this consumes the line that was too big
                 if "chunk exceed the limit" in str(err):
                     continue
+                # raise for all other (value) errors
                 raise
 
     async def _feed_stdin(self, custom_stdin: AsyncGenerator[bytes, None]) -> None:
