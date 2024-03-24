@@ -35,13 +35,15 @@ class SonosUpdateError(PlayerCommandFailed):
 @overload
 def soco_error(
     errorcodes: None = ...,
-) -> Callable[[_FuncType[_T, _P, _R]], _FuncType[_T, _P, _R]]: ...
+) -> Callable[[_FuncType[_T, _P, _R]], _FuncType[_T, _P, _R]]:
+    ...
 
 
 @overload
 def soco_error(
     errorcodes: list[str],
-) -> Callable[[_FuncType[_T, _P, _R]], _ReturnFuncType[_T, _P, _R]]: ...
+) -> Callable[[_FuncType[_T, _P, _R]], _ReturnFuncType[_T, _P, _R]]:
+    ...
 
 
 def soco_error(
