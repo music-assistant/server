@@ -55,6 +55,7 @@ if TYPE_CHECKING:
 
 
 CACHE_DIR = gettempdir()
+LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -177,7 +178,7 @@ class SpotifyProvider(MusicProvider):
             result.artists += [
                 await self._parse_artist(item)
                 for item in searchresult["artists"]["items"]
-                if (item and item["id"])
+                if (item and item["id"] and item["name"])
             ]
         if "albums" in searchresult:
             result.albums += [
@@ -229,8 +230,40 @@ class SpotifyProvider(MusicProvider):
             if item and item["track"]["id"]:
                 yield await self._parse_track(item["track"])
 
+    def _get_liked_songs_playlist_id(self) -> str:
+        return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
+
+    async def _get_liked_songs_playlist(self) -> Playlist:
+        liked_songs = Playlist(
+            item_id=self._get_liked_songs_playlist_id(),
+            provider=self.domain,
+            name="Liked Songs",  # TODO to be translated
+            owner="Me",  # TODO Get logged in user display name
+            provider_mappings={
+                ProviderMapping(
+                    item_id=self._get_liked_songs_playlist_id(),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url="https://open.spotify.com/collection/tracks",
+                )
+            },
+        )
+
+        liked_songs.is_editable = False  # TODO Editing requires special endpoints
+
+        liked_songs.metadata.images = [
+            MediaItemImage(
+                type=ImageType.THUMB, path="https://misc.scdn.co/liked-songs/liked-songs-64.png"
+            )
+        ]
+
+        liked_songs.metadata.checksum = str(time.time())
+
+        return liked_songs
+
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
+        yield await self._get_liked_songs_playlist()
         for item in await self._get_all_items("me/playlists"):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
@@ -252,6 +285,9 @@ class SpotifyProvider(MusicProvider):
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
+        if prov_playlist_id == self._get_liked_songs_playlist_id():
+            return await self._get_liked_songs_playlist()
+
         playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
         return await self._parse_playlist(playlist_obj)
 
@@ -266,8 +302,13 @@ class SpotifyProvider(MusicProvider):
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
+        uri = (
+            "me/tracks"
+            if prov_playlist_id == self._get_liked_songs_playlist_id()
+            else f"playlists/{prov_playlist_id}/tracks"
+        )
         for item in await self._get_all_items(
-            f"playlists/{prov_playlist_id}/tracks",
+            uri,
         ):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
@@ -411,7 +452,7 @@ class SpotifyProvider(MusicProvider):
         artist = Artist(
             item_id=artist_obj["id"],
             provider=self.domain,
-            name=artist_obj["name"],
+            name=artist_obj["name"] or artist_obj["id"],
             provider_mappings={
                 ProviderMapping(
                     item_id=artist_obj["id"],
@@ -455,6 +496,8 @@ class SpotifyProvider(MusicProvider):
             album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
 
         for artist_obj in album_obj["artists"]:
+            if not artist_obj.get("name") or not artist_obj.get("id"):
+                continue
             album.artists.append(await self._parse_artist(artist_obj))
 
         with contextlib.suppress(ValueError):
@@ -523,6 +566,8 @@ class SpotifyProvider(MusicProvider):
         if artist:
             track.artists.append(artist)
         for track_artist in track_obj.get("artists", []):
+            if not track_artist.get("name") or not track_artist.get("id"):
+                continue
             artist = await self._parse_artist(track_artist)
             if artist and artist.item_id not in {x.item_id for x in track.artists}:
                 track.artists.append(artist)

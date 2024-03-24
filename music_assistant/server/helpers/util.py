@@ -18,6 +18,8 @@ from typing import TYPE_CHECKING
 import ifaddr
 import memory_tempfile
 
+from music_assistant.server.helpers.process import check_output
+
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
@@ -31,15 +33,11 @@ HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
 async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     LOGGER.debug("Installing python package %s", package)
-    cmd = f"python3 -m pip install --find-links {HA_WHEELS} {package}"
-    proc = await asyncio.create_subprocess_shell(
-        cmd, stderr=asyncio.subprocess.STDOUT, stdout=asyncio.subprocess.PIPE
-    )
+    args = ["python3", "-m", "pip", "install", "--find-links", HA_WHEELS, package]
+    return_code, output = await check_output(args)
 
-    stdout, _ = await proc.communicate()
-
-    if proc.returncode != 0:
-        msg = f"Failed to install package {package}\n{stdout.decode()}"
+    if return_code != 0:
+        msg = f"Failed to install package {package}\n{output.decode()}"
         raise RuntimeError(msg)
 
 

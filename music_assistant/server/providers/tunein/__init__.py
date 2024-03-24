@@ -22,7 +22,6 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -227,15 +226,14 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType.UNKNOWN,
                 ),
                 media_type=MediaType.RADIO,
-                data=item_id,
+                direct=item_id,
+                expires=time() + 3600,
             )
         stream_item_id, media_type = item_id.split("--", 1)
         stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] != media_type:
                 continue
-            # check if the radio stream is not a playlist
-            url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream["url"])
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -243,21 +241,11 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                 ),
                 media_type=MediaType.RADIO,
-                data=url_resolved,
-                expires=time() + 24 * 3600,
-                direct=url_resolved if not supports_icy else None,
+                direct=stream["url"],
+                expires=time() + 3600,
             )
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
-
-    async def get_audio_stream(
-        self,
-        streamdetails: StreamDetails,
-        seek_position: int = 0,
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
-            yield chunk
 
     async def __get_data(self, endpoint: str, **kwargs):
         """Get data from api."""

@@ -22,7 +22,6 @@ from music_assistant.common.models.media_items import (
     SearchResults,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
@@ -283,7 +282,6 @@ class RadioBrowserProvider(MusicProvider):
         """Get streamdetails for a radio station."""
         stream = await self.radios.station(uuid=item_id)
         await self.radios.station_click(uuid=item_id)
-        url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream.url_resolved)
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
@@ -291,16 +289,6 @@ class RadioBrowserProvider(MusicProvider):
                 content_type=ContentType.try_parse(stream.codec),
             ),
             media_type=MediaType.RADIO,
-            data=url_resolved,
-            direct=url_resolved if not supports_icy else None,
-            expires=time() + 24 * 3600,
+            direct=stream.url_resolved,
+            expires=time() + 3600,
         )
-
-    async def get_audio_stream(
-        self,
-        streamdetails: StreamDetails,
-        seek_position: int = 0,
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
-            yield chunk

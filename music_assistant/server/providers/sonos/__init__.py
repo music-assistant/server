@@ -94,10 +94,8 @@ async def setup(
     # set-up soco logging
     if prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
         logging.getLogger("soco").setLevel(logging.DEBUG)
-        logging.getLogger("urllib3.connectionpool").setLevel(logging.INFO)
     else:
-        logging.getLogger("pychromecast").setLevel(prov.logger.level + 10)
-        logging.getLogger("urllib3.connectionpool").setLevel(logging.WARNING)
+        logging.getLogger("soco").setLevel(prov.logger.level + 10)
     await prov.handle_async_init()
     return prov
 

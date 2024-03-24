@@ -1,0 +1,12 @@
+{
+  "build": {
+    "dockerfile": "Dockerfile",
+    "context": ".."
+  },
+  "features": {
+  },
+  "postCreateCommand": "./.devcontainer/post-create.sh",
+  "forwardPorts": [
+    8095
+  ]
+}

@@ -50,7 +50,6 @@ def get_arguments():
         help="Provide logging level. Example --log-level debug, "
         "default=info, possible=(critical, error, warning, info, debug)",
     )
-    parser.add_argument("-u", "--enable-uvloop", action="store_true")
     return parser.parse_args()
 
 
@@ -108,6 +107,7 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("charset_normalizer").setLevel(logging.WARNING)
+    logging.getLogger("urllib3.connectionpool").setLevel(logging.ERROR)
 
     sys.excepthook = lambda *args: logging.getLogger(None).exception(
         "Uncaught exception",
@@ -179,7 +179,6 @@ def main() -> None:
         hass_options = {}
 
     log_level = hass_options.get("log_level", args.log_level).upper()
-    enable_uvloop = bool(hass_options.get("enable_uvloop", args.enable_uvloop))
     dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
 
     # setup logger
@@ -203,7 +202,6 @@ def main() -> None:
 
     run(
         start_mass(),
-        use_uvloop=enable_uvloop,
         shutdown_callback=on_shutdown,
         executor_workers=32,
     )

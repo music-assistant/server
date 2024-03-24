@@ -137,7 +137,6 @@ class ContentType(StrEnum):
     PCM_F32LE = "f32le"  # PCM 32-bit floating-point little-endian
     PCM_F64LE = "f64le"  # PCM 64-bit floating-point little-endian
     PCM = "pcm"  # PCM generic (details determined later)
-    MPEG_DASH = "dash"
     UNKNOWN = "?"
 
     @classmethod

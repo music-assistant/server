@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 from contextlib import suppress
+from signal import SIGINT
 from types import TracebackType
 from typing import TYPE_CHECKING
 
@@ -59,6 +60,7 @@ class AsyncProcess:
             self._custom_stdin = None
             self.attached_tasks.append(asyncio.create_task(self._feed_stdin(custom_stdin)))
         self._custom_stdout = custom_stdout
+        self._stderr_locked = asyncio.Lock()
 
     @property
     def closed(self) -> bool:
@@ -98,8 +100,6 @@ class AsyncProcess:
             stdin=stdin if self._enable_stdin else None,
             stdout=stdout if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-            limit=4000000,
-            pipesize=256000,
         )
         LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
@@ -167,12 +167,27 @@ class AsyncProcess:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+
+        if self.proc.returncode is None:
+            # always first try to send sigint signal to try clean shutdown
+            # for example ffmpeg needs this to cleanly shutdown and not lock on pipes
+            self.proc.send_signal(SIGINT)
+            # allow the process a little bit of time to respond to the signal
+            await asyncio.sleep(0.1)
+
         # send communicate until we exited
         while self.proc.returncode is None:
-            # make sure the process is cleaned up
+            # make sure the process is really cleaned up.
+            # especially with pipes this can cause deadlocks if not properly guarded
+            # we need to use communicate to ensure buffers are flushed
+            # we do that with sending communicate
+            if self._enable_stdin and not self.proc.stdin.is_closing():
+                self.proc.stdin.close()
             try:
-                # we need to use communicate to ensure buffers are flushed
-                await asyncio.wait_for(self.proc.communicate(), 10)
+                if self.proc.stdout and self._stderr_locked.locked():
+                    await asyncio.wait_for(self.proc.stdout.read(), 5)
+                else:
+                    await asyncio.wait_for(self.proc.communicate(), 5)
             except TimeoutError:
                 LOGGER.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
@@ -180,7 +195,6 @@ class AsyncProcess:
                     self.proc.pid,
                 )
                 self.proc.terminate()
-                await asyncio.sleep(0.5)
         LOGGER.debug(
             "Process %s with PID %s stopped with returncode %s",
             self._name,
@@ -200,10 +214,11 @@ class AsyncProcess:
         stdout, stderr = await self.proc.communicate(input_data)
         return (stdout, stderr)
 
-    async def read_stderr(self) -> AsyncGenerator[bytes, None]:
-        """Read lines from the stderr stream."""
-        async for line in self.proc.stderr:
-            yield line
+    async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
+        """Iterate lines from the stderr stream."""
+        async with self._stderr_locked:
+            async for line in self.proc.stderr:
+                yield line
 
     async def _feed_stdin(self, custom_stdin: AsyncGenerator[bytes, None]) -> None:
         """Feed stdin with chunks from an AsyncGenerator."""
@@ -220,12 +235,19 @@ class AsyncProcess:
             task.cancel()
 
 
-async def check_output(shell_cmd: str) -> tuple[int, bytes]:
-    """Run shell subprocess and return output."""
-    proc = await asyncio.create_subprocess_shell(
-        shell_cmd,
-        stderr=asyncio.subprocess.STDOUT,
-        stdout=asyncio.subprocess.PIPE,
-    )
+async def check_output(args: str | list[str]) -> tuple[int, bytes]:
+    """Run subprocess and return output."""
+    if isinstance(args, str):
+        proc = await asyncio.create_subprocess_shell(
+            args,
+            stderr=asyncio.subprocess.STDOUT,
+            stdout=asyncio.subprocess.PIPE,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stderr=asyncio.subprocess.STDOUT,
+            stdout=asyncio.subprocess.PIPE,
+        )
     stdout, _ = await proc.communicate()
     return (proc.returncode, stdout)
