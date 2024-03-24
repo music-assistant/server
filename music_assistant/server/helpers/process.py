@@ -100,10 +100,6 @@ class AsyncProcess:
             stdin=stdin if self._enable_stdin else None,
             stdout=stdout if self._enable_stdout else None,
             stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
-            # setting the buffer limit is important to prevent exceeding the limit
-            # when reading lines from stderr (e.g. with long running ffmpeg process)
-            # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
-            limit=1024 * 1024,
         )
         LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
@@ -223,8 +219,7 @@ class AsyncProcess:
         while not self.closed:
             try:
                 async with self._stderr_locked:
-                    async for line in self.proc.stderr:
-                        yield line
+                    yield await self.proc.stderr.readline()
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
                 # NOTE: this consumes the line that was too big
