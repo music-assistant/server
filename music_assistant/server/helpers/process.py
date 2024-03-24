@@ -103,7 +103,7 @@ class AsyncProcess:
             # setting the buffer limit is important to prevent exceeding the limit
             # when reading lines from stderr (e.g. with long running ffmpeg process)
             # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
-            limit=1024 * 1000,
+            limit=1024 * 1024,
         )
         LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
 
@@ -220,7 +220,7 @@ class AsyncProcess:
 
     async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
         """Iterate lines from the stderr stream."""
-        while True:
+        while not self.closed:
             try:
                 async with self._stderr_locked:
                     async for line in self.proc.stderr:
