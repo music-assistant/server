@@ -557,7 +557,7 @@ class TidalProvider(MusicProvider):
         # metadata
         if full_details and artist_obj.name != "Various Artists":
             try:
-                image_url = await self._get_image_url(artist_obj, 750)
+                image_url = await self._get_image_url(artist_obj, size=750)
                 artist.metadata.images = [
                     MediaItemImage(
                         type=ImageType.THUMB,
@@ -611,7 +611,7 @@ class TidalProvider(MusicProvider):
         album.metadata.popularity = album_obj.popularity
         if full_details:
             try:
-                image_url = await self._get_image_url(album_obj, 1280)
+                image_url = await self._get_image_url(album_obj, size=1280)
                 album.metadata.images = [
                     MediaItemImage(
                         type=ImageType.THUMB,
@@ -655,7 +655,7 @@ class TidalProvider(MusicProvider):
                         content_type=ContentType.FLAC,
                         bit_depth=24 if self._is_hi_res(track_obj=track_obj) else 16,
                     ),
-                    url=f"http://www.tidal.com/tracks/{track_id}",
+                    url=f"http://www.tidal.com/track/{track_id}",
                     available=track_obj.available,
                 )
             },
@@ -683,13 +683,16 @@ class TidalProvider(MusicProvider):
                     track.metadata.lyrics = lyrics_obj.text
             except Exception:
                 self.logger.info(f"Track {track_obj.id} has no available lyrics")
-        if not track.image and track_obj.album and (image_url := track_obj.album.image(640, None)):
-            track.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=image_url,
-                )
-            ]
+            try:
+                image_url = await self._get_image_url(track_obj, width=1080, height=720)
+                track.metadata.images = [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=image_url,
+                    )
+                ]
+            except Exception:
+                self.logger.info(f"Track {track_obj.id} has no available picture")
 
         return track
 
@@ -710,7 +713,7 @@ class TidalProvider(MusicProvider):
                     item_id=str(playlist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"http://www.tidal.com/playlists/{playlist_id}",
+                    url=f"http://www.tidal.com/playlist/{playlist_id}",
                 )
             },
         )
@@ -721,7 +724,7 @@ class TidalProvider(MusicProvider):
         playlist.metadata.popularity = playlist_obj.popularity
         if full_details:
             try:
-                image_url = await self._get_image_url(playlist_obj, 1080)
+                image_url = await self._get_image_url(playlist_obj, size=1080)
                 playlist.metadata.images = [
                     MediaItemImage(
                         type=ImageType.THUMB,
@@ -734,10 +737,17 @@ class TidalProvider(MusicProvider):
         return playlist
 
     async def _get_image_url(
-        self, item: TidalArtist | TidalAlbum | TidalPlaylist, size: int
+        self,
+        item: TidalArtist | TidalAlbum | TidalPlaylist | TidalTrack,
+        size: int,
+        width: int,
+        height: int,
     ) -> str:
         def inner() -> str:
-            image_url: str = item.image(size)
+            if isinstance(TidalTrack):
+                image_url: str = item.image(width, height)
+            else:
+                image_url: str = item.image(size)
             return image_url
 
         return await asyncio.to_thread(inner)
