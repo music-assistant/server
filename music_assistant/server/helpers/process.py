@@ -60,7 +60,8 @@ class AsyncProcess:
             self._custom_stdin = None
             self.attached_tasks.append(asyncio.create_task(self._feed_stdin(custom_stdin)))
         self._custom_stdout = custom_stdout
-        self._stderr_locked = asyncio.Lock()
+        self._stderr_lock = asyncio.Lock()
+        self._stdout_lock = asyncio.Lock()
 
     @property
     def closed(self) -> bool:
@@ -122,7 +123,8 @@ class AsyncProcess:
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
         try:
-            return await self.proc.stdout.readexactly(n)
+            async with self._stdout_lock:
+                return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
 
@@ -133,7 +135,8 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        return await self.proc.stdout.read(n)
+        async with self._stdout_lock:
+            return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
@@ -173,7 +176,7 @@ class AsyncProcess:
             # for example ffmpeg needs this to cleanly shutdown and not lock on pipes
             self.proc.send_signal(SIGINT)
             # allow the process a little bit of time to respond to the signal
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(0.2)
 
         # send communicate until we exited
         while self.proc.returncode is None:
@@ -184,9 +187,13 @@ class AsyncProcess:
             if self._enable_stdin and not self.proc.stdin.is_closing():
                 self.proc.stdin.close()
             try:
-                if self.proc.stdout and self._stderr_locked.locked():
+                if self.proc.stdout:
+                    await asyncio.wait_for(self._stdout_lock.acquire(), 5)
                     await asyncio.wait_for(self.proc.stdout.read(), 5)
-                else:
+                if self.proc.stderr and self.proc.returncode is None:
+                    await asyncio.wait_for(self._stderr_lock.acquire(), 5)
+                    await asyncio.wait_for(self.proc.stdout.read(), 5)
+                if self.proc.returncode is None:
                     await asyncio.wait_for(self.proc.communicate(), 5)
             except TimeoutError:
                 LOGGER.debug(
@@ -218,7 +225,7 @@ class AsyncProcess:
         """Iterate lines from the stderr stream."""
         while not self.closed:
             try:
-                async with self._stderr_locked:
+                async with self._stderr_lock:
                     yield await self.proc.stderr.readline()
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
