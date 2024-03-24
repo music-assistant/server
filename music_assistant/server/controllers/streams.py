@@ -828,7 +828,7 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            buffer_size = int(pcm_sample_size * 2)  # 2 seconds
+            buffer_size = int(pcm_sample_size * 5)  # 5 seconds
             if use_crossfade:
                 buffer_size += crossfade_size
             bytes_written = 0
@@ -872,7 +872,7 @@ class StreamsController(CoreController):
                     buffer = b""
 
                 #### OTHER: enough data in buffer, feed to output
-                else:
+                while len(buffer) > buffer_size:
                     yield buffer[:pcm_sample_size]
                     bytes_written += pcm_sample_size
                     buffer = buffer[pcm_sample_size:]
@@ -1011,7 +1011,8 @@ class StreamsController(CoreController):
             filter_params=filter_params,
             extra_args=extra_args,
             input_path=input_path,
-            loglevel="info",  # needed for loudness measurement
+            # loglevel info is needed for loudness measurement
+            loglevel="info",
         )
 
         async def log_reader(ffmpeg_proc: AsyncProcess, state_data: dict[str, Any]):
@@ -1119,7 +1120,7 @@ class StreamsController(CoreController):
             # we did not receive any data, somethinh wet wrong
             # raise here to prevent an endless loop elsewhere
             if state_data["bytes_sent"] == 0:
-                raise AudioError("stream error on %s", streamdetails.uri)
+                raise AudioError(f"stream error on {streamdetails.uri}")
 
             # all chunks received, strip silence of last part if needed and yield remaining bytes
             if strip_silence_end and prev_chunk:
