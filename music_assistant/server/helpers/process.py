@@ -108,7 +108,7 @@ class AsyncProcess:
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
-        while True:
+        while not self._close_called:
             chunk = await self.readexactly(n)
             if len(chunk) == 0:
                 break
@@ -116,7 +116,7 @@ class AsyncProcess:
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
-        while True:
+        while not self._close_called:
             chunk = await self.read(n)
             if len(chunk) == 0:
                 break
@@ -124,6 +124,8 @@ class AsyncProcess:
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
+        if not self.proc.stdout or self.proc.stdout.at_eof():
+            return b""
         try:
             async with self._stdout_lock:
                 return await self.proc.stdout.readexactly(n)
@@ -137,6 +139,8 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
+        if not self.proc.stdout or self.proc.stdout.at_eof():
+            return b""
         async with self._stdout_lock:
             return await self.proc.stdout.read(n)
 
@@ -150,6 +154,8 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
+        if self._close_called or self.proc.stdin.is_closing():
+            return
         try:
             if self.proc.stdin.can_write_eof():
                 self.proc.stdin.write_eof()
