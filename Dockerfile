@@ -44,11 +44,6 @@ ARG MASS_VERSION
 ARG TARGETPLATFORM
 
 RUN set -x \
-    # add bookworm backports repo
-    && sh -c 'echo "deb http://deb.debian.org/debian bookworm-backports main" >> /etc/apt/sources.list' \
-    # add multimedia repo
-    && sh -c 'echo "Types: deb\nURIs: https://www.deb-multimedia.org\nSuites: stable\nComponents: main non-free\nSigned-By: /etc/apt/trusted.gpg.d/deb-multimedia-keyring.gpg" >> /etc/apt/sources.list.d/deb-multimedia.sources' \
-    && sh -c 'echo "Package: *\nPin: origin www.deb-multimedia.org\nPin-Priority: 1" >> /etc/apt/preferences.d/99deb-multimedia' \
     && apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -63,8 +58,12 @@ RUN set -x \
         libnfs-utils \
         libjemalloc2 \
     # install snapcast server 0.27 from bookworm backports
+    && sh -c 'echo "deb http://deb.debian.org/debian bookworm-backports main" >> /etc/apt/sources.list' \
+    && apt-get update \
     && apt-get install -y --no-install-recommends -t bookworm-backports snapserver \
     # install ffmpeg 6 from multimedia repo
+    && sh -c 'echo "Types: deb\nURIs: https://www.deb-multimedia.org\nSuites: stable\nComponents: main non-free\nSigned-By: /etc/apt/trusted.gpg.d/deb-multimedia-keyring.gpg" >> /etc/apt/sources.list.d/deb-multimedia.sources' \
+    && sh -c 'echo "Package: *\nPin: origin www.deb-multimedia.org\nPin-Priority: 1" >> /etc/apt/preferences.d/99deb-multimedia' \
     && cd /tmp && curl -sLO https://www.deb-multimedia.org/pool/main/d/deb-multimedia-keyring/deb-multimedia-keyring_2016.8.1_all.deb \
     && apt install -y /tmp/deb-multimedia-keyring_2016.8.1_all.deb \
     && apt-get update \
