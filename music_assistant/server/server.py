@@ -362,13 +362,13 @@ class MusicAssistant:
         *args: Any,
         task_id: str | None = None,
         **kwargs: Any,
-    ) -> asyncio.Task | asyncio.Future:
+    ) -> asyncio.TimerHandle:
         """Run callable/awaitable after given delay."""
 
         def _create_task() -> None:
             self.create_task(target, *args, task_id=task_id, **kwargs)
 
-        self.loop.call_later(delay, _create_task)
+        return self.loop.call_later(delay, _create_task)
 
     def get_task(self, task_id: str) -> asyncio.Task | asyncio.Future:
         """Get existing scheduled task."""
