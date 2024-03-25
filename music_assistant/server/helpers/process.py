@@ -91,7 +91,8 @@ class AsyncProcess:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Exit context manager."""
-        await self.close()
+        # send interrupt signal to process when we're cancelled
+        await self.close(send_signal=exc_type in (GeneratorExit, asyncio.CancelledError))
         self._returncode = self.returncode
 
     async def start(self) -> None:
@@ -169,7 +170,7 @@ class AsyncProcess:
             # already exited, race condition
             pass
 
-    async def close(self) -> int:
+    async def close(self, send_signal: bool = False) -> int:
         """Close/terminate the process and wait for exit."""
         self._close_called = True
         # close any/all attached (writer) tasks
@@ -178,13 +179,15 @@ class AsyncProcess:
                 task.cancel()
                 with suppress(asyncio.CancelledError):
                     await task
+        if send_signal and self.returncode is None:
+            self.proc.send_signal(SIGINT)
+            # allow the process a bit of time to respond to the signal before we go nuclear
+            await asyncio.sleep(0.5)
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
         # we need to ensure stdout and stderr are flushed and stdin closed
         while self.returncode is None:
-            if not self.proc.stdin:
-                self.proc.send_signal(SIGINT)
             try:
                 async with asyncio.timeout(30):
                     # wait for stdout/stderr locks if needed

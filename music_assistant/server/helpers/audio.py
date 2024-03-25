@@ -823,6 +823,8 @@ def get_ffmpeg_args(
     ]
     # collect input args
     input_args = []
+    if extra_input_args:
+        input_args += extra_input_args
     if input_path.startswith("http"):
         # append reconnect options for direct stream from http
         input_args += [
@@ -855,8 +857,6 @@ def get_ffmpeg_args(
             input_format.content_type.value,
         ]
     input_args += ["-i", input_path]
-    if extra_input_args:
-        input_args += extra_input_args
 
     # collect output args
     if output_path.upper() == "NULL":
