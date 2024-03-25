@@ -828,9 +828,10 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            buffer_size = int(pcm_sample_size * 2)  # 2 seconds
-            if use_crossfade:
-                buffer_size += crossfade_size
+            if use_crossfade:  # noqa: SIM108
+                buffer_size = int(pcm_sample_size * 20)  # 20 seconds
+            else:
+                buffer_size = int(pcm_sample_size * 10)  # 10 seconds
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
@@ -859,9 +860,13 @@ class StreamsController(CoreController):
                         pcm_format.bit_depth,
                         pcm_format.sample_rate,
                     )
-                    # send crossfade_part
-                    yield crossfade_part
+                    # send crossfade_part (in 1 second chunks)
                     bytes_written += len(crossfade_part)
+                    while len(crossfade_part) > pcm_sample_size:
+                        yield crossfade_part[:pcm_sample_size]
+                        crossfade_part = crossfade_part[pcm_sample_size:]
+                    yield crossfade_part
+
                     # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
                         yield remaining_bytes
@@ -891,9 +896,13 @@ class StreamsController(CoreController):
                 bytes_written += len(remaining_bytes)
                 del remaining_bytes
             else:
-                # no crossfade enabled, just yield the (entire) buffer last part
-                yield buffer
+                # no crossfade enabled, just yield the buffer last part (in 1 second chunks)
                 bytes_written += len(buffer)
+                while len(buffer) > pcm_sample_size:
+                    yield buffer[:pcm_sample_size]
+                    buffer = buffer[pcm_sample_size:]
+                yield buffer
+                del buffer
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
@@ -914,7 +923,7 @@ class StreamsController(CoreController):
         if last_fadeout_part:
             yield last_fadeout_part
             del last_fadeout_part
-        del buffer
+
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
@@ -960,9 +969,8 @@ class StreamsController(CoreController):
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
         if is_radio or streamdetails.seek_position:
             strip_silence_begin = False
-        # chunk size = 2 seconds of pcm audio
-        pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-        chunk_size = pcm_sample_size * (1 if is_radio else 2)
+        # chunk size = 1 second of pcm audio
+        chunk_size = pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
         expected_chunks = int((streamdetails.duration or 0) / 2)
         if expected_chunks < 10:
             strip_silence_end = False
@@ -1117,7 +1125,7 @@ class StreamsController(CoreController):
                 # collect this chunk for next round
                 prev_chunk = chunk
 
-            # we did not receive any data, somethinh wet wrong
+            # if we did not receive any data, something went (terribly) wrong
             # raise here to prevent an endless loop elsewhere
             if state_data["bytes_sent"] == 0:
                 raise AudioError(f"stream error on {streamdetails.uri}")
@@ -1134,7 +1142,11 @@ class StreamsController(CoreController):
             else:
                 final_chunk = prev_chunk
 
-            # yield final chunk to output
+            # yield final chunk to output (in chunk_size parts)
+            while len(final_chunk) > chunk_size:
+                yield final_chunk[:chunk_size]
+                final_chunk = final_chunk[chunk_size:]
+                state_data["bytes_sent"] += len(final_chunk)
             yield final_chunk
             state_data["bytes_sent"] += len(final_chunk)
             state_data["finished"].set()
