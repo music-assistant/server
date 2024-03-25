@@ -38,6 +38,7 @@ from music_assistant.constants import (
     CONF_PLAYERS,
     ROOT_LOGGER_NAME,
     SYNCGROUP_PREFIX,
+    UGP_PREFIX,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.core_controller import CoreController
@@ -527,11 +528,17 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/group_power")
     async def cmd_group_power(self, player_id: str, power: bool) -> None:
-        """Handle power command for a PlayerGroup."""
+        """Handle power command for a PlayerGroup/SyncGroup."""
         group_player = self.get(player_id, True)
 
         if group_player.powered == power:
             return  # nothing to do
+
+        if group_player.type == PlayerType.GROUP and not player_id.startswith(UGP_PREFIX):
+            # this is a native group player (and not UGP), redirect
+            await self.cmd_power(player_id, power)
+            return
+
         # make sure to update the group power state
         group_player.powered = power
 

@@ -33,7 +33,7 @@ HA_WHEELS = "https://wheels.home-assistant.io/musllinux/"
 async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     LOGGER.debug("Installing python package %s", package)
-    args = ["python3", "-m", "pip", "install", "--find-links", HA_WHEELS, package]
+    args = ["pip", "install", "--find-links", HA_WHEELS, package]
     return_code, output = await check_output(args)
 
     if return_code != 0:
