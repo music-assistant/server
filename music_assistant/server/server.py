@@ -262,9 +262,9 @@ class MusicAssistant:
         if self.closing:
             return
 
-        if LOGGER.isEnabledFor(logging.DEBUG) and event != EventType.QUEUE_TIME_UPDATED:
+        if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL):
             # do not log queue time updated events because that is too chatty
-            LOGGER.getChild("event").debug("%s %s", event.value, object_id or "")
+            LOGGER.getChild("event").log(VERBOSE_LOG_LEVEL, "%s %s", event.value, object_id or "")
 
         event_obj = MassEvent(event=event, object_id=object_id, data=data)
         for cb_func, event_filter, id_filter in self._subscribers:
