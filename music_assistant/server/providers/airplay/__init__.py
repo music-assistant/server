@@ -62,7 +62,7 @@ CONF_VOLUME_START = "volume_start"
 CONF_PASSWORD = "password"
 
 # the output buffer to raop must be big enough to prevent small hiccups
-REQUIRED_BUFFER = int(44100 * (16 / 8) * 2) * 3  # 3 seconds
+REQUIRED_BUFFER = int(44100 * (16 / 8) * 2) * 3  # 2 seconds
 
 
 PLAYER_CONFIG_ENTRIES = (
