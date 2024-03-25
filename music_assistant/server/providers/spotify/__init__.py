@@ -637,10 +637,10 @@ class SpotifyProvider(MusicProvider):
             try:
                 retries += 1
                 if not tokeninfo:
-                    async with asyncio.timeout(5):
+                    async with asyncio.timeout(10):
                         tokeninfo = await self._get_token()
                 if tokeninfo and not userinfo:
-                    async with asyncio.timeout(5):
+                    async with asyncio.timeout(10):
                         userinfo = await self._get_data("me", tokeninfo=tokeninfo)
                 if tokeninfo and userinfo:
                     # we have all info we need!
@@ -689,10 +689,8 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        librespot = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        stdout, _ = await librespot.communicate()
+        async with AsyncProcess(args, enable_stdout=True) as librespot:
+            stdout = await librespot.read(-1)
         if stdout.decode().strip() != "authorized":
             raise LoginFailed(f"Login failed for username {self.config.get_value(CONF_USERNAME)}")
         # get token with (authorized) librespot
@@ -727,10 +725,8 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        librespot = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        stdout, _ = await librespot.communicate()
+        async with AsyncProcess(args, enable_stdout=True) as librespot:
+            stdout = await librespot.read(-1)
         duration = round(time.time() - time_start, 2)
         try:
             result = json.loads(stdout)

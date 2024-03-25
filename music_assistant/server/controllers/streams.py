@@ -37,11 +37,11 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
+    ROOT_LOGGER_NAME,
     SILENCE_FILE,
     UGP_PREFIX,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -362,7 +362,7 @@ class StreamsController(CoreController):
             "with libsoxr support" if libsoxr_support else "",
         )
         # copy log level to audio module
-        AUDIO_LOGGER.setLevel(self.logger.level)
+        logging.getLogger(f"{ROOT_LOGGER_NAME}.audio").setLevel(self.logger.level)
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -828,8 +828,9 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            buffer_size = int(pcm_sample_size * 5)  # 5 seconds
+            buffer_size = int(pcm_sample_size * 2)  # 2 seconds
             if use_crossfade:
+                # buffer size needs to be big enough to include the crossfade part
                 buffer_size += crossfade_size
             bytes_written = 0
             buffer = b""
@@ -859,9 +860,10 @@ class StreamsController(CoreController):
                         pcm_format.bit_depth,
                         pcm_format.sample_rate,
                     )
-                    # send crossfade_part
-                    yield crossfade_part
+                    # send crossfade_part (as one big chunk)
                     bytes_written += len(crossfade_part)
+                    yield crossfade_part
+
                     # also write the leftover bytes from the crossfade action
                     if remaining_bytes:
                         yield remaining_bytes
@@ -873,9 +875,11 @@ class StreamsController(CoreController):
 
                 #### OTHER: enough data in buffer, feed to output
                 while len(buffer) > buffer_size:
-                    yield buffer[:pcm_sample_size]
-                    bytes_written += pcm_sample_size
+                    subchunk = buffer[:pcm_sample_size]
                     buffer = buffer[pcm_sample_size:]
+                    bytes_written += len(subchunk)
+                    yield subchunk
+                    del subchunk
 
             #### HANDLE END OF TRACK
             if last_fadeout_part:
@@ -891,9 +895,10 @@ class StreamsController(CoreController):
                 bytes_written += len(remaining_bytes)
                 del remaining_bytes
             else:
-                # no crossfade enabled, just yield the (entire) buffer last part
-                yield buffer
+                # no crossfade enabled, just yield the buffer last part
                 bytes_written += len(buffer)
+                yield buffer
+                del buffer
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
@@ -914,7 +919,7 @@ class StreamsController(CoreController):
         if last_fadeout_part:
             yield last_fadeout_part
             del last_fadeout_part
-        del buffer
+
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
@@ -960,10 +965,10 @@ class StreamsController(CoreController):
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
         if is_radio or streamdetails.seek_position:
             strip_silence_begin = False
-        # chunk size = 2 seconds of pcm audio
-        pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-        chunk_size = pcm_sample_size * (1 if is_radio else 2)
-        expected_chunks = int((streamdetails.duration or 0) / 2)
+        # chunk size = 1 second of pcm audio
+        pcm_sample_size = pcm_format.pcm_sample_size
+        chunk_size = pcm_sample_size  # chunk size = sample size  (= 1 second)
+        expected_chunks = int(((streamdetails.duration or 0) * pcm_sample_size) / chunk_size)
         if expected_chunks < 10:
             strip_silence_end = False
 
@@ -980,7 +985,7 @@ class StreamsController(CoreController):
             extra_args += ["-ss", str(seek_pos)]
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
-            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:LRA=7:tp=-2:offset=-0.5"
+            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:LRA=11:TP=-2"
             if streamdetails.loudness:
                 filter_rule += f":measured_I={streamdetails.loudness.integrated}"
                 filter_rule += f":measured_LRA={streamdetails.loudness.lra}"
@@ -1013,6 +1018,7 @@ class StreamsController(CoreController):
             input_path=input_path,
             # loglevel info is needed for loudness measurement
             loglevel="info",
+            extra_input_args=["-filter_threads", "1"],
         )
 
         async def log_reader(ffmpeg_proc: AsyncProcess, state_data: dict[str, Any]):
@@ -1068,10 +1074,6 @@ class StreamsController(CoreController):
                 if music_prov := self.mass.get_provider(streamdetails.provider):
                     self.mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
-            # cleanup
-            del state_data
-            del ffmpeg_proc
-
         async with AsyncProcess(
             ffmpeg_args,
             enable_stdin=audio_source_iterator is not None,
@@ -1116,8 +1118,7 @@ class StreamsController(CoreController):
 
                 # collect this chunk for next round
                 prev_chunk = chunk
-
-            # we did not receive any data, somethinh wet wrong
+            # if we did not receive any data, something went (terribly) wrong
             # raise here to prevent an endless loop elsewhere
             if state_data["bytes_sent"] == 0:
                 raise AudioError(f"stream error on {streamdetails.uri}")
@@ -1134,7 +1135,11 @@ class StreamsController(CoreController):
             else:
                 final_chunk = prev_chunk
 
-            # yield final chunk to output
+            # yield final chunk to output (in chunk_size parts)
+            while len(final_chunk) > chunk_size:
+                yield final_chunk[:chunk_size]
+                final_chunk = final_chunk[chunk_size:]
+                state_data["bytes_sent"] += len(final_chunk)
             yield final_chunk
             state_data["bytes_sent"] += len(final_chunk)
             state_data["finished"].set()

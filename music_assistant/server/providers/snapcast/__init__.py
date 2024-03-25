@@ -330,7 +330,7 @@ class SnapCastProvider(PlayerProvider):
             input_format = DEFAULT_SNAPCAST_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
                 queue_item.streamdetails.data["url"],
-                pcm_format=DEFAULT_SNAPCAST_FORMAT,
+                output_format=DEFAULT_SNAPCAST_FORMAT,
                 use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
             )
         else:
