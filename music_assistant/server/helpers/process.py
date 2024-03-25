@@ -183,23 +183,15 @@ class AsyncProcess:
         # especially with pipes this can cause deadlocks if not properly guarded
         # we need to ensure stdout and stderr are flushed and stdin closed
         while self.returncode is None:
-            if self.proc.stdin and not self.proc.stdin.is_closing():
-                self.proc.stdin.close()
             if not self.proc.stdin:
                 self.proc.send_signal(SIGINT)
             try:
-                async with asyncio.timeout(10):
-                    # consume stdout if needed
-                    if self.proc.stdout and self.returncode is None:
-                        async with self._stdout_lock:
-                            await self.proc.stdout.read()
-                    # consume stderr if needed
-                    if self.proc.stderr and self.returncode is None:
-                        async with self._stderr_lock:
-                            self.proc.stderr.read()
-                    # wait for process exit
-                    if self.returncode is None:
-                        self._returncode = await self.proc.wait()
+                async with asyncio.timeout(30):
+                    # wait for stdout/stderr locks if needed
+                    await self._stdout_lock.acquire()
+                    await self._stderr_lock.acquire()
+                    # use communicate to flush all pipe buffers
+                    await self.proc.communicate()
             except TimeoutError:
                 LOGGER.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
