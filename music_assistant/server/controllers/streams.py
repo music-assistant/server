@@ -1084,14 +1084,14 @@ class StreamsController(CoreController):
         async with AsyncProcess(
             ffmpeg_args,
             enable_stdin=audio_source_iterator is not None,
-            enable_stderr=True,
+            enable_stderr=False,
             custom_stdin=audio_source_iterator,
             name="ffmpeg_media_stream",
         ) as ffmpeg_proc:
             state_data = {"finished": asyncio.Event(), "bytes_sent": 0}
             logger.debug("start media stream for: %s", streamdetails.uri)
 
-            self.mass.create_task(log_reader(ffmpeg_proc, state_data))
+            # self.mass.create_task(log_reader(ffmpeg_proc, state_data))
 
             # get pcm chunks from stdout
             # we always stay one chunk behind to properly detect end of chunks
@@ -1153,6 +1153,7 @@ class StreamsController(CoreController):
             state_data["finished"].set()
             del final_chunk
             del prev_chunk
+            logger.warning("end of stream reached here")
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
