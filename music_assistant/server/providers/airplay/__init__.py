@@ -314,7 +314,6 @@ class AirplayStream:
         """Write EOF to the ffmpeg stdin."""
         await self._ffmpeg_proc.write_eof()
         await self._ffmpeg_proc.wait()
-        await self.stop()
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""

@@ -75,7 +75,9 @@ class AsyncProcess:
             return self._returncode
         if self.proc is None:
             return None
-        return self.proc.returncode
+        if (ret_code := self.proc.returncode) is not None:
+            self._returncode = ret_code
+        return ret_code
 
     async def __aenter__(self) -> AsyncProcess:
         """Enter context manager."""
@@ -171,30 +173,28 @@ class AsyncProcess:
                 with suppress(asyncio.CancelledError):
                     await task
 
-        if self.proc.returncode is None:
-            # always first try to send sigint signal to try clean shutdown
-            # for example ffmpeg needs this to cleanly shutdown and not lock on pipes
-            self.proc.send_signal(SIGINT)
-            # allow the process a little bit of time to respond to the signal
-            await asyncio.sleep(0.2)
-
         # send communicate until we exited
-        while self.proc.returncode is None:
+        while self.returncode is None:
             # make sure the process is really cleaned up.
             # especially with pipes this can cause deadlocks if not properly guarded
-            # we need to use communicate to ensure buffers are flushed
-            # we do that with sending communicate
-            if self._enable_stdin and not self.proc.stdin.is_closing():
+            # we need to ensure stdout and stderr are flushed and stdin closed
+            if self.proc.stdin and not self.proc.stdin.is_closing():
                 self.proc.stdin.close()
+            else:
+                self.proc.send_signal(SIGINT)
             try:
-                if self.proc.stdout:
-                    await asyncio.wait_for(self._stdout_lock.acquire(), 5)
-                    await asyncio.wait_for(self.proc.stdout.read(), 5)
-                if self.proc.stderr and self.proc.returncode is None:
-                    await asyncio.wait_for(self._stderr_lock.acquire(), 5)
-                    await asyncio.wait_for(self.proc.stdout.read(), 5)
-                if self.proc.returncode is None:
-                    await asyncio.wait_for(self.proc.communicate(), 5)
+                async with asyncio.timeout(10):
+                    # consume stdout if needed
+                    if self.proc.stdout and self.returncode is None:
+                        async with self._stdout_lock:
+                            await self.proc.stdout.read()
+                    # consume stderr if needed
+                    if self.proc.stderr and self.returncode is None:
+                        async with self._stderr_lock:
+                            self.proc.stdout.read()
+                    # wait for process exit
+                    if self.returncode is None:
+                        self._returncode = await self.proc.wait()
             except TimeoutError:
                 LOGGER.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
@@ -206,19 +206,21 @@ class AsyncProcess:
             "Process %s with PID %s stopped with returncode %s",
             self._name,
             self.proc.pid,
-            self.proc.returncode,
+            self.returncode,
         )
-        return self.proc.returncode
+        return self.returncode
 
     async def wait(self) -> int:
         """Wait for the process and return the returncode."""
         if self.returncode is not None:
             return self.returncode
-        return await self.proc.wait()
+        self._returncode = await self.proc.wait()
+        return self._returncode
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
         stdout, stderr = await self.proc.communicate(input_data)
+        self._returncode = self.proc.returncode
         return (stdout, stderr)
 
     async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
@@ -226,6 +228,8 @@ class AsyncProcess:
         while not self.closed:
             try:
                 async with self._stderr_lock:
+                    if self.proc.stderr.at_eof():
+                        break
                     yield await self.proc.stderr.readline()
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
