@@ -989,7 +989,7 @@ class StreamsController(CoreController):
             extra_args += ["-ss", str(seek_pos)]
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
-            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:LRA=7:tp=-2:offset=-0.5"
+            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:LRA=11:TP=-2"
             if streamdetails.loudness:
                 filter_rule += f":measured_I={streamdetails.loudness.integrated}"
                 filter_rule += f":measured_LRA={streamdetails.loudness.lra}"
