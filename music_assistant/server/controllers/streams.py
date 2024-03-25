@@ -37,11 +37,11 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
+    ROOT_LOGGER_NAME,
     SILENCE_FILE,
     UGP_PREFIX,
     VERBOSE_LOG_LEVEL,
 )
-from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
@@ -362,7 +362,7 @@ class StreamsController(CoreController):
             "with libsoxr support" if libsoxr_support else "",
         )
         # copy log level to audio module
-        AUDIO_LOGGER.setLevel(self.logger.level)
+        logging.getLogger(f"{ROOT_LOGGER_NAME}.audio").setLevel(self.logger.level)
         # start the webserver
         self.publish_port = config.get_value(CONF_BIND_PORT)
         self.publish_ip = config.get_value(CONF_PUBLISH_IP)
@@ -830,9 +830,9 @@ class StreamsController(CoreController):
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             if use_crossfade:  # noqa: SIM108
                 # buffer size needs to be big enough to include the crossfade part
-                buffer_size = int(pcm_sample_size * 15)  # 15 seconds
+                buffer_size = int(pcm_sample_size * 12)  # 12 seconds
             else:
-                buffer_size = int(pcm_sample_size * 10)  # 5 seconds
+                buffer_size = int(pcm_sample_size * 2)  # 2 seconds
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks

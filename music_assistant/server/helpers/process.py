@@ -179,14 +179,13 @@ class AsyncProcess:
                 with suppress(asyncio.CancelledError):
                     await task
 
-        # send communicate until we exited
+        # make sure the process is really cleaned up.
+        # especially with pipes this can cause deadlocks if not properly guarded
+        # we need to ensure stdout and stderr are flushed and stdin closed
         while self.returncode is None:
-            # make sure the process is really cleaned up.
-            # especially with pipes this can cause deadlocks if not properly guarded
-            # we need to ensure stdout and stderr are flushed and stdin closed
             if self.proc.stdin and not self.proc.stdin.is_closing():
                 self.proc.stdin.close()
-            else:
+            if not self.proc.stdin:
                 self.proc.send_signal(SIGINT)
             try:
                 async with asyncio.timeout(10):
@@ -232,10 +231,10 @@ class AsyncProcess:
     async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
         """Iterate lines from the stderr stream."""
         while not self.closed:
+            if self.proc.stderr.at_eof():
+                break
             try:
                 async with self._stderr_lock:
-                    if self.proc.stderr.at_eof():
-                        break
                     yield await self.proc.stderr.readline()
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
