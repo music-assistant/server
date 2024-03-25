@@ -236,9 +236,6 @@ class AirplayStream:
             extra_args += ["-debug", "10"]
 
         cliraop_args = [
-            "nice",
-            "-n",
-            "20",
             self.prov.cliraop_bin,
             "-ntpstart",
             str(start_ntp),

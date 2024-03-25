@@ -1022,8 +1022,8 @@ class StreamsController(CoreController):
             input_path=input_path,
             # loglevel info is needed for loudness measurement
             loglevel="info",
+            extra_input_args=["-filter_threads", "1"],
         )
-        ffmpeg_args = ["nice", "-n", "5", *ffmpeg_args]
 
         async def log_reader(ffmpeg_proc: AsyncProcess, state_data: dict[str, Any]):
             # To prevent stderr locking up, we must keep reading it
@@ -1154,7 +1154,6 @@ class StreamsController(CoreController):
             state_data["finished"].set()
             del final_chunk
             del prev_chunk
-            logger.warning("end of stream reached here")
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

@@ -123,8 +123,8 @@ class AsyncProcess:
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
-        if not self.proc.stdout or self.proc.stdout.at_eof():
-            return b""
+        if self._close_called or not self.proc.stdout or self.proc.stdout.at_eof():
+            raise asyncio.CancelledError
         try:
             return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
@@ -137,8 +137,8 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        if not self.proc.stdout or self.proc.stdout.at_eof():
-            return b""
+        if self._close_called or not self.proc.stdout or self.proc.stdout.at_eof():
+            raise asyncio.CancelledError
         return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
@@ -219,6 +219,8 @@ class AsyncProcess:
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
         """Write bytes to process and read back results."""
+        if self._close_called or not self.proc.stdout or self.proc.stdout.at_eof():
+            raise asyncio.CancelledError
         stdout, stderr = await self.proc.communicate(input_data)
         self._returncode = self.proc.returncode
         return (stdout, stderr)
@@ -226,10 +228,12 @@ class AsyncProcess:
     async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
         """Iterate lines from the stderr stream."""
         while not self.closed:
-            if self.proc.stderr.at_eof():
-                break
+            if self._close_called or not self.proc.stderr or self.proc.stderr.at_eof():
+                raise GeneratorExit
             try:
                 yield await self.proc.stderr.readline()
+                if self.proc.stderr.at_eof():
+                    break
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
                 # this may happen with ffmpeg during a long (radio) stream where progress
