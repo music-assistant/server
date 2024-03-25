@@ -46,6 +46,7 @@ ARG TARGETPLATFORM
 RUN set -x \
     # add bookworm backports repo
     && sh -c 'echo "deb http://deb.debian.org/debian bookworm-backports main" >> /etc/apt/sources.list' \
+    # add multimedia repo
     && sh -c 'echo "Types: deb\nURIs: https://www.deb-multimedia.org\nSuites: stable\nComponents: main non-free\nSigned-By: /etc/apt/trusted.gpg.d/deb-multimedia-keyring.gpg" >> /etc/apt/sources.list.d/deb-multimedia.sources' \
     && sh -c 'echo "Package: *\nPin: origin www.deb-multimedia.org\nPin-Priority: 1" >> /etc/apt/preferences.d/99deb-multimedia' \
     && apt-get update \
@@ -66,6 +67,7 @@ RUN set -x \
     # install ffmpeg 6 from multimedia repo
     && cd /tmp && curl -sLO https://www.deb-multimedia.org/pool/main/d/deb-multimedia-keyring/deb-multimedia-keyring_2016.8.1_all.deb \
     && apt install -y /tmp/deb-multimedia-keyring_2016.8.1_all.deb \
+    && apt-get update \
     && apt install -y -t 'o=Unofficial Multimedia Packages' ffmpeg \
     # cleanup
     && rm -rf /tmp/* \
