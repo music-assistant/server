@@ -394,7 +394,8 @@ class AirplayStream:
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(airplay_player.player_id)
         # ensure we're cleaned up afterwards
-        await self.stop()
+        if self._ffmpeg_proc.returncode is None or self._cliraop_proc.returncode is None:
+            await self.stop()
 
     async def _send_metadata(self, queue: PlayerQueue) -> None:
         """Send metadata to player (and connected sync childs)."""
