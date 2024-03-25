@@ -20,7 +20,12 @@ from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi import UserPlaylist as TidalUserPlaylist
-from tidalapi.exceptions import ObjectNotFound, TooManyRequests
+from tidalapi.exceptions import (
+    MetadataNotAvailable,
+    ObjectNotFound,
+    TooManyRequests,
+    URLNotAvailable,
+)
 
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.errors import MediaNotFoundError
@@ -179,7 +184,7 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> str:
         try:
             track_url: str = TidalTrack(session, prov_track_id).get_url()
             return track_url
-        except (ObjectNotFound, TooManyRequests) as err:
+        except (ObjectNotFound, TooManyRequests, URLNotAvailable) as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
 
@@ -301,7 +306,7 @@ async def get_similar_tracks(
                 limit=limit
             )
             return tracks
-        except (ObjectNotFound, TooManyRequests) as err:
+        except (MetadataNotAvailable, ObjectNotFound, TooManyRequests) as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
 
