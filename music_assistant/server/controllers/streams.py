@@ -828,11 +828,10 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            if use_crossfade:  # noqa: SIM108
+            buffer_size = int(pcm_sample_size * 2)  # 2 seconds
+            if use_crossfade:
                 # buffer size needs to be big enough to include the crossfade part
-                buffer_size = int(pcm_sample_size * 12)  # 12 seconds
-            else:
-                buffer_size = int(pcm_sample_size * 2)  # 2 seconds
+                buffer_size += crossfade_size
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
@@ -861,11 +860,8 @@ class StreamsController(CoreController):
                         pcm_format.bit_depth,
                         pcm_format.sample_rate,
                     )
-                    # send crossfade_part (in 1 second chunks)
+                    # send crossfade_part (as one big chunk)
                     bytes_written += len(crossfade_part)
-                    while len(crossfade_part) > pcm_sample_size:
-                        yield crossfade_part[:pcm_sample_size]
-                        crossfade_part = crossfade_part[pcm_sample_size:]
                     yield crossfade_part
 
                     # also write the leftover bytes from the crossfade action
@@ -879,9 +875,11 @@ class StreamsController(CoreController):
 
                 #### OTHER: enough data in buffer, feed to output
                 while len(buffer) > buffer_size:
-                    yield buffer[:pcm_sample_size]
-                    bytes_written += pcm_sample_size
+                    subchunk = buffer[:pcm_sample_size]
                     buffer = buffer[pcm_sample_size:]
+                    bytes_written += len(subchunk)
+                    yield subchunk
+                    del subchunk
 
             #### HANDLE END OF TRACK
             if last_fadeout_part:
@@ -897,11 +895,8 @@ class StreamsController(CoreController):
                 bytes_written += len(remaining_bytes)
                 del remaining_bytes
             else:
-                # no crossfade enabled, just yield the buffer last part (in 1 second chunks)
+                # no crossfade enabled, just yield the buffer last part
                 bytes_written += len(buffer)
-                while len(buffer) > pcm_sample_size:
-                    yield buffer[:pcm_sample_size]
-                    buffer = buffer[pcm_sample_size:]
                 yield buffer
                 del buffer
 
@@ -971,8 +966,9 @@ class StreamsController(CoreController):
         if is_radio or streamdetails.seek_position:
             strip_silence_begin = False
         # chunk size = 1 second of pcm audio
-        chunk_size = pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-        expected_chunks = int((streamdetails.duration or 0) / 2)
+        pcm_sample_size = pcm_format.pcm_sample_size
+        chunk_size = pcm_sample_size  # chunk size = sample size  (= 1 second)
+        expected_chunks = int(((streamdetails.duration or 0) * pcm_sample_size) / chunk_size)
         if expected_chunks < 10:
             strip_silence_end = False
 
@@ -1078,10 +1074,6 @@ class StreamsController(CoreController):
                 if music_prov := self.mass.get_provider(streamdetails.provider):
                     self.mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
-            # cleanup
-            del state_data
-            del ffmpeg_proc
-
         async with AsyncProcess(
             ffmpeg_args,
             enable_stdin=audio_source_iterator is not None,
@@ -1126,7 +1118,6 @@ class StreamsController(CoreController):
 
                 # collect this chunk for next round
                 prev_chunk = chunk
-
             # if we did not receive any data, something went (terribly) wrong
             # raise here to prevent an endless loop elsewhere
             if state_data["bytes_sent"] == 0:
