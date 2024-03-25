@@ -792,6 +792,7 @@ def get_ffmpeg_args(
     input_path: str = "-",
     output_path: str = "-",
     loglevel: str = "info",
+    extra_input_args: list[str] | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
     if extra_args is None:
@@ -817,6 +818,8 @@ def get_ffmpeg_args(
         "-ignore_unknown",
         "-protocol_whitelist",
         "file,http,https,tcp,tls,crypto,pipe,data,fd",
+        "-filter_complex_threads",
+        "1",
     ]
     # collect input args
     input_args = []
@@ -852,6 +855,8 @@ def get_ffmpeg_args(
             input_format.content_type.value,
         ]
     input_args += ["-i", input_path]
+    if extra_input_args:
+        input_args += extra_input_args
 
     # collect output args
     if output_path.upper() == "NULL":

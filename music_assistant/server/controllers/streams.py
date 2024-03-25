@@ -1022,6 +1022,7 @@ class StreamsController(CoreController):
             input_path=input_path,
             # loglevel info is needed for loudness measurement
             loglevel="info",
+            extra_input_args=["-readrate", "1.1", "-readrate_initial_burst", "10"],
         )
 
         async def log_reader(ffmpeg_proc: AsyncProcess, state_data: dict[str, Any]):
