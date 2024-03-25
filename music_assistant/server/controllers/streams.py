@@ -828,7 +828,7 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            buffer_size = int(pcm_sample_size * 5)  # 5 seconds
+            buffer_size = int(pcm_sample_size * 2)  # 2 seconds
             if use_crossfade:
                 buffer_size += crossfade_size
             bytes_written = 0
