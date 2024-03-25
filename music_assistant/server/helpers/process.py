@@ -186,7 +186,7 @@ class AsyncProcess:
         while self.returncode is None:
             try:
                 async with asyncio.timeout(30):
-                    # wait for stdout/stderr locks if needed
+                    # abort existing readers on stderr/stdout first before we send communicate
                     if self.proc.stdout and self.proc.stdout._waiter is not None:
                         self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
                         self.proc.stdout._waiter = None
