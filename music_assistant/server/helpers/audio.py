@@ -819,14 +819,7 @@ def get_ffmpeg_args(
         "file,http,https,tcp,tls,crypto,pipe,data,fd",
     ]
     # collect input args
-    input_args = [
-        "-ac",
-        str(input_format.channels),
-        "-channel_layout",
-        "mono" if input_format.channels == 1 else "stereo",
-    ]
-    if input_format.content_type.is_pcm():
-        input_args += ["-ar", str(input_format.sample_rate)]
+    input_args = []
     if input_path.startswith("http"):
         # append reconnect options for direct stream from http
         input_args += [
@@ -847,6 +840,12 @@ def get_ffmpeg_args(
             ]
     if input_format.content_type.is_pcm():
         input_args += [
+            "-ac",
+            str(input_format.channels),
+            "-channel_layout",
+            "mono" if input_format.channels == 1 else "stereo",
+            "-ar",
+            str(input_format.sample_rate),
             "-acodec",
             input_format.content_type.name.lower(),
             "-f",
