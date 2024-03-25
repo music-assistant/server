@@ -191,7 +191,7 @@ class AsyncProcess:
                     # consume stderr if needed
                     if self.proc.stderr and self.returncode is None:
                         async with self._stderr_lock:
-                            self.proc.stdout.read()
+                            self.proc.stderr.read()
                     # wait for process exit
                     if self.returncode is None:
                         self._returncode = await self.proc.wait()
