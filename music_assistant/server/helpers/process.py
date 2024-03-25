@@ -60,8 +60,6 @@ class AsyncProcess:
             self._custom_stdin = None
             self.attached_tasks.append(asyncio.create_task(self._feed_stdin(custom_stdin)))
         self._custom_stdout = custom_stdout
-        self._stderr_lock = asyncio.Lock()
-        self._stdout_lock = asyncio.Lock()
 
     @property
     def closed(self) -> bool:
@@ -128,8 +126,7 @@ class AsyncProcess:
         if not self.proc.stdout or self.proc.stdout.at_eof():
             return b""
         try:
-            async with self._stdout_lock:
-                return await self.proc.stdout.readexactly(n)
+            return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
             return err.partial
 
@@ -142,8 +139,7 @@ class AsyncProcess:
         """
         if not self.proc.stdout or self.proc.stdout.at_eof():
             return b""
-        async with self._stdout_lock:
-            return await self.proc.stdout.read(n)
+        return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
@@ -191,8 +187,12 @@ class AsyncProcess:
             try:
                 async with asyncio.timeout(30):
                     # wait for stdout/stderr locks if needed
-                    await self._stdout_lock.acquire()
-                    await self._stderr_lock.acquire()
+                    if self.proc.stdout and self.proc.stdout._waiter is not None:
+                        self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
+                        self.proc.stdout._waiter = None
+                    if self.proc.stderr and self.proc.stderr._waiter is not None:
+                        self.proc.stderr._waiter.set_exception(asyncio.CancelledError())
+                        self.proc.stderr._waiter = None
                     # use communicate to flush all pipe buffers
                     await self.proc.communicate()
             except TimeoutError:
@@ -229,8 +229,7 @@ class AsyncProcess:
             if self.proc.stderr.at_eof():
                 break
             try:
-                async with self._stderr_lock:
-                    yield await self.proc.stderr.readline()
+                yield await self.proc.stderr.readline()
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
                 # this may happen with ffmpeg during a long (radio) stream where progress
