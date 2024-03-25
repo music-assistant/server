@@ -1023,6 +1023,7 @@ class StreamsController(CoreController):
             # loglevel info is needed for loudness measurement
             loglevel="info",
         )
+        ffmpeg_args = ["nice", "-n", "5", *ffmpeg_args]
 
         async def log_reader(ffmpeg_proc: AsyncProcess, state_data: dict[str, Any]):
             # To prevent stderr locking up, we must keep reading it
@@ -1084,14 +1085,14 @@ class StreamsController(CoreController):
         async with AsyncProcess(
             ffmpeg_args,
             enable_stdin=audio_source_iterator is not None,
-            enable_stderr=False,
+            enable_stderr=True,
             custom_stdin=audio_source_iterator,
             name="ffmpeg_media_stream",
         ) as ffmpeg_proc:
             state_data = {"finished": asyncio.Event(), "bytes_sent": 0}
             logger.debug("start media stream for: %s", streamdetails.uri)
 
-            # self.mass.create_task(log_reader(ffmpeg_proc, state_data))
+            self.mass.create_task(log_reader(ffmpeg_proc, state_data))
 
             # get pcm chunks from stdout
             # we always stay one chunk behind to properly detect end of chunks
