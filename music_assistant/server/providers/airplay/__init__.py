@@ -290,17 +290,17 @@ class AirplayStream:
 
     async def stop(self, wait: bool = True):
         """Stop playback and cleanup."""
-        if self._cliraop_proc.closed and self._ffmpeg_proc.closed:
-            return
         self._stop_requested = True
 
         async def _stop() -> None:
             # ffmpeg MUST be stopped before cliraop due to the chained pipes
-            await self._ffmpeg_proc.close()
+            if not self._ffmpeg_proc.closed:
+                await self._ffmpeg_proc.close()
             # allow the cliraop process to stop gracefully first
-            await self.send_cli_command("ACTION=STOP")
-            with suppress(TimeoutError):
-                await asyncio.wait_for(self._cliraop_proc.wait(), 5)
+            if not self._cliraop_proc.closed:
+                await self.send_cli_command("ACTION=STOP")
+                with suppress(TimeoutError):
+                    await asyncio.wait_for(self._cliraop_proc.wait(), 5)
             # send regular close anyway (which also logs the returncode)
             await self._cliraop_proc.close()
 
