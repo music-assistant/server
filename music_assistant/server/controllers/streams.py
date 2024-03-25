@@ -829,9 +829,8 @@ class StreamsController(CoreController):
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             if use_crossfade:  # noqa: SIM108
-                # buffer size needs to be big enough to
-                # consume both fade in and fade out parts
-                buffer_size = int(pcm_sample_size * 20)  # 30 seconds
+                # buffer size needs to be big enough to include the crossfade part
+                buffer_size = int(pcm_sample_size * 15)  # 15 seconds
             else:
                 buffer_size = int(pcm_sample_size * 10)  # 5 seconds
             bytes_written = 0
