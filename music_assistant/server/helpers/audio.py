@@ -818,8 +818,8 @@ def get_ffmpeg_args(
         "-ignore_unknown",
         "-protocol_whitelist",
         "file,http,https,tcp,tls,crypto,pipe,data,fd",
-        "-filter_complex_threads",
-        "1",
+        # "-filter_complex_threads",
+        # "1",
     ]
     # collect input args
     input_args = []
