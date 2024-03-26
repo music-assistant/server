@@ -616,11 +616,12 @@ class AirplayProvider(PlayerProvider):
             self._resync_handle.cancel()
             self._resync_handle = None
         # always stop existing stream first
-        for airplay_player in self._get_sync_clients(player_id):
-            if airplay_player.active_stream and airplay_player.active_stream.running:
-                wait = not queue_item.streamdetails or queue_item.streamdetails.seek_position == 0
-                await airplay_player.active_stream.stop(wait=wait)
-
+        wait_stopped = not queue_item.streamdetails or queue_item.streamdetails.seek_position == 0
+        async with asyncio.TaskGroup() as tg:
+            for airplay_player in self._get_sync_clients(player_id):
+                if airplay_player.active_stream and airplay_player.active_stream.running:
+                    tg.create_task(airplay_player.active_stream.stop(wait=wait_stopped))
+        # select audio source
         if queue_item.queue_id.startswith(UGP_PREFIX):
             # special case: we got forwarded a request from the UGP
             # use the existing stream job that was already created by UGP
