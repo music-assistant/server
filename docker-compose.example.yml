@@ -13,3 +13,7 @@ services:
       - SYS_ADMIN
       - DAC_READ_SEARCH
     privileged: true
+    environment:
+      # Provide logging level as environment variable.
+      # default=info, possible=(critical, error, warning, info, debug, verbose)
+      - LOG_LEVEL=info

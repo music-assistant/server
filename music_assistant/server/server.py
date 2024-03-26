@@ -27,8 +27,8 @@ from music_assistant.constants import (
     CONF_PROVIDERS,
     CONF_SERVER_ID,
     CONFIGURABLE_CORE_CONTROLLERS,
+    MASS_LOGGER_NAME,
     MIN_SCHEMA_VERSION,
-    ROOT_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.controllers.cache import CacheController
@@ -61,7 +61,7 @@ EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]
 
-LOGGER = logging.getLogger(ROOT_LOGGER_NAME)
+LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")

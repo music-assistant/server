@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.common.models.provider import ProviderManifest
-from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
+from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import (
@@ -62,13 +62,13 @@ class CoreController:
 
     def _set_logger(self, log_level: str | None = None) -> None:
         """Set the logger settings."""
-        mass_logger = logging.getLogger(ROOT_LOGGER_NAME)
-        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.{self.domain}")
+        self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.{self.domain}")
         if log_level is None:
             log_level = self.mass.config.get_raw_core_config_value(
                 self.domain, CONF_LOG_LEVEL, "GLOBAL"
             )
         if log_level == "GLOBAL":
+            mass_logger = logging.getLogger(MASS_LOGGER_NAME)
             self.logger.setLevel(mass_logger.level)
         else:
             self.logger.setLevel(log_level)

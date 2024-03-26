@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import CONF_LOG_LEVEL, ROOT_LOGGER_NAME
+from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from zeroconf import ServiceStateChange
@@ -27,12 +27,12 @@ class Provider:
         self.mass = mass
         self.manifest = manifest
         self.config = config
-        mass_logger = logging.getLogger(ROOT_LOGGER_NAME)
-        self.logger = mass_logger.getChild(f"providers.{self.domain}")
+        self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.providers.{self.domain}")
         log_level = config.get_value(CONF_LOG_LEVEL)
         if log_level == "GLOBAL":
+            mass_logger = logging.getLogger(MASS_LOGGER_NAME)
             self.logger.setLevel(mass_logger.level)
-        elif logging.getLogger().level > self.logger.level:
+        if logging.getLogger().level > self.logger.level:
             # if the root logger's level is higher, we need to adjust that too
             logging.getLogger().setLevel(self.logger.level)
         self.logger.debug("Log level configured to %s", log_level)

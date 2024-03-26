@@ -34,7 +34,7 @@ from music_assistant.constants import (
     CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
-    ROOT_LOGGER_NAME,
+    MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.playlists import (
@@ -53,7 +53,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.player_queue import QueueItem
     from music_assistant.server import MusicAssistant
 
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.audio")
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
 # pylint:disable=consider-using-f-string,too-many-locals,too-many-statements
 # ruff: noqa: PLR0915
 

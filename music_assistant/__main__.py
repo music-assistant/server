@@ -18,7 +18,7 @@ from aiorun import run
 from colorlog import ColoredFormatter
 
 from music_assistant.common.helpers.json import json_loads
-from music_assistant.constants import ROOT_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 from music_assistant.server import MusicAssistant
 from music_assistant.server.helpers.logging import activate_log_queue_handler
 
@@ -27,6 +27,8 @@ FORMAT_TIME: Final = "%H:%M:%S"
 FORMAT_DATETIME: Final = f"{FORMAT_DATE} {FORMAT_TIME}"
 MAX_LOG_FILESIZE = 1000000 * 10  # 10 MB
 ALPINE_RELEASE_FILE = "/etc/alpine-release"
+
+LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 
 def get_arguments():
@@ -46,9 +48,9 @@ def get_arguments():
     parser.add_argument(
         "--log-level",
         type=str,
-        default="info",
+        default=os.environ.get("LOG_LEVEL", "info"),
         help="Provide logging level. Example --log-level debug, "
-        "default=info, possible=(critical, error, warning, info, debug)",
+        "default=info, possible=(critical, error, warning, info, debug, verbose)",
     )
     return parser.parse_args()
 
@@ -96,7 +98,7 @@ def setup_logger(data_path: str, level: str = "DEBUG"):
     logging.addLevelName(VERBOSE_LOG_LEVEL, "VERBOSE")
 
     # apply the configured global log level to the (root) music assistant logger
-    logging.getLogger(ROOT_LOGGER_NAME).setLevel(level)
+    logging.getLogger(MASS_LOGGER_NAME).setLevel(level)
 
     # silence some noisy loggers
     logging.getLogger("asyncio").setLevel(logging.WARNING)
@@ -178,6 +180,7 @@ def main() -> None:
     else:
         hass_options = {}
 
+    # prefer value in hass_options
     log_level = hass_options.get("log_level", args.log_level).upper()
     dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
 
