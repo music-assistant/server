@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import pathlib
 import random
 import socket
@@ -148,6 +149,8 @@ class SnapCastProvider(PlayerProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
+        # set snapcast logging
+        logging.getLogger("snapcast").setLevel(self.logger.level)
         self._use_builtin_server = not self.config.get_value(CONF_USE_EXTERNAL_SERVER)
         if self._use_builtin_server:
             self._snapcast_server_host = "127.0.0.1"
