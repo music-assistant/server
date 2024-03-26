@@ -89,7 +89,7 @@ PLAYER_CONFIG_ENTRIES = (
         description="Enable a crossfade transition between (queue) tracks. \n\n"
         "Note that DLNA does not natively support crossfading so you need to enable "
         "the 'flow mode' workaround to use crossfading with DLNA players.",
-        advanced=False,
+        category="audio",
         depends_on=CONF_FLOW_MODE,
     ),
     CONF_ENTRY_FLOW_MODE,

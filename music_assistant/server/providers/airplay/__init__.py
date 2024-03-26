@@ -76,7 +76,7 @@ PLAYER_CONFIG_ENTRIES = (
         label="Enable encryption",
         description="Enable encrypted communication with the player, "
         "some (3rd party) players require this.",
-        advanced=True,
+        category="airplay",
     ),
     ConfigEntry(
         key=CONF_ALAC_ENCODE,
@@ -85,7 +85,7 @@ PLAYER_CONFIG_ENTRIES = (
         label="Enable compression",
         description="Save some network bandwidth by sending the audio as "
         "(lossless) ALAC at the cost of a bit CPU.",
-        advanced=True,
+        category="airplay",
     ),
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry(
@@ -95,7 +95,7 @@ PLAYER_CONFIG_ENTRIES = (
         required=False,
         label="Device password",
         description="Some devices require a password to connect/play.",
-        advanced=True,
+        category="airplay",
     ),
 )
 BACKOFF_TIME_LOWER_LIMIT = 15  # seconds
@@ -561,7 +561,7 @@ class AirplayProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if player_id not in self._players:
             # most probably a syncgroup
-            return base_entries
+            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
         return base_entries + PLAYER_CONFIG_ENTRIES
 
     async def cmd_stop(self, player_id: str) -> None:

@@ -113,7 +113,7 @@ class UniversalGroupProvider(PlayerProvider):
             ),
             ConfigEntry(
                 key="ugp_note",
-                type=ConfigEntryType.LABEL,
+                type=ConfigEntryType.ALERT,
                 label="Please note that although the universal group "
                 "allows you to group any player, it will not enable audio sync "
                 "between players of different ecosystems.",
@@ -126,7 +126,7 @@ class UniversalGroupProvider(PlayerProvider):
                 description="Enable a crossfade transition between (queue) tracks. \n\n"
                 "Note that DLNA does not natively support crossfading so you need to enable "
                 "the 'flow mode' workaround to use crossfading with DLNA players.",
-                advanced=False,
+                category="audio",
             ),
             CONF_ENTRY_CROSSFADE_DURATION,
         )

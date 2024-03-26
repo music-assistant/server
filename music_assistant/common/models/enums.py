@@ -388,6 +388,8 @@ class ConfigEntryType(StrEnum):
     LABEL = "label"
     DIVIDER = "divider"
     ACTION = "action"
+    ICON = "icon"
+    ALERT = "alert"
     UNKNOWN = "unknown"
 
     @classmethod

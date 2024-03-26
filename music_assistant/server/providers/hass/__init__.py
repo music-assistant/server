@@ -143,7 +143,7 @@ async def get_config_entries(
             "'authenticate' button to generate a token for you with logging in.",
             depends_on=CONF_URL,
             value=values.get(CONF_AUTH_TOKEN) if values else None,
-            advanced=True,
+            category="advanced",
         ),
     )
 

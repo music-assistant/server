@@ -12,6 +12,8 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
     CONF_ENTRY_HIDE_PLAYER,
+    CONF_ENTRY_PLAYER_ICON,
+    CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
@@ -41,6 +43,7 @@ class PlayerProvider(Provider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         entries = (
+            CONF_ENTRY_PLAYER_ICON,
             CONF_ENTRY_VOLUME_NORMALIZATION,
             CONF_ENTRY_AUTO_PLAY,
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
@@ -69,6 +72,7 @@ class PlayerProvider(Provider):
                     multi_value=True,
                     required=True,
                 ),
+                CONF_ENTRY_PLAYER_ICON_GROUP,
             )
         return entries
 

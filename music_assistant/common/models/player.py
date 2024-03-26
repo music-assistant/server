@@ -91,6 +91,10 @@ class Player(DataClassDictMixin):
     # a hidden player is hidden in the UI only but can still be controlled
     hidden: bool = False
 
+    # icon: material design icon for this player
+    # will be set by the player manager based on config
+    icon: str = "mdi-speaker"
+
     # group_volume: if the player is a player group or syncgroup master,
     # this will return the average volume of all child players
     # if not a group player, this is just the player's volume

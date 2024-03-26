@@ -184,7 +184,7 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if not (sonos_player := self.sonosplayers.get(player_id)):
             # most probably a syncgroup
-            return base_entries
+            return (*base_entries, CONF_ENTRY_CROSSFADE)
         return (
             *base_entries,
             CONF_ENTRY_CROSSFADE,
@@ -196,7 +196,7 @@ class SonosPlayerProvider(PlayerProvider):
                 value=sonos_player.bass,
                 range=(-10, 10),
                 description="Set the Bass level for the Sonos player",
-                advanced=True,
+                category="advanced",
             ),
             ConfigEntry(
                 key="sonos_treble",
@@ -206,7 +206,7 @@ class SonosPlayerProvider(PlayerProvider):
                 value=sonos_player.treble,
                 range=(-10, 10),
                 description="Set the Treble level for the Sonos player",
-                advanced=True,
+                category="advanced",
             ),
             ConfigEntry(
                 key="sonos_loudness",
@@ -215,7 +215,7 @@ class SonosPlayerProvider(PlayerProvider):
                 default_value=sonos_player.loudness,
                 value=sonos_player.loudness,
                 description="Enable loudness compensation on the Sonos player",
-                advanced=True,
+                category="advanced",
             ),
         )
 

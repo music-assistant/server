@@ -112,7 +112,7 @@ CONF_ENTRY_DISPLAY = ConfigEntry(
     required=False,
     label="Enable display support",
     description="Enable/disable native display support on squeezebox or squeezelite32 hardware.",
-    advanced=True,
+    category="advanced",
 )
 CONF_ENTRY_VISUALIZATION = ConfigEntry(
     key=CONF_VISUALIZATION,
@@ -126,7 +126,7 @@ CONF_ENTRY_VISUALIZATION = ConfigEntry(
     label="Visualization type",
     description="The type of visualization to show on the display "
     "during playback if the device supports this.",
-    advanced=True,
+    category="advanced",
     depends_on=CONF_DISPLAY,
 )
 
@@ -168,7 +168,7 @@ async def get_config_entries(
             "player compatibility, so security risks are minimized to practically zero."
             "You may safely disable this option if you have no players that rely on this feature "
             "or you dont care about the additional metadata.",
-            advanced=True,
+            category="advanced",
         ),
         ConfigEntry(
             key=CONF_CLI_JSON_PORT,
@@ -184,7 +184,7 @@ async def get_config_entries(
             "it on a different port. Set to 0 to disable this functionality.\n\n"
             "You may safely disable this option if you have no players that rely on this feature "
             "or you dont care about the additional metadata.",
-            advanced=True,
+            category="advanced",
         ),
         ConfigEntry(
             key=CONF_DISCOVERY,
@@ -195,7 +195,7 @@ async def get_config_entries(
             "discover and connect to this server. \n\n"
             "You may want to disable this feature if you are running multiple slimproto servers "
             "on your network and/or you don't want clients to auto connect to this server.",
-            advanced=True,
+            category="advanced",
         ),
         ConfigEntry(
             key=CONF_PORT,
@@ -206,7 +206,7 @@ async def get_config_entries(
             "The default is 3483 and using a different port is not supported by "
             "hardware squeezebox players. Only adjust this port if you want to "
             "use other slimproto based servers side by side with (squeezelite) software players.",
-            advanced=True,
+            category="advanced",
         ),
     )
 
@@ -261,6 +261,9 @@ class SlimprotoProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
+        if not self.slimproto.get_player(player_id):
+            # most probably a syncgroup
+            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
 
         # create preset entries (for players that support it)
         preset_entries = ()
@@ -278,7 +281,7 @@ class SlimprotoProvider(PlayerProvider):
                 label=f"Preset {index}",
                 description="Assign a playable item to the player's preset. "
                 "Only supported on real squeezebox hardware or jive(lite) based emulators.",
-                advanced=False,
+                category="presets",
                 required=False,
             )
             for index in range(1, preset_count + 1)

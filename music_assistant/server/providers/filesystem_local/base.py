@@ -68,7 +68,6 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     description="Music Assistant prefers information stored in ID3 tags and only uses"
     " online sources for additional metadata. This means that the ID3 tags need to be "
     "accurate, preferably tagged with MusicBrainz Picard.",
-    advanced=False,
     required=False,
     options=(
         ConfigValueOption("Skip track and log warning", "skip"),
