@@ -7,7 +7,7 @@ API_SCHEMA_VERSION: Final[int] = 24
 MIN_SCHEMA_VERSION: Final[int] = 24
 DB_SCHEMA_VERSION: Final[int] = 28
 
-ROOT_LOGGER_NAME: Final[str] = "music_assistant"
+MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 UNKNOWN_ARTIST: Final[str] = "Unknown Artist"
 VARIOUS_ARTISTS_NAME: Final[str] = "Various Artists"

@@ -434,3 +434,15 @@ CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     "you can shift the audio a bit.",
     advanced=True,
 )
+
+CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
+    key=CONF_SYNC_ADJUST,
+    type=ConfigEntryType.INTEGER,
+    range=(-500, 500),
+    default_value=0,
+    label="Audio synchronization delay correction",
+    description="If this player is playing audio synced with other players "
+    "and you always hear the audio too early or late on this player, "
+    "you can shift the audio a bit.",
+    advanced=True,
+)

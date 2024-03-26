@@ -29,10 +29,9 @@ from tidalapi.exceptions import (
 
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.errors import MediaNotFoundError
-from music_assistant.constants import ROOT_LOGGER_NAME
 
 DEFAULT_LIMIT = 50
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.tidal.helpers")
+LOGGER = logging.getLogger(__name__)
 
 
 async def get_library_artists(

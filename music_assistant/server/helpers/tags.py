@@ -14,13 +14,13 @@ from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
 from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import MediaItemChapter
-from music_assistant.constants import ROOT_LOGGER_NAME, UNKNOWN_ARTIST
+from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-LOGGER = logging.getLogger(ROOT_LOGGER_NAME).getChild("tags")
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.

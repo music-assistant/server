@@ -590,7 +590,10 @@ class ConfigController:
 
         Note that this only returns the stored value without any validation or default.
         """
-        return self.get(f"{CONF_CORE}/{core_module}/{key}", default)
+        return self.get(
+            f"{CONF_CORE}/{core_module}/values/{key}",
+            self.get(f"{CONF_CORE}/{core_module}/{key}", default),
+        )
 
     def get_raw_provider_config_value(
         self, provider_instance: str, key: str, default: ConfigValueType = None
@@ -600,7 +603,10 @@ class ConfigController:
 
         Note that this only returns the stored value without any validation or default.
         """
-        return self.get(f"{CONF_PROVIDERS}/{provider_instance}/{key}", default)
+        return self.get(
+            f"{CONF_PROVIDERS}/{provider_instance}/values/{key}",
+            self.get(f"{CONF_PROVIDERS}/{provider_instance}/{key}", default),
+        )
 
     def set_raw_provider_config_value(
         self, provider_instance: str, key: str, value: ConfigValueType
