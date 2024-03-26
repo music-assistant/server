@@ -348,11 +348,12 @@ class SnapCastProvider(PlayerProvider):
             self.mass.players.update(player_id)
 
             def stream_callback(_stream) -> None:
-                player.state = PlayerState(stream.status)
+                player.state = PlayerState(_stream.status)
                 if player.state == PlayerState.PLAYING:
                     player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
                     player.elapsed_time = 0
                     player.elapsed_time_last_updated = time.time()
+                self.mass.players.update(player_id)
                 self._set_childs_state(player_id, player.state)
 
             stream.set_callback(stream_callback)
@@ -379,6 +380,7 @@ class SnapCastProvider(PlayerProvider):
                     # we need to wait a bit for the stream status to become idle
                     # to ensure that all snapclients have consumed the audio
                     await self.mass.players.wait_for_state(player, PlayerState.IDLE)
+                    await asyncio.sleep(5)
             finally:
                 self.logger.debug("Finished streaming to %s", stream_path)
                 # there is no way to unsub the callback to we do this nasty
