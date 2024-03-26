@@ -48,7 +48,7 @@ def get_arguments():
     parser.add_argument(
         "--log-level",
         type=str,
-        default="info",
+        default=os.environ.get("LOG_LEVEL", "info"),
         help="Provide logging level. Example --log-level debug, "
         "default=info, possible=(critical, error, warning, info, debug, verbose)",
     )
@@ -180,6 +180,7 @@ def main() -> None:
     else:
         hass_options = {}
 
+    # prefer value in hass_options
     log_level = hass_options.get("log_level", args.log_level).upper()
     dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
 
