@@ -903,22 +903,25 @@ class StreamsController(CoreController):
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
-            seconds_streamed = (bytes_written + len(last_fadeout_part)) / pcm_sample_size
+            seconds_streamed = bytes_written / pcm_sample_size
             queue_track.streamdetails.seconds_streamed = seconds_streamed
             queue_track.streamdetails.duration = (
                 queue_track.streamdetails.seek_position + seconds_streamed
             )
             self.logger.debug(
-                "Finished Streaming queue track: %s (%s) on queue %s - seconds streamed: %s",
+                "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.streamdetails.uri,
                 queue_track.name,
                 queue.display_name,
-                seconds_streamed,
             )
-
+        #### HANDLE END OF QUEUE FLOW STREAM
         # end of queue flow: make sure we yield the last_fadeout_part
         if last_fadeout_part:
             yield last_fadeout_part
+            # correct seconds streamed/duration
+            last_part_seconds = len(last_fadeout_part) / pcm_sample_size
+            queue_track.streamdetails.seconds_streamed += last_part_seconds
+            queue_track.streamdetails.duration += last_part_seconds
             del last_fadeout_part
 
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
