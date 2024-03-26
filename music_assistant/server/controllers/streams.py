@@ -898,7 +898,8 @@ class StreamsController(CoreController):
                 # no crossfade enabled, just yield the buffer last part
                 bytes_written += len(buffer)
                 yield buffer
-                del buffer
+            # make sure the buffer gets cleaned up
+            del buffer
 
             # update duration details based on the actual pcm data we sent
             # this also accounts for crossfade and silence stripping
@@ -930,13 +931,13 @@ class StreamsController(CoreController):
         fmt = announcement_url.rsplit(".")[-1]
         audio_format = AudioFormat(content_type=ContentType.try_parse(fmt))
         extra_args = []
-        filter_params = ["loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5"]
+        filter_params = ["loudnorm=I=-10:LRA=11:TP=-2"]
         if use_pre_announce:
             extra_args += [
                 "-i",
                 ANNOUNCE_ALERT_FILE,
                 "-filter_complex",
-                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=7:tp=-2:offset=-0.5",
+                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=11:TP=-2",
             ]
             filter_params = []
         async for chunk in get_ffmpeg_stream(
@@ -1026,12 +1027,11 @@ class StreamsController(CoreController):
             stderr_data = ""
             async for line in ffmpeg_proc.iter_stderr():
                 line = line.decode().strip()  # noqa: PLW2901
-                if not line:
-                    continue
                 if stderr_data or "loudnorm" in line:
                     stderr_data += line
-                else:
+                elif line:
                     self.logger.log(VERBOSE_LOG_LEVEL, line)
+                del line
 
             # if we reach this point, the process is finished (finish or aborted)
             if ffmpeg_proc.returncode == 0:
@@ -1073,6 +1073,8 @@ class StreamsController(CoreController):
                 )
                 if music_prov := self.mass.get_provider(streamdetails.provider):
                     self.mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
+            # cleanup
+            del stderr_data
 
         async with AsyncProcess(
             ffmpeg_args,
@@ -1119,8 +1121,9 @@ class StreamsController(CoreController):
                 # collect this chunk for next round
                 prev_chunk = chunk
             # if we did not receive any data, something went (terribly) wrong
-            # raise here to prevent an endless loop elsewhere
+            # raise here to prevent an (endless) loop elsewhere
             if state_data["bytes_sent"] == 0:
+                del prev_chunk
                 raise AudioError(f"stream error on {streamdetails.uri}")
 
             # all chunks received, strip silence of last part if needed and yield remaining bytes
@@ -1135,11 +1138,7 @@ class StreamsController(CoreController):
             else:
                 final_chunk = prev_chunk
 
-            # yield final chunk to output (in chunk_size parts)
-            while len(final_chunk) > chunk_size:
-                yield final_chunk[:chunk_size]
-                final_chunk = final_chunk[chunk_size:]
-                state_data["bytes_sent"] += len(final_chunk)
+            # yield final chunk to output (as one big chunk)
             yield final_chunk
             state_data["bytes_sent"] += len(final_chunk)
             state_data["finished"].set()

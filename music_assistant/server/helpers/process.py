@@ -109,16 +109,16 @@ class AsyncProcess:
         """Yield chunks of n size from the process stdout."""
         while self.returncode is None:
             chunk = await self.readexactly(n)
-            if len(chunk) == 0:
-                break
+            if chunk == b"":
+                raise StopAsyncIteration
             yield chunk
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
         while self.returncode is None:
             chunk = await self.read(n)
-            if len(chunk) == 0:
-                break
+            if chunk == b"":
+                raise StopAsyncIteration
             yield chunk
 
     async def readexactly(self, n: int) -> bytes:
@@ -226,12 +226,11 @@ class AsyncProcess:
     async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
         """Iterate lines from the stderr stream."""
         while self.returncode is None:
-            if self.proc.stderr.at_eof():
-                break
             try:
-                yield await self.proc.stderr.readline()
-                if self.proc.stderr.at_eof():
-                    break
+                line = await self.proc.stderr.readline()
+                if line == b"":
+                    raise StopAsyncIteration
+                yield line
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big
                 # this may happen with ffmpeg during a long (radio) stream where progress
