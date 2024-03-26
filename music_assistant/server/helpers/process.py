@@ -110,7 +110,7 @@ class AsyncProcess:
         while self.returncode is None:
             chunk = await self.readexactly(n)
             if chunk == b"":
-                raise StopAsyncIteration
+                break
             yield chunk
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
@@ -118,7 +118,7 @@ class AsyncProcess:
         while self.returncode is None:
             chunk = await self.read(n)
             if chunk == b"":
-                raise StopAsyncIteration
+                break
             yield chunk
 
     async def readexactly(self, n: int) -> bytes:
@@ -229,7 +229,7 @@ class AsyncProcess:
             try:
                 line = await self.proc.stderr.readline()
                 if line == b"":
-                    raise StopAsyncIteration
+                    break
                 yield line
             except ValueError as err:
                 # we're waiting for a line (separator found), but the line was too big

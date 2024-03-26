@@ -18,7 +18,7 @@ from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.helpers.datetime import utc
-from music_assistant.common.helpers.util import get_ip_pton, select_free_port
+from music_assistant.common.helpers.util import empty_queue, get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -294,6 +294,7 @@ class AirplayStream:
     async def stop(self, wait: bool = True):
         """Stop playback and cleanup."""
         self.running = False
+        empty_queue(self._buffer)
 
         async def _stop() -> None:
             # ffmpeg MUST be stopped before cliraop due to the chained pipes
@@ -358,7 +359,12 @@ class AirplayStream:
                 # send metadata to player(s) if needed
                 # NOTE: this must all be done in separate tasks to not disturb audio
                 now = time.time()
-                if queue and queue.current_item and queue.current_item.streamdetails:
+                if (
+                    mass_player.elapsed_time > 2
+                    and queue
+                    and queue.current_item
+                    and queue.current_item.streamdetails
+                ):
                     metadata_checksum = (
                         queue.current_item.streamdetails.stream_title
                         or queue.current_item.queue_item_id
@@ -385,7 +391,7 @@ class AirplayStream:
                 self.mass.players.update(airplay_player.player_id)
             if "lost packet out of backlog" in line:
                 lost_packets += 1
-                if lost_packets == 50:
+                if lost_packets == 100:
                     logger.error("High packet loss detected, stopping playback...")
                     await self.stop(False)
                 elif lost_packets % 10 == 0:
@@ -612,7 +618,8 @@ class AirplayProvider(PlayerProvider):
         # always stop existing stream first
         for airplay_player in self._get_sync_clients(player_id):
             if airplay_player.active_stream and airplay_player.active_stream.running:
-                await airplay_player.active_stream.stop(wait=False)
+                wait = not queue_item.streamdetails or queue_item.streamdetails.seek_position == 0
+                await airplay_player.active_stream.stop(wait=wait)
 
         if queue_item.queue_id.startswith(UGP_PREFIX):
             # special case: we got forwarded a request from the UGP
