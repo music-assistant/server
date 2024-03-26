@@ -878,7 +878,7 @@ def get_ffmpeg_args(
     if input_format.sample_rate != output_format.sample_rate and libsoxr_support:
         filter_params.append("aresample=resampler=soxr")
 
-    if filter_params:
+    if filter_params and "-filter_complex" not in extra_args:
         extra_args += ["-af", ",".join(filter_params)]
 
     return generic_args + input_args + extra_args + output_args

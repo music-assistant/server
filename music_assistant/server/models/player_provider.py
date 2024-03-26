@@ -6,8 +6,13 @@ from abc import abstractmethod
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_ANNOUNCE_VOLUME,
+    CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+    CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
     CONF_ENTRY_HIDE_PLAYER,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
     CONF_ENTRY_VOLUME_NORMALIZATION,
     CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
     ConfigEntry,
@@ -40,6 +45,11 @@ class PlayerProvider(Provider):
             CONF_ENTRY_AUTO_PLAY,
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             CONF_ENTRY_HIDE_PLAYER,
+            CONF_ENTRY_TTS_PRE_ANNOUNCE,
+            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+            CONF_ENTRY_ANNOUNCE_VOLUME,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+            CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
         )
         if player_id.startswith(SYNCGROUP_PREFIX):
             # add default entries for syncgroups
@@ -133,7 +143,9 @@ class PlayerProvider(Provider):
         This will NOT be called if the player is using flow mode to playback the queue.
         """
 
-    async def play_announcement(self, player_id: str, announcement_url: str) -> None:
+    async def play_announcement(
+        self, player_id: str, announcement_url: str, volume_level: int | None = None
+    ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
         # will only be called for players with PLAY_ANNOUNCEMENT feature set.
         raise NotImplementedError

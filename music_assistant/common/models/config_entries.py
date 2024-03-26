@@ -12,6 +12,10 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.common.models.enums import ProviderType
 from music_assistant.constants import (
+    CONF_ANNOUNCE_VOLUME,
+    CONF_ANNOUNCE_VOLUME_MAX,
+    CONF_ANNOUNCE_VOLUME_MIN,
+    CONF_ANNOUNCE_VOLUME_STRATEGY,
     CONF_AUTO_PLAY,
     CONF_CROSSFADE,
     CONF_CROSSFADE_DURATION,
@@ -24,6 +28,7 @@ from music_assistant.constants import (
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_SYNC_ADJUST,
+    CONF_TTS_PRE_ANNOUNCE,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     SECURE_STRING_SUBSTITUTE,
@@ -433,4 +438,55 @@ CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     "and you always hear the audio too early or late on this player, "
     "you can shift the audio a bit.",
     advanced=True,
+)
+
+
+CONF_ENTRY_TTS_PRE_ANNOUNCE = ConfigEntry(
+    key=CONF_TTS_PRE_ANNOUNCE,
+    type=ConfigEntryType.BOOLEAN,
+    default_value=True,
+    label="Pre-announce TTS announcements",
+    description="When a TTS (text-to-speech) message is sent to the Announce feature, "
+    "prepend the announcement with a short pre-announcement sound (bell whistle).",
+)
+
+
+CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
+    key=CONF_ANNOUNCE_VOLUME_STRATEGY,
+    type=ConfigEntryType.STRING,
+    options=[
+        ConfigValueOption("Absolute volume", "absolute"),
+        ConfigValueOption("Relative volume increase", "relative"),
+        ConfigValueOption("Percentual volume increase", "percentual"),
+        ConfigValueOption("Do not adjust volume", "none"),
+    ],
+    default_value="percentual",
+    label="Volume strategy for Announcements",
+    description="When an announcement is being broadcast to this player, "
+    "how should the volume be adjusted temporary (use in combination with the volume value below).",
+)
+
+CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
+    key=CONF_ANNOUNCE_VOLUME,
+    type=ConfigEntryType.INTEGER,
+    default_value=85,
+    label="Volume for Announcements",
+    description="The percentual, relative or absolute volume level, "
+    "used with the strategy for announcements.",
+)
+
+CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
+    key=CONF_ANNOUNCE_VOLUME_MIN,
+    type=ConfigEntryType.INTEGER,
+    default_value=15,
+    label="Minimum Volume level for Announcements",
+    description="The volume (adjustment) of announcements should no go below this level.",
+)
+
+CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
+    key=CONF_ANNOUNCE_VOLUME_MAX,
+    type=ConfigEntryType.INTEGER,
+    default_value=75,
+    label="Maximum Volume level for Announcements",
+    description="The volume (adjustment) of announcements should no go above this level.",
 )

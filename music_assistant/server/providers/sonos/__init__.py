@@ -396,11 +396,11 @@ class SonosPlayerProvider(PlayerProvider):
 
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
 
-    async def play_announcement(self, player_id: str, announcement_url: str) -> None:
+    async def play_announcement(
+        self, player_id: str, announcement_url: str, volume_level: int | None = None
+    ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
         sonos_player = self.sonosplayers[player_id]
-        mass_player = self.mass.players.get(player_id)
-        temp_volume = max(int(min(75, mass_player.volume_level) * 1.5), 15)
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",
             announcement_url,
@@ -409,7 +409,7 @@ class SonosPlayerProvider(PlayerProvider):
         try:
             response, _ = await sonos_player.websocket.play_clip(
                 announcement_url,
-                volume=temp_volume,
+                volume=volume_level,
             )
         except SonosWebsocketError as exc:
             raise PlayerCommandFailed(f"Error when calling Sonos websocket: {exc}") from exc

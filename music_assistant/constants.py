@@ -55,6 +55,12 @@ CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_HIDE_PLAYER: Final[str] = "hide_player"
 CONF_ENFORCE_MP3: Final[str] = "enforce_mp3"
 CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
+CONF_TTS_PRE_ANNOUNCE: Final[str] = "tts_pre_announce"
+CONF_ANNOUNCE_VOLUME_STRATEGY: Final[str] = "announce_volume_strategy"
+CONF_ANNOUNCE_VOLUME: Final[str] = "announce_volume"
+CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
+CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
+
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

@@ -10,6 +10,13 @@ from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 import shortuuid
 
 from music_assistant.common.helpers.util import get_changed_values
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_ANNOUNCE_VOLUME,
+    CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
+    CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+    CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_TTS_PRE_ANNOUNCE,
+)
 from music_assistant.common.models.enums import (
     ContentType,
     EventType,
@@ -600,7 +607,8 @@ class PlayerController(CoreController):
         self,
         player_id: str,
         url: str,
-        use_pre_announce: bool = False,
+        use_pre_announce: bool | None = None,
+        volume_level: int | None = None,
     ) -> None:
         """Handle playback of an announcement (url) on given player."""
         player = self.get(player_id, True)
@@ -615,6 +623,49 @@ class PlayerController(CoreController):
                 use_pre_announce,
                 url,
             )
+            # work out preferences for announcements
+            if use_pre_announce is None and "tts" in url:
+                use_pre_announce = self.mass.config.get_raw_player_config_value(
+                    player_id,
+                    CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
+                    CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
+                )
+            volume_strategy = self.mass.config.get_raw_player_config_value(
+                player_id,
+                CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.key,
+                CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.default_value,
+            )
+            volume_strategy = self.mass.config.get_raw_player_config_value(
+                player_id,
+                CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.key,
+                CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY.default_value,
+            )
+            volume_strategy_volume = self.mass.config.get_raw_player_config_value(
+                player_id,
+                CONF_ENTRY_ANNOUNCE_VOLUME.key,
+                CONF_ENTRY_ANNOUNCE_VOLUME.default_value,
+            )
+            if volume_level is None and volume_strategy == "absolute":
+                volume_level = volume_strategy_volume
+            elif volume_level is None and volume_strategy == "relative":
+                volume_level = player.volume_level + volume_strategy_volume
+            elif volume_level is None and volume_strategy == "percentual":
+                percentual = (player.volume_level / 100) * volume_strategy_volume
+                volume_level = player.volume_level + percentual
+            if volume_level is not None:
+                announce_volume_min = self.mass.config.get_raw_player_config_value(
+                    player_id,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MIN.key,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MIN.default_value,
+                )
+                announce_volume_max = self.mass.config.get_raw_player_config_value(
+                    player_id,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MAX.key,
+                    CONF_ENTRY_ANNOUNCE_VOLUME_MAX.default_value,
+                )
+                volume_level = max(announce_volume_min, volume_level)
+                volume_level = min(announce_volume_max, volume_level)
+
             # check for native announce support
             if PlayerFeature.PLAY_ANNOUNCEMENT in player.supported_features:
                 if prov := self.mass.get_provider(player.provider):
@@ -624,10 +675,10 @@ class PlayerController(CoreController):
                     announcement_url = self.mass.streams.get_announcement_url(
                         player.player_id, url, use_pre_announce=use_pre_announce
                     )
-                    await prov.play_announcement(player_id, announcement_url)
+                    await prov.play_announcement(player_id, announcement_url, volume_level)
                     return
             # use fallback/default implementation
-            await self._play_announcement(player, url, use_pre_announce)
+            await self._play_announcement(player, url, use_pre_announce, volume_level)
         finally:
             player.announcement_in_progress = False
 
@@ -1081,7 +1132,13 @@ class PlayerController(CoreController):
             # if a child player turned ON while the group player is on, we need to resync/resume
             self.mass.create_task(self._sync_syncgroup(group_player.player_id))
 
-    async def _play_announcement(self, player: Player, url: str, use_pre_announce: bool) -> None:
+    async def _play_announcement(
+        self,
+        player: Player,
+        url: str,
+        use_pre_announce: bool,
+        announcement_volume: int | None = None,
+    ) -> None:
         """Handle (default/fallback) implementation of the play announcement feature.
 
         This default implementation will;
@@ -1139,16 +1196,17 @@ class PlayerController(CoreController):
             await self.cmd_stop(player.player_id)
             # wait for the player to stop
             with suppress(TimeoutError):
-                await self.wait_for_state(player, PlayerState.IDLE, 5)
-        # increase volume a bit
-        temp_volume = max(int(min(75, prev_volume) * 1.5), 15)
+                await self.wait_for_state(player, PlayerState.IDLE, 10)
+        # adjust volume if needed
+        temp_volume = announcement_volume or player.volume_level
         if temp_volume > prev_volume:
             self.logger.debug(
                 "Announcement to player %s - setting temporary volume (%s)...",
                 player.display_name,
-                temp_volume,
+                announcement_volume,
             )
-            await self.cmd_volume_set(player.player_id, temp_volume)
+            await self.cmd_volume_set(player.player_id, announcement_volume)
+            await asyncio.sleep(0.5)
             # play the announcement
             self.logger.debug(
                 "Announcement to player %s - playing the announcement on the player...",
@@ -1157,20 +1215,23 @@ class PlayerController(CoreController):
         await self.play_media(player_id=player.player_id, queue_item=queue_item)
         # wait for the player to play
         with suppress(TimeoutError):
-            await self.wait_for_state(player, PlayerState.PLAYING, 5)
+            await self.wait_for_state(player, PlayerState.PLAYING, 10)
         self.logger.debug(
             "Announcement to player %s - waiting on the player to stop playing...",
             player.display_name,
         )
         # wait for the player to stop playing
         with suppress(TimeoutError):
-            await self.wait_for_state(player, PlayerState.IDLE, 30)
+            await self.wait_for_state(
+                player, PlayerState.IDLE, (queue_item.streamdetails.duration or 30) + 3
+            )
         self.logger.debug(
             "Announcement to player %s - restore previous state...", player.display_name
         )
         # restore volume
         if temp_volume != prev_volume:
             await self.cmd_volume_set(player.player_id, prev_volume)
+            await asyncio.sleep(0.5)
         player.current_item_id = prev_item_id
         # either power off the player or resume playing
         if not prev_power:
