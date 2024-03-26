@@ -125,7 +125,8 @@ class Players:
         self,
         player_id: str,
         url: str,
-        use_pre_announce: bool = False,
+        use_pre_announce: bool | None = None,
+        volume_level: int | None = None,
     ) -> None:
         """Handle playback of an announcement (url) on given player."""
         await self.client.send_command(
@@ -133,6 +134,7 @@ class Players:
             player_id=player_id,
             url=url,
             use_pre_announce=use_pre_announce,
+            volume_level=volume_level,
         )
 
     #  PlayerGroup related endpoints/commands

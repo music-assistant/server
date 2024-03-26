@@ -949,7 +949,7 @@ class StreamsController(CoreController):
             output_format=output_format,
             extra_args=extra_args,
             filter_params=filter_params,
-            loglevel="fatal",
+            loglevel="info",
         ):
             yield chunk
 
