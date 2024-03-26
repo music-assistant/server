@@ -18,7 +18,7 @@ from music_assistant.constants import (
     DB_SCHEMA_VERSION,
     DB_TABLE_CACHE,
     DB_TABLE_SETTINGS,
-    ROOT_LOGGER_NAME,
+    MASS_LOGGER_NAME,
 )
 from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
@@ -26,7 +26,7 @@ from music_assistant.server.models.core_controller import CoreController
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
 
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
 
 

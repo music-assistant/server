@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import urllib.parse
 from base64 import b64encode
@@ -27,11 +26,7 @@ from music_assistant.common.models.media_items import (
     Radio,
     Track,
 )
-from music_assistant.constants import (
-    ROOT_LOGGER_NAME,
-    VARIOUS_ARTISTS_ID_MBID,
-    VARIOUS_ARTISTS_NAME,
-)
+from music_assistant.constants import VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
 from music_assistant.server.models.core_controller import CoreController
@@ -40,8 +35,6 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.metadata_provider import MetadataProvider
     from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
-
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
 
 
 class MetaDataController(CoreController):
@@ -99,7 +92,7 @@ class MetaDataController(CoreController):
             if self.scan_busy:
                 return
 
-            LOGGER.debug("Start scan for missing artist metadata")
+            self.logger.debug("Start scan for missing artist metadata")
             self.scan_busy = True
             async for artist in self.mass.music.artists.iter_library_items():
                 if artist.metadata.last_refresh is not None:
@@ -115,7 +108,7 @@ class MetaDataController(CoreController):
                 # this is slow on purpose to not cause stress on the metadata providers
                 await asyncio.sleep(30)
             self.scan_busy = False
-            LOGGER.debug("Finished scan for missing artist metadata")
+            self.logger.debug("Finished scan for missing artist metadata")
 
         self.mass.create_task(scan_artist_metadata)
 
@@ -132,7 +125,7 @@ class MetaDataController(CoreController):
                 continue
             if metadata := await provider.get_artist_metadata(artist):
                 artist.metadata.update(metadata)
-                LOGGER.debug(
+                self.logger.debug(
                     "Fetched metadata for Artist %s on provider %s",
                     artist.name,
                     provider.name,
@@ -151,7 +144,7 @@ class MetaDataController(CoreController):
                 continue
             if metadata := await provider.get_album_metadata(album):
                 album.metadata.update(metadata)
-                LOGGER.debug(
+                self.logger.debug(
                     "Fetched metadata for Album %s on provider %s",
                     album.name,
                     provider.name,
@@ -169,7 +162,7 @@ class MetaDataController(CoreController):
                 continue
             if metadata := await provider.get_track_metadata(track):
                 track.metadata.update(metadata)
-                LOGGER.debug(
+                self.logger.debug(
                     "Fetched metadata for Track %s on provider %s",
                     track.name,
                     provider.name,
@@ -226,7 +219,7 @@ class MetaDataController(CoreController):
                     MediaItemImage(type=ImageType.THUMB, path=img_path, provider="file")
                 ]
         except Exception as err:
-            LOGGER.warning(
+            self.logger.warning(
                 "Error while creating playlist image: %s",
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(10) else None,
@@ -272,7 +265,7 @@ class MetaDataController(CoreController):
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
-        LOGGER.debug(
+        self.logger.debug(
             "Unable to get musicbrainz ID for artist %s\n"
             " - using lookup-album(s): %s\n"
             " - using lookup-track(s): %s\n",

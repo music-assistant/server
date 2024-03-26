@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import logging
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
@@ -36,7 +35,6 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_HIDE_PLAYER,
     CONF_PLAYERS,
-    ROOT_LOGGER_NAME,
     SYNCGROUP_PREFIX,
     UGP_PREFIX,
 )
@@ -49,8 +47,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import CoreConfig
 
-
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.players")
 
 _PlayerControllerT = TypeVar("_PlayerControllerT", bound="PlayerController")
 _R = TypeVar("_R")
@@ -201,7 +197,7 @@ class PlayerController(CoreController):
         # initialize sync groups as soon as a player is registered
         self.mass.loop.create_task(self._register_syncgroups())
 
-        LOGGER.info(
+        self.logger.info(
             "Player registered: %s/%s",
             player_id,
             player.name,
@@ -229,7 +225,7 @@ class PlayerController(CoreController):
         player = self._players.pop(player_id, None)
         if player is None:
             return
-        LOGGER.info("Player removed: %s", player.name)
+        self.logger.info("Player removed: %s", player.name)
         self.mass.player_queues.on_player_remove(player_id)
         if cleanup_config:
             self.mass.config.remove(f"players/{player_id}")
@@ -741,7 +737,7 @@ class PlayerController(CoreController):
             msg = f"Player {player.name} does not support syncing"
             raise UnsupportedFeaturedException(msg)
         if not player.synced_to:
-            LOGGER.info(
+            self.logger.info(
                 "Ignoring command to unsync player %s "
                 "because it is currently not synced to another player.",
                 player.display_name,
@@ -788,7 +784,7 @@ class PlayerController(CoreController):
             return sync_leader.player_id
         if player.synced_to:
             sync_leader = self.get(player.synced_to, True)
-            LOGGER.warning(
+            self.logger.warning(
                 "Player %s is synced to %s and can not accept "
                 "playback related commands itself, "
                 "redirected the command to the sync leader.",
@@ -908,7 +904,7 @@ class PlayerController(CoreController):
                         player.state = PlayerState.IDLE
                         player.powered = False
                     except Exception as err:  # pylint: disable=broad-except
-                        LOGGER.warning(
+                        self.logger.warning(
                             "Error while requesting latest state from player %s: %s",
                             player.display_name,
                             str(err),
