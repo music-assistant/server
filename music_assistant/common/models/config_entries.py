@@ -25,6 +25,7 @@ from music_assistant.constants import (
     CONF_EQ_TREBLE,
     CONF_FLOW_MODE,
     CONF_HIDE_PLAYER,
+    CONF_ICON,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
     CONF_SYNC_ADJUST,
@@ -52,9 +53,16 @@ ConfigEntryTypeMap = {
     ConfigEntryType.LABEL: str,
     ConfigEntryType.DIVIDER: str,
     ConfigEntryType.ACTION: str,
+    ConfigEntryType.ALERT: str,
+    ConfigEntryType.ICON: str,
 }
 
-UI_ONLY = (ConfigEntryType.LABEL, ConfigEntryType.DIVIDER, ConfigEntryType.ACTION)
+UI_ONLY = (
+    ConfigEntryType.LABEL,
+    ConfigEntryType.DIVIDER,
+    ConfigEntryType.ACTION,
+    ConfigEntryType.ALERT,
+)
 
 
 @dataclass
@@ -95,8 +103,8 @@ class ConfigEntry(DataClassDictMixin):
     depends_on: str | None = None
     # hidden: hide from UI
     hidden: bool = False
-    # advanced: this is an advanced setting (frontend hides it in some corner)
-    advanced: bool = False
+    # category: category to group this setting into in the frontend (e.g. advanced)
+    category: str = "generic"
     # action: (configentry)action that is needed to get the value for this entry
     action: str | None = None
     # action_label: default label for the action when no translation for the action is present
@@ -298,7 +306,7 @@ CONF_ENTRY_LOG_LEVEL = ConfigEntry(
         ConfigValueOption("verbose", "VERBOSE"),
     ),
     default_value="GLOBAL",
-    advanced=True,
+    category="advanced",
 )
 
 DEFAULT_PROVIDER_CONFIG_ENTRIES = (CONF_ENTRY_LOG_LEVEL,)
@@ -311,7 +319,6 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Enable queue flow mode",
     default_value=False,
-    advanced=False,
 )
 
 
@@ -335,7 +342,7 @@ CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     ],
     default_value="stereo",
     label="Output Channel Mode",
-    advanced=True,
+    category="audio",
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
@@ -344,6 +351,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION = ConfigEntry(
     label="Enable volume normalization",
     default_value=True,
     description="Enable volume normalization (EBU-R128 based)",
+    category="audio",
 )
 
 CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
@@ -354,7 +362,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
-    advanced=True,
+    category="audio",
 )
 
 CONF_ENTRY_EQ_BASS = ConfigEntry(
@@ -364,7 +372,7 @@ CONF_ENTRY_EQ_BASS = ConfigEntry(
     default_value=0,
     label="Equalizer: bass",
     description="Use the builtin basic equalizer to adjust the bass of audio.",
-    advanced=True,
+    category="audio",
 )
 
 CONF_ENTRY_EQ_MID = ConfigEntry(
@@ -374,7 +382,7 @@ CONF_ENTRY_EQ_MID = ConfigEntry(
     default_value=0,
     label="Equalizer: midrange",
     description="Use the builtin basic equalizer to adjust the midrange of audio.",
-    advanced=True,
+    category="audio",
 )
 
 CONF_ENTRY_EQ_TREBLE = ConfigEntry(
@@ -384,7 +392,7 @@ CONF_ENTRY_EQ_TREBLE = ConfigEntry(
     default_value=0,
     label="Equalizer: treble",
     description="Use the builtin basic equalizer to adjust the treble of audio.",
-    advanced=True,
+    category="audio",
 )
 
 
@@ -394,7 +402,7 @@ CONF_ENTRY_CROSSFADE = ConfigEntry(
     label="Enable crossfade",
     default_value=False,
     description="Enable a crossfade transition between (queue) tracks.",
-    advanced=False,
+    category="audio",
 )
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
@@ -405,7 +413,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     label="Crossfade duration",
     description="Duration in seconds of the crossfade between tracks (if enabled)",
     depends_on=CONF_CROSSFADE,
-    advanced=True,
+    category="audio",
 )
 
 CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
@@ -413,7 +421,6 @@ CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     label="Hide this player in the user interface",
     default_value=False,
-    advanced=True,
 )
 
 CONF_ENTRY_ENFORCE_MP3 = ConfigEntry(
@@ -425,7 +432,7 @@ CONF_ENTRY_ENFORCE_MP3 = ConfigEntry(
     "to all players. Some players can not deal with that and require the stream to be packed "
     "into a lossy mp3 codec. \n\n "
     "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
-    advanced=True,
+    category="audio",
 )
 
 CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
@@ -437,7 +444,7 @@ CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     description="If this player is playing audio synced with other players "
     "and you always hear the audio too early or late on this player, "
     "you can shift the audio a bit.",
-    advanced=True,
+    category="advanced",
 )
 
 
@@ -446,8 +453,7 @@ CONF_ENTRY_TTS_PRE_ANNOUNCE = ConfigEntry(
     type=ConfigEntryType.BOOLEAN,
     default_value=True,
     label="Pre-announce TTS announcements",
-    description="When a TTS (text-to-speech) message is sent to the Announce feature, "
-    "prepend the announcement with a short pre-announcement sound (bell whistle).",
+    category="announcements",
 )
 
 
@@ -457,13 +463,12 @@ CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
     options=[
         ConfigValueOption("Absolute volume", "absolute"),
         ConfigValueOption("Relative volume increase", "relative"),
-        ConfigValueOption("Percentual volume increase", "percentual"),
+        ConfigValueOption("Volume increase by fixed percentage", "percentual"),
         ConfigValueOption("Do not adjust volume", "none"),
     ],
     default_value="percentual",
     label="Volume strategy for Announcements",
-    description="When an announcement is being broadcast to this player, "
-    "how should the volume be adjusted temporary (use in combination with the volume value below).",
+    category="announcements",
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
@@ -471,8 +476,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME = ConfigEntry(
     type=ConfigEntryType.INTEGER,
     default_value=85,
     label="Volume for Announcements",
-    description="The percentual, relative or absolute volume level, "
-    "used with the strategy for announcements.",
+    category="announcements",
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
@@ -481,6 +485,7 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MIN = ConfigEntry(
     default_value=15,
     label="Minimum Volume level for Announcements",
     description="The volume (adjustment) of announcements should no go below this level.",
+    category="announcements",
 )
 
 CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
@@ -489,4 +494,19 @@ CONF_ENTRY_ANNOUNCE_VOLUME_MAX = ConfigEntry(
     default_value=75,
     label="Maximum Volume level for Announcements",
     description="The volume (adjustment) of announcements should no go above this level.",
+    category="announcements",
+)
+
+CONF_ENTRY_PLAYER_ICON = ConfigEntry(
+    key=CONF_ICON,
+    type=ConfigEntryType.ICON,
+    default_value="mdi-speaker",
+    label="Icon",
+    description="Material design icon for this player. "
+    "\n\nSee https://pictogrammers.com/library/mdi/",
+    category="generic",
+)
+
+CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
+    {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "mdi-speaker-multiple"}
 )

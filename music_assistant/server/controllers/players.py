@@ -15,6 +15,8 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+    CONF_ENTRY_PLAYER_ICON,
+    CONF_ENTRY_PLAYER_ICON_GROUP,
     CONF_ENTRY_TTS_PRE_ANNOUNCE,
 )
 from music_assistant.common.models.enums import (
@@ -272,6 +274,13 @@ class PlayerController(CoreController):
             player.powered = True
         player.hidden = self.mass.config.get_raw_player_config_value(
             player.player_id, CONF_HIDE_PLAYER, False
+        )
+        player.icon = self.mass.config.get_raw_player_config_value(
+            player.player_id,
+            CONF_ENTRY_PLAYER_ICON.key,
+            CONF_ENTRY_PLAYER_ICON_GROUP.default_value
+            if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP)
+            else CONF_ENTRY_PLAYER_ICON.default_value,
         )
         # handle syncgroup - get attributes from first player that has this group as source
         if player.player_id.startswith(SYNCGROUP_PREFIX):

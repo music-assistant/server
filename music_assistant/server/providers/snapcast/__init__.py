@@ -108,7 +108,7 @@ async def get_config_entries(
             description="Music Assistant by default already includes a Snapserver. \n\n"
             "Checking this option allows you to connect to your own/external existing Snapserver "
             "and not use the builtin one provided by Music Assistant.",
-            advanced=snapserver_present,
+            category="advanced" if snapserver_present else "generic",
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
@@ -117,7 +117,7 @@ async def get_config_entries(
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            advanced=snapserver_present,
+            category="advanced" if snapserver_present else "generic",
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -126,7 +126,7 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            advanced=snapserver_present,
+            category="advanced" if snapserver_present else "generic",
         ),
     )
 

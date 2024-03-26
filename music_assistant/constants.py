@@ -60,7 +60,7 @@ CONF_ANNOUNCE_VOLUME_STRATEGY: Final[str] = "announce_volume_strategy"
 CONF_ANNOUNCE_VOLUME: Final[str] = "announce_volume"
 CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
-
+CONF_ICON: Final[str] = "icon"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

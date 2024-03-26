@@ -79,7 +79,7 @@ async def get_config_entries(
             default_value="2323",
             label="Port to use to connect to the Fully Kiosk API (default is 2323).",
             required=True,
-            advanced=True,
+            category="advanced",
         ),
     )
 
@@ -160,7 +160,7 @@ class FullyKioskProvider(PlayerProvider):
                 description="By default, Music Assistant sends lossless, high quality audio "
                 "to all players. Some devices can not deal with that and require "
                 "the stream to be packed into a lossy mp3 codec. Only enable when needed.",
-                advanced=True,
+                category="advanced",
             ),
         )
 

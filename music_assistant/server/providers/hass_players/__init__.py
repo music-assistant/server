@@ -99,7 +99,7 @@ PLAYER_CONFIG_ENTRIES = (
         description="Enable a crossfade transition between (queue) tracks. \n\n"
         "Note that you need to enable the 'flow mode' workaround to use "
         "crossfading with Home Assistant players.",
-        advanced=False,
+        category="audio",
         depends_on=CONF_FLOW_MODE,
     ),
     CONF_ENTRY_FLOW_MODE,
@@ -113,7 +113,7 @@ PLAYER_CONFIG_ENTRIES = (
         "to all players. Some players can not deal with that and require the stream to be packed "
         "into a lossy mp3 codec. \n\n "
         "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
-        advanced=True,
+        category="audio",
     ),
 )
 

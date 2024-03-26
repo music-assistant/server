@@ -330,7 +330,7 @@ class StreamsController(CoreController):
                 "on the given IP and TCP port by players on the local network. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                advanced=True,
+                category="advanced",
             ),
             ConfigEntry(
                 key=CONF_BIND_IP,
@@ -342,7 +342,7 @@ class StreamsController(CoreController):
                 "Use 0.0.0.0 to bind to all interfaces, which is the default. \n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                advanced=True,
+                category="advanced",
             ),
         )
 
