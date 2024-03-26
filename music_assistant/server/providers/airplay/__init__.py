@@ -318,8 +318,6 @@ class AirplayStream:
 
     async def write_eof(self) -> None:
         """Write EOF to the ffmpeg stdin."""
-        if not self.running:
-            return
         await self._buffer.put(b"")
 
     async def send_cli_command(self, command: str) -> None:
@@ -634,7 +632,7 @@ class AirplayProvider(PlayerProvider):
             input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
                 queue_item.streamdetails.data["url"],
-                pcm_format=AIRPLAY_PCM_FORMAT,
+                output_format=AIRPLAY_PCM_FORMAT,
                 use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
             )
         else:

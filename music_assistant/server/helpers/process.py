@@ -107,7 +107,7 @@ class AsyncProcess:
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
-        while self.returncode is None:
+        while not self._close_called:
             chunk = await self.readexactly(n)
             if chunk == b"":
                 break
@@ -115,7 +115,7 @@ class AsyncProcess:
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
-        while self.returncode is None:
+        while not self._close_called:
             chunk = await self.read(n)
             if chunk == b"":
                 break
@@ -123,8 +123,6 @@ class AsyncProcess:
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
-        if not self.proc.stdout or self.proc.stdout.at_eof():
-            return b""
         try:
             return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
@@ -137,21 +135,19 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
-        if not self.proc.stdout or self.proc.stdout.at_eof():
-            return b""
         return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self.returncode is not None or self.proc.stdin.is_closing():
-            raise asyncio.CancelledError("write called while process already done")
+        if self._close_called:
+            raise RuntimeError("write called while process already done")
         self.proc.stdin.write(data)
         with suppress(BrokenPipeError, ConnectionResetError):
             await self.proc.stdin.drain()
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self.returncode is not None or self.proc.stdin.is_closing():
+        if self._close_called:
             return
         try:
             if self.proc.stdin.can_write_eof():
@@ -183,9 +179,9 @@ class AsyncProcess:
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
         # we need to ensure stdout and stderr are flushed and stdin closed
-        while self.returncode is None:
+        while True:
             try:
-                async with asyncio.timeout(30):
+                async with asyncio.timeout(5):
                     # abort existing readers on stderr/stdout first before we send communicate
                     if self.proc.stdout and self.proc.stdout._waiter is not None:
                         self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
@@ -195,6 +191,8 @@ class AsyncProcess:
                         self.proc.stderr._waiter = None
                     # use communicate to flush all pipe buffers
                     await self.proc.communicate()
+                    if self.returncode is not None:
+                        break
             except TimeoutError:
                 LOGGER.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
