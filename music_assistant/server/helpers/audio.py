@@ -675,50 +675,14 @@ async def get_preview_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Create a 30 seconds preview audioclip for the given streamdetails."""
     music_prov = mass.get_provider(provider_instance_id_or_domain)
-
     streamdetails = await music_prov.get_stream_details(track_id)
-
-    input_args = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "quiet",
-        "-ignore_unknown",
-    ]
-    if streamdetails.direct:
-        input_args += ["-ss", "30", "-i", streamdetails.direct]
-    else:
-        # the input is received from pipe/stdin
-        if streamdetails.audio_format.content_type != ContentType.UNKNOWN:
-            input_args += ["-f", streamdetails.audio_format.content_type]
-        input_args += ["-i", "-"]
-
-    output_args = ["-to", "30", "-f", "mp3", "-"]
-    args = input_args + output_args
-
-    writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(args, enable_stdin=True, enable_stdout=True, enable_stderr=False)
-    await ffmpeg_proc.start()
-
-    async def writer() -> None:
-        """Task that grabs the source audio and feeds it to ffmpeg."""
-        music_prov = mass.get_provider(streamdetails.provider)
-        async for audio_chunk in music_prov.get_audio_stream(streamdetails, 30):
-            await ffmpeg_proc.write(audio_chunk)
-        # write eof when last packet is received
-        await ffmpeg_proc.write_eof()
-
-    if not streamdetails.direct:
-        writer_task = asyncio.create_task(writer())
-
-    # yield chunks from stdout
-    try:
-        async for chunk in ffmpeg_proc.iter_any():
-            yield chunk
-    finally:
-        if writer_task and not writer_task.done():
-            writer_task.cancel()
-        await ffmpeg_proc.close()
+    async for chunk in get_ffmpeg_stream(
+        audio_input=music_prov.get_audio_stream(streamdetails, 30),
+        input_format=streamdetails.audio_format,
+        output_format=AudioFormat(content_type=ContentType.MP3),
+        extra_input_args=["-to", "30"],
+    ):
+        yield chunk
 
 
 async def get_silence(

@@ -252,8 +252,7 @@ class MusicProvider(Provider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        if streamdetails.direct is None:
-            raise NotImplementedError
+        raise NotImplementedError
 
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
         """Handle callback when an item completed streaming."""

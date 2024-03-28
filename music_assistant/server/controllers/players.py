@@ -1184,7 +1184,6 @@ class PlayerController(CoreController):
                     content_type=ContentType.try_parse(url),
                 ),
                 media_type=MediaType.ANNOUNCEMENT,
-                direct=url,
                 data={"url": url, "use_pre_announce": use_pre_announce},
                 target_loudness=-10,
             ),

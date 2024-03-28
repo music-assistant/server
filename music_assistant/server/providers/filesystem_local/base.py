@@ -615,7 +615,7 @@ class FileSystemProviderBase(MusicProvider):
             media_type=MediaType.TRACK,
             duration=library_item.duration,
             size=file_item.file_size,
-            direct=file_item.local_path,
+            data=file_item.local_path,
             can_seek=prov_mapping.audio_format.content_type in SEEKABLE_FILES,
         )
 

@@ -22,6 +22,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -226,7 +227,7 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType.UNKNOWN,
                 ),
                 media_type=MediaType.RADIO,
-                direct=item_id,
+                data=item_id,
                 expires=time() + 3600,
             )
         stream_item_id, media_type = item_id.split("--", 1)
@@ -241,11 +242,19 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                 ),
                 media_type=MediaType.RADIO,
-                direct=stream["url"],
+                data=stream["url"],
                 expires=time() + 3600,
             )
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        # report playback started as soon as we start streaming
+        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails, 0):
+            yield chunk
 
     async def __get_data(self, endpoint: str, **kwargs):
         """Get data from api."""

@@ -46,9 +46,8 @@ class StreamDetails(DataClassDictMixin):
     # expires: timestamp this streamdetails expire
     expires: float = time() + 3600
     # data: provider specific data (not exposed externally)
+    # this info is for example used to pass details to the get_audio_stream
     data: Any = None
-    # direct: if the url/file is supported by ffmpeg directly, use direct stream
-    direct: str | None = None
     # can_seek: bool to indicate that the providers 'get_audio_stream' supports seeking of the item
     can_seek: bool = True
 
