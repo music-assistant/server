@@ -782,7 +782,7 @@ def get_ffmpeg_args(
     extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
-    loglevel: str = "info",
+    loglevel: str = "fatal",
     extra_input_args: list[str] | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
