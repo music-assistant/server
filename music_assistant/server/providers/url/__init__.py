@@ -199,8 +199,7 @@ class URLProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
             ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            direct=item_id if is_radio else None,
-            data=item_id,
+            data={"url": item_id},
         )
 
     async def get_audio_stream(
@@ -209,17 +208,19 @@ class URLProvider(MusicProvider):
         """Return the audio stream for the provider item."""
         if streamdetails.media_type == MediaType.RADIO:
             # radio stream url
-            async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
+            async for chunk in get_radio_stream(
+                self.mass, streamdetails.data["url"], streamdetails
+            ):
                 yield chunk
         elif os.path.isfile(streamdetails.data):
             # local file
             async for chunk in get_file_stream(
-                self.mass, streamdetails.data, streamdetails, seek_position
+                self.mass, streamdetails.data["url"], streamdetails, seek_position
             ):
                 yield chunk
         else:
             # regular stream url (without icy meta)
             async for chunk in get_http_stream(
-                self.mass, streamdetails.data, streamdetails, seek_position
+                self.mass, streamdetails.data["url"], streamdetails, seek_position
             ):
                 yield chunk

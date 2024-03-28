@@ -48,7 +48,6 @@ from music_assistant.server.helpers.audio import (
     get_ffmpeg_args,
     get_ffmpeg_stream,
     get_player_filter_params,
-    get_radio_stream,
     parse_loudnorm,
     strip_silence,
 )
@@ -988,15 +987,6 @@ class StreamsController(CoreController):
 
         # collect all arguments for ffmpeg
         filter_params = []
-        extra_args = []
-        seek_pos = (
-            streamdetails.seek_position
-            if (streamdetails.direct or not streamdetails.can_seek)
-            else 0
-        )
-        if seek_pos:
-            # only use ffmpeg seeking if the provider stream does not support seeking
-            extra_args += ["-ss", str(seek_pos)]
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
             filter_rule = f"loudnorm=I={streamdetails.target_loudness}:LRA=11:TP=-2"
@@ -1010,28 +1000,19 @@ class StreamsController(CoreController):
         if streamdetails.fade_in:
             filter_params.append("afade=type=in:start_time=0:duration=3")
 
-        if is_radio and streamdetails.direct and streamdetails.direct.startswith("http"):
-            # ensure we use the radio streamer for radio items
-            audio_source_iterator = get_radio_stream(self.mass, streamdetails.direct, streamdetails)
-            input_path = "-"
-        elif streamdetails.direct:
-            audio_source_iterator = None
-            input_path = streamdetails.direct
-        else:
-            audio_source_iterator = self.mass.get_provider(streamdetails.provider).get_audio_stream(
-                streamdetails,
-                seek_position=streamdetails.seek_position if streamdetails.can_seek else 0,
-            )
-            input_path = "-"
-
+        audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
+            streamdetails,
+            seek_position=streamdetails.seek_position,
+        )
         ffmpeg_args = get_ffmpeg_args(
             input_format=streamdetails.audio_format,
             output_format=pcm_format,
             filter_params=filter_params,
-            extra_args=extra_args,
-            input_path=input_path,
+            input_path="-",
             # loglevel info is needed for loudness measurement
             loglevel="info",
+            # we criple ffmpeg a bit on purpose with the filter_threads
+            # option so it doesn't consume all cpu when calculating loudnorm
             extra_input_args=["-filter_threads", "1"],
         )
 
@@ -1040,7 +1021,10 @@ class StreamsController(CoreController):
             stderr_data = ""
             async for line in ffmpeg_proc.iter_stderr():
                 line = line.decode().strip()  # noqa: PLW2901
-                # if streamdetails contenttype is uinknown, try pars eit from the ffmpeg log output
+                if not line:
+                    continue
+                logger.log(VERBOSE_LOG_LEVEL, line)
+                # if streamdetails contenttype is unknown, try parse it from the ffmpeg log output
                 # this has no actual usecase, other than displaying the correct codec in the UI
                 if (
                     streamdetails.audio_format.content_type == ContentType.UNKNOWN
@@ -1053,8 +1037,6 @@ class StreamsController(CoreController):
                     stderr_data += line
                 elif "HTTP error" in line:
                     logger.warning(line)
-                elif line:
-                    logger.log(VERBOSE_LOG_LEVEL, line)
                 del line
 
             # if we reach this point, the process is finished (finish or aborted)
@@ -1102,9 +1084,9 @@ class StreamsController(CoreController):
 
         async with AsyncProcess(
             ffmpeg_args,
-            enable_stdin=audio_source_iterator is not None,
+            enable_stdin=True,
             enable_stderr=True,
-            custom_stdin=audio_source_iterator,
+            custom_stdin=audio_source,
             name="ffmpeg_media_stream",
         ) as ffmpeg_proc:
             state_data = {"finished": asyncio.Event(), "bytes_sent": 0}

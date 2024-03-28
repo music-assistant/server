@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 import pytube
+from aiohttp import ClientResponseError
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
@@ -39,6 +40,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -533,7 +535,7 @@ class YoutubeMusicProvider(MusicProvider):
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format["mimeType"]),
             ),
-            direct=url,
+            data=url,
         )
         if (
             track_obj["streamingData"].get("expiresInSeconds")
@@ -549,6 +551,27 @@ class YoutubeMusicProvider(MusicProvider):
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
             stream_details.audio_format.sample_rate = int(stream_format.get("audioSampleRate"))
         return stream_details
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        is_retry = False
+        while True:
+            try:
+                async for chunk in get_http_stream(
+                    self.mass, streamdetails.data, streamdetails, seek_position
+                ):
+                    yield chunk
+                return
+            except ClientResponseError as err:
+                if not is_retry and err.status == 403:
+                    # cipher expired, get a fresh one
+                    self.logger.warning("Cipher expired, trying to refresh...")
+                    streamdetails = await self.get_stream_details(streamdetails.item_id)
+                    continue
+                # raise for all other cases or we have already retried
+                raise
 
     async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):
         """Post data to the given endpoint."""

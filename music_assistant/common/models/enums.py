@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 from enum import StrEnum
 from typing import Self
 
@@ -127,6 +128,7 @@ class ContentType(StrEnum):
     AIFF = "aiff"
     WMA = "wma"
     M4A = "m4a"
+    MP4 = "mp4"
     M4B = "m4b"
     DSF = "dsf"
     OPUS = "opus"
@@ -153,16 +155,15 @@ class ContentType(StrEnum):
         for splitter in (".", ","):
             if splitter in tempstr:
                 for val in tempstr.split(splitter):
-                    try:
-                        return cls(val.strip())
-                    except ValueError:
-                        pass
-
+                    with contextlib.suppress(ValueError):
+                        parsed = cls(val.strip())
+                    if parsed != ContentType.UNKNOWN:
+                        return parsed
         tempstr = tempstr.split("?")[0]
         tempstr = tempstr.split("&")[0]
         tempstr = tempstr.split(";")[0]
         tempstr = tempstr.replace("mp4", "m4a")
-        tempstr = tempstr.replace("mpd", "dash")
+        tempstr = tempstr.replace("mp4a", "m4a")
         try:
             return cls(tempstr)
         except ValueError:

@@ -9,7 +9,6 @@ from typing import TYPE_CHECKING, Any
 
 import plexapi.exceptions
 import requests
-from aiohttp import ClientTimeout
 from plexapi.audio import Album as PlexAlbum
 from plexapi.audio import Artist as PlexArtist
 from plexapi.audio import Playlist as PlexPlaylist
@@ -47,6 +46,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
@@ -760,7 +760,7 @@ class PlexProvider(MusicProvider):
         )
 
         if media_type != ContentType.M4A:
-            stream_details.direct = self._plex_server.url(media_part.key, True)
+            stream_details.data = self._plex_server.url(media_part.key, True)
             if audio_stream.samplingRate:
                 stream_details.audio_format.sample_rate = audio_stream.samplingRate
             if audio_stream.bitDepth:
@@ -781,12 +781,12 @@ class PlexProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        url = streamdetails.data.getStreamURL(offset=seek_position)
-
-        timeout = ClientTimeout(total=0, connect=30, sock_read=600)
-        async with self.mass.http_session.get(url, timeout=timeout) as resp:
-            async for chunk in resp.content.iter_any():
-                yield chunk
+        if isinstance(streamdetails.data, str):
+            url = streamdetails.data
+        else:
+            url = streamdetails.data.getStreamURL(offset=seek_position)
+        async for chunk in get_http_stream(self.mass, url, streamdetails, 0):
+            yield chunk
 
     async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""
