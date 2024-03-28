@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import struct
+from collections import deque
 from io import BytesIO
 from time import time
 from typing import TYPE_CHECKING
@@ -43,6 +44,7 @@ from music_assistant.server.helpers.playlists import (
     fetch_playlist,
     parse_m3u,
 )
+from music_assistant.server.helpers.tags import parse_tags
 
 from .process import AsyncProcess, check_output
 from .util import create_tempfile
@@ -323,7 +325,9 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool, bool]:
+async def resolve_radio_stream(
+    mass: MusicAssistant, url: str, use_get: bool = False
+) -> tuple[str, bool, bool]:
     """
     Resolve a streaming radio URL.
 
@@ -336,7 +340,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     - bool uf the URL represents a HLS stream/playlist.
     """
     base_url = url.split("?")[0]
-    cache_key = f"resolved_radio_{url}"
+    cache_key = f"RADIO_RESOLVED_{url}"
     if cache := await mass.cache.get(cache_key):
         return cache
     is_hls = False
@@ -344,12 +348,16 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     resolved_url = url
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
-        async with mass.http_session.head(
-            url, headers=VLC_HEADERS_ICY, allow_redirects=True, timeout=timeout
+        method = "GET" if use_get else "HEAD"
+        async with mass.http_session.request(
+            method, url, headers=VLC_HEADERS_ICY, allow_redirects=True, timeout=timeout
         ) as resp:
             resolved_url = str(resp.real_url)
             headers = resp.headers
-        supports_icy = int(headers.get("icy-metaint", "0")) > 0
+            resp.raise_for_status()
+            if not resp.headers:
+                raise InvalidDataError("no headers found")
+        supports_icy = headers.get("icy-name") is not None or "Icecast" in headers.get("server", "")
         is_hls = headers.get("content-type") in HLS_CONTENT_TYPES
         if (
             base_url.endswith((".m3u", ".m3u8", ".pls"))
@@ -367,11 +375,14 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
                 is_hls = True
 
     except (ClientResponseError, InvalidDataError) as err:
+        if not use_get:
+            return await resolve_radio_stream(mass, resolved_url, True)
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
         return (resolved_url, supports_icy, is_hls)
 
     result = (resolved_url, supports_icy, is_hls)
-    await mass.cache.set(cache_key, result, expiration=86400)
+    cache_expiration = 24 * 3600 if url == resolved_url else 600
+    await mass.cache.set(cache_key, result, expiration=cache_expiration)
     return result
 
 
@@ -425,6 +436,83 @@ async def get_icy_stream(
 
 
 async def get_hls_stream(
+    mass: MusicAssistant, url: str, streamdetails: StreamDetails
+) -> AsyncGenerator[bytes, None]:
+    """Get audio stream from HTTP HLS stream."""
+    logger = LOGGER.getChild("hls_stream")
+    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+    # fetch master playlist and select (best) child playlist
+    # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
+    async with mass.http_session.get(url, headers=VLC_HEADERS, timeout=timeout) as resp:
+        charset = resp.charset or "utf-8"
+        master_m3u_data = await resp.text(charset)
+    substreams = parse_m3u(master_m3u_data)
+    if any(x for x in substreams if x.path.endswith(".ts")) or not all(
+        x for x in substreams if x.stream_info is not None
+    ):
+        # the url we got is already a substream
+        substream_url = url
+    else:
+        # sort substreams on best quality (highest bandwidth)
+        substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
+        substream = substreams[0]
+        substream_url = substream.path
+        if not substream_url.startswith("http"):
+            # path is relative, stitch it together
+            base_path = url.rsplit("/", 1)[0]
+            substream_url = base_path + "/" + substream.path
+
+    logger.debug(
+        "Start streaming HLS stream for url %s (selected substream %s)", url, substream_url
+    )
+
+    if streamdetails.audio_format.content_type == ContentType.UNKNOWN:
+        streamdetails.audio_format = AudioFormat(content_type=ContentType.AAC)
+
+    prev_chunks: deque[str] = deque(maxlen=30)
+    has_playlist_metadata: bool | None = None
+    has_id3_metadata: bool | None = None
+    while True:
+        async with mass.http_session.get(
+            substream_url, headers=VLC_HEADERS, timeout=timeout
+        ) as resp:
+            charset = resp.charset or "utf-8"
+            substream_m3u_data = await resp.text(charset)
+        # get chunk-parts from the substream
+        hls_chunks = parse_m3u(substream_m3u_data)
+        for chunk_item in hls_chunks:
+            if chunk_item.path in prev_chunks:
+                continue
+            chunk_item_url = chunk_item.path
+            if not chunk_item_url.startswith("http"):
+                # path is relative, stitch it together
+                base_path = substream_url.rsplit("/", 1)[0]
+                chunk_item_url = base_path + "/" + chunk_item.path
+            # handle (optional) in-playlist (timed) metadata
+            if has_playlist_metadata is None:
+                has_playlist_metadata = chunk_item.title is not None
+                logger.debug("Station support for in-playlist metadata: %s", has_playlist_metadata)
+            if has_playlist_metadata and chunk_item.title != "no desc":
+                # bbc (and maybe others?) set the title to 'no desc'
+                streamdetails.stream_title = chunk_item.title
+            logger.log(VERBOSE_LOG_LEVEL, "playing chunk %s", chunk_item)
+            # prevent that we play this chunk again if we loop through
+            prev_chunks.append(chunk_item.path)
+            async with mass.http_session.get(
+                chunk_item_url, headers=VLC_HEADERS, timeout=timeout
+            ) as resp:
+                async for chunk in resp.content.iter_any():
+                    yield chunk
+            # handle (optional) in-band (m3u) metadata
+            if has_id3_metadata is not None and has_playlist_metadata:
+                continue
+            if has_id3_metadata in (None, True):
+                tags = await parse_tags(chunk_item_url)
+                has_id3_metadata = tags.title and tags.title not in chunk_item.path
+                logger.debug("Station support for in-band (ID3) metadata: %s", has_id3_metadata)
+
+
+async def get_hls_stream_org(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get audio stream from HTTP HLS stream."""
