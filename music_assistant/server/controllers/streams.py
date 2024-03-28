@@ -828,10 +828,6 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            buffer_size = int(pcm_sample_size * 2)  # 2 seconds
-            if use_crossfade:
-                # buffer size needs to be big enough to include the crossfade part
-                buffer_size += crossfade_size
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
@@ -839,9 +835,22 @@ class StreamsController(CoreController):
                 queue_track.streamdetails,
                 pcm_format=pcm_format,
                 # strip silence from begin/end if track is being crossfaded
-                strip_silence_begin=use_crossfade,
+                strip_silence_begin=use_crossfade and bytes_written > 0,
                 strip_silence_end=use_crossfade,
             ):
+                # required buffer size is a bit dynamic,
+                # it needs to be small when the flow stream starts
+                seconds_streamed = int(bytes_written / pcm_sample_size)
+                if not use_crossfade or seconds_streamed < 5:
+                    buffer_size = pcm_sample_size
+                elif seconds_streamed < 10:
+                    buffer_size = pcm_sample_size * 2
+                elif use_crossfade and seconds_streamed < 20:
+                    buffer_size = pcm_sample_size * 5
+                else:
+                    buffer_size = crossfade_size + pcm_sample_size * 2
+                    # buffer size needs to be big enough to include the crossfade part
+
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
                 del chunk
@@ -970,13 +979,12 @@ class StreamsController(CoreController):
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
         if is_radio or streamdetails.seek_position:
             strip_silence_begin = False
-        # pcm_sample_size = chunk size = 1 second of pcm audio
-        chunk_size = pcm_format.pcm_sample_size
-        expected_chunks = int(
-            ((streamdetails.duration or 0) * pcm_format.pcm_sample_size) / chunk_size
-        )
-        if expected_chunks < 10:
+        if is_radio or streamdetails.duration < 30:
             strip_silence_end = False
+        # pcm_sample_size = chunk size = 1 second of pcm audio
+        pcm_sample_size = pcm_format.pcm_sample_size
+        buffer_size_begin = pcm_sample_size * 2 if strip_silence_begin else pcm_sample_size
+        buffer_size_end = pcm_sample_size * 5 if strip_silence_end else pcm_sample_size
 
         # collect all arguments for ffmpeg
         filter_params = []
@@ -1032,10 +1040,21 @@ class StreamsController(CoreController):
             stderr_data = ""
             async for line in ffmpeg_proc.iter_stderr():
                 line = line.decode().strip()  # noqa: PLW2901
+                # if streamdetails contenttype is uinknown, try pars eit from the ffmpeg log output
+                # this has no actual usecase, other than displaying the correct codec in the UI
+                if (
+                    streamdetails.audio_format.content_type == ContentType.UNKNOWN
+                    and line.startswith("Stream #0:0: Audio: ")
+                ):
+                    streamdetails.audio_format.content_type = ContentType.try_parse(
+                        line.split("Stream #0:0: Audio: ")[1].split(" ")[0]
+                    )
                 if stderr_data or "loudnorm" in line:
                     stderr_data += line
+                elif "HTTP error" in line:
+                    logger.warning(line)
                 elif line:
-                    self.logger.log(VERBOSE_LOG_LEVEL, line)
+                    logger.log(VERBOSE_LOG_LEVEL, line)
                 del line
 
             # if we reach this point, the process is finished (finish or aborted)
@@ -1094,37 +1113,41 @@ class StreamsController(CoreController):
             self.mass.create_task(log_reader(ffmpeg_proc, state_data))
 
             # get pcm chunks from stdout
-            # we always stay one chunk behind to properly detect end of chunks
+            # we always stay buffer_size of bytes behind
             # so we can strip silence at the beginning and end of a track
-            prev_chunk = b""
+            buffer = b""
             chunk_num = 0
-            async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
+            async for chunk in ffmpeg_proc.iter_chunked(pcm_sample_size):
                 chunk_num += 1
+                required_buffer = buffer_size_begin if chunk_num < 10 else buffer_size_end
+                buffer += chunk
+                del chunk
+
+                if len(buffer) < required_buffer:
+                    # buffer is not full enough, move on
+                    continue
+
                 if strip_silence_begin and chunk_num == 2:
                     # first 2 chunks received, strip silence of beginning
                     stripped_audio = await strip_silence(
                         self.mass,
-                        prev_chunk + chunk,
+                        buffer,
                         sample_rate=pcm_format.sample_rate,
                         bit_depth=pcm_format.bit_depth,
                     )
                     yield stripped_audio
                     state_data["bytes_sent"] += len(stripped_audio)
-                    prev_chunk = b""
+                    buffer = b""
                     del stripped_audio
                     continue
-                if strip_silence_end and chunk_num >= (expected_chunks - 6):
-                    # last part of the track, collect multiple chunks to strip silence later
-                    prev_chunk += chunk
-                    continue
 
-                # middle part of the track, send previous chunk and collect current chunk
-                if prev_chunk:
-                    yield prev_chunk
-                    state_data["bytes_sent"] += len(prev_chunk)
-
-                # collect this chunk for next round
-                prev_chunk = chunk
+                #### OTHER: enough data in buffer, feed to output
+                while len(buffer) > required_buffer:
+                    subchunk = buffer[:pcm_sample_size]
+                    buffer = buffer[pcm_sample_size:]
+                    state_data["bytes_sent"] += len(subchunk)
+                    yield subchunk
+                    del subchunk
 
             # if we did not receive any data, something went (terribly) wrong
             # raise here to prevent an (endless) loop elsewhere
@@ -1132,23 +1155,23 @@ class StreamsController(CoreController):
                 raise AudioError(f"stream error on {streamdetails.uri}")
 
             # all chunks received, strip silence of last part if needed and yield remaining bytes
-            if strip_silence_end and prev_chunk:
+            if strip_silence_end:
                 final_chunk = await strip_silence(
                     self.mass,
-                    prev_chunk,
+                    buffer,
                     sample_rate=pcm_format.sample_rate,
                     bit_depth=pcm_format.bit_depth,
                     reverse=True,
                 )
             else:
-                final_chunk = prev_chunk
+                final_chunk = buffer
 
             # yield final chunk to output (as one big chunk)
             yield final_chunk
             state_data["bytes_sent"] += len(final_chunk)
             state_data["finished"].set()
             del final_chunk
-            del prev_chunk
+            del buffer
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
