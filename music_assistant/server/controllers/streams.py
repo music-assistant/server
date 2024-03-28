@@ -988,7 +988,7 @@ class StreamsController(CoreController):
 
         # collect all arguments for ffmpeg
         filter_params = []
-        extra_args = []
+        extra_input_args = []
         seek_pos = (
             streamdetails.seek_position
             if (streamdetails.direct or not streamdetails.can_seek)
@@ -996,7 +996,7 @@ class StreamsController(CoreController):
         )
         if seek_pos:
             # only use ffmpeg seeking if the provider stream does not support seeking
-            extra_args += ["-ss", str(seek_pos)]
+            extra_input_args += ["-ss", str(seek_pos)]
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
             filter_rule = f"loudnorm=I={streamdetails.target_loudness}:LRA=11:TP=-2"
@@ -1028,11 +1028,12 @@ class StreamsController(CoreController):
             input_format=streamdetails.audio_format,
             output_format=pcm_format,
             filter_params=filter_params,
-            extra_args=extra_args,
             input_path=input_path,
             # loglevel info is needed for loudness measurement
             loglevel="info",
-            extra_input_args=["-filter_threads", "1"],
+            # we criple ffmpeg a bit on purpose with the filter_threads
+            # option so it doesn't consume all cpu when calculating loudnorm
+            extra_input_args=[*extra_input_args, "-filter_threads", "1"],
         )
 
         async def log_reader(ffmpeg_proc: AsyncProcess, state_data: dict[str, Any]):
@@ -1040,7 +1041,10 @@ class StreamsController(CoreController):
             stderr_data = ""
             async for line in ffmpeg_proc.iter_stderr():
                 line = line.decode().strip()  # noqa: PLW2901
-                # if streamdetails contenttype is uinknown, try pars eit from the ffmpeg log output
+                if not line:
+                    continue
+                logger.log(VERBOSE_LOG_LEVEL, line)
+                # if streamdetails contenttype is unknown, try parse it from the ffmpeg log output
                 # this has no actual usecase, other than displaying the correct codec in the UI
                 if (
                     streamdetails.audio_format.content_type == ContentType.UNKNOWN
@@ -1053,8 +1057,6 @@ class StreamsController(CoreController):
                     stderr_data += line
                 elif "HTTP error" in line:
                     logger.warning(line)
-                elif line:
-                    logger.log(VERBOSE_LOG_LEVEL, line)
                 del line
 
             # if we reach this point, the process is finished (finish or aborted)

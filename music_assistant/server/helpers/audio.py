@@ -509,89 +509,6 @@ async def get_hls_stream(
                 logger.debug("Station support for in-band (ID3) metadata: %s", has_id3_metadata)
 
 
-async def get_hls_stream_org(
-    mass: MusicAssistant, url: str, streamdetails: StreamDetails
-) -> AsyncGenerator[bytes, None]:
-    """Get audio stream from HTTP HLS stream."""
-    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
-    # fetch master playlist and select (best) child playlist
-    # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
-    async with mass.http_session.get(url, headers=VLC_HEADERS, timeout=timeout) as resp:
-        charset = resp.charset or "utf-8"
-        master_m3u_data = await resp.text(charset)
-    substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.path.endswith(".ts")) or not all(
-        x for x in substreams if x.stream_info is not None
-    ):
-        # the url we got is already a substream
-        substream_url = url
-    else:
-        # sort substreams on best quality (highest bandwidth)
-        substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
-        substream = substreams[0]
-        substream_url = substream.path
-        if not substream_url.startswith("http"):
-            # path is relative, stitch it together
-            base_path = url.rsplit("/", 1)[0]
-            substream_url = base_path + "/" + substream.path
-
-    async def watch_metadata():
-        # ffmpeg is not (yet?) able to handle metadata updates that is provided
-        # in the substream playlist and/or the ID3 metadata
-        # so we do that here in a separate task.
-        # this also gets the basic
-        prev_chunk = ""
-        while True:
-            async with mass.http_session.get(
-                substream_url, headers=VLC_HEADERS, timeout=timeout
-            ) as resp:
-                charset = resp.charset or "utf-8"
-                substream_m3u_data = await resp.text(charset)
-            # get chunk-parts from the substream
-            hls_chunks = parse_m3u(substream_m3u_data)
-            metadata_found = False
-            for chunk_item in hls_chunks:
-                if chunk_item.path == prev_chunk:
-                    continue
-                chunk_item_url = chunk_item.path
-                if not chunk_item_url.startswith("http"):
-                    # path is relative, stitch it together
-                    base_path = substream_url.rsplit("/", 1)[0]
-                    chunk_item_url = base_path + "/" + chunk_item.path
-                if chunk_item.title and chunk_item.title != "no desc":
-                    streamdetails.stream_title = chunk_item.title
-                    metadata_found = True
-                # prevent that we play this chunk again if we loop through
-                prev_chunk = chunk_item.path
-                if chunk_item.length and chunk_item.length.isnumeric():
-                    await asyncio.sleep(int(chunk_item.length))
-                else:
-                    await asyncio.sleep(5)
-            if not metadata_found:
-                # this station does not provide metadata embedded in the HLS playlist
-                return
-
-    LOGGER.debug(
-        "Start streaming HLS stream for url %s (selected substream %s)", url, substream_url
-    )
-
-    if streamdetails.audio_format.content_type == ContentType.UNKNOWN:
-        streamdetails.audio_format = AudioFormat(content_type=ContentType.AAC)
-
-    try:
-        metadata_task = asyncio.create_task(watch_metadata())
-        async for chunk in get_ffmpeg_stream(
-            audio_input=substream_url,
-            input_format=streamdetails.audio_format,
-            # we need a self-explaining codec but not loose data from re-encoding
-            output_format=AudioFormat(content_type=ContentType.FLAC),
-        ):
-            yield chunk
-    finally:
-        if metadata_task and not metadata_task.done():
-            metadata_task.cancel()
-
-
 async def get_http_stream(
     mass: MusicAssistant,
     url: str,
@@ -603,40 +520,63 @@ async def get_http_stream(
     if seek_position:
         assert streamdetails.duration, "Duration required for seek requests"
     # try to get filesize with a head request
-    if seek_position and not streamdetails.size:
-        async with mass.http_session.head(url) as resp:
+    seek_supported = streamdetails.can_seek
+    if seek_position or not streamdetails.size:
+        async with mass.http_session.head(url, headers=VLC_HEADERS) as resp:
+            resp.raise_for_status()
             if size := resp.headers.get("Content-Length"):
                 streamdetails.size = int(size)
+            seek_supported = resp.headers.get("Accept-Ranges") == "bytes"
     # headers
-    headers = {}
+    headers = {**VLC_HEADERS}
+    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     skip_bytes = 0
     if seek_position and streamdetails.size:
         skip_bytes = int(streamdetails.size / streamdetails.duration * seek_position)
-        headers["Range"] = f"bytes={skip_bytes}-"
+        headers["Range"] = f"bytes={skip_bytes}-{streamdetails.size}"
+
+    # seeking an unknown or container format is not supported due to the (moov) headers
+    if seek_position and (
+        not seek_supported
+        or streamdetails.audio_format.content_type
+        in (
+            ContentType.UNKNOWN,
+            ContentType.M4A,
+            ContentType.M4B,
+        )
+    ):
+        LOGGER.debug(
+            "Seeking in %s (%s) not possible, fallback to ffmpeg seeking.",
+            streamdetails.uri,
+            streamdetails.audio_format.output_format_str,
+        )
+        async for chunk in get_ffmpeg_stream(
+            url,
+            # we must set the input content type to unknown to
+            # enforce ffmpeg to determine it from the headers
+            input_format=AudioFormat(content_type=ContentType.UNKNOWN),
+            # enforce wav as we dont want to re-encode lossy formats
+            # choose wav so we have descriptive headers and move on
+            output_format=AudioFormat(content_type=ContentType.WAV),
+            extra_input_args=["-ss", str(seek_position)],
+        ):
+            yield chunk
+        return
 
     # start the streaming from http
-    buffer = b""
-    buffer_all = False
     bytes_received = 0
-    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
-    async with mass.http_session.get(url, headers=VLC_HEADERS, timeout=timeout) as resp:
+    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         is_partial = resp.status == 206
-        buffer_all = seek_position and not is_partial
+        if seek_position and not is_partial:
+            raise InvalidDataError("HTTP source does not support seeking!")
+        resp.raise_for_status()
         async for chunk in resp.content.iter_any():
             bytes_received += len(chunk)
-            if buffer_all and not skip_bytes:
-                buffer += chunk
-                continue
-            if not is_partial and skip_bytes and bytes_received < skip_bytes:
-                continue
             yield chunk
 
     # store size on streamdetails for later use
     if not streamdetails.size:
         streamdetails.size = bytes_received
-    if buffer_all:
-        skip_bytes = streamdetails.size / streamdetails.duration * seek_position
-        yield buffer[:skip_bytes]
     LOGGER.debug(
         "Finished HTTP stream for %s (transferred %s/%s bytes)",
         streamdetails.uri,
@@ -678,6 +618,7 @@ async def get_ffmpeg_stream(
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     loglevel: str | None = None,
+    extra_input_args: list[str] | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -696,6 +637,7 @@ async def get_ffmpeg_stream(
         input_path="-" if use_stdin else audio_input,
         output_path="-",
         loglevel=loglevel,
+        extra_input_args=extra_input_args or [],
     )
     async with AsyncProcess(
         ffmpeg_args,
@@ -938,13 +880,20 @@ def get_ffmpeg_args(
             input_format.content_type.name.lower(),
             "-f",
             input_format.content_type.value,
+            "-i",
+            input_path,
         ]
-    input_args += ["-i", input_path]
+    elif input_format.content_type == ContentType.UNKNOWN:
+        # let ffmpeg guess/auto detect the content type
+        input_args += ["-i", input_path]
+    else:
+        # use explicit format identifier for all other
+        input_args += ["-f", input_format.content_type.value, "-i", input_path]
 
     # collect output args
     if output_path.upper() == "NULL":
         output_args = ["-f", "null", "-"]
-    else:
+    elif output_format.content_type.is_pcm():
         output_args = [
             "-acodec",
             output_format.content_type.name.lower(),
@@ -956,6 +905,12 @@ def get_ffmpeg_args(
             str(output_format.sample_rate),
             output_path,
         ]
+    elif output_format.content_type == ContentType.UNKNOWN:
+        # use wav so we at least have some headers for the rest of the chain
+        output_args = ["-f", "wav", output_path]
+    else:
+        # use explicit format identifier for all other
+        output_args = ["-f", output_format.content_type.value, output_path]
 
     # prefer libsoxr high quality resampler (if present) for sample rate conversions
     if input_format.sample_rate != output_format.sample_rate and libsoxr_support:
