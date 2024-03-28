@@ -542,6 +542,8 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.expires = time() + int(
                 track_obj["streamingData"].get("expiresInSeconds")
             )
+        else:
+            stream_details.expires = time() + 600
         if stream_format.get("audioChannels") and str(stream_format.get("audioChannels")).isdigit():
             stream_details.audio_format.channels = int(stream_format.get("audioChannels"))
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():

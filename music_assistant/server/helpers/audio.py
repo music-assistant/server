@@ -201,7 +201,7 @@ async def get_stream_details(
     Do not try to request streamdetails in advance as this is expiring data.
         param media_item: The QueueItem for which to request the streamdetails for.
     """
-    if queue_item.streamdetails and (time() < queue_item.streamdetails.expires):
+    if queue_item.streamdetails and (time() + 60) < queue_item.streamdetails.expires:
         LOGGER.debug(f"Using (pre)cached streamdetails from queue_item for {queue_item.uri}")
         # we already have (fresh) streamdetails stored on the queueitem, use these.
         # this happens for example while seeking in a track.
@@ -226,23 +226,20 @@ async def get_stream_details(
             item_key = f"{music_prov.lookup_key}/{prov_media.item_id}"
             cache_key = f"cached_streamdetails_{item_key}"
             if cache := await mass.cache.get(cache_key):
-                LOGGER.debug(f"Using cached streamdetails for {item_key}")
-                streamdetails = StreamDetails.from_dict(cache)
-                break
+                if time() + 60 < cache["expires"]:
+                    LOGGER.debug(f"Using cached streamdetails for {item_key}")
+                    streamdetails = StreamDetails.from_dict(cache)
             # get streamdetails from provider
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
                     prov_media.item_id
                 )
-                # store streamdetails in cache
-                expiration = streamdetails.expires - time()
-                if expiration > 300:
-                    await mass.cache.set(
-                        cache_key, streamdetails.to_dict(), expiration=expiration - 60
-                    )
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
             else:
+                # store streamdetails in cache
+                expiration = streamdetails.expires - time()
+                await mass.cache.set(cache_key, streamdetails.to_dict(), expiration=expiration - 60)
                 break
         else:
             raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
