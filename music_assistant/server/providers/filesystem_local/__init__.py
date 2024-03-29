@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import os
 import os.path
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -14,7 +13,9 @@ from aiofiles.os import wrap
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import SetupFailedError
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PATH
+from music_assistant.server.helpers.audio import get_file_stream
 
 from .base import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
@@ -25,6 +26,8 @@ from .base import (
 from .helpers import get_absolute_path, get_relative_path
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -44,9 +47,10 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     conf_path = config.get_value(CONF_PATH)
     if not await isdir(conf_path):
-        raise SetupFailedError(f"Music Directory {conf_path} does not exist")
+        msg = f"Music Directory {conf_path} does not exist"
+        raise SetupFailedError(msg)
     prov = LocalFileSystemProvider(mass, manifest, config)
-    await prov.handle_setup()
+    prov.base_path = config.get_value(CONF_PATH)
     return prov
 
 
@@ -97,10 +101,6 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
     base_path: str
 
-    async def handle_setup(self) -> None:
-        """Handle async initialization of the provider."""
-        self.base_path = self.config.get_value(CONF_PATH)
-
     async def listdir(
         self, path: str, recursive: bool = False
     ) -> AsyncGenerator[FileSystemItem, None]:
@@ -118,8 +118,6 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self.base_path, path)
-        rel_path = get_relative_path(self.base_path, path)
-        self.logger.debug("Processing: %s", rel_path)
         entries = await asyncio.to_thread(os.scandir, abs_path)
         for entry in entries:
             if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
@@ -136,7 +134,9 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 yield item
 
     async def resolve(
-        self, file_path: str, require_local: bool = False  # noqa: ARG002
+        self,
+        file_path: str,
+        require_local: bool = False,
     ) -> FileSystemItem:
         """Resolve (absolute or relative) path to FileSystemItem.
 
@@ -169,10 +169,18 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self.base_path, file_path)
         return await exists(abs_path)
 
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        abs_path = get_absolute_path(self.base_path, streamdetails.item_id)
+        async for chunk in get_file_stream(self.mass, abs_path, streamdetails, seek_position):
+            yield chunk
+
     async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         abs_path = get_absolute_path(self.base_path, file_path)
-        chunk_size = 512000
+        chunk_size = 64000
         async with aiofiles.open(abs_path, "rb") as _file:
             if seek:
                 await _file.seek(seek)

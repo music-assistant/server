@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
+from collections.abc import AsyncGenerator
 from operator import itemgetter
 from time import time
-from typing import TYPE_CHECKING, AsyncGenerator  # noqa: UP035
+from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 import pytube
+from aiohttp import ClientResponseError
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
@@ -34,9 +37,10 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -117,7 +121,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = YoutubeMusicProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -186,10 +190,12 @@ class YoutubeMusicProvider(MusicProvider):
     _signature_timestamp = 0
     _cipher = None
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
+        logging.getLogger("pytube").setLevel(self.logger.level + 10)
         if not self.config.get_value(CONF_AUTH_TOKEN):
-            raise LoginFailed("Invalid login credentials")
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         await self._initialize_headers()
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
@@ -283,7 +289,8 @@ class YoutubeMusicProvider(MusicProvider):
         await self._check_oauth_token()
         if album_obj := await get_album(prov_album_id=prov_album_id):
             return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
@@ -294,7 +301,7 @@ class YoutubeMusicProvider(MusicProvider):
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
             track_obj["disc_number"] = 0
-            track_obj["track_number"] = idx
+            track_obj["track_number"] = track_obj.get("trackNumber", idx)
             try:
                 track = await self._parse_track(track_obj=track_obj)
             except InvalidDataError:
@@ -307,7 +314,8 @@ class YoutubeMusicProvider(MusicProvider):
         await self._check_oauth_token()
         if artist_obj := await get_artist(prov_artist_id=prov_artist_id, headers=self._headers):
             return await self._parse_artist(artist_obj=artist_obj)
-        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
+        msg = f"Item {prov_artist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
@@ -318,7 +326,8 @@ class YoutubeMusicProvider(MusicProvider):
             signature_timestamp=self._signature_timestamp,
         ):
             return await self._parse_track(track_obj)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        msg = f"Item {prov_track_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
@@ -330,7 +339,8 @@ class YoutubeMusicProvider(MusicProvider):
             prov_playlist_id=prov_playlist_id, headers=self._headers
         ):
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        msg = f"Item {prov_playlist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
@@ -338,7 +348,14 @@ class YoutubeMusicProvider(MusicProvider):
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
-        playlist_obj = await get_playlist(prov_playlist_id=prov_playlist_id, headers=self._headers)
+        # Add a try to prevent MA from stopping syncing whenever we fail a single playlist
+        try:
+            playlist_obj = await get_playlist(
+                prov_playlist_id=prov_playlist_id, headers=self._headers
+            )
+        except KeyError as ke:
+            self.logger.warning("Could not load playlist: %s: %s", prov_playlist_id, ke)
+            return
         if "tracks" not in playlist_obj:
             return
         for index, track_obj in enumerate(playlist_obj["tracks"]):
@@ -494,16 +511,18 @@ class YoutubeMusicProvider(MusicProvider):
             signature_timestamp=self._signature_timestamp,
         )
         if not track_obj:
-            raise MediaNotFoundError(f"Item {item_id} not found")
+            msg = f"Item {item_id} not found"
+            raise MediaNotFoundError(msg)
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):
             if retry > 4:
-                self.logger.warn(
+                self.logger.warning(
                     f"Could not resolve a valid URL for item '{item_id}'. "
                     "Are you playing music on another device using the same account?"
                 )
-                raise UnplayableMediaError(f"Could not resolve a valid URL for item '{item_id}'.")
+                msg = f"Could not resolve a valid URL for item '{item_id}'."
+                raise UnplayableMediaError(msg)
             self.logger.debug(
                 "Invalid playback URL encountered. Retrying with new signature timestamp."
             )
@@ -516,7 +535,7 @@ class YoutubeMusicProvider(MusicProvider):
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format["mimeType"]),
             ),
-            direct=url,
+            data=url,
         )
         if (
             track_obj["streamingData"].get("expiresInSeconds")
@@ -525,13 +544,36 @@ class YoutubeMusicProvider(MusicProvider):
             stream_details.expires = time() + int(
                 track_obj["streamingData"].get("expiresInSeconds")
             )
+        else:
+            stream_details.expires = time() + 600
         if stream_format.get("audioChannels") and str(stream_format.get("audioChannels")).isdigit():
             stream_details.audio_format.channels = int(stream_format.get("audioChannels"))
         if stream_format.get("audioSampleRate") and stream_format.get("audioSampleRate").isdigit():
             stream_details.audio_format.sample_rate = int(stream_format.get("audioSampleRate"))
         return stream_details
 
-    async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):  # noqa: ARG002
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        is_retry = False
+        while True:
+            try:
+                async for chunk in get_http_stream(
+                    self.mass, streamdetails.data, streamdetails, seek_position
+                ):
+                    yield chunk
+                return
+            except ClientResponseError as err:
+                if not is_retry and err.status == 403:
+                    # cipher expired, get a fresh one
+                    self.logger.warning("Cipher expired, trying to refresh...")
+                    streamdetails = await self.get_stream_details(streamdetails.item_id)
+                    continue
+                # raise for all other cases or we have already retried
+                raise
+
+    async def _post_data(self, endpoint: str, data: dict[str, str], **kwargs):
         """Post data to the given endpoint."""
         await self._check_oauth_token()
         url = f"{YTM_BASE_URL}{endpoint}"
@@ -545,7 +587,7 @@ class YoutubeMusicProvider(MusicProvider):
         ) as response:
             return await response.json()
 
-    async def _get_data(self, url: str, params: dict = None):
+    async def _get_data(self, url: str, params: dict | None = None):
         """Get data from the given URL."""
         await self._check_oauth_token()
         async with self.mass.http_session.get(
@@ -588,7 +630,7 @@ class YoutubeMusicProvider(MusicProvider):
             }
         }
 
-    async def _parse_album(self, album_obj: dict, album_id: str = None) -> Album:
+    async def _parse_album(self, album_obj: dict, album_id: str | None = None) -> Album:
         """Parse a YT Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
         if "title" in album_obj:
@@ -640,12 +682,13 @@ class YoutubeMusicProvider(MusicProvider):
         artist_id = None
         if "channelId" in artist_obj:
             artist_id = artist_obj["channelId"]
-        elif "id" in artist_obj and artist_obj["id"]:
+        elif artist_obj.get("id"):
             artist_id = artist_obj["id"]
         elif artist_obj["name"] == "Various Artists":
             artist_id = VARIOUS_ARTISTS_YTM_ID
         if not artist_id:
-            raise InvalidDataError("Artist does not have a valid ID")
+            msg = "Artist does not have a valid ID"
+            raise InvalidDataError(msg)
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["name"],
@@ -661,7 +704,7 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if "description" in artist_obj:
             artist.metadata.description = artist_obj["description"]
-        if "thumbnails" in artist_obj and artist_obj["thumbnails"]:
+        if artist_obj.get("thumbnails"):
             artist.metadata.images = await self._parse_thumbnails(artist_obj["thumbnails"])
         return artist
 
@@ -688,7 +731,7 @@ class YoutubeMusicProvider(MusicProvider):
         )
         if "description" in playlist_obj:
             playlist.metadata.description = playlist_obj["description"]
-        if "thumbnails" in playlist_obj and playlist_obj["thumbnails"]:
+        if playlist_obj.get("thumbnails"):
             playlist.metadata.images = await self._parse_thumbnails(playlist_obj["thumbnails"])
         is_editable = False
         if playlist_obj.get("privacy") and playlist_obj.get("privacy") == "PRIVATE":
@@ -709,7 +752,8 @@ class YoutubeMusicProvider(MusicProvider):
     async def _parse_track(self, track_obj: dict) -> Track | AlbumTrack | PlaylistTrack:
         """Parse a YT Track response to a Track model object."""
         if not track_obj.get("videoId"):
-            raise InvalidDataError("Track is missing videoId")
+            msg = "Track is missing videoId"
+            raise InvalidDataError(msg)
 
         if "position" in track_obj:
             track_class = PlaylistTrack
@@ -741,7 +785,7 @@ class YoutubeMusicProvider(MusicProvider):
             **extra_init_kwargs,
         )
 
-        if "artists" in track_obj and track_obj["artists"]:
+        if track_obj.get("artists"):
             track.artists = [
                 self._get_artist_item_mapping(artist)
                 for artist in track_obj["artists"]
@@ -751,8 +795,9 @@ class YoutubeMusicProvider(MusicProvider):
             ]
         # guard that track has valid artists
         if not track.artists:
-            raise InvalidDataError("Track is missing artists")
-        if "thumbnails" in track_obj and track_obj["thumbnails"]:
+            msg = "Track is missing artists"
+            raise InvalidDataError(msg)
+        if track_obj.get("thumbnails"):
             track.metadata.images = await self._parse_thumbnails(track_obj["thumbnails"])
         if (
             track_obj.get("album")
@@ -778,12 +823,14 @@ class YoutubeMusicProvider(MusicProvider):
             response = await self._get_data(url=YT_DOMAIN)
             match = re.search(r'jsUrl"\s*:\s*"([^"]+)"', response)
         if match is None:
-            raise Exception("Could not identify the URL for base.js player.")
+            msg = "Could not identify the URL for base.js player."
+            raise Exception(msg)  # pylint: disable=broad-exception-raised
         url = YTM_DOMAIN + match.group(1)
         response = await self._get_data(url=url)
         match = re.search(r"signatureTimestamp[:=](\d+)", response)
         if match is None:
-            raise Exception("Unable to identify the signatureTimestamp.")
+            msg = "Unable to identify the signatureTimestamp."
+            raise Exception(msg)  # pylint: disable=broad-exception-raised
         return int(match.group(1))
 
     async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
@@ -869,5 +916,6 @@ class YoutubeMusicProvider(MusicProvider):
             ):
                 stream_format = adaptive_format
         if stream_format is None:
-            raise MediaNotFoundError("No stream found for this track")
+            msg = "No stream found for this track"
+            raise MediaNotFoundError(msg)
         return stream_format

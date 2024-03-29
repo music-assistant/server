@@ -1,13 +1,13 @@
 """Tests for utility/helper functions."""
 
-from pytest import raises
+import pytest
 
 from music_assistant.common.helpers import uri, util
 from music_assistant.common.models import media_items
 from music_assistant.common.models.errors import MusicAssistantError
 
 
-def test_version_extract():
+def test_version_extract() -> None:
     """Test the extraction of version from title."""
     test_str = "Bam Bam (feat. Ed Sheeran) - Karaoke Version"
     title, version = util.parse_title_and_version(test_str)
@@ -15,7 +15,7 @@ def test_version_extract():
     assert version == "Karaoke Version"
 
 
-def test_uri_parsing():
+def test_uri_parsing() -> None:
     """Test parsing of URI."""
     # test regular uri
     test_uri = "spotify://track/123456789"
@@ -42,5 +42,5 @@ def test_uri_parsing():
     assert provider == "filesystem"
     assert item_id == "Artist/Album/Track.flac"
     # test invalid uri
-    with raises(MusicAssistantError):
+    with pytest.raises(MusicAssistantError):
         uri.parse_uri("invalid://blah")

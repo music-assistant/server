@@ -154,7 +154,7 @@ class Music:
         return [
             Track.from_dict(item)
             for item in await self.client.send_command(
-                "music/album/album_tracks",
+                "music/albums/album_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
             )
@@ -425,7 +425,9 @@ class Music:
         Destructive! Will remove the item and all dependants.
         """
         await self.client.send_command(
-            "music/library/remove", media_type=media_type, library_item_id=library_item_id
+            "music/library/remove",
+            media_type=media_type,
+            library_item_id=library_item_id,
         )
 
     async def add_item_to_favorites(
@@ -465,17 +467,21 @@ class Music:
         ]
 
     async def search(
-        self, search_query: str, media_types: tuple[MediaType] = MediaType.ALL, limit: int = 25
+        self,
+        search_query: str,
+        media_types: tuple[MediaType] = MediaType.ALL,
+        limit: int = 25,
     ) -> SearchResults:
         """Perform global search for media items on all providers."""
         return SearchResults.from_dict(
             await self.client.send_command(
-                "music/search", search_query=search_query, media_types=media_types, limit=limit
+                "music/search",
+                search_query=search_query,
+                media_types=media_types,
+                limit=limit,
             ),
         )
 
     async def get_sync_tasks(self) -> list[SyncTask]:
         """Return any/all sync tasks that are in progress on the server."""
-        return [
-            SyncTask.from_dict(item) for item in await self.client.send_command("music/synctasks")
-        ]
+        return [SyncTask(**item) for item in await self.client.send_command("music/synctasks")]

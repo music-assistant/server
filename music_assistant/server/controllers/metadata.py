@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import os
 import urllib.parse
 from base64 import b64encode
@@ -16,7 +15,7 @@ import aiofiles
 from aiohttp import web
 
 from music_assistant.common.models.enums import ImageType, MediaType, ProviderFeature, ProviderType
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -27,21 +26,15 @@ from music_assistant.common.models.media_items import (
     Radio,
     Track,
 )
-from music_assistant.constants import (
-    ROOT_LOGGER_NAME,
-    VARIOUS_ARTISTS_ID_MBID,
-    VARIOUS_ARTISTS_NAME,
-)
+from music_assistant.constants import VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
 from music_assistant.server.models.core_controller import CoreController
-from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.metadata_provider import MetadataProvider
-
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.metadata")
+    from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 
 class MetaDataController(CoreController):
@@ -61,7 +54,7 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "book-information-variant"
 
-    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
 
@@ -94,12 +87,12 @@ class MetaDataController(CoreController):
     def start_scan(self) -> None:
         """Start background scan for missing metadata."""
 
-        async def scan_artist_metadata():
+        async def scan_artist_metadata() -> None:
             """Background task that scans for artists missing metadata on filesystem providers."""
             if self.scan_busy:
                 return
 
-            LOGGER.debug("Start scan for missing artist metadata")
+            self.logger.debug("Start scan for missing artist metadata")
             self.scan_busy = True
             async for artist in self.mass.music.artists.iter_library_items():
                 if artist.metadata.last_refresh is not None:
@@ -115,7 +108,7 @@ class MetaDataController(CoreController):
                 # this is slow on purpose to not cause stress on the metadata providers
                 await asyncio.sleep(30)
             self.scan_busy = False
-            LOGGER.debug("Finished scan for missing artist metadata")
+            self.logger.debug("Finished scan for missing artist metadata")
 
         self.mass.create_task(scan_artist_metadata)
 
@@ -132,7 +125,7 @@ class MetaDataController(CoreController):
                 continue
             if metadata := await provider.get_artist_metadata(artist):
                 artist.metadata.update(metadata)
-                LOGGER.debug(
+                self.logger.debug(
                     "Fetched metadata for Artist %s on provider %s",
                     artist.name,
                     provider.name,
@@ -151,7 +144,7 @@ class MetaDataController(CoreController):
                 continue
             if metadata := await provider.get_album_metadata(album):
                 album.metadata.update(metadata)
-                LOGGER.debug(
+                self.logger.debug(
                     "Fetched metadata for Album %s on provider %s",
                     album.name,
                     provider.name,
@@ -169,7 +162,7 @@ class MetaDataController(CoreController):
                 continue
             if metadata := await provider.get_track_metadata(track):
                 track.metadata.update(metadata)
-                LOGGER.debug(
+                self.logger.debug(
                     "Fetched metadata for Track %s on provider %s",
                     track.name,
                     provider.name,
@@ -226,7 +219,11 @@ class MetaDataController(CoreController):
                     MediaItemImage(type=ImageType.THUMB, path=img_path, provider="file")
                 ]
         except Exception as err:
-            LOGGER.debug("Error while creating playlist image", exc_info=err)
+            self.logger.warning(
+                "Error while creating playlist image: %s",
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())
 
@@ -268,7 +265,7 @@ class MetaDataController(CoreController):
         # lookup failed
         ref_albums_str = "/".join(x.name for x in ref_albums) or "none"
         ref_tracks_str = "/".join(x.name for x in ref_tracks) or "none"
-        LOGGER.debug(
+        self.logger.debug(
             "Unable to get musicbrainz ID for artist %s\n"
             " - using lookup-album(s): %s\n"
             " - using lookup-track(s): %s\n",
@@ -329,23 +326,38 @@ class MetaDataController(CoreController):
 
         return None
 
-    def get_image_url(self, image: MediaItemImage, size: int = 0) -> str:
+    def get_image_url(
+        self,
+        image: MediaItemImage,
+        size: int = 0,
+        prefer_proxy: bool = False,
+        image_format: str = "png",
+    ) -> str:
         """Get (proxied) URL for MediaItemImage."""
-        if image.provider != "url":
+        if image.provider != "url" or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
-            return f"{self.mass.streams.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}"  # noqa: E501
+            return f"{self.mass.streams.base_url}/imageproxy?path={encoded_url}&provider={image.provider}&size={size}&fmt={image_format}"  # noqa: E501
         return image.path
 
     async def get_thumbnail(
-        self, path: str, size: int | None = None, provider: str = "url", base64: bool = False
+        self,
+        path: str,
+        size: int | None = None,
+        provider: str = "url",
+        base64: bool = False,
+        image_format: str = "png",
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        thumbnail = await get_image_thumb(self.mass, path, size=size, provider=provider)
+        if provider != "url" and not self.mass.get_provider(provider):
+            raise ProviderUnavailableError
+        thumbnail = await get_image_thumb(
+            self.mass, path, size=size, provider=provider, image_format=image_format
+        )
         if base64:
             enc_image = b64encode(thumbnail).decode()
-            thumbnail = f"data:image/png;base64,{enc_image}"
+            thumbnail = f"data:image/{image_format};base64,{enc_image}"
         return thumbnail
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
@@ -353,17 +365,21 @@ class MetaDataController(CoreController):
         path = request.query["path"]
         provider = request.query.get("provider", "url")
         size = int(request.query.get("size", "0"))
+        image_format = request.query.get("fmt", "png")
+        if provider != "url" and not self.mass.get_provider(provider):
+            return web.Response(status=404)
         if "%" in path:
             # assume (double) encoded url, decode it
             path = urllib.parse.unquote(path)
-
         with suppress(FileNotFoundError):
-            image_data = await self.get_thumbnail(path, size=size, provider=provider)
+            image_data = await self.get_thumbnail(
+                path, size=size, provider=provider, image_format=image_format
+            )
             # we set the cache header to 1 year (forever)
             # the client can use the checksum value to refresh when content changes
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000"},
-                content_type="image/png",
+                content_type=f"image/{image_format}",
             )
         return web.Response(status=404)

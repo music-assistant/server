@@ -141,8 +141,7 @@ async def get_library_tracks(headers: dict[str, str]) -> dict[str, str]:
 
     def _get_library_tracks():
         ytm = ytmusicapi.YTMusic(auth=headers)
-        tracks = ytm.get_library_songs(limit=9999)
-        return tracks
+        return ytm.get_library_songs(limit=9999)
 
     return await asyncio.to_thread(_get_library_tracks)
 
@@ -236,7 +235,7 @@ async def get_song_radio_tracks(
     return await asyncio.to_thread(_get_song_radio_tracks)
 
 
-async def search(query: str, ytm_filter: str = None, limit: int = 20) -> list[dict]:
+async def search(query: str, ytm_filter: str | None = None, limit: int = 20) -> list[dict]:
     """Async wrapper around the ytmusicapi search function."""
 
     def _search():
@@ -293,8 +292,7 @@ async def login_oauth(auth_helper: AuthenticationHelper):
     """Use device login to get a token."""
     http_session = auth_helper.mass.http_session
     code = await get_oauth_code(http_session)
-    token = await visit_oauth_auth_url(auth_helper, code)
-    return token
+    return await visit_oauth_auth_url(auth_helper, code)
 
 
 def _get_data_and_headers(data: dict):
@@ -324,7 +322,8 @@ async def visit_oauth_auth_url(auth_helper: AuthenticationHelper, code: dict[str
             return token
         await asyncio.sleep(interval)
         expiry -= interval
-    raise TimeoutError("You took too long to log in")
+    msg = "You took too long to log in"
+    raise TimeoutError(msg)
 
 
 async def get_oauth_token_from_code(session: ClientSession, device_code: str):

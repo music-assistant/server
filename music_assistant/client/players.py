@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import EventType, QueueOption, RepeatMode
-from music_assistant.common.models.event import MassEvent
-from music_assistant.common.models.media_items import MediaItemType
 from music_assistant.common.models.player import Player
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+    from music_assistant.common.models.event import MassEvent
+    from music_assistant.common.models.media_items import MediaItemType
+
     from .client import MusicAssistantClient
 
 
@@ -118,6 +120,22 @@ class Players:
           - player_id: player_id of the player to handle the command.
         """
         await self.client.send_command("players/cmd/unsync", player_id=player_id)
+
+    async def play_announcement(
+        self,
+        player_id: str,
+        url: str,
+        use_pre_announce: bool | None = None,
+        volume_level: int | None = None,
+    ) -> None:
+        """Handle playback of an announcement (url) on given player."""
+        await self.client.send_command(
+            "players/cmd/play_announcement",
+            player_id=player_id,
+            url=url,
+            use_pre_announce=use_pre_announce,
+            volume_level=volume_level,
+        )
 
     #  PlayerGroup related endpoints/commands
 
@@ -264,7 +282,7 @@ class Players:
         self,
         queue_id: str,
         media: MediaItemType | list[MediaItemType] | str | list[str],
-        option: QueueOption = QueueOption.PLAY,
+        option: QueueOption | None = None,
         radio_mode: bool = False,
     ) -> None:
         """

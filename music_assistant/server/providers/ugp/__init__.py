@@ -8,7 +8,6 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import shortuuid
@@ -28,16 +27,21 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_GROUP_MEMBERS,
+    SYNCGROUP_PREFIX,
+    UGP_PREFIX,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
-
-UGP_PREFIX = "ugp_"
 
 
 # ruff: noqa: ARG002
@@ -47,9 +51,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    prov = UniversalGroupProvider(mass, manifest, config)
-    await prov.handle_setup()
-    return prov
+    return UniversalGroupProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -65,7 +67,7 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    return tuple()
+    return ()
 
 
 class UniversalGroupProvider(PlayerProvider):
@@ -79,15 +81,22 @@ class UniversalGroupProvider(PlayerProvider):
         """Return the features supported by this Provider."""
         return (ProviderFeature.PLAYER_GROUP_CREATE,)
 
-    async def handle_setup(self) -> None:
-        """Handle async initialization of the provider."""
+    def __init__(
+        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
+    ) -> None:
+        """Initialize MusicProvider."""
+        super().__init__(mass, manifest, config)
         self.prev_sync_leaders = {}
-        self.mass.loop.create_task(self._register_all_players())
 
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:  # noqa: ARG002
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await self._register_all_players()
+
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + (
+        return (
+            *base_entries,
             ConfigEntry(
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
@@ -104,7 +113,7 @@ class UniversalGroupProvider(PlayerProvider):
             ),
             ConfigEntry(
                 key="ugp_note",
-                type=ConfigEntryType.LABEL,
+                type=ConfigEntryType.ALERT,
                 label="Please note that although the universal group "
                 "allows you to group any player, it will not enable audio sync "
                 "between players of different ecosystems.",
@@ -117,7 +126,7 @@ class UniversalGroupProvider(PlayerProvider):
                 description="Enable a crossfade transition between (queue) tracks. \n\n"
                 "Note that DLNA does not natively support crossfading so you need to enable "
                 "the 'flow mode' workaround to use crossfading with DLNA players.",
-                advanced=False,
+                category="audio",
             ),
             CONF_ENTRY_CROSSFADE_DURATION,
         )
@@ -132,6 +141,8 @@ class UniversalGroupProvider(PlayerProvider):
                 if member.state == PlayerState.IDLE:
                     continue
                 tg.create_task(self.mass.players.cmd_stop(member.player_id))
+        if existing := self.mass.streams.multi_client_jobs.pop(player_id, None):
+            existing.stop()
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
@@ -154,26 +165,25 @@ class UniversalGroupProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
+        """Handle PLAY MEDIA on given player."""
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
 
-        # create multi-client stream job
-        stream_job = await self.mass.streams.create_multi_client_stream_job(
-            player_id, start_queue_item=queue_item, seek_position=seek_position, fade_in=fade_in
+        # create a multi-client stream job - all (direct) child's of this UGP group
+        # will subscribe to this multi client queue stream
+        queue = self.mass.player_queues.get(player_id)
+        stream_job = self.mass.streams.create_multi_client_stream_job(
+            queue.queue_id,
+            start_queue_item=queue_item,
+        )
+        # create a fake queue item to forward to downstream play_media commands
+        ugp_queue_item = QueueItem(
+            player_id,
+            queue_item_id=stream_job.job_id,
+            name="Music Assistant",
+            duration=None,
         )
 
         # forward the stream job to all group members
@@ -184,8 +194,7 @@ class UniversalGroupProvider(PlayerProvider):
                     member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
                     if member is None:
                         continue
-                tg.create_task(player_prov.play_stream(member.player_id, stream_job))
-        stream_job.start()
+                tg.create_task(player_prov.play_media(member.player_id, ugp_queue_item))
 
     async def poll_player(self, player_id: str) -> None:
         """Poll player for state updates."""
@@ -216,16 +225,19 @@ class UniversalGroupProvider(PlayerProvider):
             enabled=True,
             values={CONF_GROUP_MEMBERS: members},
         )
-        player = self._register_group_player(new_group_id, name=name, members=members)
-        return player
+        return self._register_group_player(new_group_id, name=name, members=members)
 
     async def _register_all_players(self) -> None:
         """Register all (virtual/fake) group players in the Player controller."""
-        player_configs = await self.mass.config.get_player_configs(self.instance_id)
+        player_configs = await self.mass.config.get_player_configs(
+            self.instance_id, include_values=True
+        )
         for player_config in player_configs:
             members = player_config.get_value(CONF_GROUP_MEMBERS)
             self._register_group_player(
-                player_config.player_id, player_config.name or player_config.default_name, members
+                player_config.player_id,
+                player_config.name or player_config.default_name,
+                members,
             )
 
     def _register_group_player(
@@ -272,7 +284,7 @@ class UniversalGroupProvider(PlayerProvider):
 
         if not group_player.powered:
             # guard, this should be caught in the player controller but just in case...
-            return
+            return None
 
         powered_childs = [
             x
@@ -301,5 +313,9 @@ class UniversalGroupProvider(PlayerProvider):
                 group_player.display_name,
             )
             self.mass.loop.call_later(
-                1, self.mass.create_task, self.mass.player_queues.resume(group_player.player_id)
+                1,
+                self.mass.create_task,
+                self.mass.player_queues.resume(group_player.player_id),
             )
+            return None
+        return None

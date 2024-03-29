@@ -3,11 +3,18 @@
   "domain": "chromecast",
   "name": "Chromecast",
   "description": "Support for Chromecast based players.",
-  "codeowners": ["@music-assistant"],
-  "requirements": ["PyChromecast==13.0.8"],
-  "documentation": "https://github.com/music-assistant/hass-music-assistant/discussions/1138",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "requirements": [
+    "PyChromecast==14.0.1"
+  ],
+  "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": true,
-  "icon": "cast"
+  "icon": "cast",
+  "mdns_discovery": [
+    "_googlecast._tcp.local."
+  ]
 }

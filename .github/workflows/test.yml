@@ -18,7 +18,7 @@ jobs:
       - name: Check out code from GitHub
         uses: actions/checkout@v4
       - name: Set up Python
-        uses: actions/setup-python@v5.0.0
+        uses: actions/setup-python@v5.1.0
         with:
           python-version: "3.11"
       - name: Install dependencies
@@ -28,7 +28,7 @@ jobs:
           python -m pip install --upgrade pip build setuptools
           pip install . .[test]
       - name: Lint/test with pre-commit
-        run: pre-commit run --all-files
+        run: SKIP=no-commit-to-branch pre-commit run --all-files
 
   test:
     runs-on: ubuntu-latest
@@ -43,7 +43,7 @@ jobs:
       - name: Check out code from GitHub
         uses: actions/checkout@v4
       - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v5.0.0
+        uses: actions/setup-python@v5.1.0
         with:
           python-version: ${{ matrix.python-version }}
       - name: Install dependencies

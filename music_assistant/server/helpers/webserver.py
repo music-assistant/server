@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import logging
-from collections.abc import Awaitable, Callable
-from typing import Final
+from typing import TYPE_CHECKING, Final
 
 from aiohttp import web
+
+if TYPE_CHECKING:
+    import logging
+    from collections.abc import Awaitable, Callable
 
 MAX_CLIENT_SIZE: Final = 1024**2 * 16
 MAX_LINE_SIZE: Final = 24570
@@ -19,7 +21,7 @@ class Webserver:
         self,
         logger: logging.Logger,
         enable_dynamic_routes: bool = False,
-    ):
+    ) -> None:
         """Initialize instance."""
         self.logger = logger
         # the below gets initialized in async setup
@@ -92,10 +94,12 @@ class Webserver:
     def register_dynamic_route(self, path: str, handler: Awaitable, method: str = "*") -> Callable:
         """Register a dynamic route on the webserver, returns handler to unregister."""
         if self._dynamic_routes is None:
-            raise RuntimeError("Dynamic routes are not enabled")
+            msg = "Dynamic routes are not enabled"
+            raise RuntimeError(msg)
         key = f"{method}.{path}"
-        if key in self._dynamic_routes:
-            raise RuntimeError(f"Route {path} already registered.")
+        if key in self._dynamic_routes:  # pylint: disable=unsupported-membership-test
+            msg = f"Route {path} already registered."
+            raise RuntimeError(msg)
         self._dynamic_routes[key] = handler
 
         def _remove():
@@ -106,7 +110,8 @@ class Webserver:
     def unregister_dynamic_route(self, path: str, method: str = "*") -> None:
         """Unregister a dynamic route from the webserver."""
         if self._dynamic_routes is None:
-            raise RuntimeError("Dynamic routes are not enabled")
+            msg = "Dynamic routes are not enabled"
+            raise RuntimeError(msg)
         key = f"{method}.{path}"
         self._dynamic_routes.pop(key)
 

@@ -25,13 +25,13 @@ class Player(DataClassDictMixin):
     """Representation of a Player within Music Assistant."""
 
     player_id: str
-    provider: str
+    provider: str  # instance_id of the player provider
     type: PlayerType
     name: str
     available: bool
     powered: bool
     device_info: DeviceInfo
-    supported_features: tuple[PlayerFeature, ...] = field(default=tuple())
+    supported_features: tuple[PlayerFeature, ...] = field(default=())
 
     elapsed_time: float = 0
     elapsed_time_last_updated: float = time.time()
@@ -51,7 +51,8 @@ class Player(DataClassDictMixin):
     # active_source: return player_id of the active queue for this player
     # if the player is grouped and a group is active, this will be set to the group's player_id
     # otherwise it will be set to the own player_id
-    active_source: str = ""
+    # can also be an actual different source if the player supports that
+    active_source: str | None = None
 
     # current_item_id: return item_id/uri of the current active/loaded item on the player
     # this may be a MA queue_item_id, url, uri or some provider specific string
@@ -59,7 +60,7 @@ class Player(DataClassDictMixin):
 
     # can_sync_with: return tuple of player_ids that can be synced to/with this player
     # usually this is just a list of all player_ids within the playerprovider
-    can_sync_with: tuple[str, ...] = field(default=tuple())
+    can_sync_with: tuple[str, ...] = field(default=())
 
     # synced_to: player_id of the player this player is currently synced to
     # also referred to as "sync master"
@@ -90,6 +91,10 @@ class Player(DataClassDictMixin):
     # a hidden player is hidden in the UI only but can still be controlled
     hidden: bool = False
 
+    # icon: material design icon for this player
+    # will be set by the player manager based on config
+    icon: str = "mdi-speaker"
+
     # group_volume: if the player is a player group or syncgroup master,
     # this will return the average volume of all child players
     # if not a group player, this is just the player's volume
@@ -102,6 +107,9 @@ class Player(DataClassDictMixin):
     # extra_data: any additional data to store on the player object
     # and pass along freely
     extra_data: dict[str, Any] = field(default_factory=dict)
+
+    # announcement_in_progress boolean to indicate there's an announcement in progress.
+    announcement_in_progress: bool = False
 
     @property
     def corrected_elapsed_time(self) -> float:

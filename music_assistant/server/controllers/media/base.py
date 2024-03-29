@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 from abc import ABCMeta, abstractmethod
-from collections.abc import AsyncGenerator, Iterable, Mapping
 from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
@@ -22,9 +21,11 @@ from music_assistant.common.models.media_items import (
     Track,
     media_from_dict,
 )
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, ROOT_LOGGER_NAME
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Iterable, Mapping
+
     from music_assistant.server import MusicAssistant
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
@@ -40,11 +41,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     item_cls: MediaItemType
     db_table: str
 
-    def __init__(self, mass: MusicAssistant):
+    def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
         self.base_query = f"SELECT * FROM {self.db_table}"
-        self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
+        self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
     async def add_item_to_library(self, item: ItemCls, metadata_lookup: bool = True) -> ItemCls:
@@ -193,7 +194,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         if not details:
             # we couldn't get a match from any of the providers, raise error
-            raise MediaNotFoundError(f"Item not found: {provider_instance_id_or_domain}/{item_id}")
+            msg = f"Item not found: {provider_instance_id_or_domain}/{item_id}"
+            raise MediaNotFoundError(msg)
         if not add_to_library:
             # return the provider item as-is
             return details
@@ -282,7 +284,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         match = {"item_id": db_id}
         if db_row := await self.mass.music.database.get_row(self.db_table, match):
             return self.item_cls.from_dict(self._parse_db_row(db_row))
-        raise MediaNotFoundError(f"{self.media_type.value} not found in library: {db_id}")
+        msg = f"{self.media_type.value} not found in library: {db_id}"
+        raise MediaNotFoundError(msg)
 
     async def get_library_item_by_prov_id(
         self,
@@ -452,10 +455,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # so not for tracks and albums (which rely on other objects)
             return fallback
         # all options exhausted, we really can not find this item
-        raise MediaNotFoundError(
+        msg = (
             f"{self.media_type.value}://{item_id} not "
             f"found on provider {provider_instance_id_or_domain}"
         )
+        raise MediaNotFoundError(msg)
 
     async def add_provider_mapping(
         self, item_id: str | int, provider_mapping: ProviderMapping

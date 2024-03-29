@@ -3,11 +3,11 @@
 import pathlib
 from typing import Final
 
-API_SCHEMA_VERSION: Final[int] = 23
-MIN_SCHEMA_VERSION: Final[int] = 23
-DB_SCHEMA_VERSION: Final[int] = 27
+API_SCHEMA_VERSION: Final[int] = 24
+MIN_SCHEMA_VERSION: Final[int] = 24
+DB_SCHEMA_VERSION: Final[int] = 28
 
-ROOT_LOGGER_NAME: Final[str] = "music_assistant"
+MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 UNKNOWN_ARTIST: Final[str] = "Unknown Artist"
 VARIOUS_ARTISTS_NAME: Final[str] = "Various Artists"
@@ -53,6 +53,14 @@ CONF_GROUP_PLAYERS: Final[str] = "group_players"
 CONF_CROSSFADE: Final[str] = "crossfade"
 CONF_GROUP_MEMBERS: Final[str] = "group_members"
 CONF_HIDE_PLAYER: Final[str] = "hide_player"
+CONF_ENFORCE_MP3: Final[str] = "enforce_mp3"
+CONF_SYNC_ADJUST: Final[str] = "sync_adjust"
+CONF_TTS_PRE_ANNOUNCE: Final[str] = "tts_pre_announce"
+CONF_ANNOUNCE_VOLUME_STRATEGY: Final[str] = "announce_volume_strategy"
+CONF_ANNOUNCE_VOLUME: Final[str] = "announce_volume"
+CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
+CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
+CONF_ICON: Final[str] = "icon"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -88,3 +96,5 @@ CONFIGURABLE_CORE_CONTROLLERS = (
     "player_queues",
 )
 SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
+VERBOSE_LOG_LEVEL: Final[int] = 5
+UGP_PREFIX: Final[str] = "ugp_"

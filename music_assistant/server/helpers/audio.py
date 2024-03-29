@@ -1,4 +1,4 @@
-"""Various helpers for audio manipulation."""
+"""Various helpers for audio streaming and manipulation."""
 
 from __future__ import annotations
 
@@ -7,44 +7,60 @@ import logging
 import os
 import re
 import struct
-from collections.abc import AsyncGenerator
-from contextlib import suppress
+from collections import deque
 from io import BytesIO
 from time import time
 from typing import TYPE_CHECKING
 
 import aiofiles
-from aiohttp import ClientTimeout
+from aiohttp import ClientResponseError, ClientTimeout
 
+from music_assistant.common.helpers.global_cache import (
+    get_global_cache_value,
+    set_global_cache_values,
+)
+from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
 from music_assistant.common.models.errors import (
     AudioError,
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
 )
-from music_assistant.common.models.media_items import (
-    AudioFormat,
-    ContentType,
-    MediaType,
-    StreamDetails,
-)
+from music_assistant.common.models.media_items import AudioFormat, ContentType
+from music_assistant.common.models.streamdetails import LoudnessMeasurement, StreamDetails
 from music_assistant.constants import (
+    CONF_EQ_BASS,
+    CONF_EQ_MID,
+    CONF_EQ_TREBLE,
+    CONF_OUTPUT_CHANNELS,
     CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
-    ROOT_LOGGER_NAME,
+    MASS_LOGGER_NAME,
+    VERBOSE_LOG_LEVEL,
 )
-from music_assistant.server.helpers.playlists import fetch_playlist
+from music_assistant.server.helpers.playlists import (
+    HLS_CONTENT_TYPES,
+    IsHLSPlaylist,
+    fetch_playlist,
+    parse_m3u,
+)
+from music_assistant.server.helpers.tags import parse_tags
 
 from .process import AsyncProcess, check_output
 from .util import create_tempfile
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.player_queue import QueueItem
     from music_assistant.server import MusicAssistant
 
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.audio")
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.audio")
+# pylint:disable=consider-using-f-string,too-many-locals,too-many-statements
+# ruff: noqa: PLR0915
 
-# pylint:disable=consider-using-f-string
+VLC_HEADERS = {"User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
+VLC_HEADERS_ICY = {**VLC_HEADERS, "Icy-MetaData": "1"}
 
 
 async def crossfade_pcm_parts(
@@ -97,10 +113,11 @@ async def crossfade_pcm_parts(
         fmt,
         "-",
     ]
-    async with AsyncProcess(args, True) as proc:
+    async with AsyncProcess(args, stdin=True, stdout=True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
         if crossfade_data:
-            LOGGER.debug(
+            LOGGER.log(
+                5,
                 "crossfaded 2 pcm chunks. fade_in_part: %s - "
                 "fade_out_part: %s - fade_length: %s seconds",
                 len(fade_in_part),
@@ -153,16 +170,17 @@ async def strip_silence(
         ]
     # output args
     args += ["-f", fmt, "-"]
-    async with AsyncProcess(args, True) as proc:
+    async with AsyncProcess(args, stdin=True, stdout=True) as proc:
         stripped_data, _ = await proc.communicate(audio_data)
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
-    if LOGGER.isEnabledFor(logging.DEBUG):
+    if LOGGER.isEnabledFor(5):
         pcm_sample_size = int(sample_rate * (bit_depth / 8) * 2)
         seconds_stripped = round(bytes_stripped / pcm_sample_size, 2)
         location = "end" if reverse else "begin"
-        LOGGER.debug(
+        LOGGER.log(
+            5,
             "stripped %s seconds of silence from %s of pcm audio. bytes stripped: %s",
             seconds_stripped,
             location,
@@ -171,95 +189,25 @@ async def strip_silence(
     return stripped_data
 
 
-async def analyze_audio(mass: MusicAssistant, streamdetails: StreamDetails) -> None:
-    """Analyze track audio, for now we only calculate EBU R128 loudness."""
-    if streamdetails.loudness is not None:
-        # only when needed we do the analyze job
-        return
-
-    LOGGER.debug("Start analyzing audio for %s", streamdetails.uri)
-    # calculate BS.1770 R128 integrated loudness with ffmpeg
-    input_file = streamdetails.direct or "-"
-    proc_args = [
-        "ffmpeg",
-        "-protocol_whitelist",
-        "file,http,https,tcp,tls,crypto,pipe,fd",
-        "-t",
-        "300",  # limit to 5 minutes to prevent OOM
-        "-i",
-        input_file,
-        "-f",
-        streamdetails.audio_format.content_type,
-        "-af",
-        "ebur128=framelog=verbose",
-        "-f",
-        "null",
-        "-",
-    ]
-    async with AsyncProcess(
-        proc_args,
-        enable_stdin=streamdetails.direct is None,
-        enable_stdout=False,
-        enable_stderr=True,
-    ) as ffmpeg_proc:
-
-        async def writer():
-            """Task that grabs the source audio and feeds it to ffmpeg."""
-            music_prov = mass.get_provider(streamdetails.provider)
-            chunk_count = 0
-            async for audio_chunk in music_prov.get_audio_stream(streamdetails):
-                chunk_count += 1
-                await ffmpeg_proc.write(audio_chunk)
-                if chunk_count == 300:
-                    # safety guard: max (more or less) 5 minutes seconds of audio may be analyzed
-                    break
-            ffmpeg_proc.write_eof()
-
-        if streamdetails.direct is None:
-            writer_task = ffmpeg_proc.attach_task(writer())
-            # wait for the writer task to finish
-            await writer_task
-
-        _, stderr = await ffmpeg_proc.communicate()
-        try:
-            loudness_str = (
-                stderr.decode().split("Integrated loudness")[1].split("I:")[1].split("LUFS")[0]
-            )
-            loudness = float(loudness_str.strip())
-        except (IndexError, ValueError, AttributeError):
-            LOGGER.warning(
-                "Could not determine integrated loudness of %s - %s",
-                streamdetails.uri,
-                stderr.decode() or "received empty value",
-            )
-        else:
-            streamdetails.loudness = loudness
-            await mass.music.set_track_loudness(
-                streamdetails.item_id, streamdetails.provider, loudness
-            )
-            LOGGER.debug(
-                "Integrated loudness of %s is: %s",
-                streamdetails.uri,
-                loudness,
-            )
-
-
-async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> None:
-    """Set streamdetails for the given QueueItem.
+async def get_stream_details(
+    mass: MusicAssistant,
+    queue_item: QueueItem,
+    seek_position: int = 0,
+    fade_in: bool = False,
+) -> StreamDetails:
+    """Get streamdetails for the given QueueItem.
 
     This is called just-in-time when a PlayerQueue wants a MediaItem to be played.
     Do not try to request streamdetails in advance as this is expiring data.
         param media_item: The QueueItem for which to request the streamdetails for.
     """
-    streamdetails = None
-    if queue_item.streamdetails and (time() < (queue_item.streamdetails.expires - 360)):
-        LOGGER.debug(f"Using cached streamdetails for {queue_item.uri}")
-        # we already have fresh streamdetails, use these
-        queue_item.streamdetails.seconds_skipped = None
-        queue_item.streamdetails.seconds_streamed = None
-        streamdetails = queue_item.streamdetails
+    if queue_item.streamdetails and (time() + 60) < queue_item.streamdetails.expires:
+        LOGGER.debug(f"Using (pre)cached streamdetails from queue_item for {queue_item.uri}")
+        # we already have (fresh) streamdetails stored on the queueitem, use these.
+        # this happens for example while seeking in a track.
+        # we create a copy (using to/from dict) to ensure the one-time values are cleared
+        streamdetails = StreamDetails.from_dict(queue_item.streamdetails.to_dict())
     else:
-        # fetch streamdetails from provider
         # always request the full item as there might be other qualities available
         full_item = await mass.music.get_item_by_uri(queue_item.uri)
         # sort by quality and check track availability
@@ -269,11 +217,19 @@ async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Non
             if not prov_media.available:
                 LOGGER.debug(f"Skipping unavailable {prov_media}")
                 continue
-            # get streamdetails from provider
+            # guard that provider is available
             music_prov = mass.get_provider(prov_media.provider_instance)
             if not music_prov:
                 LOGGER.debug(f"Skipping {prov_media} - provider not available")
                 continue  # provider not available ?
+            # prefer cache
+            item_key = f"{music_prov.lookup_key}/{prov_media.item_id}"
+            cache_key = f"cached_streamdetails_{item_key}"
+            if cache := await mass.cache.get(cache_key):
+                if time() + 60 < cache["expires"]:
+                    LOGGER.debug(f"Using cached streamdetails for {item_key}")
+                    streamdetails = StreamDetails.from_dict(cache)
+            # get streamdetails from provider
             try:
                 streamdetails: StreamDetails = await music_prov.get_stream_details(
                     prov_media.item_id
@@ -281,55 +237,35 @@ async def set_stream_details(mass: MusicAssistant, queue_item: QueueItem) -> Non
             except MusicAssistantError as err:
                 LOGGER.warning(str(err))
             else:
+                # store streamdetails in cache
+                expiration = streamdetails.expires - time()
+                await mass.cache.set(cache_key, streamdetails.to_dict(), expiration=expiration - 60)
                 break
-
-    if not streamdetails:
-        raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
+        else:
+            raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
 
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
-    # get gain correct / replaygain
-    if streamdetails.gain_correct is None:
-        loudness, gain_correct = await get_gain_correct(mass, streamdetails)
-        streamdetails.gain_correct = gain_correct
-        streamdetails.loudness = loudness
+    # handle skip/fade_in details
+    streamdetails.seek_position = seek_position
+    streamdetails.fade_in = fade_in
+    # handle volume normalization details
+    if not streamdetails.loudness:
+        streamdetails.loudness = await mass.music.get_track_loudness(
+            streamdetails.item_id, streamdetails.provider
+        )
+    if streamdetails.target_loudness is not None:
+        streamdetails.target_loudness = streamdetails.target_loudness
+    elif (
+        player_settings := await mass.config.get_player_config(streamdetails.queue_id)
+    ) and player_settings.get_value(CONF_VOLUME_NORMALIZATION):
+        streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
+    else:
+        streamdetails.target_loudness = None
+
     if not streamdetails.duration:
         streamdetails.duration = queue_item.duration
-    # make sure that ffmpeg handles mpeg dash streams directly
-    if (
-        streamdetails.audio_format.content_type == ContentType.MPEG_DASH
-        and streamdetails.data
-        and streamdetails.data.startswith("http")
-    ):
-        streamdetails.direct = streamdetails.data
-    # set streamdetails as attribute on the queue_item
-    queue_item.streamdetails = streamdetails
-
-
-async def get_gain_correct(
-    mass: MusicAssistant, streamdetails: StreamDetails
-) -> tuple[float | None, float | None]:
-    """Get gain correction for given queue / track combination."""
-    player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if not player_settings or not player_settings.get_value(CONF_VOLUME_NORMALIZATION):
-        return (None, None)
-    if streamdetails.gain_correct is not None:
-        return (streamdetails.loudness, streamdetails.gain_correct)
-    target_gain = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
-    track_loudness = await mass.music.get_track_loudness(
-        streamdetails.item_id, streamdetails.provider
-    )
-    if track_loudness is None:
-        # fallback to provider average
-        fallback_track_loudness = await mass.music.get_provider_loudness(streamdetails.provider)
-        if fallback_track_loudness is None:
-            # fallback to some (hopefully sane) average value for now
-            fallback_track_loudness = -8.5
-        gain_correct = target_gain - fallback_track_loudness
-    else:
-        gain_correct = target_gain - track_loudness
-    gain_correct = round(gain_correct, 2)
-    return (track_loudness, gain_correct)
+    return streamdetails
 
 
 def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=None):
@@ -386,167 +322,64 @@ def create_wave_header(samplerate=44100, channels=2, bitspersample=16, duration=
     return file.getvalue()
 
 
-async def get_media_stream(  # noqa: PLR0915
-    mass: MusicAssistant,
-    streamdetails: StreamDetails,
-    pcm_format: AudioFormat,
-    seek_position: int = 0,
-    fade_in: bool = False,
-    strip_silence_begin: bool = False,
-    strip_silence_end: bool = True,
-) -> AsyncGenerator[bytes, None]:
-    """
-    Get the (raw PCM) audio stream for the given streamdetails.
-
-    Other than stripping silence at end and beginning and optional
-    volume normalization this is the pure, unaltered audio data as PCM chunks.
-    """
-    bytes_sent = 0
-    streamdetails.seconds_skipped = seek_position
-    is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
-    if is_radio or seek_position:
-        strip_silence_begin = False
-    # chunk size = 2 seconds of pcm audio
-    pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-    chunk_size = pcm_sample_size * (1 if is_radio else 2)
-    expected_chunks = int((streamdetails.duration or 0) / 2)
-    if expected_chunks < 60:
-        strip_silence_end = False
-
-    # collect all arguments for ffmpeg
-    seek_pos = seek_position if (streamdetails.direct or not streamdetails.can_seek) else 0
-    args = await _get_ffmpeg_args(
-        streamdetails=streamdetails,
-        pcm_output_format=pcm_format,
-        # only use ffmpeg seeking if the provider stream does not support seeking
-        seek_position=seek_pos,
-        fade_in=fade_in,
-    )
-
-    async with AsyncProcess(args, enable_stdin=streamdetails.direct is None) as ffmpeg_proc:
-        LOGGER.debug("start media stream for: %s", streamdetails.uri)
-
-        async def writer():
-            """Task that grabs the source audio and feeds it to ffmpeg."""
-            LOGGER.debug("writer started for %s", streamdetails.uri)
-            music_prov = mass.get_provider(streamdetails.provider)
-            seek_pos = seek_position if streamdetails.can_seek else 0
-            async for audio_chunk in music_prov.get_audio_stream(streamdetails, seek_pos):
-                await ffmpeg_proc.write(audio_chunk)
-            # write eof when last packet is received
-            ffmpeg_proc.write_eof()
-            LOGGER.debug("writer finished for %s", streamdetails.uri)
-
-        if streamdetails.direct is None:
-            ffmpeg_proc.attach_task(writer())
-
-        # get pcm chunks from stdout
-        # we always stay one chunk behind to properly detect end of chunks
-        # so we can strip silence at the beginning and end of a track
-        prev_chunk = b""
-        chunk_num = 0
-        try:
-            async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
-                chunk_num += 1
-                if strip_silence_begin and chunk_num == 2:
-                    # first 2 chunks received, strip silence of beginning
-                    stripped_audio = await strip_silence(
-                        mass,
-                        prev_chunk + chunk,
-                        sample_rate=pcm_format.sample_rate,
-                        bit_depth=pcm_format.bit_depth,
-                    )
-                    yield stripped_audio
-                    bytes_sent += len(stripped_audio)
-                    prev_chunk = b""
-                    del stripped_audio
-                    continue
-                if strip_silence_end and chunk_num >= (expected_chunks - 6):
-                    # last part of the track, collect multiple chunks to strip silence later
-                    prev_chunk += chunk
-                    continue
-
-                # middle part of the track, send previous chunk and collect current chunk
-                if prev_chunk:
-                    yield prev_chunk
-                    bytes_sent += len(prev_chunk)
-
-                prev_chunk = chunk
-
-            # all chunks received, strip silence of last part
-            if strip_silence_end:
-                stripped_audio = await strip_silence(
-                    mass,
-                    prev_chunk,
-                    sample_rate=pcm_format.sample_rate,
-                    bit_depth=pcm_format.bit_depth,
-                    reverse=True,
-                )
-                yield stripped_audio
-                bytes_sent += len(stripped_audio)
-                del stripped_audio
-            else:
-                yield prev_chunk
-                bytes_sent += len(prev_chunk)
-
-            del prev_chunk
-
-            # update duration details based on the actual pcm data we sent
-            streamdetails.seconds_streamed = bytes_sent / pcm_sample_size
-            streamdetails.duration = seek_position + streamdetails.seconds_streamed
-
-        except (asyncio.CancelledError, GeneratorExit) as err:
-            LOGGER.debug("media stream aborted for: %s", streamdetails.uri)
-            raise err
-        else:
-            LOGGER.debug("finished media stream for: %s", streamdetails.uri)
-        finally:
-            # report playback
-            await mass.music.mark_item_played(
-                streamdetails.media_type, streamdetails.item_id, streamdetails.provider
-            )
-            if streamdetails.callback:
-                mass.create_task(streamdetails.callback, streamdetails)
-            # send analyze job to background worker
-            if streamdetails.loudness is None:
-                mass.create_task(analyze_audio(mass, streamdetails))
-
-
-async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, bool]:
+async def resolve_radio_stream(
+    mass: MusicAssistant, url: str, use_get: bool = False
+) -> tuple[str, bool, bool]:
     """
     Resolve a streaming radio URL.
 
     Unwraps any playlists if needed.
     Determines if the stream supports ICY metadata.
 
-    Returns unfolded URL and a bool if the URL supports ICY metadata.
+    Returns tuple;
+    - unfolded URL as string
+    - bool if the URL supports ICY metadata.
+    - bool uf the URL represents a HLS stream/playlist.
     """
-    cache_key = f"resolved_radio_url_{url}"
+    base_url = url.split("?")[0]
+    cache_key = f"RADIO_RESOLVED_{url}"
     if cache := await mass.cache.get(cache_key):
         return cache
-    # handle playlisted radio urls
-    is_mpeg_dash = False
+    is_hls = False
     supports_icy = False
-    if ".m3u" in url or ".pls" in url:
-        # url is playlist, try to figure out how to handle it
-        with suppress(InvalidDataError, IndexError):
-            playlist = await fetch_playlist(mass, url)
-            if len(playlist) > 1 or ".m3u" in playlist[0] or ".pls" in playlist[0]:
-                # if it is an mpeg-dash stream, let ffmpeg handle that
-                is_mpeg_dash = True
-            url = playlist[0]
-    if not is_mpeg_dash:
-        # determine ICY metadata support by looking at the http headers
-        headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
-        timeout = ClientTimeout(total=0, connect=10, sock_read=5)
-        async with mass.http_session.head(
-            url, headers=headers, allow_redirects=True, timeout=timeout
+    resolved_url = url
+    timeout = ClientTimeout(total=0, connect=10, sock_read=5)
+    try:
+        method = "GET" if use_get else "HEAD"
+        async with mass.http_session.request(
+            method, url, headers=VLC_HEADERS_ICY, allow_redirects=True, timeout=timeout
         ) as resp:
+            resolved_url = str(resp.real_url)
             headers = resp.headers
-            supports_icy = int(headers.get("icy-metaint", "0")) > 0
+            resp.raise_for_status()
+            if not resp.headers:
+                raise InvalidDataError("no headers found")
+        supports_icy = headers.get("icy-name") is not None or "Icecast" in headers.get("server", "")
+        is_hls = headers.get("content-type") in HLS_CONTENT_TYPES
+        if (
+            base_url.endswith((".m3u", ".m3u8", ".pls"))
+            or headers.get("content-type") == "audio/x-mpegurl"
+        ):
+            # url is playlist, we need to unfold it
+            try:
+                for line in await fetch_playlist(mass, resolved_url):
+                    if not line.is_url:
+                        continue
+                    # unfold first url of playlist
+                    return await resolve_radio_stream(mass, line.path)
+                raise InvalidDataError("No content found in playlist")
+            except IsHLSPlaylist:
+                is_hls = True
 
-    result = (url, supports_icy)
-    await mass.cache.set(cache_key, result)
+    except (ClientResponseError, InvalidDataError) as err:
+        if not use_get:
+            return await resolve_radio_stream(mass, resolved_url, True)
+        LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
+        return (resolved_url, supports_icy, is_hls)
+
+    result = (resolved_url, supports_icy, is_hls)
+    cache_expiration = 24 * 3600 if url == resolved_url else 600
+    await mass.cache.set(cache_key, result, expiration=cache_expiration)
     return result
 
 
@@ -554,38 +387,126 @@ async def get_radio_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
     """Get radio audio stream from HTTP, including metadata retrieval."""
-    headers = {"Icy-MetaData": "1", "User-Agent": "VLC/3.0.2.LibVLC/3.0.2"}
-    timeout = ClientTimeout(total=0, connect=30, sock_read=60)
-    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
+    resolved_url, supports_icy, is_hls = await resolve_radio_stream(mass, url)
+    # handle special HLS stream
+    if is_hls:
+        async for chunk in get_hls_stream(mass, resolved_url, streamdetails):
+            yield chunk
+        return
+    # handle http stream supports icy metadata
+    if supports_icy:
+        async for chunk in get_icy_stream(mass, resolved_url, streamdetails):
+            yield chunk
+        return
+    # generic http stream (without icy metadata)
+    async for chunk in get_http_stream(mass, resolved_url, streamdetails):
+        yield chunk
+
+
+async def get_icy_stream(
+    mass: MusicAssistant, url: str, streamdetails: StreamDetails
+) -> AsyncGenerator[bytes, None]:
+    """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
+    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+    LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
+    async with mass.http_session.get(url, headers=VLC_HEADERS_ICY, timeout=timeout) as resp:
         headers = resp.headers
-        meta_int = int(headers.get("icy-metaint", "0"))
-        # stream with ICY Metadata
-        if meta_int:
-            LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
-            while True:
-                try:
-                    audio_chunk = await resp.content.readexactly(meta_int)
-                    yield audio_chunk
-                    meta_byte = await resp.content.readexactly(1)
-                    meta_length = ord(meta_byte) * 16
-                    meta_data = await resp.content.readexactly(meta_length)
-                except asyncio.exceptions.IncompleteReadError:
-                    break
-                if not meta_data:
-                    continue
-                meta_data = meta_data.rstrip(b"\0")
-                stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
-                if not stream_title:
-                    continue
-                stream_title = stream_title.group(1).decode()
-                if stream_title != streamdetails.stream_title:
-                    streamdetails.stream_title = stream_title
-        # Regular HTTP stream
-        else:
-            LOGGER.debug("Start streaming radio without ICY metadata from url %s", url)
-            async for chunk in resp.content.iter_any():
-                yield chunk
-        LOGGER.debug("Finished streaming radio from url %s", url)
+        meta_int = int(headers["icy-metaint"])
+        while True:
+            try:
+                audio_chunk = await resp.content.readexactly(meta_int)
+                yield audio_chunk
+                meta_byte = await resp.content.readexactly(1)
+                meta_length = ord(meta_byte) * 16
+                meta_data = await resp.content.readexactly(meta_length)
+            except asyncio.exceptions.IncompleteReadError:
+                break
+            if not meta_data:
+                continue
+            meta_data = meta_data.rstrip(b"\0")
+            stream_title = re.search(rb"StreamTitle='([^']*)';", meta_data)
+            if not stream_title:
+                continue
+            stream_title = stream_title.group(1).decode()
+            if stream_title != streamdetails.stream_title:
+                streamdetails.stream_title = stream_title
+
+
+async def get_hls_stream(
+    mass: MusicAssistant, url: str, streamdetails: StreamDetails
+) -> AsyncGenerator[bytes, None]:
+    """Get audio stream from HTTP HLS stream."""
+    logger = LOGGER.getChild("hls_stream")
+    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+    # fetch master playlist and select (best) child playlist
+    # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
+    async with mass.http_session.get(url, headers=VLC_HEADERS, timeout=timeout) as resp:
+        charset = resp.charset or "utf-8"
+        master_m3u_data = await resp.text(charset)
+    substreams = parse_m3u(master_m3u_data)
+    if any(x for x in substreams if x.path.endswith(".ts")) or not all(
+        x for x in substreams if x.stream_info is not None
+    ):
+        # the url we got is already a substream
+        substream_url = url
+    else:
+        # sort substreams on best quality (highest bandwidth)
+        substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
+        substream = substreams[0]
+        substream_url = substream.path
+        if not substream_url.startswith("http"):
+            # path is relative, stitch it together
+            base_path = url.rsplit("/", 1)[0]
+            substream_url = base_path + "/" + substream.path
+
+    logger.debug(
+        "Start streaming HLS stream for url %s (selected substream %s)", url, substream_url
+    )
+
+    if streamdetails.audio_format.content_type == ContentType.UNKNOWN:
+        streamdetails.audio_format = AudioFormat(content_type=ContentType.AAC)
+
+    prev_chunks: deque[str] = deque(maxlen=30)
+    has_playlist_metadata: bool | None = None
+    has_id3_metadata: bool | None = None
+    while True:
+        async with mass.http_session.get(
+            substream_url, headers=VLC_HEADERS, timeout=timeout
+        ) as resp:
+            charset = resp.charset or "utf-8"
+            substream_m3u_data = await resp.text(charset)
+        # get chunk-parts from the substream
+        hls_chunks = parse_m3u(substream_m3u_data)
+        for chunk_item in hls_chunks:
+            if chunk_item.path in prev_chunks:
+                continue
+            chunk_item_url = chunk_item.path
+            if not chunk_item_url.startswith("http"):
+                # path is relative, stitch it together
+                base_path = substream_url.rsplit("/", 1)[0]
+                chunk_item_url = base_path + "/" + chunk_item.path
+            # handle (optional) in-playlist (timed) metadata
+            if has_playlist_metadata is None:
+                has_playlist_metadata = chunk_item.title is not None
+                logger.debug("Station support for in-playlist metadata: %s", has_playlist_metadata)
+            if has_playlist_metadata and chunk_item.title != "no desc":
+                # bbc (and maybe others?) set the title to 'no desc'
+                streamdetails.stream_title = chunk_item.title
+            logger.log(VERBOSE_LOG_LEVEL, "playing chunk %s", chunk_item)
+            # prevent that we play this chunk again if we loop through
+            prev_chunks.append(chunk_item.path)
+            async with mass.http_session.get(
+                chunk_item_url, headers=VLC_HEADERS, timeout=timeout
+            ) as resp:
+                async for chunk in resp.content.iter_any():
+                    yield chunk
+            # handle (optional) in-band (m3u) metadata
+            if has_id3_metadata is not None and has_playlist_metadata:
+                continue
+            if has_id3_metadata in (None, True):
+                tags = await parse_tags(chunk_item_url)
+                has_id3_metadata = tags.title and tags.title not in chunk_item.path
+                logger.debug("Station support for in-band (ID3) metadata: %s", has_id3_metadata)
 
 
 async def get_http_stream(
@@ -595,43 +516,73 @@ async def get_http_stream(
     seek_position: int = 0,
 ) -> AsyncGenerator[bytes, None]:
     """Get audio stream from HTTP."""
+    LOGGER.debug("Start HTTP stream for %s (seek_position %s)", streamdetails.uri, seek_position)
     if seek_position:
         assert streamdetails.duration, "Duration required for seek requests"
     # try to get filesize with a head request
-    if seek_position and not streamdetails.size:
-        async with mass.http_session.head(url) as resp:
+    seek_supported = streamdetails.can_seek
+    if seek_position or not streamdetails.size:
+        async with mass.http_session.head(url, headers=VLC_HEADERS) as resp:
+            resp.raise_for_status()
             if size := resp.headers.get("Content-Length"):
                 streamdetails.size = int(size)
+            seek_supported = resp.headers.get("Accept-Ranges") == "bytes"
     # headers
-    headers = {}
+    headers = {**VLC_HEADERS}
+    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     skip_bytes = 0
     if seek_position and streamdetails.size:
         skip_bytes = int(streamdetails.size / streamdetails.duration * seek_position)
-        headers["Range"] = f"bytes={skip_bytes}-"
+        headers["Range"] = f"bytes={skip_bytes}-{streamdetails.size}"
+
+    # seeking an unknown or container format is not supported due to the (moov) headers
+    if seek_position and (
+        not seek_supported
+        or streamdetails.audio_format.content_type
+        in (
+            ContentType.UNKNOWN,
+            ContentType.M4A,
+            ContentType.M4B,
+        )
+    ):
+        LOGGER.debug(
+            "Seeking in %s (%s) not possible, fallback to ffmpeg seeking.",
+            streamdetails.uri,
+            streamdetails.audio_format.output_format_str,
+        )
+        async for chunk in get_ffmpeg_stream(
+            url,
+            # we must set the input content type to unknown to
+            # enforce ffmpeg to determine it from the headers
+            input_format=AudioFormat(content_type=ContentType.UNKNOWN),
+            # enforce wav as we dont want to re-encode lossy formats
+            # choose wav so we have descriptive headers and move on
+            output_format=AudioFormat(content_type=ContentType.WAV),
+            extra_input_args=["-ss", str(seek_position)],
+        ):
+            yield chunk
+        return
 
     # start the streaming from http
-    buffer = b""
-    buffer_all = False
     bytes_received = 0
-    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
         is_partial = resp.status == 206
-        buffer_all = seek_position and not is_partial
+        if seek_position and not is_partial:
+            raise InvalidDataError("HTTP source does not support seeking!")
+        resp.raise_for_status()
         async for chunk in resp.content.iter_any():
             bytes_received += len(chunk)
-            if buffer_all and not skip_bytes:
-                buffer += chunk
-                continue
-            if not is_partial and skip_bytes and bytes_received < skip_bytes:
-                continue
             yield chunk
 
     # store size on streamdetails for later use
     if not streamdetails.size:
         streamdetails.size = bytes_received
-    if buffer_all:
-        skip_bytes = streamdetails.size / streamdetails.duration * seek_position
-        yield buffer[:skip_bytes]
+    LOGGER.debug(
+        "Finished HTTP stream for %s (transferred %s/%s bytes)",
+        streamdetails.uri,
+        bytes_received,
+        streamdetails.size,
+    )
 
 
 async def get_file_stream(
@@ -646,7 +597,36 @@ async def get_file_stream(
     if not streamdetails.size:
         stat = await asyncio.to_thread(os.stat, filename)
         streamdetails.size = stat.st_size
-    chunk_size = get_chunksize(streamdetails.audio_format.content_type)
+
+    # seeking an unknown or container format is not supported due to the (moov) headers
+    if seek_position and (
+        streamdetails.audio_format.content_type
+        in (
+            ContentType.UNKNOWN,
+            ContentType.M4A,
+            ContentType.M4B,
+            ContentType.MP4,
+        )
+    ):
+        LOGGER.debug(
+            "Seeking in %s (%s) not possible, fallback to ffmpeg seeking.",
+            streamdetails.uri,
+            streamdetails.audio_format.output_format_str,
+        )
+        async for chunk in get_ffmpeg_stream(
+            filename,
+            # we must set the input content type to unknown to
+            # enforce ffmpeg to determine it from the headers
+            input_format=AudioFormat(content_type=ContentType.UNKNOWN),
+            # enforce wav as we dont want to re-encode lossy formats
+            # choose wav so we have descriptive headers and move on
+            output_format=AudioFormat(content_type=ContentType.WAV),
+            extra_input_args=["-ss", str(seek_position)],
+        ):
+            yield chunk
+        return
+
+    chunk_size = get_chunksize(streamdetails.audio_format)
     async with aiofiles.open(streamdetails.data, "rb") as _file:
         if seek_position:
             seek_pos = int((streamdetails.size / streamdetails.duration) * seek_position)
@@ -659,12 +639,49 @@ async def get_file_stream(
             yield data
 
 
+async def get_ffmpeg_stream(
+    audio_input: AsyncGenerator[bytes, None] | str,
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+    filter_params: list[str] | None = None,
+    extra_args: list[str] | None = None,
+    chunk_size: int | None = None,
+    ffmpeg_loglevel: str = "info",
+    extra_input_args: list[str] | None = None,
+    logger: logging.Logger | None = None,
+) -> AsyncGenerator[bytes, None]:
+    """
+    Get the ffmpeg audio stream as async generator.
+
+    Takes care of resampling and/or recoding if needed,
+    according to player preferences.
+    """
+    ffmpeg_args = get_ffmpeg_args(
+        input_format=input_format,
+        output_format=output_format,
+        filter_params=filter_params or [],
+        extra_args=extra_args or [],
+        input_path=audio_input if isinstance(audio_input, str) else "-",
+        output_path="-",
+        loglevel=ffmpeg_loglevel,
+        extra_input_args=extra_input_args or [],
+    )
+    stdin = audio_input if not isinstance(audio_input, str) else True
+    async with AsyncProcess(
+        ffmpeg_args,
+        stdin=stdin,
+        stdout=True,
+        stderr=logger or LOGGER.getChild("ffmpeg_stream"),
+        name="ffmpeg_stream",
+    ) as ffmpeg_proc:
+        # read final chunks from stdout
+        chunk_size = chunk_size or get_chunksize(output_format, 1)
+        async for chunk in ffmpeg_proc.iter_chunked(chunk_size):
+            yield chunk
+
+
 async def check_audio_support() -> tuple[bool, bool, str]:
     """Check if ffmpeg is present (with/without libsoxr support)."""
-    cache_key = "audio_support_cache"
-    if cache := globals().get(cache_key):
-        return cache
-
     # check for FFmpeg presence
     returncode, output = await check_output("ffmpeg -version")
     ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
@@ -673,7 +690,8 @@ async def check_audio_support() -> tuple[bool, bool, str]:
     version = output.decode().split("ffmpeg version ")[1].split(" ")[0].split("-")[0]
     libsoxr_support = "enable-libsoxr" in output.decode()
     result = (ffmpeg_present, libsoxr_support, version)
-    globals()[cache_key] = result
+    # store in global cache for easy access by 'get_ffmpeg_args'
+    await set_global_cache_values({"ffmpeg_support": result})
     return result
 
 
@@ -684,42 +702,14 @@ async def get_preview_stream(
 ) -> AsyncGenerator[bytes, None]:
     """Create a 30 seconds preview audioclip for the given streamdetails."""
     music_prov = mass.get_provider(provider_instance_id_or_domain)
-
     streamdetails = await music_prov.get_stream_details(track_id)
-
-    input_args = [
-        "ffmpeg",
-        "-hide_banner",
-        "-loglevel",
-        "quiet",
-        "-ignore_unknown",
-    ]
-    if streamdetails.direct:
-        input_args += ["-ss", "30", "-i", streamdetails.direct]
-    else:
-        # the input is received from pipe/stdin
-        if streamdetails.audio_format.content_type != ContentType.UNKNOWN:
-            input_args += ["-f", streamdetails.audio_format.content_type]
-        input_args += ["-i", "-"]
-
-    output_args = ["-to", "30", "-f", "mp3", "-"]
-    args = input_args + output_args
-    async with AsyncProcess(args, True) as ffmpeg_proc:
-
-        async def writer():
-            """Task that grabs the source audio and feeds it to ffmpeg."""
-            music_prov = mass.get_provider(streamdetails.provider)
-            async for audio_chunk in music_prov.get_audio_stream(streamdetails, 30):
-                await ffmpeg_proc.write(audio_chunk)
-            # write eof when last packet is received
-            ffmpeg_proc.write_eof()
-
-        if not streamdetails.direct:
-            ffmpeg_proc.attach_task(writer())
-
-        # yield chunks from stdout
-        async for chunk in ffmpeg_proc.iter_any():
-            yield chunk
+    async for chunk in get_ffmpeg_stream(
+        audio_input=music_prov.get_audio_stream(streamdetails, 30),
+        input_format=streamdetails.audio_format,
+        output_format=AudioFormat(content_type=ContentType.MP3),
+        extra_input_args=["-to", "30"],
+    ):
+        yield chunk
 
 
 async def get_silence(
@@ -729,7 +719,7 @@ async def get_silence(
     """Create stream of silence, encoded to format of choice."""
     if output_format.content_type.is_pcm():
         # pcm = just zeros
-        for _ in range(0, duration):
+        for _ in range(duration):
             yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
         return
     if output_format.content_type == ContentType.WAV:
@@ -740,7 +730,7 @@ async def get_silence(
             bitspersample=output_format.bit_depth,
             duration=duration,
         )
-        for _ in range(0, duration):
+        for _ in range(duration):
             yield b"\0" * int(output_format.sample_rate * (output_format.bit_depth / 8) * 2)
         return
     # use ffmpeg for all other encodings
@@ -756,10 +746,10 @@ async def get_silence(
         "-t",
         str(duration),
         "-f",
-        output_format.output_fmt.value,
+        output_format.output_format_str,
         "-",
     ]
-    async with AsyncProcess(args) as ffmpeg_proc:
+    async with AsyncProcess(args, stdout=True) as ffmpeg_proc:
         async for chunk in ffmpeg_proc.iter_any():
             yield chunk
 
@@ -783,19 +773,56 @@ def get_chunksize(
     return int((320000 / 8) * seconds)
 
 
-async def _get_ffmpeg_args(
-    streamdetails: StreamDetails,
-    pcm_output_format: AudioFormat,
-    seek_position: int = 0,
-    fade_in: bool = False,
+def get_player_filter_params(
+    mass: MusicAssistant,
+    player_id: str,
+) -> list[str]:
+    """Get player specific filter parameters for ffmpeg (if any)."""
+    # collect all players-specific filter args
+    # TODO: add convolution/DSP/roomcorrections here?!
+    filter_params = []
+
+    # the below is a very basic 3-band equalizer,
+    # this could be a lot more sophisticated at some point
+    if (eq_bass := mass.config.get_raw_player_config_value(player_id, CONF_EQ_BASS, 0)) != 0:
+        filter_params.append(f"equalizer=frequency=100:width=200:width_type=h:gain={eq_bass}")
+    if (eq_mid := mass.config.get_raw_player_config_value(player_id, CONF_EQ_MID, 0)) != 0:
+        filter_params.append(f"equalizer=frequency=900:width=1800:width_type=h:gain={eq_mid}")
+    if (eq_treble := mass.config.get_raw_player_config_value(player_id, CONF_EQ_TREBLE, 0)) != 0:
+        filter_params.append(f"equalizer=frequency=9000:width=18000:width_type=h:gain={eq_treble}")
+    # handle output mixing only left or right
+    conf_channels = mass.config.get_raw_player_config_value(
+        player_id, CONF_OUTPUT_CHANNELS, "stereo"
+    )
+    if conf_channels == "left":
+        filter_params.append("pan=mono|c0=FL")
+    elif conf_channels == "right":
+        filter_params.append("pan=mono|c0=FR")
+
+    return filter_params
+
+
+def get_ffmpeg_args(
+    input_format: AudioFormat,
+    output_format: AudioFormat,
+    filter_params: list[str],
+    extra_args: list[str] | None = None,
+    input_path: str = "-",
+    output_path: str = "-",
+    loglevel: str = "info",
+    extra_input_args: list[str] | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
-    ffmpeg_present, libsoxr_support, version = await check_audio_support()
-
+    if extra_args is None:
+        extra_args = []
+    ffmpeg_present, libsoxr_support, version = get_global_cache_value("ffmpeg_support")
     if not ffmpeg_present:
-        raise AudioError(
+        msg = (
             "FFmpeg binary is missing from system."
-            "Please install ffmpeg on your OS to enable playback.",
+            "Please install ffmpeg on your OS to enable playback."
+        )
+        raise AudioError(
+            msg,
         )
 
     major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
@@ -805,78 +832,107 @@ async def _get_ffmpeg_args(
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "warning" if LOGGER.isEnabledFor(logging.DEBUG) else "quiet",
+        loglevel,
         "-ignore_unknown",
         "-protocol_whitelist",
         "file,http,https,tcp,tls,crypto,pipe,data,fd",
     ]
     # collect input args
-    input_args = [
-        "-ac",
-        str(streamdetails.audio_format.channels),
-        "-channel_layout",
-        "mono" if streamdetails.audio_format.channels == 1 else "stereo",
-    ]
-    if seek_position:
-        input_args += ["-ss", str(seek_position)]
-    if streamdetails.direct:
-        # ffmpeg can access the inputfile (or url) directly
-        if streamdetails.direct.startswith("http"):
-            # append reconnect options for direct stream from http
-            input_args += [
-                "-reconnect",
-                "1",
-                "-reconnect_streamed",
-                "1",
-                "-reconnect_delay_max",
-                "10",
-            ]
-            if major_version > 4:
-                # these options are only supported in ffmpeg > 5
-                input_args += [
-                    "-reconnect_on_network_error",
-                    "1",
-                    "-reconnect_on_http_error",
-                    "5xx",
-                ]
-
-        input_args += ["-i", streamdetails.direct]
-    else:
-        # the input is received from pipe/stdin
-        if streamdetails.audio_format.content_type != ContentType.UNKNOWN:
-            input_args += ["-f", streamdetails.audio_format.content_type.value]
+    input_args = []
+    if extra_input_args:
+        input_args += extra_input_args
+    if input_path.startswith("http"):
+        # append reconnect options for direct stream from http
         input_args += [
-            "-i",
-            "-",
+            "-reconnect",
+            "1",
+            "-reconnect_streamed",
+            "1",
+            "-reconnect_delay_max",
+            "10",
         ]
+        if major_version > 4:
+            # these options are only supported in ffmpeg > 5
+            input_args += [
+                "-reconnect_on_network_error",
+                "1",
+                "-reconnect_on_http_error",
+                "5xx",
+            ]
+    if input_format.content_type.is_pcm():
+        input_args += [
+            "-ac",
+            str(input_format.channels),
+            "-channel_layout",
+            "mono" if input_format.channels == 1 else "stereo",
+            "-ar",
+            str(input_format.sample_rate),
+            "-acodec",
+            input_format.content_type.name.lower(),
+            "-f",
+            input_format.content_type.value,
+            "-i",
+            input_path,
+        ]
+    elif input_format.content_type in (
+        ContentType.UNKNOWN,
+        ContentType.M4A,
+        ContentType.M4B,
+        ContentType.MP4,
+    ):
+        # let ffmpeg guess/auto detect the content type
+        input_args += ["-i", input_path]
+    else:
+        # use explicit format identifier for all other
+        input_args += ["-f", input_format.content_type.value, "-i", input_path]
 
     # collect output args
-    output_args = [
-        "-acodec",
-        pcm_output_format.content_type.name.lower(),
-        "-f",
-        pcm_output_format.content_type.value,
-        "-ac",
-        str(pcm_output_format.channels),
-        "-ar",
-        str(pcm_output_format.sample_rate),
-        "-",
-    ]
-    # collect extra and filter args
-    extra_args = []
-    filter_params = []
-    if streamdetails.gain_correct is not None:
-        filter_params.append(f"volume={streamdetails.gain_correct}dB")
-    if (
-        streamdetails.audio_format.sample_rate != pcm_output_format.sample_rate
-        and libsoxr_support
-        and streamdetails.media_type == MediaType.TRACK
-    ):
-        # prefer libsoxr high quality resampler (if present) for sample rate conversions
+    if output_path.upper() == "NULL":
+        output_args = ["-f", "null", "-"]
+    elif output_format.content_type.is_pcm():
+        output_args = [
+            "-acodec",
+            output_format.content_type.name.lower(),
+            "-f",
+            output_format.content_type.value,
+            "-ac",
+            str(output_format.channels),
+            "-ar",
+            str(output_format.sample_rate),
+            output_path,
+        ]
+    elif output_format.content_type == ContentType.UNKNOWN:
+        # use wav so we at least have some headers for the rest of the chain
+        output_args = ["-f", "wav", output_path]
+    else:
+        # use explicit format identifier for all other
+        output_args = ["-f", output_format.content_type.value, output_path]
+
+    # prefer libsoxr high quality resampler (if present) for sample rate conversions
+    if input_format.sample_rate != output_format.sample_rate and libsoxr_support:
         filter_params.append("aresample=resampler=soxr")
-    if fade_in:
-        filter_params.append("afade=type=in:start_time=0:duration=3")
-    if filter_params:
+
+    if filter_params and "-filter_complex" not in extra_args:
         extra_args += ["-af", ",".join(filter_params)]
 
     return generic_args + input_args + extra_args + output_args
+
+
+def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
+    """Parse Loudness measurement from ffmpeg stderr output."""
+    stderr_data = raw_stderr.decode() if isinstance(raw_stderr, bytes) else raw_stderr
+    if "[Parsed_loudnorm_" not in stderr_data:
+        return None
+    stderr_data = stderr_data.split("[Parsed_loudnorm_")[1]
+    stderr_data = stderr_data.rsplit("]")[-1].strip()
+    stderr_data = stderr_data.rsplit("}")[0].strip() + "}"
+    try:
+        loudness_data = json_loads(stderr_data)
+    except JSON_DECODE_EXCEPTIONS:
+        return None
+    return LoudnessMeasurement(
+        integrated=float(loudness_data["input_i"]),
+        true_peak=float(loudness_data["input_tp"]),
+        lra=float(loudness_data["input_lra"]),
+        threshold=float(loudness_data["input_thresh"]),
+    )

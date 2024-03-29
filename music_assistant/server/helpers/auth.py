@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import TracebackType
 from typing import TYPE_CHECKING
 
 from aiohttp.web import Request, Response
@@ -16,7 +17,7 @@ if TYPE_CHECKING:
 class AuthenticationHelper:
     """Context manager helper class for authentication with a forward and redirect URL."""
 
-    def __init__(self, mass: MusicAssistant, session_id: str):
+    def __init__(self, mass: MusicAssistant, session_id: str) -> None:
         """
         Initialize the Authentication Helper.
 
@@ -40,7 +41,12 @@ class AuthenticationHelper:
         )
         return self
 
-    async def __aexit__(self, exc_type, exc_value, traceback) -> bool:
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
         """Exit context manager."""
         self.mass.streams.unregister_dynamic_route(f"/callback/{self.session_id}", "GET")
 

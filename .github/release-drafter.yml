@@ -22,6 +22,5 @@ version-resolver:
     labels:
       - 'new-feature'
       - 'new-provider'
-      - 'enhancement'
       - 'refactor'
   default: patch

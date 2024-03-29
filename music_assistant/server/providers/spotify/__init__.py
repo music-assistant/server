@@ -8,14 +8,13 @@ import json
 import os
 import platform
 import time
-from collections.abc import AsyncGenerator
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any
 
-import aiohttp
 from asyncio_throttle import Throttler
 
+from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
@@ -34,15 +33,21 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+
+# pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
+
+# pylint: enable=no-name-in-module
 from music_assistant.server.helpers.process import AsyncProcess
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -50,6 +55,7 @@ if TYPE_CHECKING:
 
 
 CACHE_DIR = gettempdir()
+LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -73,7 +79,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = SpotifyProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -93,10 +99,16 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
         ConfigEntry(
-            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=True,
         ),
     )
 
@@ -107,13 +119,14 @@ class SpotifyProvider(MusicProvider):
     _auth_token: str | None = None
     _sp_user: str | None = None
     _librespot_bin: str | None = None
+    # rate limiter needs to be specified on provider-level,
+    # so make it an instance attribute
+    _throttler = Throttler(rate_limit=1, period=1)
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._throttler = Throttler(rate_limit=1, period=0.1)
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
-
         # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
         # try login which will raise if it fails
@@ -160,33 +173,31 @@ class SpotifyProvider(MusicProvider):
             searchtypes.append("playlist")
         searchtype = ",".join(searchtypes)
         search_query = search_query.replace("'", "")
-        if searchresult := await self._get_data(
-            "search", q=search_query, type=searchtype, limit=limit
-        ):
-            if "artists" in searchresult:
-                result.artists += [
-                    await self._parse_artist(item)
-                    for item in searchresult["artists"]["items"]
-                    if (item and item["id"])
-                ]
-            if "albums" in searchresult:
-                result.albums += [
-                    await self._parse_album(item)
-                    for item in searchresult["albums"]["items"]
-                    if (item and item["id"])
-                ]
-            if "tracks" in searchresult:
-                result.tracks += [
-                    await self._parse_track(item)
-                    for item in searchresult["tracks"]["items"]
-                    if (item and item["id"])
-                ]
-            if "playlists" in searchresult:
-                result.playlists += [
-                    await self._parse_playlist(item)
-                    for item in searchresult["playlists"]["items"]
-                    if (item and item["id"])
-                ]
+        searchresult = await self._get_data("search", q=search_query, type=searchtype, limit=limit)
+        if "artists" in searchresult:
+            result.artists += [
+                await self._parse_artist(item)
+                for item in searchresult["artists"]["items"]
+                if (item and item["id"] and item["name"])
+            ]
+        if "albums" in searchresult:
+            result.albums += [
+                await self._parse_album(item)
+                for item in searchresult["albums"]["items"]
+                if (item and item["id"])
+            ]
+        if "tracks" in searchresult:
+            result.tracks += [
+                await self._parse_track(item)
+                for item in searchresult["tracks"]["items"]
+                if (item and item["id"])
+            ]
+        if "playlists" in searchresult:
+            result.playlists += [
+                await self._parse_playlist(item)
+                for item in searchresult["playlists"]["items"]
+                if (item and item["id"])
+            ]
         return result
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -219,8 +230,40 @@ class SpotifyProvider(MusicProvider):
             if item and item["track"]["id"]:
                 yield await self._parse_track(item["track"])
 
+    def _get_liked_songs_playlist_id(self) -> str:
+        return f"{LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX}-{self.instance_id}"
+
+    async def _get_liked_songs_playlist(self) -> Playlist:
+        liked_songs = Playlist(
+            item_id=self._get_liked_songs_playlist_id(),
+            provider=self.domain,
+            name="Liked Songs",  # TODO to be translated
+            owner="Me",  # TODO Get logged in user display name
+            provider_mappings={
+                ProviderMapping(
+                    item_id=self._get_liked_songs_playlist_id(),
+                    provider_domain=self.domain,
+                    provider_instance=self.instance_id,
+                    url="https://open.spotify.com/collection/tracks",
+                )
+            },
+        )
+
+        liked_songs.is_editable = False  # TODO Editing requires special endpoints
+
+        liked_songs.metadata.images = [
+            MediaItemImage(
+                type=ImageType.THUMB, path="https://misc.scdn.co/liked-songs/liked-songs-64.png"
+            )
+        ]
+
+        liked_songs.metadata.checksum = str(time.time())
+
+        return liked_songs
+
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
+        yield await self._get_liked_songs_playlist()
         for item in await self._get_all_items("me/playlists"):
             if item and item["id"]:
                 yield await self._parse_playlist(item)
@@ -228,39 +271,44 @@ class SpotifyProvider(MusicProvider):
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         artist_obj = await self._get_data(f"artists/{prov_artist_id}")
-        return await self._parse_artist(artist_obj) if artist_obj else None
+        return await self._parse_artist(artist_obj)
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        if album_obj := await self._get_data(f"albums/{prov_album_id}"):
-            return await self._parse_album(album_obj)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        album_obj = await self._get_data(f"albums/{prov_album_id}")
+        return await self._parse_album(album_obj)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
-        if track_obj := await self._get_data(f"tracks/{prov_track_id}"):
-            return await self._parse_track(track_obj)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        track_obj = await self._get_data(f"tracks/{prov_track_id}")
+        return await self._parse_track(track_obj)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
-        if playlist_obj := await self._get_data(f"playlists/{prov_playlist_id}"):
-            return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        if prov_playlist_id == self._get_liked_songs_playlist_id():
+            return await self._get_liked_songs_playlist()
+
+        playlist_obj = await self._get_data(f"playlists/{prov_playlist_id}")
+        return await self._parse_playlist(playlist_obj)
 
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
         return [
             await self._parse_track(item)
             for item in await self._get_all_items(f"albums/{prov_album_id}/tracks")
-            if (item and item["id"])
+            if item["id"]
         ]
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
+        uri = (
+            "me/tracks"
+            if prov_playlist_id == self._get_liked_songs_playlist_id()
+            else f"playlists/{prov_playlist_id}/tracks"
+        )
         for item in await self._get_all_items(
-            f"playlists/{prov_playlist_id}/tracks",
+            uri,
         ):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
@@ -323,9 +371,7 @@ class SpotifyProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
-        track_uris = []
-        for track_id in prov_track_ids:
-            track_uris.append(f"spotify:track:{track_id}")
+        track_uris = [f"spotify:track:{track_id}" for track_id in prov_track_ids]
         data = {"uris": track_uris}
         return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
@@ -352,10 +398,6 @@ class SpotifyProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         # make sure a valid track is requested.
         track = await self.get_track(item_id)
-        if not track:
-            raise MediaNotFoundError(f"track {item_id} not found")
-        # make sure that the token is still valid by just requesting it
-        await self.login()
         return StreamDetails(
             item_id=track.item_id,
             provider=self.instance_id,
@@ -363,6 +405,9 @@ class SpotifyProvider(MusicProvider):
                 content_type=ContentType.OGG,
             ),
             duration=track.duration,
+            # these streamdetails may be cached for a long time,
+            # as there is no time sensitive info in them
+            expires=time.time() + 30 * 24 * 3600,
         )
 
     async def get_audio_stream(
@@ -387,7 +432,7 @@ class SpotifyProvider(MusicProvider):
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
         bytes_sent = 0
-        async with AsyncProcess(args) as librespot_proc:
+        async with AsyncProcess(args, stdout=True) as librespot_proc:
             async for chunk in librespot_proc.iter_any():
                 yield chunk
                 bytes_sent += len(chunk)
@@ -397,8 +442,8 @@ class SpotifyProvider(MusicProvider):
             # https://github.com/librespot-org/librespot/issues/972
             # retry with ap-port set to invalid value, which will force fallback
             args += ["--ap-port", "12345"]
-            async with AsyncProcess(args) as librespot_proc:
-                async for chunk in librespot_proc.iter_any(64000):
+            async with AsyncProcess(args, stdout=True) as librespot_proc:
+                async for chunk in librespot_proc.iter_any():
                     yield chunk
             self._ap_workaround = True
 
@@ -407,7 +452,7 @@ class SpotifyProvider(MusicProvider):
         artist = Artist(
             item_id=artist_obj["id"],
             provider=self.domain,
-            name=artist_obj["name"],
+            name=artist_obj["name"] or artist_obj["id"],
             provider_mappings={
                 ProviderMapping(
                     item_id=artist_obj["id"],
@@ -451,6 +496,8 @@ class SpotifyProvider(MusicProvider):
             album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
 
         for artist_obj in album_obj["artists"]:
+            if not artist_obj.get("name") or not artist_obj.get("id"):
+                continue
             album.artists.append(await self._parse_artist(artist_obj))
 
         with contextlib.suppress(ValueError):
@@ -519,6 +566,8 @@ class SpotifyProvider(MusicProvider):
         if artist:
             track.artists.append(artist)
         for track_artist in track_obj.get("artists", []):
+            if not track_artist.get("name") or not track_artist.get("id"):
+                continue
             artist = await self._parse_artist(track_artist)
             if artist and artist.item_id not in {x.item_id for x in track.artists}:
                 track.artists.append(artist)
@@ -531,7 +580,8 @@ class SpotifyProvider(MusicProvider):
             if track_obj["album"].get("images"):
                 track.metadata.images = [
                     MediaItemImage(
-                        type=ImageType.THUMB, path=track_obj["album"]["images"][0]["url"]
+                        type=ImageType.THUMB,
+                        path=track_obj["album"]["images"][0]["url"],
                     )
                 ]
         if track_obj.get("copyright"):
@@ -579,17 +629,18 @@ class SpotifyProvider(MusicProvider):
             return self._auth_token
         tokeninfo, userinfo = None, self._sp_user
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
-            raise LoginFailed("Invalid login credentials")
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         # retrieve token with librespot
         retries = 0
-        while retries < 20:
+        while retries < 5:
             try:
                 retries += 1
                 if not tokeninfo:
-                    async with asyncio.timeout(5):
+                    async with asyncio.timeout(10):
                         tokeninfo = await self._get_token()
                 if tokeninfo and not userinfo:
-                    async with asyncio.timeout(5):
+                    async with asyncio.timeout(10):
                         userinfo = await self._get_data("me", tokeninfo=tokeninfo)
                 if tokeninfo and userinfo:
                     # we have all info we need!
@@ -597,7 +648,7 @@ class SpotifyProvider(MusicProvider):
                 if retries > 2:
                     # switch to ap workaround after 2 retries
                     self._ap_workaround = True
-            except asyncio.exceptions.TimeoutError:
+            except TimeoutError:
                 await asyncio.sleep(2)
         if tokeninfo and userinfo:
             self._auth_token = tokeninfo
@@ -607,15 +658,19 @@ class SpotifyProvider(MusicProvider):
             self._auth_token = tokeninfo
             return tokeninfo
         if tokeninfo and not userinfo:
-            raise LoginFailed(
-                "Unable to retrieve userdetails from Spotify API - probably just a temporary error"
+            msg = (
+                "Unable to retrieve userdetails from Spotify API - "
+                "probably just a temporary error"
             )
+            raise LoginFailed(msg)
         if self.config.get_value(CONF_USERNAME).isnumeric():
             # a spotify free/basic account can be recognized when
             # the username consists of numbers only - check that here
             # an integer can be parsed of the username, this is a free account
-            raise LoginFailed("Only Spotify Premium accounts are supported")
-        raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
+            msg = "Only Spotify Premium accounts are supported"
+            raise LoginFailed(msg)
+        msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+        raise LoginFailed(msg)
 
     async def _get_token(self):
         """Get spotify auth token with librespot bin."""
@@ -632,8 +687,12 @@ class SpotifyProvider(MusicProvider):
             "-p",
             self.config.get_value(CONF_PASSWORD),
         ]
-        librespot = await asyncio.create_subprocess_exec(*args)
-        await librespot.wait()
+        if self._ap_workaround:
+            args += ["--ap-port", "12345"]
+        async with AsyncProcess(args, stdout=True) as librespot:
+            stdout = await librespot.read(-1)
+        if stdout.decode().strip() != "authorized":
+            raise LoginFailed(f"Login failed for username {self.config.get_value(CONF_USERNAME)}")
         # get token with (authorized) librespot
         scopes = [
             "user-read-playback-state",
@@ -666,10 +725,8 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        librespot = await asyncio.create_subprocess_exec(
-            *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT
-        )
-        stdout, _ = await librespot.communicate()
+        async with AsyncProcess(args, stdout=True) as librespot:
+            stdout = await librespot.read(-1)
         duration = round(time.time() - time_start, 2)
         try:
             result = json.loads(stdout)
@@ -708,72 +765,90 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
-    async def _get_data(self, endpoint, tokeninfo: dict | None = None, **kwargs):
+    async def _get_data(self, endpoint, **kwargs) -> dict[str, Any]:
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         kwargs["market"] = "from_token"
         kwargs["country"] = "from_token"
+        tokeninfo = kwargs.pop("tokeninfo", None)
         if tokeninfo is None:
             tokeninfo = await self.login()
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
-        async with self._throttler:
-            time_start = time.time()
-            try:
-                async with self.mass.http_session.get(
-                    url, headers=headers, params=kwargs, ssl=False, timeout=120
-                ) as response:
-                    result = await response.json()
-                    if "error" in result or ("status" in result and "error" in result["status"]):
-                        self.logger.error("%s - %s", endpoint, result)
-                        return None
-            except (
-                aiohttp.ContentTypeError,
-                JSONDecodeError,
-            ) as err:
-                self.logger.error("%s - %s", endpoint, str(err))
-                return None
-            finally:
+        async with (
+            self._throttler,
+            self.mass.http_session.get(
+                url, headers=headers, params=kwargs, ssl=True, timeout=120
+            ) as response,
+        ):
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._get_data(endpoint, **kwargs)
+            # handle temporary server error
+            if response.status == 503:
                 self.logger.debug(
-                    "Processing GET/%s took %s seconds",
+                    "Request to %s failed with 503 error, retrying in 30 seconds...",
                     endpoint,
-                    round(time.time() - time_start, 2),
                 )
-            return result
+                await asyncio.sleep(30)
+                return await self._get_data(endpoint, **kwargs)
+            # handle 404 not found, convert to MediaNotFoundError
+            if response.status == 404:
+                raise MediaNotFoundError(f"{endpoint} not found")
+            response.raise_for_status()
+            return await response.json(loads=json_loads)
 
-    async def _delete_data(self, endpoint, data=None, **kwargs):
+    async def _delete_data(self, endpoint, data=None, **kwargs) -> str:
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
-        if not token:
-            return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.delete(
             url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._delete_data(endpoint, data=data, **kwargs)
+            response.raise_for_status()
             return await response.text()
 
-    async def _put_data(self, endpoint, data=None, **kwargs):
+    async def _put_data(self, endpoint, data=None, **kwargs) -> str:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
-        if not token:
-            return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.put(
             url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._put_data(endpoint, data=data, **kwargs)
+            response.raise_for_status()
             return await response.text()
 
-    async def _post_data(self, endpoint, data=None, **kwargs):
+    async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
-        if not token:
-            return None
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.post(
             url, headers=headers, params=kwargs, json=data, ssl=False
         ) as response:
+            # handle spotify rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers["Retry-After"])
+                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
+                await asyncio.sleep(backoff_time)
+                return await self._post_data(endpoint, data=data, **kwargs)
+            response.raise_for_status()
             return await response.text()
 
     async def get_librespot_binary(self):
@@ -807,4 +882,5 @@ class SpotifyProvider(MusicProvider):
         ):
             return bridge_binary
 
-        raise RuntimeError(f"Unable to locate Librespot for {system}/{architecture}")
+        msg = f"Unable to locate Librespot for {system}/{architecture}"
+        raise RuntimeError(msg)

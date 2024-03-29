@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import platform
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.server.helpers.audio import get_file_stream
 from music_assistant.server.providers.filesystem_local import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     LocalFileSystemProvider,
     exists,
     makedirs,
 )
+from music_assistant.server.providers.filesystem_local.helpers import get_absolute_path
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -37,13 +41,15 @@ async def setup(
     # check if valid dns name is given for the host
     server: str = config.get_value(CONF_HOST)
     if not await get_ip_from_host(server):
-        raise LoginFailed(f"Unable to resolve {server}, make sure the address is resolveable.")
+        msg = f"Unable to resolve {server}, make sure the address is resolveable."
+        raise LoginFailed(msg)
     # check if share is valid
     share: str = config.get_value(CONF_SHARE)
     if not share or "/" in share or "\\" in share:
-        raise LoginFailed("Invalid share name")
+        msg = "Invalid share name"
+        raise LoginFailed(msg)
     prov = SMBFileSystemProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -110,7 +116,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Mount options",
             required=False,
-            advanced=True,
+            category="advanced",
             default_value="noserverino,file_mode=0775,dir_mode=0775,uid=0,gid=0",
             description="[optional] Any additional mount options you "
             "want to pass to the mount command if needed for your particular setup.",
@@ -129,10 +135,10 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
     smb library for Python (and we tried both pysmb and smbprotocol).
     """
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         # base_path will be the path where we're going to mount the remote share
-        self.base_path = f"/tmp/{self.instance_id}"
+        self.base_path = f"/tmp/{self.instance_id}"  # noqa: S108
         if not await exists(self.base_path):
             await makedirs(self.base_path)
 
@@ -141,7 +147,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             await self.unmount(ignore_error=True)
             await self.mount()
         except Exception as err:
-            raise LoginFailed(f"Connection failed for the given details: {err}") from err
+            msg = f"Connection failed for the given details: {err}"
+            raise LoginFailed(msg) from err
 
     async def unload(self) -> None:
         """
@@ -150,6 +157,14 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         await self.unmount()
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        abs_path = get_absolute_path(self.base_path, streamdetails.item_id)
+        async for chunk in get_file_stream(self.mass, abs_path, streamdetails, seek_position):
+            yield chunk
 
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
@@ -183,7 +198,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             mount_cmd = f"mount -t cifs -o {','.join(options)} //{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
 
         else:
-            raise LoginFailed(f"SMB provider is not supported on {platform.system()}")
+            msg = f"SMB provider is not supported on {platform.system()}"
+            raise LoginFailed(msg)
 
         self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
         self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
@@ -193,7 +209,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         )
         _, stderr = await proc.communicate()
         if proc.returncode != 0:
-            raise LoginFailed(f"SMB mount failed with error: {stderr.decode()}")
+            msg = f"SMB mount failed with error: {stderr.decode()}"
+            raise LoginFailed(msg)
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
