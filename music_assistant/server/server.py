@@ -1,4 +1,5 @@
 """Main Music Assistant class."""
+
 from __future__ import annotations
 
 import asyncio
@@ -197,6 +198,11 @@ class MusicAssistant:
     def get_provider_manifests(self) -> list[ProviderManifest]:
         """Return all Provider manifests."""
         return list(self._provider_manifests.values())
+
+    @api_command("providers/manifests/get")
+    def get_provider_manifest(self, domain: str) -> ProviderManifest:
+        """Return Provider manifests of single provider(domain)."""
+        return self._provider_manifests[domain]
 
     @api_command("providers")
     def get_providers(
@@ -410,7 +416,7 @@ class MusicAssistant:
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         # if this is a music provider, start sync
         if provider.type == ProviderType.MUSIC:
-            await self.music.start_sync(providers=[provider.instance_id])
+            self.music.start_sync(providers=[provider.instance_id])
 
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""
@@ -424,9 +430,13 @@ class MusicAssistant:
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
-            await provider.unload()
-            self._providers.pop(instance_id, None)
-            self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+            try:
+                await provider.unload()
+            except Exception as err:
+                LOGGER.warning("Error while unload provider %s: %s", provider.name, str(err))
+            finally:
+                self._providers.pop(instance_id, None)
+                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
 
     def _register_api_commands(self) -> None:
         """Register all methods decorated as api_command within a class(instance)."""

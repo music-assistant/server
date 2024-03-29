@@ -1,4 +1,5 @@
 """Fanart.tv Metadata provider for Music Assistant."""
+
 from __future__ import annotations
 
 from json import JSONDecodeError
@@ -119,9 +120,10 @@ class FanartTvMetadataProvider(MetadataProvider):
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
         kwargs["api_key"] = app_var(4)
-        async with self.throttler, self.mass.http_session.get(
-            url, params=kwargs, ssl=False
-        ) as response:
+        async with (
+            self.throttler,
+            self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
+        ):
             try:
                 result = await response.json()
             except (

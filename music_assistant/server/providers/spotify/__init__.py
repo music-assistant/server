@@ -1,4 +1,5 @@
 """Spotify musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +18,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -429,11 +430,6 @@ class SpotifyProvider(MusicProvider):
     async def _parse_album(self, album_obj: dict):
         """Parse spotify album object to generic layout."""
         name, version = parse_title_and_version(album_obj["name"])
-        barcode = None
-        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
-            barcode = album_obj["external_ids"]["upc"]
-        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
-            barcode = album_obj["external_ids"]["ean"]
         album = Album(
             item_id=album_obj["id"],
             provider=self.domain,
@@ -446,10 +442,14 @@ class SpotifyProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(content_type=ContentType.OGG, bit_rate=320),
                     url=album_obj["external_urls"]["spotify"],
-                    barcode=barcode,
                 )
             },
         )
+        if "external_ids" in album_obj and album_obj["external_ids"].get("upc"):
+            album.external_ids.add((ExternalID.BARCODE, "0" + album_obj["external_ids"]["upc"]))
+        if "external_ids" in album_obj and album_obj["external_ids"].get("ean"):
+            album.external_ids.add((ExternalID.BARCODE, album_obj["external_ids"]["ean"]))
+
         for artist_obj in album_obj["artists"]:
             album.artists.append(await self._parse_artist(artist_obj))
 
@@ -507,13 +507,14 @@ class SpotifyProvider(MusicProvider):
                         content_type=ContentType.OGG,
                         bit_rate=320,
                     ),
-                    isrc=track_obj.get("external_ids", {}).get("isrc"),
                     url=track_obj["external_urls"]["spotify"],
                     available=not track_obj["is_local"] and track_obj["is_playable"],
                 )
             },
             **extra_init_kwargs,
         )
+        if isrc := track_obj.get("external_ids", {}).get("isrc"):
+            track.external_ids.add((ExternalID.ISRC, isrc))
 
         if artist:
             track.artists.append(artist)
@@ -797,45 +798,13 @@ class SpotifyProvider(MusicProvider):
             except OSError:
                 return None
 
-        base_path = os.path.join(os.path.dirname(__file__), "librespot")
-        if platform.system() == "Windows" and (
-            librespot := await check_librespot(os.path.join(base_path, "windows", "librespot.exe"))
+        base_path = os.path.join(os.path.dirname(__file__), "bin")
+        system = platform.system().lower()
+        architecture = platform.machine().lower()
+
+        if bridge_binary := await check_librespot(
+            os.path.join(base_path, f"librespot-{system}-{architecture}")
         ):
-            return librespot
-        if platform.system() == "Darwin":
-            # macos binary is x86_64 intel
-            if librespot := await check_librespot(os.path.join(base_path, "osx", "librespot")):
-                return librespot
+            return bridge_binary
 
-        if platform.system() == "FreeBSD":
-            # FreeBSD binary is x86_64 intel
-            if librespot := await check_librespot(os.path.join(base_path, "freebsd", "librespot")):
-                return librespot
-
-        if platform.system() == "Linux":
-            architecture = platform.machine()
-            if architecture in ["AMD64", "x86_64"]:
-                # generic linux x86_64 binary
-                if librespot := await check_librespot(
-                    os.path.join(
-                        base_path,
-                        "linux",
-                        "librespot-x86_64",
-                    )
-                ):
-                    return librespot
-
-            # arm architecture... try all options one by one...
-            for arch in ["aarch64", "armv7", "armhf", "arm"]:
-                if librespot := await check_librespot(
-                    os.path.join(
-                        base_path,
-                        "linux",
-                        f"librespot-{arch}",
-                    )
-                ):
-                    return librespot
-
-        raise RuntimeError(
-            f"Unable to locate Libespot for {platform.system()} ({platform.machine()})"
-        )
+        raise RuntimeError(f"Unable to locate Librespot for {system}/{architecture}")

@@ -1,8 +1,8 @@
 """Model a QueueItem."""
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
@@ -32,12 +32,6 @@ class QueueItem(DataClassDictMixin):
             self.name = self.streamdetails.stream_title
         if not self.name:
             self.name = self.uri
-
-    @classmethod
-    def __pre_deserialize__(cls, d: dict[Any, Any]) -> dict[Any, Any]:
-        """Run actions before deserialization."""
-        d.pop("streamdetails", None)
-        return d
 
     @property
     def uri(self) -> str:

@@ -1,10 +1,11 @@
 """Manage MediaItems of type Album."""
+
 from __future__ import annotations
 
 import asyncio
 import contextlib
 from random import choice, random
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -65,7 +66,6 @@ class AlbumsController(MediaControllerBase[Album]):
         lazy: bool = True,
         details: Album | ItemMapping = None,
         add_to_library: bool = False,
-        **kwargs: dict[str, Any],
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
@@ -75,7 +75,6 @@ class AlbumsController(MediaControllerBase[Album]):
             lazy=lazy,
             details=details,
             add_to_library=add_to_library,
-            **kwargs,
         )
         # append full artist details to full album item
         album.artists = [
@@ -85,7 +84,6 @@ class AlbumsController(MediaControllerBase[Album]):
                 lazy=lazy,
                 details=item,
                 add_to_library=add_to_library,
-                **kwargs,
             )
             for item in album.artists
         ]
@@ -95,34 +93,38 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item: Album,
         metadata_lookup: bool = True,
-        add_album_tracks: bool = True,
-        **kwargs: dict[str, Any],  # noqa: ARG002
+        add_album_tracks: bool = False,
     ) -> Album:
         """Add album to library and return the database item."""
         if not isinstance(item, Album):
             raise InvalidDataError("Not a valid Album object (ItemMapping can not be added to db)")
         if not item.provider_mappings:
             raise InvalidDataError("Album is missing provider mapping(s)")
-        # resolve any ItemMapping artists
-        item.artists = [
-            await self.mass.music.artists.get_provider_item(
-                artist.item_id, artist.provider, fallback=artist
-            )
-            if isinstance(artist, ItemMapping)
-            else artist
-            for artist in item.artists
-        ]
-        if not item.artists:
-            raise InvalidDataError("Album is missing artist(s)")
         # grab additional metadata
-        if not metadata_lookup:
+        if metadata_lookup:
             await self.mass.metadata.get_album_metadata(item)
-        # actually add (or update) the item in the library db
-        # use the lock to prevent a race condition of the same item being added twice
-        async with self._db_add_lock:
-            library_item = await self._add_library_item(item)
+        # check for existing item first
+        library_item = None
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            # existing item match by provider id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
+        else:
+            # search by name
+            async for db_item in self.iter_library_items(search=item.name):
+                if compare_album(db_item, item):
+                    # existing item found: update it
+                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    break
+        if not library_item:
+            # actually add a new item in the library db
+            # use the lock to prevent a race condition of the same item being added twice
+            async with self._db_add_lock:
+                library_item = await self._add_library_item(item)
         # also fetch the same album on all providers
-        if not metadata_lookup:
+        if metadata_lookup:
             await self._match(library_item)
             library_item = await self.get_library_item(library_item.item_id)
         # also add album tracks
@@ -131,9 +133,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 for track in await self._get_provider_album_tracks(item.item_id, item.provider):
                     track.album = library_item
                     tg.create_task(
-                        self.mass.music.tracks.add_item_to_library(
-                            track, metadata_lookup=metadata_lookup
-                        )
+                        self.mass.music.tracks.add_item_to_library(track, metadata_lookup=False)
                     )
         self.mass.signal_event(
             EventType.MEDIA_ITEM_ADDED,
@@ -156,6 +156,7 @@ class AlbumsController(MediaControllerBase[Album]):
         else:
             album_type = cur_item.album_type
         sort_artist = album_artists[0].sort_name
+        cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -169,7 +170,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 "artists": serialize_to_json(album_artists),
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
-                "mbid": update.mbid or cur_item.mbid,
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
                 "timestamp_modified": int(utc_timestamp()),
             },
         )
@@ -236,28 +239,8 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _add_library_item(self, item: Album) -> Album:
         """Add a new record to the database."""
-        # safety guard: check for existing item first
-        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-            # existing item found: update it
-            return await self.update_item_in_library(cur_item.item_id, item)
-        if item.mbid:
-            match = {"mbid": item.mbid}
-            if db_row := await self.mass.music.database.get_row(self.db_table, match):
-                cur_item = Album.from_dict(self._parse_db_row(db_row))
-                # existing item found: update it
-                return await self.update_item_in_library(cur_item.item_id, item)
-        # fallback to search and match
-        match = {"sort_name": item.sort_name}
-        for db_row in await self.mass.music.database.get_rows(self.db_table, match):
-            row_album = Album.from_dict(self._parse_db_row(db_row))
-            if compare_album(row_album, item):
-                cur_item = row_album
-                # existing item found: update it
-                return await self.update_item_in_library(cur_item.item_id, item)
-
-        # insert new item
-        album_artists = await self._get_artist_mappings(item, cur_item)
-        sort_artist = album_artists[0].sort_name
+        album_artists = await self._get_artist_mappings(item)
+        sort_artist = album_artists[0].sort_name if album_artists else ""
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -267,11 +250,11 @@ class AlbumsController(MediaControllerBase[Album]):
                 "favorite": item.favorite,
                 "album_type": item.album_type,
                 "year": item.year,
-                "mbid": item.mbid,
                 "metadata": serialize_to_json(item.metadata),
                 "provider_mappings": serialize_to_json(item.provider_mappings),
                 "artists": serialize_to_json(album_artists),
                 "sort_artist": sort_artist,
+                "external_ids": serialize_to_json(item.external_ids),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
             },
@@ -412,7 +395,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
-                    if not compare_album(search_result_item, db_album):
+                    if not compare_album(db_album, search_result_item):
                         continue
                     # we must fetch the full album version, search results are simplified objects
                     prov_album = await self.get_provider_item(
@@ -420,7 +403,7 @@ class AlbumsController(MediaControllerBase[Album]):
                         search_result_item.provider,
                         fallback=search_result_item,
                     )
-                    if compare_album(prov_album, db_album):
+                    if compare_album(db_album, prov_album):
                         # 100% match, we update the db with the additional provider mapping(s)
                         match_found = True
                         for provider_mapping in search_result_item.provider_mappings:

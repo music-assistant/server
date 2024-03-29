@@ -1,4 +1,5 @@
 """Base (ABC) MediaType specific controller."""
+
 from __future__ import annotations
 
 import logging
@@ -9,7 +10,7 @@ from time import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
-from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
 from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
-JSON_KEYS = ("artists", "metadata", "provider_mappings")
+JSON_KEYS = ("artists", "metadata", "provider_mappings", "external_ids")
 
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
@@ -46,7 +47,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.logger = logging.getLogger(f"{ROOT_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
-    async def add_item_to_library(self, item: ItemCls, **kwargs: dict[str, Any]) -> ItemCls:
+    async def add_item_to_library(self, item: ItemCls, metadata_lookup: bool = True) -> ItemCls:
         """Add item to library and return the database item."""
         raise NotImplementedError
 
@@ -153,7 +154,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         lazy: bool = True,
         details: ItemCls = None,
         add_to_library: bool = False,
-        **kwargs: dict[str, Any],
     ) -> ItemCls:
         """Return (full) details for a single media item."""
         if provider_instance_id_or_domain == "database":
@@ -203,9 +203,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # only if we really need to wait for the result (e.g. to prevent race conditions),
         # we can set lazy to false and we await the job to complete.
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(
-            self.add_item_to_library, item=details, task_id=task_id, **kwargs
-        )
+        add_task = self.mass.create_task(self.add_item_to_library, item=details, task_id=task_id)
         if not lazy:
             await add_task
             return add_task.result()
@@ -256,7 +254,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         else:
             items = searchresult.radio
         # store (serializable items) in cache
-        if not prov.domain.startswith("filesystem"):  # do not cache filesystem results
+        if prov.is_streaming_provider:  # do not cache filesystem results
             self.mass.create_task(
                 self.mass.cache.set(cache_key, [x.to_dict() for x in items], expiration=86400 * 7)
             )
@@ -322,6 +320,30 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 provider_item_ids=(mapping.item_id,),
             ):
                 return item
+        return None
+
+    async def get_library_item_by_external_id(
+        self, external_id: str, external_id_type: ExternalID | None = None
+    ) -> ItemCls | None:
+        """Get the library item for the given external id."""
+        query = self.base_query + f" WHERE {self.db_table}.external_ids LIKE :external_id_str"
+        if external_id_type:
+            external_id_str = f'%("{external_id_type}", "{external_id}")%'
+        else:
+            external_id_str = f'%"{external_id}"%'
+        for item in await self._get_library_items_by_query(
+            query=query, query_params={"external_id_str": external_id_str}
+        ):
+            return item
+        return None
+
+    async def get_library_item_by_external_ids(
+        self, external_ids: set[tuple[ExternalID, str]]
+    ) -> ItemCls | None:
+        """Get the library item for (one of) the given external ids."""
+        for external_id_type, external_id in external_ids:
+            if match := await self.get_library_item_by_external_id(external_id, external_id_type):
+                return match
         return None
 
     async def get_library_items_by_prov_id(
@@ -684,17 +706,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return ItemMapping.from_item(db_artist)
 
         # try to request the full item
+        artist = await self.mass.music.artists.get_provider_item(
+            artist.item_id, artist.provider, fallback=artist
+        )
         with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
             db_artist = await self.mass.music.artists.add_item_to_library(
                 artist, metadata_lookup=False
             )
             return ItemMapping.from_item(db_artist)
         # fallback to just the provider item
-        artist = await self.mass.music.artists.get_provider_item(
-            artist.item_id, artist.provider, fallback=artist
-        )
+        # this can happen for unavailable items
         if isinstance(artist, ItemMapping):
-            # this can happen for unavailable items
             return artist
         return ItemMapping.from_item(artist)
 
@@ -720,8 +742,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 "version": db_row_dict["album_version"],
             }
             db_row_dict["album"] = ItemMapping.from_dict(db_row_dict["album"])
-            if not db_row_dict["metadata"]["images"]:
-                # copy album image in case the track has no image
+            if db_row_dict["album_metadata"]:
+                # copy album image
                 album_metadata = json_loads(db_row_dict["album_metadata"])
-                db_row_dict["metadata"]["images"] = album_metadata["images"]
+                if album_metadata and album_metadata["images"]:
+                    db_row_dict["metadata"]["images"] = album_metadata["images"]
         return db_row_dict

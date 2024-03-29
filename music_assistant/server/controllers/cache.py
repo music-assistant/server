@@ -1,4 +1,5 @@
 """Provides a simple stateless caching system."""
+
 from __future__ import annotations
 
 import asyncio

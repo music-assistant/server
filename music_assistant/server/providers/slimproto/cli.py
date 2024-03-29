@@ -8,6 +8,7 @@ Output is adjusted to conform to Music Assistant logic or just for simplificatio
 Goal is player compatibility, not API compatibility.
 Users that need more, should just stay with a full blown LMS server.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -178,7 +179,7 @@ class LmsCli:
         """Handle new connection on the legacy CLI."""
         # https://raw.githubusercontent.com/Logitech/slimserver/public/7.8/HTML/EN/html/docs/cli-api.html
         # https://github.com/elParaguayo/LMS-CLI-Documentation/blob/master/LMS-CLI.md
-        self.logger.info("Client connected on Telnet CLI")
+        self.logger.debug("Client connected on Telnet CLI")
         try:
             while True:
                 raw_request = await reader.readline()
@@ -362,9 +363,7 @@ class LmsCli:
                         "timestamp": time.strftime("%a, %d %b %Y %H:%M:%S %Z", time.gmtime()),
                         "advice": {
                             # update interval for streaming mode
-                            "interval": 5000
-                            if streaming
-                            else 0
+                            "interval": 5000 if streaming else 0
                         },
                     }
                 )
@@ -534,7 +533,7 @@ class LmsCli:
                 await resp.write(chunk)
                 cometd_client.last_seen = int(time.time())
             except ConnectionResetError:
-                return
+                return resp
         return resp
 
     def _handle_cometd_request(self, client: CometDClient, cometd_request: dict[str, Any]) -> None:
@@ -591,6 +590,8 @@ class LmsCli:
         """Handle players command."""
         players: list[PlayerItem] = []
         for index, mass_player in enumerate(self.mass.players.all()):
+            if not isinstance(start_index, int):
+                start_index = 0
             if isinstance(start_index, int) and index < start_index:
                 continue
             if len(players) > limit:
@@ -853,7 +854,7 @@ class LmsCli:
             jump = int(number.split("+")[1])
             self.mass.create_task(self.mass.player_queues.skip, player_queue.queue_id, jump)
         else:
-            self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, number)
+            self.mass.create_task(self.mass.player_queues.seek, player_queue.queue_id, int(number))
 
     def _handle_power(self, player_id: str, value: str | int, *args, **kwargs) -> int | None:
         """Handle player `time` command."""
@@ -901,20 +902,17 @@ class LmsCli:
             next_index = (queue.current_index or 0) - int(arg.split("-")[1])
             self.mass.create_task(self.mass.player_queues.play_index, player_id, next_index)
             return
+        if subcommand == "shuffle" and arg == "?":
+            return queue.shuffle_enabled
         if subcommand == "shuffle":
-            self.mass.player_queues.set_shuffle(queue.queue_id, not queue.shuffle_enabled)
+            self.mass.player_queues.set_shuffle(queue.queue_id, bool(arg))
             return
+        if subcommand == "repeat" and arg == "?":
+            return str(REPEATMODE_MAP[queue.repeat_mode])
         if subcommand == "repeat":
-            if queue.repeat_mode == RepeatMode.ALL:
-                new_repeat_mode = RepeatMode.OFF
-            elif queue.repeat_mode == RepeatMode.OFF:
-                new_repeat_mode = RepeatMode.ONE
-            else:
-                new_repeat_mode = RepeatMode.ALL
+            repeat_map = {val: key for key, val in REPEATMODE_MAP.items()}
+            new_repeat_mode = repeat_map.get(int(arg))
             self.mass.player_queues.set_repeat(queue.queue_id, new_repeat_mode)
-            return
-        if subcommand == "crossfade":
-            self.mass.player_queues.set_crossfade(queue.queue_id, not queue.crossfade_enabled)
             return
 
         self.logger.warning("Unhandled command: playlist/%s", subcommand)
@@ -1034,16 +1032,16 @@ class LmsCli:
             return
         # queue related button commands
         queue = self.mass.player_queues.get_active_queue(player_id)
-        if subcommand == "jump_fwd":
+        if subcommand == "fwd":
             self.mass.create_task(self.mass.player_queues.next, queue.queue_id)
             return
-        if subcommand == "jump_rew":
+        if subcommand == "rew":
             self.mass.create_task(self.mass.player_queues.previous, queue.queue_id)
             return
-        if subcommand == "fwd":
+        if subcommand == "jump_fwd":
             self.mass.create_task(self.mass.player_queues.skip, queue.queue_id, 10)
             return
-        if subcommand == "rew":
+        if subcommand == "jump_rew":
             self.mass.create_task(self.mass.player_queues.skip, queue.queue_id, -10)
             return
         if subcommand == "shuffle":
@@ -1261,9 +1259,9 @@ class LmsCli:
                         "favorites_title": item.name,
                         "favorites_url": item.uri,
                         "favorites_type": item.media_type.value,
-                        "icon": self.mass.metadata.get_image_url(item.image, 256)
-                        if item.image
-                        else "",
+                        "icon": (
+                            self.mass.metadata.get_image_url(item.image, 256) if item.image else ""
+                        ),
                     },
                     "textkey": item.name[0].upper(),
                     "commonParams": {

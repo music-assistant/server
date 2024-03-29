@@ -6,6 +6,7 @@ https://github.com/home-assistant/core/blob/e5ccd85e7e26c167d0b73669a88bc3a7614d
 
 All rights reserved.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -108,15 +109,13 @@ def log_exception(format_err: Callable[..., Any], *args: Any) -> None:
 @overload
 def catch_log_exception(
     func: Callable[..., Coroutine[Any, Any, Any]], format_err: Callable[..., Any]
-) -> Callable[..., Coroutine[Any, Any, None]]:
-    ...
+) -> Callable[..., Coroutine[Any, Any, None]]: ...
 
 
 @overload
 def catch_log_exception(
     func: Callable[..., Any], format_err: Callable[..., Any]
-) -> Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]:
-    ...
+) -> Callable[..., None] | Callable[..., Coroutine[Any, Any, None]]: ...
 
 
 def catch_log_exception(

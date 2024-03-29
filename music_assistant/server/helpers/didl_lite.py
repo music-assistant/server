@@ -1,4 +1,5 @@
 """Helper(s) to create DIDL Lite metadata for Sonos/DLNA players."""
+
 from __future__ import annotations
 
 import datetime

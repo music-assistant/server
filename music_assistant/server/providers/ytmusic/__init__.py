@@ -1,4 +1,5 @@
 """Youtube Music support for MusicAssistant."""
+
 from __future__ import annotations
 
 import asyncio
@@ -479,8 +480,7 @@ class YoutubeMusicProvider(MusicProvider):
                     if track:
                         tracks.append(track)
                 except InvalidDataError:
-                    track = await self.get_track(track["videoId"])
-                    if track:
+                    if track := await self.get_track(track["videoId"]):
                         tracks.append(track)
             return tracks
         return []
@@ -493,6 +493,8 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers,
             signature_timestamp=self._signature_timestamp,
         )
+        if not track_obj:
+            raise MediaNotFoundError(f"Item {item_id} not found")
         stream_format = await self._parse_stream_format(track_obj)
         url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):

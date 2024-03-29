@@ -1,4 +1,5 @@
 """Utilities for image manipulation and retrieval."""
+
 from __future__ import annotations
 
 import asyncio

@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "opensubsonic",
+  "name": "Open Subsonic Media Server Library",
+  "description": "Support for Open Subsonic based streaming providers in Music Assistant.",
+  "codeowners": ["@khers"],
+  "requirements": ["py-opensonic>=5.0.2"],
+  "documentation": "https://github.com/orgs/music-assistant/discussions/1806",
+  "multi_instance": true
+}

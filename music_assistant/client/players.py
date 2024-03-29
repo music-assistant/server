@@ -1,4 +1,5 @@
 """Handle player related endpoints for Music Assistant."""
+
 from __future__ import annotations
 
 from collections.abc import Iterator
@@ -257,12 +258,6 @@ class Players:
         """Configure repeat mode on the the queue."""
         await self.client.send_command(
             "players/queue/repeat", queue_id=queue_id, repeat_mode=repeat_mode
-        )
-
-    async def queue_command_crossfade(self, queue_id: str, crossfade_enabled: bool) -> None:
-        """Configure crossfade mode on the the queue."""
-        await self.client.send_command(
-            "players/queue/crossfade", queue_id=queue_id, crossfade_enabled=crossfade_enabled
         )
 
     async def play_media(

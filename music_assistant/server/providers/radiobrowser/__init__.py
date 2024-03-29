@@ -1,4 +1,5 @@
 """RadioBrowser musicprovider support for MusicAssistant."""
+
 from __future__ import annotations
 
 from collections.abc import AsyncGenerator
@@ -16,13 +17,14 @@ from music_assistant.common.models.media_items import (
     ImageType,
     MediaItemImage,
     MediaItemLink,
+    MediaItemType,
     MediaType,
     ProviderMapping,
     Radio,
     SearchResults,
     StreamDetails,
 )
-from music_assistant.server.helpers.audio import get_radio_stream
+from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
@@ -106,65 +108,45 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
-    async def browse(self, path: str) -> BrowseFolder:
+    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        _, subpath = path.split("://")
+        subpath = path.split("://", 1)[1]
         subsubpath = "" if "/" not in subpath else subpath.split("/")[-1]
 
         if not subpath:
             # return main listing
-            root_items: list[BrowseFolder] = []
-            root_items.append(
-                BrowseFolder(
-                    item_id="popular",
-                    provider=self.domain,
-                    path=path + "popular",
-                    name="",
-                    label="By popularity",
-                )
-            )
-            root_items.append(
-                BrowseFolder(
-                    item_id="country",
-                    provider=self.domain,
-                    path=path + "country",
-                    name="",
-                    label="By country",
-                )
-            )
-            root_items.append(
-                BrowseFolder(
-                    item_id="tag",
-                    provider=self.domain,
-                    path=path + "tag",
-                    name="",
-                    label="By tag",
-                )
-            )
-
-            return BrowseFolder(
-                item_id="root",
+            yield BrowseFolder(
+                item_id="popular",
                 provider=self.domain,
-                path=path,
-                name=self.name,
-                items=root_items,
+                path=path + "popular",
+                name="",
+                label="radiobrowser_by_popularity",
             )
+            yield BrowseFolder(
+                item_id="country",
+                provider=self.domain,
+                path=path + "country",
+                name="",
+                label="radiobrowser_by_country",
+            )
+            yield BrowseFolder(
+                item_id="tag",
+                provider=self.domain,
+                path=path + "tag",
+                name="",
+                label="radiobrowser_by_tag",
+            )
+            return
 
         if subpath == "popular":
-            return BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path,
-                name="",
-                label="radios",
-                items=[x for x in await self.get_by_popularity()],
-            )
+            for item in await self.get_by_popularity():
+                yield item
+            return
 
         if subpath == "tag":
-            sub_items: list[BrowseFolder] = []
             tags = await self.radios.tags(
                 hide_broken=True,
                 limit=100,
@@ -173,63 +155,36 @@ class RadioBrowserProvider(MusicProvider):
             )
             tags.sort(key=lambda tag: tag.name)
             for tag in tags:
-                folder = BrowseFolder(
+                yield BrowseFolder(
                     item_id=tag.name.lower(),
                     provider=self.domain,
                     path=path + "/" + tag.name.lower(),
-                    name="",
-                    label=tag.name,
+                    name=tag.name,
                 )
-                sub_items.append(folder)
-            return BrowseFolder(
-                item_id="tag",
-                provider=self.domain,
-                path=path,
-                name=self.name,
-                items=sub_items,
-            )
+            return
 
         if subpath == "country":
-            sub_items: list[BrowseFolder] = []
             for country in await self.radios.countries(order=Order.NAME):
                 folder = BrowseFolder(
                     item_id=country.code.lower(),
                     provider=self.domain,
                     path=path + "/" + country.code.lower(),
-                    name="",
-                    label=country.name,
+                    name=country.name,
                 )
                 folder.metadata.images = [
                     MediaItemImage(type=ImageType.THUMB, path=country.favicon)
                 ]
-                sub_items.append(folder)
-            return BrowseFolder(
-                item_id="country",
-                provider=self.domain,
-                path=path,
-                name=self.name,
-                items=sub_items,
-            )
+                yield folder
+            return
 
         if subsubpath in await self.get_tag_names():
-            return BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path,
-                name="",
-                label="radios",
-                items=[x for x in await self.get_by_tag(subsubpath)],
-            )
+            for item in await self.get_by_tag(subsubpath):
+                yield item
+            return
 
         if subsubpath in await self.get_country_codes():
-            return BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path,
-                name="",
-                label="radios",
-                items=[x for x in await self.get_by_country(subsubpath)],
-            )
+            for item in await self.get_by_country(subsubpath):
+                yield item
 
     async def get_tag_names(self):
         """Get a list of tag names."""
@@ -323,8 +278,8 @@ class RadioBrowserProvider(MusicProvider):
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         stream = await self.radios.station(uuid=item_id)
-        url_resolved = stream.url_resolved
         await self.radios.station_click(uuid=item_id)
+        url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream.url_resolved)
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
@@ -333,6 +288,7 @@ class RadioBrowserProvider(MusicProvider):
             ),
             media_type=MediaType.RADIO,
             data=url_resolved,
+            direct=url_resolved if not supports_icy else None,
             expires=time() + 24 * 3600,
         )
 

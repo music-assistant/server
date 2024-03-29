@@ -1,4 +1,5 @@
 """Helpers to deal with Cast devices."""
+
 from __future__ import annotations
 
 import urllib.error
@@ -176,8 +177,8 @@ class CastStatusListener:
         """Handle the cast removed from a group."""
         if not self._valid:
             return
-        if group_uuid in self.castplayer.player.hidden_by:
-            self.castplayer.player.hidden_by.remove(group_uuid)
+        if group_uuid == self.castplayer.player.active_source:
+            self.castplayer.player.active_source = ""
         self.prov.logger.debug(
             "%s is removed from multizone: %s", self.castplayer.player.display_name, group_uuid
         )

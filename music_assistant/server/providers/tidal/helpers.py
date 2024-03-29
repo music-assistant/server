@@ -49,21 +49,29 @@ async def library_items_add_remove(
     def inner() -> None:
         match media_type:
             case MediaType.ARTIST:
-                TidalFavorites(session, user_id).add_artist(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_artist(item_id)
+                (
+                    TidalFavorites(session, user_id).add_artist(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_artist(item_id)
+                )
             case MediaType.ALBUM:
-                TidalFavorites(session, user_id).add_album(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_album(item_id)
+                (
+                    TidalFavorites(session, user_id).add_album(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_album(item_id)
+                )
             case MediaType.TRACK:
-                TidalFavorites(session, user_id).add_track(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_track(item_id)
+                (
+                    TidalFavorites(session, user_id).add_track(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_track(item_id)
+                )
             case MediaType.PLAYLIST:
-                TidalFavorites(session, user_id).add_playlist(item_id) if add else TidalFavorites(
-                    session, user_id
-                ).remove_playlist(item_id)
+                (
+                    TidalFavorites(session, user_id).add_playlist(item_id)
+                    if add
+                    else TidalFavorites(session, user_id).remove_playlist(item_id)
+                )
             case MediaType.UNKNOWN:
                 return
 
@@ -261,12 +269,15 @@ async def create_playlist(
     return await asyncio.to_thread(inner)
 
 
-async def get_similar_tracks(session: TidalSession, prov_track_id, limit: int) -> list[TidalTrack]:
+async def get_similar_tracks(
+    session: TidalSession, prov_track_id: str, limit: int = 25
+) -> list[TidalTrack]:
     """Async wrapper around the tidal Track.get_similar_tracks function."""
 
     def inner() -> list[TidalTrack]:
         try:
-            return TidalTrack(session, prov_track_id).get_track_radio(limit)
+            # Re-add limit here after tidalapi supports it
+            return TidalTrack(session, prov_track_id).get_track_radio(limit=limit)
         except HTTPError as err:
             if err.response.status_code == 404:
                 raise MediaNotFoundError(f"Track {prov_track_id} not found") from err

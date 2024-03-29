@@ -1,4 +1,5 @@
 """Model/base for a Provider implementation within Music Assistant."""
+
 from __future__ import annotations
 
 import logging
@@ -51,6 +52,9 @@ class Provider:
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
         return tuple()
+
+    async def handle_setup(self) -> None:
+        """Handle async initialization of the provider."""
 
     async def unload(self) -> None:
         """
