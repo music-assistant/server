@@ -13,7 +13,9 @@ from aiofiles.os import wrap
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import SetupFailedError
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PATH
+from music_assistant.server.helpers.audio import get_file_stream
 
 from .base import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
@@ -167,10 +169,18 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self.base_path, file_path)
         return await exists(abs_path)
 
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        abs_path = get_absolute_path(self.base_path, streamdetails.item_id)
+        async for chunk in get_file_stream(self.mass, abs_path, streamdetails, seek_position):
+            yield chunk
+
     async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
         abs_path = get_absolute_path(self.base_path, file_path)
-        chunk_size = 512000
+        chunk_size = 64000
         async with aiofiles.open(abs_path, "rb") as _file:
             if seek:
                 await _file.seek(seek)

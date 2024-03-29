@@ -113,7 +113,7 @@ async def crossfade_pcm_parts(
         fmt,
         "-",
     ]
-    async with AsyncProcess(args, True) as proc:
+    async with AsyncProcess(args, stdin=True, stdout=True) as proc:
         crossfade_data, _ = await proc.communicate(fade_in_part)
         if crossfade_data:
             LOGGER.log(
@@ -170,7 +170,7 @@ async def strip_silence(
         ]
     # output args
     args += ["-f", fmt, "-"]
-    async with AsyncProcess(args, True) as proc:
+    async with AsyncProcess(args, stdin=True, stdout=True) as proc:
         stripped_data, _ = await proc.communicate(audio_data)
 
     # return stripped audio
@@ -597,7 +597,36 @@ async def get_file_stream(
     if not streamdetails.size:
         stat = await asyncio.to_thread(os.stat, filename)
         streamdetails.size = stat.st_size
-    chunk_size = get_chunksize(streamdetails.audio_format.content_type)
+
+    # seeking an unknown or container format is not supported due to the (moov) headers
+    if seek_position and (
+        streamdetails.audio_format.content_type
+        in (
+            ContentType.UNKNOWN,
+            ContentType.M4A,
+            ContentType.M4B,
+            ContentType.MP4,
+        )
+    ):
+        LOGGER.debug(
+            "Seeking in %s (%s) not possible, fallback to ffmpeg seeking.",
+            streamdetails.uri,
+            streamdetails.audio_format.output_format_str,
+        )
+        async for chunk in get_ffmpeg_stream(
+            filename,
+            # we must set the input content type to unknown to
+            # enforce ffmpeg to determine it from the headers
+            input_format=AudioFormat(content_type=ContentType.UNKNOWN),
+            # enforce wav as we dont want to re-encode lossy formats
+            # choose wav so we have descriptive headers and move on
+            output_format=AudioFormat(content_type=ContentType.WAV),
+            extra_input_args=["-ss", str(seek_position)],
+        ):
+            yield chunk
+        return
+
+    chunk_size = get_chunksize(streamdetails.audio_format)
     async with aiofiles.open(streamdetails.data, "rb") as _file:
         if seek_position:
             seek_pos = int((streamdetails.size / streamdetails.duration) * seek_position)
@@ -617,8 +646,9 @@ async def get_ffmpeg_stream(
     filter_params: list[str] | None = None,
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
-    loglevel: str | None = None,
+    ffmpeg_loglevel: str = "info",
     extra_input_args: list[str] | None = None,
+    logger: logging.Logger | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -626,25 +656,22 @@ async def get_ffmpeg_stream(
     Takes care of resampling and/or recoding if needed,
     according to player preferences.
     """
-    if loglevel is None:
-        loglevel = "info" if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else "fatal"
-    use_stdin = not isinstance(audio_input, str)
     ffmpeg_args = get_ffmpeg_args(
         input_format=input_format,
         output_format=output_format,
         filter_params=filter_params or [],
         extra_args=extra_args or [],
-        input_path="-" if use_stdin else audio_input,
+        input_path=audio_input if isinstance(audio_input, str) else "-",
         output_path="-",
-        loglevel=loglevel,
+        loglevel=ffmpeg_loglevel,
         extra_input_args=extra_input_args or [],
     )
+    stdin = audio_input if not isinstance(audio_input, str) else True
     async with AsyncProcess(
         ffmpeg_args,
-        enable_stdin=use_stdin,
-        enable_stdout=True,
-        enable_stderr=False,
-        custom_stdin=audio_input if use_stdin else None,
+        stdin=stdin,
+        stdout=True,
+        stderr=logger or LOGGER.getChild("ffmpeg_stream"),
         name="ffmpeg_stream",
     ) as ffmpeg_proc:
         # read final chunks from stdout
@@ -722,7 +749,7 @@ async def get_silence(
         output_format.output_format_str,
         "-",
     ]
-    async with AsyncProcess(args) as ffmpeg_proc:
+    async with AsyncProcess(args, stdout=True) as ffmpeg_proc:
         async for chunk in ffmpeg_proc.iter_any():
             yield chunk
 
@@ -782,7 +809,7 @@ def get_ffmpeg_args(
     extra_args: list[str] | None = None,
     input_path: str = "-",
     output_path: str = "-",
-    loglevel: str = "fatal",
+    loglevel: str = "info",
     extra_input_args: list[str] | None = None,
 ) -> list[str]:
     """Collect all args to send to the ffmpeg process."""
@@ -847,7 +874,12 @@ def get_ffmpeg_args(
             "-i",
             input_path,
         ]
-    elif input_format.content_type == ContentType.UNKNOWN:
+    elif input_format.content_type in (
+        ContentType.UNKNOWN,
+        ContentType.M4A,
+        ContentType.M4B,
+        ContentType.MP4,
+    ):
         # let ffmpeg guess/auto detect the content type
         input_args += ["-i", input_path]
     else:

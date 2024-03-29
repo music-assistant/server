@@ -368,9 +368,7 @@ async def parse_tags(
     )
 
     writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(
-        args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
-    )
+    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True)
     await ffmpeg_proc.start()
 
     async def writer() -> None:
@@ -441,9 +439,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
     )
 
     writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(
-        args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
-    )
+    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True)
     await ffmpeg_proc.start()
 
     async def writer() -> None:

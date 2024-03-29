@@ -269,23 +269,16 @@ class AirplayStream:
         )
         self._ffmpeg_proc = AsyncProcess(
             ffmpeg_args,
-            enable_stdin=True,
-            enable_stdout=True,
-            enable_stderr=False,
-            custom_stdin=read_from_buffer(),
-            custom_stdout=write,
+            stdin=read_from_buffer(),
+            stdout=write,
+            stderr="cliraop_ffmpeg",
             name="cliraop_ffmpeg",
         )
         await self._ffmpeg_proc.start()
         os.close(write)
 
         self._cliraop_proc = AsyncProcess(
-            cliraop_args,
-            enable_stdin=True,
-            enable_stdout=False,
-            enable_stderr=True,
-            custom_stdin=read,
-            name="cliraop",
+            cliraop_args, stdin=read, stdout=False, stderr=True, name="cliraop"
         )
         await self._cliraop_proc.start()
         os.close(read)

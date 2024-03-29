@@ -432,7 +432,7 @@ class SpotifyProvider(MusicProvider):
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
         bytes_sent = 0
-        async with AsyncProcess(args) as librespot_proc:
+        async with AsyncProcess(args, stdout=True) as librespot_proc:
             async for chunk in librespot_proc.iter_any():
                 yield chunk
                 bytes_sent += len(chunk)
@@ -442,7 +442,7 @@ class SpotifyProvider(MusicProvider):
             # https://github.com/librespot-org/librespot/issues/972
             # retry with ap-port set to invalid value, which will force fallback
             args += ["--ap-port", "12345"]
-            async with AsyncProcess(args) as librespot_proc:
+            async with AsyncProcess(args, stdout=True) as librespot_proc:
                 async for chunk in librespot_proc.iter_any():
                     yield chunk
             self._ap_workaround = True
@@ -689,7 +689,7 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        async with AsyncProcess(args, enable_stdout=True) as librespot:
+        async with AsyncProcess(args, stdout=True) as librespot:
             stdout = await librespot.read(-1)
         if stdout.decode().strip() != "authorized":
             raise LoginFailed(f"Login failed for username {self.config.get_value(CONF_USERNAME)}")
@@ -725,7 +725,7 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        async with AsyncProcess(args, enable_stdout=True) as librespot:
+        async with AsyncProcess(args, stdout=True) as librespot:
             stdout = await librespot.read(-1)
         duration = round(time.time() - time_start, 2)
         try:
