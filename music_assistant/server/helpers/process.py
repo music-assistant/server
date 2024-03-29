@@ -11,15 +11,17 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+
+# if TYPE_CHECKING:
+from collections.abc import AsyncGenerator
 from contextlib import suppress
 from signal import SIGINT
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
+from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
 DEFAULT_CHUNKSIZE = 128000
 
@@ -38,28 +40,31 @@ class AsyncProcess:
     def __init__(
         self,
         args: list[str],
-        enable_stdin: bool = False,
-        enable_stdout: bool = True,
-        enable_stderr: bool = False,
-        custom_stdin: AsyncGenerator[bytes, None] | int | None = None,
-        custom_stdout: int | None = None,
+        stdin: bool | int | AsyncGenerator[bytes, None] | None = None,
+        stdout: bool | int | None = None,
+        stderr: bool | int | logging.Logger | None = None,
         name: str | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
         self.proc: asyncio.subprocess.Process | None = None
+        if isinstance(stderr, logging.Logger):
+            self._stderr_logger = stderr
+            stderr = asyncio.subprocess.PIPE
+        else:
+            self._stderr_logger = None
         self._args = args
-        self._enable_stdin = enable_stdin
-        self._enable_stdout = enable_stdout
-        self._enable_stderr = enable_stderr
+        self._stdin = stdin
+        self._stdout = stdout
+        self._stderr = stderr
+        self._stdin_enabled = stdin not in (None, False)
+        self._stdout_enabled = stdout not in (None, False)
+        self._stderr_enabled = stderr not in (None, False)
         self._close_called = False
         self._returncode: bool | None = None
-        self._name = name or self._args[0].split(os.sep)[-1]
+        if name is None:
+            name = self._args[0].split(os.sep)[-1]
+        self.name = name
         self.attached_tasks: list[asyncio.Task] = []
-        self._custom_stdin = custom_stdin
-        if not isinstance(custom_stdin, int | None):
-            self._custom_stdin = None
-            self.attached_tasks.append(asyncio.create_task(self._feed_stdin(custom_stdin)))
-        self._custom_stdout = custom_stdout
 
     @property
     def closed(self) -> bool:
@@ -95,15 +100,29 @@ class AsyncProcess:
 
     async def start(self) -> None:
         """Perform Async init of process."""
-        stdin = self._custom_stdin if self._custom_stdin is not None else asyncio.subprocess.PIPE
-        stdout = self._custom_stdout if self._custom_stdout is not None else asyncio.subprocess.PIPE
+        if self._stdin is True or isinstance(self._stdin, AsyncGenerator):
+            stdin = asyncio.subprocess.PIPE
+        else:
+            stdin = self._stdin
+        if self._stdout is True or isinstance(self._stdout, AsyncGenerator):
+            stdout = asyncio.subprocess.PIPE
+        else:
+            stdout = self._stdout
+        if self._stderr is True or isinstance(self._stderr, AsyncGenerator):
+            stderr = asyncio.subprocess.PIPE
+        else:
+            stderr = self._stderr
         self.proc = await asyncio.create_subprocess_exec(
             *self._args,
-            stdin=stdin if self._enable_stdin else None,
-            stdout=stdout if self._enable_stdout else None,
-            stderr=asyncio.subprocess.PIPE if self._enable_stderr else None,
+            stdin=stdin if self._stdin_enabled else None,
+            stdout=stdout if self._stdout_enabled else None,
+            stderr=stderr if self._stderr_enabled else None,
         )
-        LOGGER.debug("Started %s with PID %s", self._name, self.proc.pid)
+        LOGGER.debug("Process %s started with PID %s", self.name, self.proc.pid)
+        if not isinstance(self._stdin, int | None):
+            self.attached_tasks.append(asyncio.create_task(self._feed_stdin()))
+        if self._stderr_logger:
+            self.attached_tasks.append(asyncio.create_task(self._read_stderr()))
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
@@ -196,13 +215,13 @@ class AsyncProcess:
             except TimeoutError:
                 LOGGER.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
-                    self._name,
+                    self.name,
                     self.proc.pid,
                 )
                 self.proc.terminate()
         LOGGER.debug(
             "Process %s with PID %s stopped with returncode %s",
-            self._name,
+            self.name,
             self.proc.pid,
             self.returncode,
         )
@@ -240,10 +259,12 @@ class AsyncProcess:
                 # raise for all other (value) errors
                 raise
 
-    async def _feed_stdin(self, custom_stdin: AsyncGenerator[bytes, None]) -> None:
+    async def _feed_stdin(self) -> None:
         """Feed stdin with chunks from an AsyncGenerator."""
+        if TYPE_CHECKING:
+            self._stdin: AsyncGenerator[bytes, None]
         try:
-            async for chunk in custom_stdin:
+            async for chunk in self._stdin:
                 if self._close_called or self.proc.stdin.is_closing():
                     return
                 await self.write(chunk)
@@ -251,8 +272,21 @@ class AsyncProcess:
         except asyncio.CancelledError:
             # make sure the stdin generator is also properly closed
             # by propagating a cancellederror within
-            task = asyncio.create_task(custom_stdin.__anext__())
+            task = asyncio.create_task(self._stdin.__anext__())
             task.cancel()
+
+    async def _read_stderr(self) -> None:
+        """Read stderr and log to logger."""
+        async for line in self.iter_stderr():
+            line = line.decode().strip()  # noqa: PLW2901
+            if not line:
+                continue
+            if "error" in line.lower():
+                self._stderr_logger.error(line)
+            elif "warning" in line.lower():
+                self._stderr_logger.warning(line)
+            else:
+                self._stderr_logger.log(VERBOSE_LOG_LEVEL, line)
 
 
 async def check_output(args: str | list[str]) -> tuple[int, bytes]:

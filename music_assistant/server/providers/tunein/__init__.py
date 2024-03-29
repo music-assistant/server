@@ -253,7 +253,7 @@ class TuneInProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         # report playback started as soon as we start streaming
-        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails, 0):
+        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
             yield chunk
 
     async def __get_data(self, endpoint: str, **kwargs):

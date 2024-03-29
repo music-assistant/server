@@ -369,9 +369,9 @@ class SnapCastProvider(PlayerProvider):
             try:
                 async with AsyncProcess(
                     ffmpeg_args,
-                    enable_stdin=True,
-                    enable_stdout=False,
-                    enable_stderr=False,
+                    stdin=True,
+                    stdout=False,
+                    stderr=self.logger.getChild("ffmpeg"),
                     name="snapcast_ffmpeg",
                 ) as ffmpeg_proc:
                     async for chunk in audio_source:
@@ -498,10 +498,8 @@ class SnapCastProvider(PlayerProvider):
             "--tcp.enabled=true",
             "--tcp.port=1705",
         ]
-        async with AsyncProcess(
-            args, enable_stdin=False, enable_stdout=True, enable_stderr=False
-        ) as snapserver_proc:
-            # keep reading from stderr until exit
+        async with AsyncProcess(args, stdin=False, stdout=True, stderr=False) as snapserver_proc:
+            # keep reading from stdout until exit
             async for data in snapserver_proc.iter_any():
                 data = data.decode().strip()  # noqa: PLW2901
                 for line in data.split("\n"):

@@ -4,19 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import platform
+from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import LoginFailed
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
+from music_assistant.server.helpers.audio import get_file_stream
 from music_assistant.server.providers.filesystem_local import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     LocalFileSystemProvider,
     exists,
     makedirs,
 )
+from music_assistant.server.providers.filesystem_local.helpers import get_absolute_path
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -153,6 +157,14 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         await self.unmount()
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        abs_path = get_absolute_path(self.base_path, streamdetails.item_id)
+        async for chunk in get_file_stream(self.mass, abs_path, streamdetails, seek_position):
+            yield chunk
 
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""

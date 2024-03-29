@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 import urllib.parse
 from collections.abc import AsyncGenerator
@@ -17,6 +18,7 @@ from contextlib import suppress
 from typing import TYPE_CHECKING, Any
 
 import shortuuid
+from aiofiles.os import wrap
 from aiohttp import web
 
 from music_assistant.common.helpers.util import get_ip, select_free_port, try_parse_bool
@@ -77,6 +79,8 @@ FLOW_DEFAULT_SAMPLE_RATE = 48000
 FLOW_DEFAULT_BIT_DEPTH = 24
 
 # pylint:disable=too-many-locals
+
+isfile = wrap(os.path.isfile)
 
 
 class MultiClientStreamJob:
@@ -999,10 +1003,6 @@ class StreamsController(CoreController):
         if streamdetails.fade_in:
             filter_params.append("afade=type=in:start_time=0:duration=3")
 
-        audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
-            streamdetails,
-            seek_position=streamdetails.seek_position,
-        )
         ffmpeg_args = get_ffmpeg_args(
             input_format=streamdetails.audio_format,
             output_format=pcm_format,
@@ -1081,12 +1081,12 @@ class StreamsController(CoreController):
             # cleanup
             del stderr_data
 
+        audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
+            streamdetails,
+            seek_position=streamdetails.seek_position,
+        )
         async with AsyncProcess(
-            ffmpeg_args,
-            enable_stdin=True,
-            enable_stderr=True,
-            custom_stdin=audio_source,
-            name="ffmpeg_media_stream",
+            ffmpeg_args, stdin=audio_source, stdout=True, stderr=True, name="ffmpeg_media_stream"
         ) as ffmpeg_proc:
             state_data = {"finished": asyncio.Event(), "bytes_sent": 0}
             logger.debug("start media stream for: %s", streamdetails.uri)
