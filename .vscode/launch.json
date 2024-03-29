@@ -6,14 +6,14 @@
     "configurations": [
         {
             "name": "Python: Module",
-            "type": "python",
+            "type": "debugpy",
             "request": "launch",
             "module": "music_assistant",
             "justMyCode": false,
             "args":[
                  "--log-level", "debug"
             ],
-            // "env": {"PYTHONDEVMODE": "1"}
+            "env": {"PYTHONDEVMODE": "1"}
         }
     ]
 }

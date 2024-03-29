@@ -12,7 +12,6 @@ import inspect
 import logging
 import os
 import urllib.parse
-from collections.abc import Awaitable
 from concurrent import futures
 from contextlib import suppress
 from functools import partial
@@ -21,7 +20,7 @@ from typing import TYPE_CHECKING, Any, Final
 from aiohttp import WSMsgType, web
 from music_assistant_frontend import where as locate_frontend
 
-from music_assistant.common.helpers.util import get_ip, select_free_port
+from music_assistant.common.helpers.util import get_ip
 from music_assistant.common.models.api import (
     ChunkedResultMessage,
     CommandMessage,
@@ -32,8 +31,7 @@ from music_assistant.common.models.api import (
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueOption
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import InvalidCommand
-from music_assistant.common.models.event import MassEvent
-from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT
+from music_assistant.constants import CONF_BIND_IP, CONF_BIND_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.api import APICommandHandler, parse_arguments
 from music_assistant.server.helpers.audio import get_preview_stream
 from music_assistant.server.helpers.util import get_ips
@@ -41,12 +39,14 @@ from music_assistant.server.helpers.webserver import Webserver
 from music_assistant.server.models.core_controller import CoreController
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
     from music_assistant.common.models.config_entries import ConfigValueType, CoreConfig
+    from music_assistant.common.models.event import MassEvent
 
 DEFAULT_SERVER_PORT = 8095
 CONF_BASE_URL = "base_url"
 CONF_EXPOSE_SERVER = "expose_server"
-DEBUG = False  # Set to True to enable very verbose logging of all incoming/outgoing messages
 MAX_PENDING_MSG = 512
 CANCELLATION_ERRORS: Final = (asyncio.CancelledError, futures.CancelledError)
 
@@ -56,7 +56,7 @@ class WebserverController(CoreController):
 
     domain: str = "webserver"
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize instance."""
         super().__init__(*args, **kwargs)
         self._server = Webserver(self.logger, enable_dynamic_routes=False)
@@ -74,8 +74,8 @@ class WebserverController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
-        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         default_publish_ip = await get_ip()
@@ -102,8 +102,7 @@ class WebserverController(CoreController):
         # HA supervisor not present: user is responsible for securing the webserver
         # we give the tools to do so by presenting config options
         all_ips = await get_ips()
-        default_port = await select_free_port(8095, 9200)
-        default_base_url = f"http://{default_publish_ip}:{default_port}"
+        default_base_url = f"http://{default_publish_ip}:{DEFAULT_SERVER_PORT}"
         return (
             ConfigEntry(
                 key=CONF_BASE_URL,
@@ -117,7 +116,7 @@ class WebserverController(CoreController):
             ConfigEntry(
                 key=CONF_BIND_PORT,
                 type=ConfigEntryType.INTEGER,
-                default_value=default_port,
+                default_value=DEFAULT_SERVER_PORT,
                 label="TCP Port",
                 description="The TCP port to run the webserver.",
             ),
@@ -133,7 +132,7 @@ class WebserverController(CoreController):
                 "to enhance security and protect outside access to the webinterface and API. \n\n"
                 "This is an advanced setting that should normally "
                 "not be adjusted in regular setups.",
-                advanced=True,
+                category="advanced",
             ),
         )
 
@@ -164,13 +163,13 @@ class WebserverController(CoreController):
         # also host the audio preview service
         routes.append(("GET", "/preview", self.serve_preview_stream))
         # start the webserver
+        default_publish_ip = await get_ip()
         if self.mass.running_as_hass_addon:
             # if we're running on the HA supervisor the webserver is secured by HA ingress
             # we only start the webserver on the internal docker network and ingress connects
             # to that internally and exposes the webUI securely
             # if a user also wants to expose a the webserver non securely on his internal
             # network he/she should explicitly do so (and know the risks)
-            default_publish_ip = await get_ip()
             self.publish_port = DEFAULT_SERVER_PORT
             if config.get_value(CONF_EXPOSE_SERVER):
                 bind_ip = "0.0.0.0"
@@ -184,7 +183,8 @@ class WebserverController(CoreController):
         else:
             base_url = config.get_value(CONF_BASE_URL)
             self.publish_port = config.get_value(CONF_BIND_PORT)
-            self.publish_ip = bind_ip = config.get_value(CONF_BIND_IP)
+            self.publish_ip = default_publish_ip
+            bind_ip = config.get_value(CONF_BIND_IP)
         await self._server.setup(
             bind_ip=bind_ip,
             bind_port=self.publish_port,
@@ -210,7 +210,7 @@ class WebserverController(CoreController):
             await resp.write(chunk)
         return resp
 
-    async def _handle_server_info(self, request: web.Request) -> web.Response:  # noqa: ARG002
+    async def _handle_server_info(self, request: web.Request) -> web.Response:
         """Handle request for server info."""
         return web.json_response(self.mass.get_server_info().to_dict())
 
@@ -222,18 +222,10 @@ class WebserverController(CoreController):
         finally:
             self.clients.remove(connection)
 
-    async def _handle_application_log(self, request: web.Request) -> web.Response:  # noqa: ARG002
+    async def _handle_application_log(self, request: web.Request) -> web.Response:
         """Handle request to get the application log."""
         log_data = await self.mass.get_application_log()
         return web.Response(text=log_data, content_type="text/text")
-
-
-class WebSocketLogAdapter(logging.LoggerAdapter):
-    """Add connection id to websocket log messages."""
-
-    def process(self, msg: str, kwargs: Any) -> tuple[str, Any]:
-        """Add connid to websocket log messages."""
-        return f'[{self.extra["connid"]}] {msg}', kwargs
 
 
 class WebsocketClientHandler:
@@ -247,7 +239,7 @@ class WebsocketClientHandler:
         self._to_write: asyncio.Queue = asyncio.Queue(maxsize=MAX_PENDING_MSG)
         self._handle_task: asyncio.Task | None = None
         self._writer_task: asyncio.Task | None = None
-        self._logger = WebSocketLogAdapter(webserver.logger, {"connid": id(self)})
+        self._logger = webserver.logger
 
     async def disconnect(self) -> None:
         """Disconnect client."""
@@ -263,11 +255,11 @@ class WebsocketClientHandler:
         try:
             async with asyncio.timeout(10):
                 await wsock.prepare(request)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             self._logger.warning("Timeout preparing request from %s", request.remote)
             return wsock
 
-        self._logger.debug("Connection from %s", request.remote)
+        self._logger.log(VERBOSE_LOG_LEVEL, "Connection from %s", request.remote)
         self._handle_task = asyncio.current_task()
         self._writer_task = asyncio.create_task(self._writer())
 
@@ -286,15 +278,14 @@ class WebsocketClientHandler:
             while not wsock.closed:
                 msg = await wsock.receive()
 
-                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING):
+                if msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSING, WSMsgType.CLOSED):
                     break
 
                 if msg.type != WSMsgType.TEXT:
                     disconnect_warn = "Received non-Text message."
                     break
 
-                if DEBUG:
-                    self._logger.debug("Received: %s", msg.data)
+                self._logger.log(VERBOSE_LOG_LEVEL, "Received: %s", msg.data)
 
                 try:
                     command_msg = CommandMessage.from_json(msg.data)
@@ -313,7 +304,7 @@ class WebsocketClientHandler:
         finally:
             # Handle connection shutting down.
             unsub_callback()
-            self._logger.debug("Unsubscribed from events")
+            self._logger.log(VERBOSE_LOG_LEVEL, "Unsubscribed from events")
 
             try:
                 self._to_write.put_nowait(None)
@@ -325,7 +316,7 @@ class WebsocketClientHandler:
 
             finally:
                 if disconnect_warn is None:
-                    self._logger.debug("Disconnected")
+                    self._logger.log(VERBOSE_LOG_LEVEL, "Disconnected")
                 else:
                     self._logger.warning("Disconnected: %s", disconnect_warn)
 
@@ -373,7 +364,10 @@ class WebsocketClientHandler:
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:  # pylint: disable=broad-except
-            self._logger.exception("Error handling message: %s", msg)
+            if self._logger.isEnabledFor(logging.DEBUG):
+                self._logger.exception("Error handling message: %s", msg)
+            else:
+                self._logger.error("Error handling message: %s: %s", msg.command, str(err))
             self._send_message(
                 ErrorResultMessage(msg.message_id, getattr(err, "error_code", 999), str(err))
             )
@@ -390,8 +384,7 @@ class WebsocketClientHandler:
                     message: str = process()
                 else:
                     message = process
-                if DEBUG:
-                    self._logger.debug("Writing: %s", message)
+                self._logger.log(VERBOSE_LOG_LEVEL, "Writing: %s", message)
                 await self.wsock.send_str(message)
 
     def _send_message(self, message: MessageType) -> None:

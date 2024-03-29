@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING
 
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import LinkType, ProviderFeature
 from music_assistant.common.models.media_items import (
     AudioFormat,
@@ -22,15 +20,21 @@ from music_assistant.common.models.media_items import (
     ProviderMapping,
     Radio,
     SearchResults,
-    StreamDetails,
 )
-from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
+from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import ProviderConfig
+    from collections.abc import AsyncGenerator
+
+    from music_assistant.common.models.config_entries import (
+        ConfigEntry,
+        ConfigValueType,
+        ProviderConfig,
+    )
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -42,7 +46,7 @@ async def setup(
     """Initialize provider(instance) with given configuration."""
     prov = RadioBrowserProvider(mass, manifest, config)
 
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -59,7 +63,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001 D205
-    return tuple()  # we do not have any config entries (yet)
+    return ()  # we do not have any config entries (yet)
 
 
 class RadioBrowserProvider(MusicProvider):
@@ -70,7 +74,7 @@ class RadioBrowserProvider(MusicProvider):
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.radios = RadioBrowser(
             session=self.mass.http_session, user_agent=f"MusicAssistant/{self.mass.version}"
@@ -79,7 +83,7 @@ class RadioBrowserProvider(MusicProvider):
             # Try to get some stats to check connection to RadioBrowser API
             await self.radios.stats()
         except RadioBrowserError as err:
-            self.logger.error("%s", err)
+            self.logger.exception("%s", err)
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
@@ -279,7 +283,6 @@ class RadioBrowserProvider(MusicProvider):
         """Get streamdetails for a radio station."""
         stream = await self.radios.station(uuid=item_id)
         await self.radios.station_click(uuid=item_id)
-        url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream.url_resolved)
         return StreamDetails(
             provider=self.domain,
             item_id=item_id,
@@ -287,14 +290,14 @@ class RadioBrowserProvider(MusicProvider):
                 content_type=ContentType.try_parse(stream.codec),
             ),
             media_type=MediaType.RADIO,
-            data=url_resolved,
-            direct=url_resolved if not supports_icy else None,
-            expires=time() + 24 * 3600,
+            data=stream.url_resolved,
+            expires=time() + 3600,
         )
 
     async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0  # noqa: ARG002
+        self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
+        # report playback started as soon as we start streaming
         async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
             yield chunk

@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator, Callable
-from typing import Any
+import logging
+from typing import TYPE_CHECKING, Any
 
 from libopensonic.connection import Connection as SonicConnection
 from libopensonic.errors import (
@@ -14,14 +14,6 @@ from libopensonic.errors import (
     ParameterError,
     SonicError,
 )
-from libopensonic.media import Album as SonicAlbum
-from libopensonic.media import AlbumInfo as SonicAlbumInfo
-from libopensonic.media import Artist as SonicArtist
-from libopensonic.media import ArtistInfo as SonicArtistInfo
-from libopensonic.media import Playlist as SonicPlaylist
-from libopensonic.media import PodcastChannel as SonicPodcastChannel
-from libopensonic.media import PodcastEpisode as SonicPodcastEpisode
-from libopensonic.media import Song as SonicSong
 
 from music_assistant.common.models.enums import ContentType, ImageType, MediaType, ProviderFeature
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
@@ -37,9 +29,9 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_PATH,
@@ -49,8 +41,21 @@ from music_assistant.constants import (
 )
 from music_assistant.server.models.music_provider import MusicProvider
 
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator, Callable
+
+    from libopensonic.media import Album as SonicAlbum
+    from libopensonic.media import AlbumInfo as SonicAlbumInfo
+    from libopensonic.media import Artist as SonicArtist
+    from libopensonic.media import ArtistInfo as SonicArtistInfo
+    from libopensonic.media import Playlist as SonicPlaylist
+    from libopensonic.media import PodcastChannel as SonicPodcastChannel
+    from libopensonic.media import PodcastEpisode as SonicPodcastEpisode
+    from libopensonic.media import Song as SonicSong
+
 CONF_BASE_URL = "baseURL"
 CONF_ENABLE_PODCASTS = "enable_podcasts"
+CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
 
@@ -60,9 +65,11 @@ class OpenSonicProvider(MusicProvider):
 
     _conn: SonicConnection = None
     _enable_podcasts: bool = True
+    _seek_support: bool = False
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
+        logging.getLogger("libopensonic").setLevel(self.logger.level)
         port = self.config.get_value(CONF_PORT)
         if port is None:
             port = 443
@@ -73,21 +80,36 @@ class OpenSonicProvider(MusicProvider):
             self.config.get_value(CONF_BASE_URL),
             username=self.config.get_value(CONF_USERNAME),
             password=self.config.get_value(CONF_PASSWORD),
+            legacyAuth=self.config.get_value(CONF_ENABLE_LEGACY_AUTH),
             port=port,
             serverPath=path,
             appName="Music Assistant",
         )
         try:
-            if not self._conn.ping():
-                raise LoginFailed(
+            success = await self._run_async(self._conn.ping)
+            if not success:
+                msg = (
                     f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, "
                     "check your settings."
                 )
+                raise LoginFailed(msg)
         except (AuthError, CredentialError) as e:
-            raise LoginFailed(
+            msg = (
                 f"Failed to connect to {self.config.get_value(CONF_BASE_URL)}, check your settings."
-            ) from e
+            )
+            raise LoginFailed(msg) from e
         self._enable_podcasts = self.config.get_value(CONF_ENABLE_PODCASTS)
+        try:
+            ret = await self._run_async(self._conn.getOpenSubsonicExtensions)
+            extensions = ret["openSubsonicExtensions"]
+            for entry in extensions:
+                if entry["name"] == "transcodeOffset":
+                    self._seek_support = True
+                    break
+        except OSError:
+            logging.getLogger("libopensonic").info(
+                "Server does not support transcodeOffset, seeking in player provider"
+            )
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -100,6 +122,8 @@ class OpenSonicProvider(MusicProvider):
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.ARTIST_TOPTRACKS,
+            ProviderFeature.SIMILAR_TRACKS,
         )
 
     @property
@@ -147,7 +171,7 @@ class OpenSonicProvider(MusicProvider):
         return artist
 
     def _parse_podcast_album(self, sonic_channel: SonicPodcastChannel) -> Album:
-        album = Album(
+        return Album(
             item_id=sonic_channel.id,
             provider=self.instance_id,
             name=sonic_channel.title,
@@ -161,7 +185,6 @@ class OpenSonicProvider(MusicProvider):
             },
             album_type=AlbumType.PODCAST,
         )
-        return album
 
     def _parse_podcast_episode(
         self, sonic_episode: SonicPodcastEpisode, sonic_channel: SonicPodcastChannel
@@ -213,12 +236,16 @@ class OpenSonicProvider(MusicProvider):
                 )
             },
         )
+
         if sonic_artist.cover_id:
             artist.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
                 )
             ]
+        else:
+            artist.metadata.images = []
+
         if sonic_info:
             if sonic_info.biography:
                 artist.metadata.description = sonic_info.biography
@@ -243,13 +270,25 @@ class OpenSonicProvider(MusicProvider):
             },
             year=sonic_album.year,
         )
+
         if sonic_album.cover_id:
             album.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
                 ),
             ]
-        if sonic_album.artist_id is None:
+        else:
+            album.metadata.images = []
+
+        if sonic_album.artist_id:
+            album.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    sonic_album.artist_id,
+                    sonic_album.artist if sonic_album.artist else UNKNOWN_ARTIST,
+                )
+            )
+        else:
             album.artists.append(
                 Artist(
                     item_id=UNKNOWN_ARTIST_ID,
@@ -262,14 +301,6 @@ class OpenSonicProvider(MusicProvider):
                             provider_instance=self.instance_id,
                         )
                     },
-                )
-            )
-        else:
-            album.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    sonic_album.artist_id,
-                    sonic_album.artist if sonic_album.artist else UNKNOWN_ARTIST,
                 )
             )
 
@@ -318,7 +349,26 @@ class OpenSonicProvider(MusicProvider):
         if not extra_init_kwargs:
             track.track_number = int(sonic_song.track) if sonic_song.track is not None else 1
 
-        if sonic_song.artist_id is None:
+        # We need to find an artist for this track but various implementations seem to disagree
+        # about where the artist with the valid ID needs to be found. We will add any artist with
+        # an ID and only use UNKNOWN if none are found.
+
+        if sonic_song.artist_id:
+            track.artists.append(
+                self._get_item_mapping(
+                    MediaType.ARTIST,
+                    sonic_song.artist_id,
+                    sonic_song.artist if sonic_song.artist else UNKNOWN_ARTIST,
+                )
+            )
+
+        for entry in sonic_song.artists:
+            if entry.id == sonic_song.artist_id:
+                continue
+            if entry.id is not None and entry.name is not None:
+                track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
+
+        if not track.artists:
             track.artists.append(
                 Artist(
                     item_id=UNKNOWN_ARTIST_ID,
@@ -333,20 +383,6 @@ class OpenSonicProvider(MusicProvider):
                     },
                 )
             )
-        else:
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    sonic_song.artist_id,
-                    sonic_song.artist if sonic_song.artist else UNKNOWN_ARTIST,
-                )
-            )
-
-        for entry in sonic_song.artists:
-            if entry.id == sonic_song.artist_id:
-                continue
-            if entry.id is not None and entry.name is not None:
-                track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
         return track
 
     def _parse_playlist(self, sonic_playlist: SonicPlaylist) -> Playlist:
@@ -381,7 +417,7 @@ class OpenSonicProvider(MusicProvider):
             with self._conn.getCoverArt(path) as art:
                 return art.content
 
-        await asyncio.to_thread(_get_cover_art)
+        return await asyncio.to_thread(_get_cover_art)
 
     async def search(
         self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 20
@@ -453,11 +489,41 @@ class OpenSonicProvider(MusicProvider):
 
         Note the lack of item count on this method.
         """
-        results = await self._run_async(
-            self._conn.search3, query="", artistCount=0, albumCount=0, songCount=999999
-        )
-        for entry in results["songs"]:
-            yield self._parse_track(entry)
+        query = ""
+        offset = 0
+        count = 500
+        try:
+            results = await self._run_async(
+                self._conn.search3,
+                query=query,
+                artistCount=0,
+                albumCount=0,
+                songOffset=offset,
+                songCount=count,
+            )
+        except ParameterError:
+            # Older Navidrome does not accept an empty string and requires the empty quotes
+            query = '""'
+            results = await self._run_async(
+                self._conn.search3,
+                query=query,
+                artistCount=0,
+                albumCount=0,
+                songOffset=offset,
+                songCount=count,
+            )
+        while results["songs"]:
+            for entry in results["songs"]:
+                yield self._parse_track(entry)
+            offset += count
+            results = await self._run_async(
+                self._conn.search3,
+                query=query,
+                artistCount=0,
+                albumCount=0,
+                songOffset=offset,
+                songCount=count,
+            )
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Return the requested Album."""
@@ -474,7 +540,8 @@ class OpenSonicProvider(MusicProvider):
                     return self._parse_podcast_album(sonic_channel=sonic_channel)
                 except SonicError:
                     pass
-            raise MediaNotFoundError(f"Album {prov_album_id} not found") from e
+            msg = f"Album {prov_album_id} not found"
+            raise MediaNotFoundError(msg) from e
 
         return self._parse_album(sonic_album, sonic_info)
 
@@ -483,7 +550,8 @@ class OpenSonicProvider(MusicProvider):
         try:
             sonic_album: SonicAlbum = await self._run_async(self._conn.getAlbum, prov_album_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Album {prov_album_id} not found") from e
+            msg = f"Album {prov_album_id} not found"
+            raise MediaNotFoundError(msg) from e
         tracks = []
         for sonic_song in sonic_album.songs:
             tracks.append(self._parse_track(sonic_song))
@@ -520,7 +588,8 @@ class OpenSonicProvider(MusicProvider):
                     return self._parse_podcast_artist(sonic_channel=sonic_channel[0])
                 except SonicError:
                     pass
-            raise MediaNotFoundError(f"Artist {prov_artist_id} not found") from e
+            msg = f"Artist {prov_artist_id} not found"
+            raise MediaNotFoundError(msg) from e
         return self._parse_artist(sonic_artist, sonic_info)
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -528,7 +597,8 @@ class OpenSonicProvider(MusicProvider):
         try:
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, prov_track_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Item {prov_track_id} not found") from e
+            msg = f"Item {prov_track_id} not found"
+            raise MediaNotFoundError(msg) from e
         return self._parse_track(sonic_song)
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
@@ -539,7 +609,8 @@ class OpenSonicProvider(MusicProvider):
         try:
             sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Album {prov_artist_id} not found") from e
+            msg = f"Album {prov_artist_id} not found"
+            raise MediaNotFoundError(msg) from e
         albums = []
         for entry in sonic_artist.albums:
             albums.append(self._parse_album(entry))
@@ -552,7 +623,8 @@ class OpenSonicProvider(MusicProvider):
                 self._conn.getPlaylist, prov_playlist_id
             )
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
+            msg = f"Playlist {prov_playlist_id} not found"
+            raise MediaNotFoundError(msg) from e
         return self._parse_playlist(sonic_playlist)
 
     async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
@@ -562,25 +634,53 @@ class OpenSonicProvider(MusicProvider):
                 self._conn.getPlaylist, prov_playlist_id
             )
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Playlist {prov_playlist_id} not found") from e
+            msg = f"Playlist {prov_playlist_id} not found"
+            raise MediaNotFoundError(msg) from e
         for index, sonic_song in enumerate(sonic_playlist.songs):
             yield self._parse_track(sonic_song, {"position": index + 1})
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
+        """Get the top listed tracks for a specified artist."""
+        sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
+        songs: list[SonicSong] = await self._run_async(self._conn.getTopSongs, sonic_artist.name)
+        return [self._parse_track(entry) for entry in songs]
+
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
+        """Get tracks similar to selected track."""
+        songs: list[SonicSong] = await self._run_async(
+            self._conn.getSimilarSongs2, iid=prov_track_id, count=limit
+        )
+        return [self._parse_track(entry) for entry in songs]
+
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get the details needed to process a specified track."""
         try:
             sonic_song: SonicSong = await self._run_async(self._conn.getSong, item_id)
         except (ParameterError, DataNotFoundError) as e:
-            raise MediaNotFoundError(f"Item {item_id} not found") from e
+            msg = f"Item {item_id} not found"
+            raise MediaNotFoundError(msg) from e
+
+        self.mass.create_task(self._report_playback_started(item_id))
+
         mime_type = sonic_song.content_type
         if mime_type.endswith("mpeg"):
             mime_type = sonic_song.suffix
+
         return StreamDetails(
             item_id=sonic_song.id,
             provider=self.instance_id,
+            can_seek=self._seek_support,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
         )
+
+    async def _report_playback_started(self, item_id: str) -> None:
+        await self._run_async(self._conn.scrobble, sid=item_id, submission=False)
+
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+        if seconds_streamed >= streamdetails.duration / 2:
+            await self._run_async(self._conn.scrobble, sid=streamdetails.item_id, submission=True)
 
     async def get_audio_stream(
         self, streamdetails: StreamDetails, seek_position: int = 0
@@ -588,7 +688,7 @@ class OpenSonicProvider(MusicProvider):
         """Provide a generator for the stream data."""
         audio_buffer = asyncio.Queue(1)
 
-        def _streamer():
+        def _streamer() -> None:
             with self._conn.stream(
                 streamdetails.item_id, timeOffset=seek_position, estimateContentLength=True
             ) as stream:
@@ -597,7 +697,7 @@ class OpenSonicProvider(MusicProvider):
                         audio_buffer.put(chunk), self.mass.loop
                     ).result()
             # send empty chunk when we're done
-            asyncio.run_coroutine_threadsafe(audio_buffer.put(b""), self.mass.loop).result()
+            asyncio.run_coroutine_threadsafe(audio_buffer.put(b"EOF"), self.mass.loop).result()
 
         # fire up an executor thread to put the audio chunks (threadsafe) on the audio buffer
         streamer_task = self.mass.loop.run_in_executor(None, _streamer)
@@ -605,8 +705,7 @@ class OpenSonicProvider(MusicProvider):
             while True:
                 # keep reading from the audio buffer until there is no more data
                 chunk = await audio_buffer.get()
-                if chunk == b"":
-                    await self._run_async(self._conn.scrobble, streamdetails.item_id)
+                if chunk == b"EOF":
                     break
                 yield chunk
         finally:

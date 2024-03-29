@@ -1,7 +1,7 @@
 version: "3"
 services:
   music-assistant-server:
-    image: ghcr.io/music-assistant/server:latest # <<< Desired release version here
+    image: ghcr.io/music-assistant/server:beta # <<< Desired release version here (change beta to latest once there is a stable release)
     container_name: music-assistant-server
     restart: unless-stopped
     # Network mode must be set to host for MA to work correctly
@@ -13,3 +13,7 @@ services:
       - SYS_ADMIN
       - DAC_READ_SEARCH
     privileged: true
+    environment:
+      # Provide logging level as environment variable.
+      # default=info, possible=(critical, error, warning, info, debug, verbose)
+      - LOG_LEVEL=info

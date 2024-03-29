@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
-from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from json import JSONDecodeError
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
 from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import MediaItemChapter
-from music_assistant.constants import ROOT_LOGGER_NAME, UNKNOWN_ARTIST
+from music_assistant.constants import MASS_LOGGER_NAME, UNKNOWN_ARTIST
 from music_assistant.server.helpers.process import AsyncProcess
 
-LOGGER = logging.getLogger(ROOT_LOGGER_NAME).getChild("tags")
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.
@@ -29,7 +32,7 @@ TAG_SPLITTER = ";"
 def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if org_str is None:
-        return tuple()
+        return ()
     if isinstance(org_str, list):
         return (x.strip() for x in org_str)
     org_str = org_str.strip()
@@ -132,7 +135,7 @@ class AudioTags:
             if TAG_SPLITTER in tag:
                 return split_items(tag)
             return split_artists(tag)
-        return tuple()
+        return ()
 
     @property
     def genres(self) -> tuple[str, ...]:
@@ -262,7 +265,7 @@ class AudioTags:
             if tag := self.tags.get(tag_name):
                 # sometimes the field contains multiple values
                 return split_items(tag, True)
-        return tuple()
+        return ()
 
     @property
     def barcode(self) -> str | None:
@@ -307,15 +310,14 @@ class AudioTags:
         """Parse instance from raw ffmpeg info output."""
         audio_stream = next((x for x in raw["streams"] if x["codec_type"] == "audio"), None)
         if audio_stream is None:
-            raise InvalidDataError("No audio stream found")
+            msg = "No audio stream found"
+            raise InvalidDataError(msg)
         has_cover_image = any(x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png"))
         # convert all tag-keys (gathered from all streams) to lowercase without spaces
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
             for key, value in stream.get("tags", {}).items():
-                alt_key = (
-                    key.lower().replace(" ", "").replace("_", "").replace("-", "")
-                )  # noqa: PLW2901
+                alt_key = key.lower().replace(" ", "").replace("_", "").replace("-", "")
                 tags[alt_key] = value
 
         return AudioTags(
@@ -365,49 +367,52 @@ async def parse_tags(
         file_path,
     )
 
-    async with AsyncProcess(
-        args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
-    ) as proc:
-        if file_path == "-":
-            # feed the file contents to the process
+    writer_task: asyncio.Task | None = None
+    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True)
+    await ffmpeg_proc.start()
 
-            async def chunk_feeder():
-                bytes_read = 0
-                try:
-                    async for chunk in input_file:
-                        if proc.closed:
-                            break
-                        await proc.write(chunk)
-                        bytes_read += len(chunk)
-                        del chunk
-                        if bytes_read > 25 * 1000000:
-                            # this is possibly a m4a file with 'moove atom' metadata at the
-                            # end of the file
-                            # we'll have to read the entire file to do something with it
-                            # for now we just ignore/deny these files
-                            LOGGER.error("Found file with tags not present at beginning of file")
-                            break
-                finally:
-                    proc.write_eof()
+    async def writer() -> None:
+        bytes_read = 0
+        async for chunk in input_file:
+            if ffmpeg_proc.closed:
+                break
+            await ffmpeg_proc.write(chunk)
+            bytes_read += len(chunk)
+            del chunk
+            if bytes_read > 25 * 1000000:
+                # this is possibly a m4a file with 'moove atom' metadata at the
+                # end of the file
+                # we'll have to read the entire file to do something with it
+                # for now we just ignore/deny these files
+                LOGGER.error("Found file with tags not present at beginning of file")
+                break
 
-            proc.attach_task(chunk_feeder())
+    if file_path == "-":
+        # feed the file contents to the process
+        writer_task = asyncio.create_task(writer)
 
-        try:
-            res = await proc.read(-1)
-            data = json.loads(res)
-            if error := data.get("error"):
-                raise InvalidDataError(error["string"])
-            if not data.get("streams"):
-                raise InvalidDataError("Not an audio file")
-            tags = AudioTags.parse(data)
-            del res
-            del data
-            if not tags.duration and file_size and tags.bit_rate:
-                # estimate duration from filesize/bitrate
-                tags.duration = int((file_size * 8) / tags.bit_rate)
-            return tags
-        except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
-            raise InvalidDataError(f"Unable to retrieve info for {file_path}: {str(err)}") from err
+    try:
+        res = await ffmpeg_proc.read(-1)
+        data = json.loads(res)
+        if error := data.get("error"):
+            raise InvalidDataError(error["string"])
+        if not data.get("streams"):
+            msg = "Not an audio file"
+            raise InvalidDataError(msg)
+        tags = AudioTags.parse(data)
+        del res
+        del data
+        if not tags.duration and file_size and tags.bit_rate:
+            # estimate duration from filesize/bitrate
+            tags.duration = int((file_size * 8) / tags.bit_rate)
+        return tags
+    except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
+        msg = f"Unable to retrieve info for {file_path}: {err!s}"
+        raise InvalidDataError(msg) from err
+    finally:
+        if writer_task and not writer_task.done():
+            writer_task.cancel()
+        await ffmpeg_proc.close()
 
 
 async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> bytes | None:
@@ -433,20 +438,25 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         "-",
     )
 
-    async with AsyncProcess(
-        args, enable_stdin=file_path == "-", enable_stdout=True, enable_stderr=False
-    ) as proc:
-        if file_path == "-":
-            # feed the file contents to the process
-            async def chunk_feeder():
-                try:
-                    async for chunk in input_file:
-                        if proc.closed:
-                            break
-                        await proc.write(chunk)
-                finally:
-                    proc.write_eof()
+    writer_task: asyncio.Task | None = None
+    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True)
+    await ffmpeg_proc.start()
 
-            proc.attach_task(chunk_feeder())
+    async def writer() -> None:
+        async for chunk in input_file:
+            if ffmpeg_proc.closed:
+                break
+            await ffmpeg_proc.write(chunk)
+        await ffmpeg_proc.write_eof()
 
-        return await proc.read(-1)
+    # feed the file contents to the process stdin
+    if file_path == "-":
+        writer_task = asyncio.create_task(writer)
+
+    # return image bytes from stdout
+    try:
+        return await ffmpeg_proc.read(-1)
+    finally:
+        if writer_task and not writer_task.cancelled():
+            writer_task.cancel()
+        await ffmpeg_proc.close()

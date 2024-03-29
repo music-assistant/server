@@ -10,23 +10,22 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import time
-from collections.abc import Awaitable, Callable, Coroutine, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
 from ipaddress import IPv4Address
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar
 
 from async_upnp_client.aiohttp import AiohttpSessionRequester
-from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
 from async_upnp_client.client_factory import UpnpFactory
 from async_upnp_client.exceptions import UpnpError, UpnpResponseError
 from async_upnp_client.profiles.dlna import DmrDevice, TransportState
 from async_upnp_client.search import async_search
-from async_upnp_client.utils import CaseInsensitiveDict
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_ENFORCE_MP3,
     CONF_ENTRY_FLOW_MODE,
     ConfigEntry,
     ConfigValueType,
@@ -40,18 +39,28 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE, CONF_PLAYERS
+from music_assistant.constants import (
+    CONF_CROSSFADE,
+    CONF_ENFORCE_MP3,
+    CONF_FLOW_MODE,
+    CONF_PLAYERS,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable, Coroutine, Sequence
+
+    from async_upnp_client.client import UpnpRequester, UpnpService, UpnpStateVariable
+    from async_upnp_client.utils import CaseInsensitiveDict
+
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
+    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
-    from music_assistant.server.controllers.streams import MultiClientStreamJob
     from music_assistant.server.models import ProviderInstanceType
 
 BASE_PLAYER_FEATURES = (
@@ -60,7 +69,7 @@ BASE_PLAYER_FEATURES = (
 )
 
 CONF_ENQUEUE_NEXT = "enqueue_next"
-CONF_ENFORCE_MP3 = "enforce_mp3"
+
 
 PLAYER_CONFIG_ENTRIES = (
     ConfigEntry(
@@ -80,22 +89,12 @@ PLAYER_CONFIG_ENTRIES = (
         description="Enable a crossfade transition between (queue) tracks. \n\n"
         "Note that DLNA does not natively support crossfading so you need to enable "
         "the 'flow mode' workaround to use crossfading with DLNA players.",
-        advanced=False,
+        category="audio",
         depends_on=CONF_FLOW_MODE,
     ),
     CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_CROSSFADE_DURATION,
-    ConfigEntry(
-        key=CONF_ENFORCE_MP3,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enforce (lossy) mp3 stream",
-        default_value=False,
-        description="By default, Music Assistant sends lossless, high quality audio "
-        "to all players. Some players can not deal with that and require the stream to be packed "
-        "into a lossy mp3 codec. \n\n "
-        "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
-        advanced=True,
-    ),
+    CONF_ENTRY_ENFORCE_MP3,
 )
 
 CONF_NETWORK_SCAN = "network_scan"
@@ -110,7 +109,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = DLNAPlayerProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -141,7 +140,7 @@ async def get_config_entries(
 
 
 def catch_request_errors(
-    func: Callable[Concatenate[_DLNAPlayerProviderT, _P], Awaitable[_R]]
+    func: Callable[Concatenate[_DLNAPlayerProviderT, _P], Awaitable[_R]],
 ) -> Callable[Concatenate[_DLNAPlayerProviderT, _P], Coroutine[Any, Any, _R | None]]:
     """Catch UpnpError errors."""
 
@@ -151,11 +150,12 @@ def catch_request_errors(
         player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         dlna_player = self.dlnaplayers[player_id]
         dlna_player.last_command = time.time()
-        self.logger.debug(
-            "Handling command %s for player %s",
-            func.__name__,
-            dlna_player.player.display_name,
-        )
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            self.logger.debug(
+                "Handling command %s for player %s",
+                func.__name__,
+                dlna_player.player.display_name,
+            )
         if not dlna_player.available:
             self.logger.warning("Device disappeared when trying to call %s", func.__name__)
             return None
@@ -163,7 +163,10 @@ def catch_request_errors(
             return await func(self, *args, **kwargs)
         except UpnpError as err:
             dlna_player.force_poll = True
-            self.logger.error("Error during call %s: %r", func.__name__, err)
+            if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+                self.logger.exception("Error during call %s: %r", func.__name__, err)
+            else:
+                self.logger.error("Error during call %s: %r", func.__name__, str(err))
         return None
 
     return wrapper
@@ -189,7 +192,7 @@ class DLNAPlayer:
     last_seen: float = field(default_factory=time.time)
     last_command: float = field(default_factory=time.time)
 
-    def update_attributes(self):
+    def update_attributes(self) -> None:
         """Update attributes of the MA Player from DLNA state."""
         # generic attributes
 
@@ -248,7 +251,7 @@ class DLNAPlayer:
         return PlayerState.IDLE
 
     @staticmethod
-    def get_supported_features(device: DmrDevice) -> set(PlayerFeature):
+    def get_supported_features(device: DmrDevice) -> set[PlayerFeature]:
         """Get player features that are supported at this moment.
 
         Supported features may change as the device enters different states.
@@ -274,14 +277,22 @@ class DLNAPlayerProvider(PlayerProvider):
     upnp_factory: UpnpFactory
     notify_server: DLNANotifyServer
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.dlnaplayers = {}
         self.lock = asyncio.Lock()
+        # silence the async_upnp_client logger
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("async_upnp_client").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("async_upnp_client").setLevel(self.logger.level + 10)
         self.requester = AiohttpSessionRequester(self.mass.http_session, with_sleep=True)
         self.upnp_factory = UpnpFactory(self.requester, non_strict=True)
         self.notify_server = DLNANotifyServer(self.requester, self.mass)
-        self.mass.create_task(self._run_discovery())
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        await self._run_discovery()
 
     async def unload(self) -> None:
         """
@@ -295,14 +306,17 @@ class DLNAPlayerProvider(PlayerProvider):
                 tg.create_task(self._device_disconnect(dlna_player))
 
     async def get_player_config_entries(
-        self, player_id: str  # noqa: ARG002
+        self,
+        player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
         return base_entries + PLAYER_CONFIG_ENTRIES
 
     def on_player_config_changed(
-        self, config: PlayerConfig, changed_keys: set[str]  # noqa: ARG002
+        self,
+        config: PlayerConfig,
+        changed_keys: set[str],
     ) -> None:
         """Call (by config manager) when the configuration of a player changes."""
         super().on_player_config_changed(config, changed_keys)
@@ -332,37 +346,21 @@ class DLNAPlayerProvider(PlayerProvider):
         self,
         player_id: str,
         queue_item: QueueItem,
-        seek_position: int,
-        fade_in: bool,
     ) -> None:
-        """Handle PLAY MEDIA on given player.
-
-        This is called by the Queue controller to start playing a queue item on the given player.
-        The provider's own implementation should work out how to handle this request.
-
-            - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
-            - seek_position: Optional seek to this position.
-            - fade_in: Optionally fade in the item at playback start.
-        """
-        use_flow_mode = await self.mass.config.get_player_config_value(
-            player_id, CONF_FLOW_MODE
-        ) or await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
+        """Handle PLAY MEDIA on given player."""
+        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
         enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            seek_position=seek_position,
-            fade_in=fade_in,
             flow_mode=use_flow_mode,
         )
         dlna_player = self.dlnaplayers[player_id]
         # always clear queue (by sending stop) first
         if dlna_player.device.can_stop:
             await self.cmd_stop(player_id)
-        didl_metadata = create_didl_metadata(
-            self.mass, url, queue_item if not use_flow_mode else None
-        )
+        didl_metadata = create_didl_metadata(self.mass, url, queue_item)
         title = queue_item.name if queue_item else "Music Assistant"
         await dlna_player.device.async_set_transport_uri(url, title, didl_metadata)
         # Play it
@@ -380,39 +378,11 @@ class DLNAPlayerProvider(PlayerProvider):
             await self.poll_player(dlna_player.udn)
 
     @catch_request_errors
-    async def play_stream(self, player_id: str, stream_job: MultiClientStreamJob) -> None:
-        """Handle PLAY STREAM on given player.
-
-        This is a special feature from the Universal Group provider.
-        """
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        output_codec = ContentType.MP3 if enforce_mp3 else ContentType.FLAC
-        url = stream_job.resolve_stream_url(player_id, output_codec)
-        dlna_player = self.dlnaplayers[player_id]
-        # always clear queue (by sending stop) first
-        if dlna_player.device.can_stop:
-            await self.cmd_stop(player_id)
-        didl_metadata = create_didl_metadata(self.mass, url, None)
-        await dlna_player.device.async_set_transport_uri(url, "Music Assistant", didl_metadata)
-        # Play it
-        await dlna_player.device.async_wait_for_can_play(10)
-        # optimistically set this timestamp to help in case of a player
-        # that does not report the progress
-        now = time.time()
-        dlna_player.player.elapsed_time = 0
-        dlna_player.player.elapsed_time_last_updated = now
-        await dlna_player.device.async_play()
-        # force poll the device
-        for sleep in (1, 2):
-            await asyncio.sleep(sleep)
-            dlna_player.force_poll = True
-            await self.poll_player(dlna_player.udn)
-
-    @catch_request_errors
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem):
+    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
         dlna_player = self.dlnaplayers[player_id]
-        url = await self.mass.streams.resolve_stream_url(
+        url = self.mass.streams.resolve_stream_url(
+            player_id,
             queue_item=queue_item,
             output_codec=ContentType.FLAC,
         )
@@ -500,7 +470,7 @@ class DLNAPlayerProvider(PlayerProvider):
             allow_network_scan = self.config.get_value(CONF_NETWORK_SCAN)
             discovered_devices: set[str] = set()
 
-            async def on_response(discovery_info: CaseInsensitiveDict):
+            async def on_response(discovery_info: CaseInsensitiveDict) -> None:
                 """Process discovered device from ssdp search."""
                 ssdp_st: str = discovery_info.get("st", discovery_info.get("nt"))
                 if not ssdp_st:
@@ -535,7 +505,7 @@ class DLNAPlayerProvider(PlayerProvider):
         finally:
             self._discovery_running = False
 
-        def reschedule():
+        def reschedule() -> None:
             self.mass.create_task(self._run_discovery(use_multicast=not use_multicast))
 
         # reschedule self once finished
@@ -584,7 +554,7 @@ class DLNAPlayerProvider(PlayerProvider):
                     udn=udn,
                     player=Player(
                         player_id=udn,
-                        provider=self.domain,
+                        provider=self.instance_id,
                         type=PlayerType.PLAYER,
                         name=udn,
                         available=False,
@@ -701,6 +671,7 @@ class DLNAPlayerProvider(PlayerProvider):
         dlna_player.player.supported_features = BASE_PLAYER_FEATURES
         player_id = dlna_player.player.player_id
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENQUEUE_NEXT, False):
-            dlna_player.player.supported_features = dlna_player.player.supported_features + (
+            dlna_player.player.supported_features = (
+                *dlna_player.player.supported_features,
                 PlayerFeature.ENQUEUE_NEXT,
             )

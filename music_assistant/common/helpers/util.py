@@ -55,7 +55,7 @@ def create_sort_name(input_str: str) -> str:
     return input_str.strip()
 
 
-def parse_title_and_version(title: str, track_version: str = None):
+def parse_title_and_version(title: str, track_version: str | None = None):
     """Try to parse clean track title and version from the title."""
     version = ""
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
@@ -151,24 +151,27 @@ async def get_ip():
     return await asyncio.to_thread(_get_ip)
 
 
-async def select_free_port(range_start: int, range_end: int) -> int:
-    """Automatically find available port within range."""
+async def is_port_in_use(port: int) -> bool:
+    """Check if port is in use."""
 
-    def is_port_in_use(port: int) -> bool:
-        """Check if port is in use."""
+    def _is_port_in_use() -> bool:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
             try:
-                _sock.bind(("127.0.0.1", port))
+                _sock.bind(("0.0.0.0", port))
             except OSError:
                 return True
+        return False
 
-    def _select_free_port():
-        for port in range(range_start, range_end):
-            if not is_port_in_use(port):
-                return port
-        raise OSError("No free port available")
+    return await asyncio.to_thread(_is_port_in_use)
 
-    return await asyncio.to_thread(_select_free_port)
+
+async def select_free_port(range_start: int, range_end: int) -> int:
+    """Automatically find available port within range."""
+    for port in range(range_start, range_end):
+        if not await is_port_in_use(port):
+            return port
+    msg = "No free port available"
+    raise OSError(msg)
 
 
 async def get_ip_from_host(dns_name: str) -> str | None:
@@ -199,13 +202,12 @@ def get_folder_size(folderpath):
     """Return folder size in gb."""
     total_size = 0
     # pylint: disable=unused-variable
-    for dirpath, dirnames, filenames in os.walk(folderpath):
+    for dirpath, _dirnames, filenames in os.walk(folderpath):
         for _file in filenames:
             _fp = os.path.join(dirpath, _file)
             total_size += os.path.getsize(_fp)
     # pylint: enable=unused-variable
-    total_size_gb = total_size / float(1 << 30)
-    return total_size_gb
+    return total_size / float(1 << 30)
 
 
 def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
@@ -230,7 +232,7 @@ def merge_tuples(base: tuple, new: tuple) -> tuple:
 
 def merge_lists(base: list, new: list) -> list:
     """Merge 2 lists."""
-    return list(x for x in base if x not in new) + list(new)
+    return [x for x in base if x not in new] + list(new)
 
 
 def get_changed_keys(
@@ -288,3 +290,10 @@ def is_valid_uuid(uuid_to_test: str) -> bool:
     except ValueError:
         return False
     return str(uuid_obj) == uuid_to_test
+
+
+class classproperty(property):  # noqa: N801
+    """Implement class property for python3.11+."""
+
+    def __get__(self, cls, owner):  # noqa: D105
+        return classmethod(self.fget).__get__(None, owner)()

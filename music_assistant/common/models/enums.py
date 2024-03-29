@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import contextlib
 from enum import StrEnum
+from typing import Self
+
+from music_assistant.common.helpers.util import classproperty
 
 
 class MediaType(StrEnum):
@@ -14,11 +18,16 @@ class MediaType(StrEnum):
     PLAYLIST = "playlist"
     RADIO = "radio"
     FOLDER = "folder"
+    ANNOUNCEMENT = "announcement"
     UNKNOWN = "unknown"
 
     @classmethod
-    @property
-    def ALL(cls) -> tuple[MediaType, ...]:  # noqa: N802
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
+
+    @classproperty
+    def ALL(self) -> tuple[MediaType, ...]:  # noqa: N802
         """Return all (default) MediaTypes as tuple."""
         return (
             MediaType.ARTIST,
@@ -26,6 +35,7 @@ class MediaType(StrEnum):
             MediaType.TRACK,
             MediaType.PLAYLIST,
             MediaType.RADIO,
+            MediaType.ANNOUNCEMENT,
         )
 
 
@@ -43,6 +53,12 @@ class ExternalID(StrEnum):
     ASIN = "asin"  # amazon unique number to identify albums
     DISCOGS = "discogs"  # id for media item on discogs
     TADB = "tadb"  # the audio db id
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
 
 class LinkType(StrEnum):
@@ -59,6 +75,12 @@ class LinkType(StrEnum):
     DISCOGS = "discogs"
     WIKIPEDIA = "wikipedia"
     ALLMUSIC = "allmusic"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
 
 class ImageType(StrEnum):
@@ -74,6 +96,11 @@ class ImageType(StrEnum):
     BACK = "back"
     DISCART = "discart"
     OTHER = "other"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.OTHER
 
 
 class AlbumType(StrEnum):
@@ -101,6 +128,7 @@ class ContentType(StrEnum):
     AIFF = "aiff"
     WMA = "wma"
     M4A = "m4a"
+    MP4 = "mp4"
     M4B = "m4b"
     DSF = "dsf"
     OPUS = "opus"
@@ -111,8 +139,12 @@ class ContentType(StrEnum):
     PCM_F32LE = "f32le"  # PCM 32-bit floating-point little-endian
     PCM_F64LE = "f64le"  # PCM 64-bit floating-point little-endian
     PCM = "pcm"  # PCM generic (details determined later)
-    MPEG_DASH = "dash"
     UNKNOWN = "?"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
     @classmethod
     def try_parse(cls: ContentType, string: str) -> ContentType:
@@ -123,16 +155,15 @@ class ContentType(StrEnum):
         for splitter in (".", ","):
             if splitter in tempstr:
                 for val in tempstr.split(splitter):
-                    try:
-                        return cls(val.strip())
-                    except ValueError:
-                        pass
-
+                    with contextlib.suppress(ValueError):
+                        parsed = cls(val.strip())
+                    if parsed != ContentType.UNKNOWN:
+                        return parsed
         tempstr = tempstr.split("?")[0]
         tempstr = tempstr.split("&")[0]
         tempstr = tempstr.split(";")[0]
         tempstr = tempstr.replace("mp4", "m4a")
-        tempstr = tempstr.replace("mpd", "dash")
+        tempstr = tempstr.replace("mp4a", "m4a")
         try:
             return cls(tempstr)
         except ValueError:
@@ -202,13 +233,21 @@ class PlayerType(StrEnum):
     """Enum with possible Player Types.
 
     player: A regular player.
+    stereo_pair: Same as player but a dedicated stereo pair of 2 speakers.
     group: A (dedicated) group player or (universal) playergroup.
     sync_group: A group/preset of players that can be synced together.
     """
 
     PLAYER = "player"
+    STEREO_PAIR = "stereo_pair"
     GROUP = "group"
     SYNC_GROUP = "sync_group"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
 
 class PlayerFeature(StrEnum):
@@ -230,6 +269,13 @@ class PlayerFeature(StrEnum):
     SYNC = "sync"
     SEEK = "seek"
     ENQUEUE_NEXT = "enqueue_next"
+    PLAY_ANNOUNCEMENT = "play_announcement"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
 
 class EventType(StrEnum):
@@ -252,6 +298,12 @@ class EventType(StrEnum):
     PLAYER_CONFIG_UPDATED = "player_config_updated"
     SYNC_TASKS_UPDATED = "sync_tasks_updated"
     AUTH_SESSION = "auth_session"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
 
 class ProviderFeature(StrEnum):
@@ -308,6 +360,12 @@ class ProviderFeature(StrEnum):
     #
     # PLUGIN FEATURES
     #
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN
 
 
 class ProviderType(StrEnum):
@@ -331,3 +389,11 @@ class ConfigEntryType(StrEnum):
     LABEL = "label"
     DIVIDER = "divider"
     ACTION = "action"
+    ICON = "icon"
+    ALERT = "alert"
+    UNKNOWN = "unknown"
+
+    @classmethod
+    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+        """Set default enum member if an unknown value is provided."""
+        return cls.UNKNOWN

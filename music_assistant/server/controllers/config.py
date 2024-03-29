@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import logging
 import os
@@ -15,6 +14,7 @@ import shortuuid
 from aiofiles.os import wrap
 from cryptography.fernet import Fernet, InvalidToken
 
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.models import config_entries
 from music_assistant.common.models.config_entries import (
@@ -37,10 +37,12 @@ from music_assistant.constants import (
     ENCRYPT_SUFFIX,
 )
 from music_assistant.server.helpers.api import api_command
-from music_assistant.server.helpers.util import get_provider_module
+from music_assistant.server.helpers.util import load_provider_module
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
+    import asyncio
+
     from music_assistant.server.models.core_controller import CoreController
     from music_assistant.server.server import MusicAssistant
 
@@ -79,7 +81,6 @@ class ConfigController:
         self._fernet = Fernet(fernet_key)
         config_entries.ENCRYPT_CALLBACK = self.encrypt_string
         config_entries.DECRYPT_CALLBACK = self.decrypt_string
-
         LOGGER.debug("Started.")
 
     async def close(self) -> None:
@@ -104,11 +105,10 @@ class ConfigController:
                     # replace None with default
                     return default
                 return value
-            elif subkey not in parent:
+            if subkey not in parent:
                 # requesting subkey from a non existing parent
                 return default
-            else:
-                parent = parent[subkey]
+            parent = parent[subkey]
         return default
 
     def set(self, key: str, value: Any) -> None:
@@ -161,12 +161,15 @@ class ConfigController:
         self,
         provider_type: ProviderType | None = None,
         provider_domain: str | None = None,
+        include_values: bool = False,
     ) -> list[ProviderConfig]:
         """Return all known provider configurations, optionally filtered by ProviderType."""
         raw_values: dict[str, dict] = self.get(CONF_PROVIDERS, {})
         prov_entries = {x.domain for x in self.mass.get_provider_manifests()}
         return [
             await self.get_provider_config(prov_conf["instance_id"])
+            if include_values
+            else ProviderConfig.parse([], prov_conf)
             for prov_conf in raw_values.values()
             if (provider_type is None or prov_conf["type"] == provider_type)
             and (provider_domain is None or prov_conf["domain"] == provider_domain)
@@ -179,15 +182,19 @@ class ConfigController:
         """Return configuration for a single provider."""
         if raw_conf := self.get(f"{CONF_PROVIDERS}/{instance_id}", {}):
             config_entries = await self.get_provider_config_entries(
-                raw_conf["domain"], instance_id=instance_id, values=raw_conf.get("values")
+                raw_conf["domain"],
+                instance_id=instance_id,
+                values=raw_conf.get("values"),
             )
             for prov in self.mass.get_provider_manifests():
                 if prov.domain == raw_conf["domain"]:
                     break
             else:
-                raise KeyError(f'Unknown provider domain: {raw_conf["domain"]}')
+                msg = f'Unknown provider domain: {raw_conf["domain"]}'
+                raise KeyError(msg)
             return ProviderConfig.parse(config_entries, raw_conf)
-        raise KeyError(f"No config found for provider id {instance_id}")
+        msg = f"No config found for provider id {instance_id}"
+        raise KeyError(msg)
 
     @api_command("config/providers/get_value")
     async def get_provider_config_value(self, instance_id: str, key: str) -> ConfigValueType:
@@ -224,10 +231,11 @@ class ConfigController:
         # lookup provider manifest and module
         for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
-                prov_mod = await get_provider_module(provider_domain)
+                prov_mod = await load_provider_module(provider_domain, prov.requirements)
                 break
         else:
-            raise KeyError(f"Unknown provider domain: {provider_domain}")
+            msg = f"Unknown provider domain: {provider_domain}"
+            raise KeyError(msg)
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
         return (
@@ -264,18 +272,21 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{instance_id}"
         existing = self.get(conf_key)
         if not existing:
-            raise KeyError(f"Provider {instance_id} does not exist")
+            msg = f"Provider {instance_id} does not exist"
+            raise KeyError(msg)
         prov_manifest = self.mass.get_provider_manifest(existing["domain"])
         if prov_manifest.load_by_default and instance_id == prov_manifest.domain:
             # Guard for a provider that is loaded by default
             LOGGER.warning(
-                "Provider %s can not be removed, disabling instead...", prov_manifest.name
+                "Provider %s can not be removed, disabling instead...",
+                prov_manifest.name,
             )
             existing["enabled"] = False
             await self._update_provider_config(instance_id, existing)
             return
         if prov_manifest.builtin:
-            raise RuntimeError(f"Builtin provider {prov_manifest.name} can not be removed.")
+            msg = f"Builtin provider {prov_manifest.name} can not be removed."
+            raise RuntimeError(msg)
         self.remove(conf_key)
         await self.mass.unload_provider(instance_id)
         if existing["type"] == "music":
@@ -310,14 +321,17 @@ class ConfigController:
         await self._load_provider_config(config)
 
     @api_command("config/players")
-    async def get_player_configs(self, provider: str | None = None) -> list[PlayerConfig]:
+    async def get_player_configs(
+        self, provider: str | None = None, include_values: bool = False
+    ) -> list[PlayerConfig]:
         """Return all known player configurations, optionally filtered by provider domain."""
-        available_providers = {x.instance_id for x in self.mass.providers}
         return [
-            await self.get_player_config(player_id)
-            for player_id, raw_conf in self.get(CONF_PLAYERS, {}).items()
+            await self.get_player_config(raw_conf["player_id"])
+            if include_values
+            else PlayerConfig.parse([], raw_conf)
+            for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
             # filter out unavailable providers
-            if raw_conf["provider"] in available_providers
+            if raw_conf["provider"] in get_global_cache_value("available_providers", [])
             # optional provider filter
             and (provider in (None, raw_conf["provider"]))
         ]
@@ -331,12 +345,13 @@ class ConfigController:
                 if player := self.mass.players.get(player_id, False):
                     raw_conf["default_name"] = player.display_name
             else:
-                conf_entries = tuple()
+                conf_entries = ()
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
             return PlayerConfig.parse(conf_entries, raw_conf)
-        raise KeyError(f"No config found for player id {player_id}")
+        msg = f"No config found for player id {player_id}"
+        raise KeyError(msg)
 
     @api_command("config/players/get_value")
     async def get_player_config_value(
@@ -346,12 +361,11 @@ class ConfigController:
     ) -> ConfigValueType:
         """Return single configentry value for a player."""
         conf = await self.get_player_config(player_id)
-        val = (
+        return (
             conf.values[key].value
             if conf.values[key].value is not None
             else conf.values[key].default_value
         )
-        return val
 
     def get_raw_player_config_value(
         self, player_id: str, key: str, default: ConfigValueType = None
@@ -376,7 +390,7 @@ class ConfigController:
 
         if not changed_keys:
             # no changes
-            return
+            return None
 
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         self.set(conf_key, config.to_raw())
@@ -411,7 +425,8 @@ class ConfigController:
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         existing = self.get(conf_key)
         if not existing:
-            raise KeyError(f"Player {player_id} does not exist")
+            msg = f"Player {player_id} does not exist"
+            raise KeyError(msg)
         self.remove(conf_key)
         if (player := self.mass.players.get(player_id)) and player.available:
             player.enabled = False
@@ -443,7 +458,11 @@ class ConfigController:
         # config does not yet exist, create a default one
         conf_key = f"{CONF_PLAYERS}/{player_id}"
         default_conf = PlayerConfig(
-            values={}, provider=provider, player_id=player_id, enabled=enabled, default_name=name
+            values={},
+            provider=provider,
+            player_id=player_id,
+            enabled=enabled,
+            default_name=name,
         )
         default_conf_raw = default_conf.to_raw()
         if values is not None:
@@ -460,7 +479,7 @@ class ConfigController:
         This is meant as helper to create default configs for default enabled providers.
         Called by the server initialization code which load all providers at startup.
         """
-        for conf in await self.get_provider_configs(provider_domain=provider_domain):
+        for _conf in await self.get_provider_configs(provider_domain=provider_domain):
             # return if there is already a config
             return
         for prov in self.mass.get_provider_manifests():
@@ -468,7 +487,8 @@ class ConfigController:
                 manifest = prov
                 break
         else:
-            raise KeyError(f"Unknown provider domain: {provider_domain}")
+            msg = f"Unknown provider domain: {provider_domain}"
+            raise KeyError(msg)
         config_entries = await self.get_provider_config_entries(provider_domain)
         instance_id = f"{manifest.domain}--{shortuuid.random(8)}"
         default_config: ProviderConfig = ProviderConfig.parse(
@@ -488,12 +508,14 @@ class ConfigController:
         self.set(conf_key, default_config.to_raw())
 
     @api_command("config/core")
-    async def get_core_configs(
-        self,
-    ) -> list[CoreConfig]:
+    async def get_core_configs(self, include_values: bool = False) -> list[CoreConfig]:
         """Return all core controllers config options."""
         return [
             await self.get_core_config(core_controller)
+            if include_values
+            else CoreConfig.parse(
+                [], self.get(f"{CONF_CORE}/{core_controller}", {"domain": core_controller})
+            )
             for core_controller in CONFIGURABLE_CORE_CONTROLLERS
         ]
 
@@ -568,7 +590,10 @@ class ConfigController:
 
         Note that this only returns the stored value without any validation or default.
         """
-        return self.get(f"{CONF_CORE}/{core_module}/{key}", default)
+        return self.get(
+            f"{CONF_CORE}/{core_module}/values/{key}",
+            self.get(f"{CONF_CORE}/{core_module}/{key}", default),
+        )
 
     def get_raw_provider_config_value(
         self, provider_instance: str, key: str, default: ConfigValueType = None
@@ -578,7 +603,10 @@ class ConfigController:
 
         Note that this only returns the stored value without any validation or default.
         """
-        return self.get(f"{CONF_PROVIDERS}/{provider_instance}/{key}", default)
+        return self.get(
+            f"{CONF_PROVIDERS}/{provider_instance}/values/{key}",
+            self.get(f"{CONF_PROVIDERS}/{provider_instance}/{key}", default),
+        )
 
     def set_raw_provider_config_value(
         self, provider_instance: str, key: str, value: ConfigValueType
@@ -586,9 +614,25 @@ class ConfigController:
         """
         Set (raw) single config(entry) value for a provider.
 
-        Note that this only returns the stored value without any validation or default.
+        Note that this only stores the (raw) value without any validation or default.
         """
-        return self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+        if not self.get(f"{CONF_PROVIDERS}/{provider_instance}"):
+            # only allow setting raw values if main entry exists
+            msg = f"Invalid provider_instance: {provider_instance}"
+            raise KeyError(msg)
+        self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+
+    def set_raw_player_config_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
+        """
+        Set (raw) single config(entry) value for a player.
+
+        Note that this only stores the (raw) value without any validation or default.
+        """
+        if not self.get(f"{CONF_PLAYERS}/{player_id}"):
+            # only allow setting raw values if main entry exists
+            msg = f"Invalid player_id: {player_id}"
+            raise KeyError(msg)
+        self.set(f"{CONF_PLAYERS}/{player_id}/values/{key}", value)
 
     def save(self, immediate: bool = False) -> None:
         """Schedule save of data to disk."""
@@ -621,26 +665,26 @@ class ConfigController:
         try:
             return self._fernet.decrypt(encrypted_str.encode()).decode()
         except InvalidToken as err:
-            raise InvalidDataError("Password decryption failed") from err
+            msg = "Password decryption failed"
+            raise InvalidDataError(msg) from err
 
     async def _load(self) -> None:
         """Load data from persistent storage."""
         assert not self._data, "Already loaded"
 
-        for filename in self.filename, f"{self.filename}.backup":
+        for filename in (self.filename, f"{self.filename}.backup"):
             try:
-                _filename = os.path.join(self.mass.storage_path, filename)
-                async with aiofiles.open(_filename, "r", encoding="utf-8") as _file:
+                async with aiofiles.open(filename, "r", encoding="utf-8") as _file:
                     self._data = json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
                     return
             except FileNotFoundError:
                 pass
             except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
-                LOGGER.error("Error while reading persistent storage file %s", filename)
+                LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
 
-    async def _async_save(self):
+    async def _async_save(self) -> None:
         """Save persistent data to disk."""
         filename_backup = f"{self.filename}.backup"
         # make backup before we write a new file
@@ -672,7 +716,8 @@ class ConfigController:
             # disable provider
             prov_manifest = self.mass.get_provider_manifest(config.domain)
             if prov_manifest.builtin:
-                raise RuntimeError("Builtin provider can not be disabled.")
+                msg = "Builtin provider can not be disabled."
+                raise RuntimeError(msg)
             # also unload any other providers dependent of this provider
             for dep_prov in self.mass.providers:
                 if dep_prov.manifest.depends_on == config.domain:
@@ -710,14 +755,19 @@ class ConfigController:
                 manifest = prov
                 break
         else:
-            raise KeyError(f"Unknown provider domain: {provider_domain}")
+            msg = f"Unknown provider domain: {provider_domain}"
+            raise KeyError(msg)
+        if prov.depends_on and not self.mass.get_provider(prov.depends_on):
+            msg = f"Provider {manifest.name} depends on {prov.depends_on}"
+            raise ValueError(msg)
         # create new provider config with given values
         existing = {
             x.instance_id for x in await self.get_provider_configs(provider_domain=provider_domain)
         }
         # determine instance id based on previous configs
         if existing and not manifest.multi_instance:
-            raise ValueError(f"Provider {manifest.name} does not support multiple instances")
+            msg = f"Provider {manifest.name} does not support multiple instances"
+            raise ValueError(msg)
         instance_id = f"{manifest.domain}--{shortuuid.random(8)}"
         # all checks passed, create config object
         config_entries = await self.get_provider_config_entries(

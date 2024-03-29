@@ -22,7 +22,7 @@ class RadioController(MediaControllerBase[Radio]):
     media_type = MediaType.RADIO
     item_cls = Radio
 
-    def __init__(self, *args, **kwargs):
+    def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
@@ -69,16 +69,18 @@ class RadioController(MediaControllerBase[Radio]):
             metadata_lookup = False
             item = Radio.from_item_mapping(item)
         if not isinstance(item, Radio):
-            raise InvalidDataError("Not a valid Radio object")
+            msg = "Not a valid Radio object"
+            raise InvalidDataError(msg)
         if not item.provider_mappings:
-            raise InvalidDataError("Radio is missing provider mapping(s)")
+            msg = "Radio is missing provider mapping(s)"
+            raise InvalidDataError(msg)
         if metadata_lookup:
             await self.mass.metadata.get_radio_metadata(item)
         # check for existing item first
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)  # noqa: SIM114
+            library_item = await self.update_item_in_library(cur_item.item_id, item)
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             library_item = await self.update_item_in_library(cur_item.item_id, item)
@@ -170,8 +172,10 @@ class RadioController(MediaControllerBase[Radio]):
         limit: int = 25,
     ) -> list[Track]:
         """Generate a dynamic list of tracks based on the item's content."""
-        raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
+        msg = "Dynamic tracks not supported for Radio MediaItem"
+        raise NotImplementedError(msg)
 
     async def _get_dynamic_tracks(self, media_item: Radio, limit: int = 25) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
-        raise NotImplementedError("Dynamic tracks not supported for Radio MediaItem")
+        msg = "Dynamic tracks not supported for Radio MediaItem"
+        raise NotImplementedError(msg)

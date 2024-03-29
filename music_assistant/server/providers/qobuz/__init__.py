@@ -5,7 +5,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import time
-from collections.abc import AsyncGenerator
 from json import JSONDecodeError
 from typing import TYPE_CHECKING
 
@@ -30,19 +29,26 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     ProviderMapping,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
     VARIOUS_ARTISTS_ID_MBID,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
+
+# pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import app_var
+
+# pylint: enable=no-name-in-module
+from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -73,7 +79,7 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     prov = QobuzProvider(mass, manifest, config)
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -93,10 +99,16 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
         ConfigEntry(
-            key=CONF_PASSWORD, type=ConfigEntryType.SECURE_STRING, label="Password", required=True
+            key=CONF_PASSWORD,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Password",
+            required=True,
         ),
     )
 
@@ -107,16 +119,18 @@ class QobuzProvider(MusicProvider):
     _user_auth_info: str | None = None
     _throttler: Throttler
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=4, period=1)
 
         if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
-            raise LoginFailed("Invalid login credentials")
+            msg = "Invalid login credentials"
+            raise LoginFailed(msg)
         # try to get a token, raise if that fails
         token = await self._auth_token()
         if not token:
-            raise LoginFailed(f"Login failed for user {self.config.get_value(CONF_USERNAME)}")
+            msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+            raise LoginFailed(msg)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -204,28 +218,32 @@ class QobuzProvider(MusicProvider):
         params = {"artist_id": prov_artist_id}
         if (artist_obj := await self._get_data("artist/get", **params)) and artist_obj["id"]:
             return await self._parse_artist(artist_obj)
-        raise MediaNotFoundError(f"Item {prov_artist_id} not found")
+        msg = f"Item {prov_artist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         params = {"album_id": prov_album_id}
         if (album_obj := await self._get_data("album/get", **params)) and album_obj["id"]:
             return await self._parse_album(album_obj)
-        raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        msg = f"Item {prov_album_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         params = {"track_id": prov_track_id}
         if (track_obj := await self._get_data("track/get", **params)) and track_obj["id"]:
             return await self._parse_track(track_obj)
-        raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        msg = f"Item {prov_track_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
         if (playlist_obj := await self._get_data("playlist/get", **params)) and playlist_obj["id"]:
             return await self._parse_playlist(playlist_obj)
-        raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        msg = f"Item {prov_playlist_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
@@ -298,7 +316,7 @@ class QobuzProvider(MusicProvider):
             )
         ]
 
-    async def get_similar_artists(self, prov_artist_id):
+    async def get_similar_artists(self, prov_artist_id) -> None:
         """Get similar artists for given artist."""
         # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
 
@@ -374,15 +392,15 @@ class QobuzProvider(MusicProvider):
                 streamdata = result
                 break
         if not streamdata:
-            raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
+            msg = f"Unable to retrieve stream details for {item_id}"
+            raise MediaNotFoundError(msg)
         if streamdata["mime_type"] == "audio/mpeg":
             content_type = ContentType.MPEG
         elif streamdata["mime_type"] == "audio/flac":
             content_type = ContentType.FLAC
         else:
-            raise MediaNotFoundError(f"Unsupported mime type for {item_id}")
-        # report playback started as soon as the streamdetails are requested
-        self.mass.create_task(self._report_playback_started(streamdata))
+            msg = f"Unsupported mime type for {item_id}"
+            raise MediaNotFoundError(msg)
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
@@ -393,10 +411,19 @@ class QobuzProvider(MusicProvider):
             ),
             duration=streamdata["duration"],
             data=streamdata,  # we need these details for reporting playback
-            expires=time.time() + 3600,  # not sure about the real allowed value
-            direct=streamdata["url"],
-            callback=self._report_playback_stopped,
+            expires=time.time() + 300,  # url expires very fast
         )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        # report playback started as soon as we start streaming
+        self.mass.create_task(self._report_playback_started(streamdetails.data))
+        async for chunk in get_http_stream(
+            self.mass, streamdetails.data["url"], streamdetails, seek_position
+        ):
+            yield chunk
 
     async def _report_playback_started(self, streamdata: dict) -> None:
         """Report playback start to qobuz."""
@@ -426,14 +453,14 @@ class QobuzProvider(MusicProvider):
         ]
         await self._post_data("track/reportStreamingStart", data=events)
 
-    async def _report_playback_stopped(self, streamdetails: StreamDetails) -> None:
-        """Report playback stop to qobuz."""
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
         user_id = self._user_auth_info["user"]["id"]
         await self._get_data(
             "/track/reportStreamingEnd",
             user_id=user_id,
             track_id=str(streamdetails.item_id),
-            duration=try_parse_int(streamdetails.seconds_streamed),
+            duration=try_parse_int(seconds_streamed),
         )
 
     async def _parse_artist(self, artist_obj: dict):
@@ -460,7 +487,7 @@ class QobuzProvider(MusicProvider):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
 
-    async def _parse_album(self, album_obj: dict, artist_obj: dict = None):
+    async def _parse_album(self, album_obj: dict, artist_obj: dict | None = None):
         """Parse qobuz album object to generic layout."""
         if not artist_obj and "artist" not in album_obj:
             # artist missing in album info, return full abum instead
@@ -577,7 +604,18 @@ class QobuzProvider(MusicProvider):
                 role = performer_str.split(", ")[1]
                 name = performer_str.split(", ")[0]
                 if "artist" in role.lower():
-                    artist = Artist(item_id=name, provider=self.domain, name=name)
+                    artist = Artist(
+                        item_id=name,
+                        provider=self.domain,
+                        name=name,
+                        provider_mappings={
+                            ProviderMapping(
+                                item_id=name,
+                                provider_domain=self.domain,
+                                provider_instance=self.instance_id,
+                            )
+                        },
+                    )
                 track.artists.append(artist)
         # TODO: fix grabbing composer from details
 
@@ -730,9 +768,9 @@ class QobuzProvider(MusicProvider):
                 JSONDecodeError,
                 AssertionError,
                 ValueError,
-            ) as err:
+            ):
                 text = await response.text()
-                self.logger.exception("Error while processing %s: %s", endpoint, text, exc_info=err)
+                self.logger.error("Error while processing %s: %s", endpoint, text)
                 return None
             return result
 

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
+from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
@@ -16,11 +16,14 @@ from music_assistant.common.models.media_items import (
     PlaylistTrack,
     Radio,
     SearchResults,
-    StreamDetails,
     Track,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 
 from .provider import Provider
+
+if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
 
 # ruff: noqa: ARG001, ARG002
 
@@ -45,6 +48,11 @@ class MusicProvider(Provider):
         Setting this to False will query all instances of this provider for search and lookups.
         """
         return True
+
+    @property
+    def lookup_key(self) -> str:
+        """Return domain if streaming_provider or instance_id otherwise."""
+        return self.domain if self.is_streaming_provider else self.instance_id
 
     async def search(
         self,
@@ -129,7 +137,8 @@ class MusicProvider(Provider):
             raise NotImplementedError
 
     async def get_album_tracks(
-        self, prov_album_id: str  # type: ignore[return]
+        self,
+        prov_album_id: str,  # type: ignore[return]
     ) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
@@ -235,7 +244,7 @@ class MusicProvider(Provider):
         if ProviderFeature.SIMILAR_TRACKS in self.supported_features:
             raise NotImplementedError
 
-    async def get_stream_details(self, item_id: str) -> StreamDetails | None:
+    async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
         raise NotImplementedError
 
@@ -243,8 +252,10 @@ class MusicProvider(Provider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        if streamdetails.direct is None:
-            raise NotImplementedError
+        raise NotImplementedError
+
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
 
     async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
         """
@@ -300,7 +311,8 @@ class MusicProvider(Provider):
             return
         if subpath:
             # unknown path
-            raise KeyError("Invalid subpath")
+            msg = "Invalid subpath"
+            raise KeyError(msg)
         # no subpath: return main listing
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
             yield BrowseFolder(

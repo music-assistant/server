@@ -1,0 +1,1 @@
+"""Music Assistant scripts."""

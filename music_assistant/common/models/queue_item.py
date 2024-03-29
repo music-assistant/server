@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any, Self
 from uuid import uuid4
 
 from mashumaro import DataClassDictMixin
 
 from .enums import MediaType
-from .media_items import Album, ItemMapping, MediaItemImage, Radio, StreamDetails, Track
+from .media_items import Album, ItemMapping, MediaItemImage, Radio, Track
+from .streamdetails import StreamDetails
 
 
 @dataclass
@@ -33,6 +35,15 @@ class QueueItem(DataClassDictMixin):
         if not self.name:
             self.name = self.uri
 
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Execute action(s) on serialization."""
+        # Exclude internal streamdetails fields from dict
+        if streamdetails := d.get("streamdetails"):
+            streamdetails.pop("data", None)
+            streamdetails.pop("direct", None)
+            streamdetails.pop("expires", None)
+        return d
+
     @property
     def uri(self) -> str:
         """Return uri for this QueueItem (for logging purposes)."""
@@ -45,6 +56,8 @@ class QueueItem(DataClassDictMixin):
         """Return MediaType for this QueueItem (for convenience purposes)."""
         if self.media_item:
             return self.media_item.media_type
+        if self.streamdetails:
+            return self.streamdetails.media_type
         return MediaType.UNKNOWN
 
     @classmethod
@@ -68,6 +81,18 @@ class QueueItem(DataClassDictMixin):
             media_item=media_item,
             image=get_image(media_item),
         )
+
+    def to_cache(self) -> dict[str, Any]:
+        """Return the dict that is suitable for storing into the cache db."""
+        base = self.to_dict()
+        base.pop("streamdetails", None)
+        return base
+
+    @classmethod
+    def from_cache(cls: Self, d: dict[Any, Any]) -> Self:
+        """Restore a QueueItem from a cache dict."""
+        d.pop("streamdetails", None)
+        return cls.from_dict(d)
 
 
 def get_image(media_item: Track | Radio | None) -> MediaItemImage | None:

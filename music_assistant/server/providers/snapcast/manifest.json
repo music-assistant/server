@@ -3,9 +3,13 @@
   "domain": "snapcast",
   "name": "Snapcast",
   "description": "Support for snapcast server and clients.",
-  "codeowners": ["@SantigoSotoC"],
-  "requirements": ["snapcast-mod==2.4.3"],
-  "documentation": "https://github.com/orgs/music-assistant/discussions/1668",
+  "codeowners": [
+    "@SantigoSotoC"
+  ],
+  "requirements": [
+    "snapcast==2.3.6"
+  ],
+  "documentation": "https://music-assistant.io/player-support/snapcast/",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": false

@@ -18,7 +18,7 @@ from music_assistant.constants import (
     DB_SCHEMA_VERSION,
     DB_TABLE_CACHE,
     DB_TABLE_SETTINGS,
-    ROOT_LOGGER_NAME,
+    MASS_LOGGER_NAME,
 )
 from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
@@ -26,7 +26,7 @@ from music_assistant.server.models.core_controller import CoreController
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
 
-LOGGER = logging.getLogger(f"{ROOT_LOGGER_NAME}.cache")
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
 
 
@@ -48,8 +48,8 @@ class CacheController(CoreController):
 
     async def get_config_entries(
         self,
-        action: str | None = None,  # noqa: ARG002
-        values: dict[str, ConfigValueType] | None = None,  # noqa: ARG002
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
         if action == CONF_CLEAR_CACHE:
@@ -68,24 +68,11 @@ class CacheController(CoreController):
                 label="Clear cache",
                 description="Reset/clear all items in the cache. ",
             ),
-            # ConfigEntry(
-            #     key=CONF_BIND_IP,
-            #     type=ConfigEntryType.STRING,
-            #     default_value=default_ip,
-            #     label="Bind to IP/interface",
-            #     description="Start the streamserver on this specific interface. \n"
-            #     "This IP address is communicated to players where to find this server. "
-            #     "Override the default in advanced scenarios, such as multi NIC configurations. \n"
-            #     "Make sure that this server can be reached "
-            #     "on the given IP and TCP port by players on the local network. \n"
-            #     "This is an advanced setting that should normally "
-            #     "not be adjusted in regular setups.",
-            #     advanced=True,
-            # ),
         )
 
-    async def setup(self, config: CoreConfig) -> None:  # noqa: ARG002
+    async def setup(self, config: CoreConfig) -> None:
         """Async initialize of cache module."""
+        self.logger.info("Initializing cache controller...")
         await self._setup_database()
         self.__schedule_cleanup_task()
 
@@ -117,7 +104,12 @@ class CacheController(CoreController):
             try:
                 data = await asyncio.to_thread(json_loads, db_row["data"])
             except Exception as exc:  # pylint: disable=broad-except
-                LOGGER.exception("Error parsing cache data for %s", cache_key, exc_info=exc)
+                LOGGER.error(
+                    "Error parsing cache data for %s: %s",
+                    cache_key,
+                    str(exc),
+                    exc_info=exc if self.logger.isEnabledFor(10) else None,
+                )
             else:
                 # also store in memory cache for faster access
                 self._mem_cache[cache_key] = (
@@ -128,7 +120,7 @@ class CacheController(CoreController):
                 return data
         return default
 
-    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)):
+    async def set(self, cache_key, data, checksum="", expiration=(86400 * 30)) -> None:
         """Set data in cache."""
         if not cache_key:
             return
@@ -146,7 +138,7 @@ class CacheController(CoreController):
             allow_replace=True,
         )
 
-    async def delete(self, cache_key):
+    async def delete(self, cache_key) -> None:
         """Delete data from cache."""
         self._mem_cache.pop(cache_key, None)
         await self.database.delete(DB_TABLE_CACHE, {"key": cache_key})
@@ -154,20 +146,31 @@ class CacheController(CoreController):
     async def clear(self, key_filter: str | None = None) -> None:
         """Clear all/partial items from cache."""
         self._mem_cache = {}
+        self.logger.info("Clearing database...")
         query = f"key LIKE '%{key_filter}%'" if key_filter else None
         await self.database.delete(DB_TABLE_CACHE, query=query)
+        await self.database.vacuum()
+        self.logger.info("Clearing database DONE")
 
-    async def auto_cleanup(self):
+    async def auto_cleanup(self) -> None:
         """Sceduled auto cleanup task."""
+        self.logger.debug("Running automatic cleanup...")
         # for now we simply reset the memory cache
         self._mem_cache = {}
         cur_timestamp = int(time.time())
+        cleaned_records = 0
         for db_row in await self.database.get_rows(DB_TABLE_CACHE):
             # clean up db cache object only if expired
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
+                cleaned_records += 1
+        if cleaned_records > 50:
+            self.logger.debug("Compacting database...")
+            await self.database.vacuum()
+            self.logger.debug("Compacting database done")
+        self.logger.debug("Automatic cleanup finished (cleaned up %s records)", cleaned_records)
 
-    async def _setup_database(self):
+    async def _setup_database(self) -> None:
         """Initialize database."""
         db_path = os.path.join(self.mass.storage_path, "cache.db")
         self.database = DatabaseConnection(db_path)
@@ -184,7 +187,7 @@ class CacheController(CoreController):
             prev_version = 0
 
         if prev_version not in (0, DB_SCHEMA_VERSION):
-            LOGGER.info(
+            LOGGER.warning(
                 "Performing database migration from %s to %s",
                 prev_version,
                 DB_SCHEMA_VERSION,
@@ -202,8 +205,6 @@ class CacheController(CoreController):
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
-        # compact db
-        await self.database.execute("VACUUM")
 
     async def __create_database_tables(self) -> None:
         """Create database table(s)."""
@@ -225,7 +226,7 @@ class CacheController(CoreController):
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
         )
 
-    def __schedule_cleanup_task(self):
+    def __schedule_cleanup_task(self) -> None:
         """Schedule the cleanup task."""
         self.mass.create_task(self.auto_cleanup())
         # reschedule self
@@ -269,7 +270,7 @@ def use_cache(expiration=86400 * 30):
 class MemoryCache(MutableMapping):
     """Simple limited in-memory cache implementation."""
 
-    def __init__(self, maxlen: int):
+    def __init__(self, maxlen: int) -> None:
         """Initialize."""
         self._maxlen = maxlen
         self.d = OrderedDict()

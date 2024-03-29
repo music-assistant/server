@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from time import time
 from typing import TYPE_CHECKING
 
@@ -20,10 +19,10 @@ from music_assistant.common.models.media_items import (
     MediaType,
     ProviderMapping,
     Radio,
-    StreamDetails,
 )
+from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream, resolve_radio_stream
+from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -33,6 +32,8 @@ SUPPORTED_FEATURES = (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import AsyncGenerator
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
@@ -44,7 +45,8 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     if not config.get_value(CONF_USERNAME):
-        raise LoginFailed("Username is invalid")
+        msg = "Username is invalid"
+        raise LoginFailed(msg)
 
     prov = TuneInProvider(mass, manifest, config)
     if "@" in config.get_value(CONF_USERNAME):
@@ -52,7 +54,7 @@ async def setup(
             "Email address detected instead of username, "
             "it is advised to use the tunein username instead of email."
         )
-    await prov.handle_setup()
+    await prov.handle_async_init()
     return prov
 
 
@@ -72,7 +74,10 @@ async def get_config_entries(
     # ruff: noqa: ARG001
     return (
         ConfigEntry(
-            key=CONF_USERNAME, type=ConfigEntryType.STRING, label="Username", required=True
+            key=CONF_USERNAME,
+            type=ConfigEntryType.STRING,
+            label="Username",
+            required=True,
         ),
     )
 
@@ -87,14 +92,16 @@ class TuneInProvider(MusicProvider):
         """Return the features supported by this Provider."""
         return SUPPORTED_FEATURES
 
-    async def handle_setup(self) -> None:
+    async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._throttler = Throttler(rate_limit=1, period=1)
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
 
-        async def parse_items(items: list[dict], folder: str = None) -> AsyncGenerator[Radio, None]:
+        async def parse_items(
+            items: list[dict], folder: str | None = None
+        ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
                 if item_type == "audio":
@@ -147,7 +154,8 @@ class TuneInProvider(MusicProvider):
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
                 return radio
-        raise MediaNotFoundError(f"Item {prov_radio_id} not found")
+        msg = f"Item {prov_radio_id} not found"
+        raise MediaNotFoundError(msg)
 
     async def _parse_radio(
         self, details: dict, stream: dict | None = None, folder: str | None = None
@@ -215,20 +223,18 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.instance_id,
                 item_id=item_id,
-                content_type=ContentType.UNKNOWN,
                 audio_format=AudioFormat(
                     content_type=ContentType.UNKNOWN,
                 ),
                 media_type=MediaType.RADIO,
                 data=item_id,
+                expires=time() + 3600,
             )
         stream_item_id, media_type = item_id.split("--", 1)
         stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
         for stream in stream_info["body"]:
             if stream["media_type"] != media_type:
                 continue
-            # check if the radio stream is not a playlist
-            url_resolved, supports_icy = await resolve_radio_stream(self.mass, stream["url"])
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
@@ -236,16 +242,17 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                 ),
                 media_type=MediaType.RADIO,
-                data=url_resolved,
-                expires=time() + 24 * 3600,
-                direct=url_resolved if not supports_icy else None,
+                data=stream["url"],
+                expires=time() + 3600,
             )
-        raise MediaNotFoundError(f"Unable to retrieve stream details for {item_id}")
+        msg = f"Unable to retrieve stream details for {item_id}"
+        raise MediaNotFoundError(msg)
 
     async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0  # noqa: ARG002
+        self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
+        # report playback started as soon as we start streaming
         async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
             yield chunk
 
