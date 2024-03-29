@@ -1,4 +1,4 @@
-"""Various helpers for audio manipulation."""
+"""Various helpers for audio streaming and manipulation."""
 
 from __future__ import annotations
 

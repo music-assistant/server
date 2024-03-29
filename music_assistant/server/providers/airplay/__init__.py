@@ -271,7 +271,6 @@ class AirplayStream:
             ffmpeg_args,
             stdin=read_from_buffer(),
             stdout=write,
-            stderr="cliraop_ffmpeg",
             name="cliraop_ffmpeg",
         )
         await self._ffmpeg_proc.start()
