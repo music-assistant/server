@@ -6,6 +6,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from soundcloudpy import SoundcloudAsyncAPI
+
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
@@ -30,8 +32,6 @@ from music_assistant.server.helpers.audio import (
     resolve_radio_stream,
 )
 from music_assistant.server.models.music_provider import MusicProvider
-
-from .soundcloudpy.asyncsoundcloudpy import SoundcloudAsyncAPI
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
