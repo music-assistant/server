@@ -322,14 +322,16 @@ class SoundcloudMusicProvider(MusicProvider):
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
-        resolved_url, _, is_hls = await resolve_radio_stream(self.mass, streamdetails.data)
+        _, _, is_hls = await resolve_radio_stream(self.mass, streamdetails.data)
         if is_hls:
             # some soundcloud streams are HLS, prefer the radio streamer
-            async for chunk in get_hls_stream(self.mass, resolved_url, streamdetails):
+            async for chunk in get_hls_stream(self.mass, streamdetails.data, streamdetails):
                 yield chunk
             return
         # regular stream from http
-        async for chunk in get_http_stream(self.mass, resolved_url, streamdetails, seek_position):
+        async for chunk in get_http_stream(
+            self.mass, streamdetails.data, streamdetails, seek_position
+        ):
             yield chunk
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
