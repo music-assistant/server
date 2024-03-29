@@ -37,6 +37,7 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
+    MediaType,
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -341,52 +342,39 @@ class SlimprotoProvider(PlayerProvider):
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
 
-        if player.group_childs:
+        if player.group_childs and queue_item.media_type != MediaType.ANNOUNCEMENT:
             # player has sync members, we need to start a (multi-player) stream job
             # to make sure that all clients receive the exact same audio
             stream_job = self.mass.streams.create_multi_client_stream_job(
                 queue_id=queue_item.queue_id,
                 start_queue_item=queue_item,
             )
-            # forward command to player and any connected sync members
-            async with asyncio.TaskGroup() as tg:
-                for slimplayer in self._get_sync_clients(player_id):
-                    enforce_mp3 = await self.mass.config.get_player_config_value(
-                        slimplayer.player_id, CONF_ENFORCE_MP3
-                    )
-                    tg.create_task(
-                        self._handle_play_url(
-                            slimplayer,
-                            url=stream_job.resolve_stream_url(
-                                slimplayer.player_id,
-                                output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-                            ),
-                            queue_item=None,
-                            send_flush=True,
-                            auto_play=False,
-                        )
-                    )
         else:
-            # regular, single player playback
-            slimplayer = self.slimproto.get_player(player_id)
-            if not slimplayer:
-                return
-            enforce_mp3 = await self.mass.config.get_player_config_value(
-                player_id, CONF_ENFORCE_MP3
-            )
-            url = self.mass.streams.resolve_stream_url(
-                player_id,
-                queue_item=queue_item,
-                output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-                flow_mode=False,
-            )
-            await self._handle_play_url(
-                slimplayer,
-                url=url,
-                queue_item=queue_item,
-                send_flush=True,
-                auto_play=True,
-            )
+            stream_job = None
+        # forward command to player and any connected sync members
+        async with asyncio.TaskGroup() as tg:
+            for slimplayer in self._get_sync_clients(player_id):
+                enforce_mp3 = await self.mass.config.get_player_config_value(
+                    slimplayer.player_id, CONF_ENFORCE_MP3
+                )
+                tg.create_task(
+                    self._handle_play_url(
+                        slimplayer,
+                        url=stream_job.resolve_stream_url(
+                            slimplayer.player_id,
+                            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
+                        )
+                        if stream_job
+                        else self.mass.streams.resolve_stream_url(
+                            slimplayer.player_id,
+                            queue_item=queue_item,
+                            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
+                        ),
+                        queue_item=None,
+                        send_flush=True,
+                        auto_play=stream_job is None,
+                    )
+                )
 
     async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
         """Handle enqueuing of the next queue item on the player."""
