@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from time import time
 from typing import Any
 
 from mashumaro import DataClassDictMixin
 
-from music_assistant.common.models.enums import MediaType
+from music_assistant.common.models.enums import MediaType, StreamType
 from music_assistant.common.models.media_items import AudioFormat
 
 
@@ -36,6 +35,8 @@ class StreamDetails(DataClassDictMixin):
     item_id: str
     audio_format: AudioFormat
     media_type: MediaType = MediaType.TRACK
+    stream_type: StreamType = StreamType.CUSTOM
+    path: str | None = None
 
     # stream_title: radio streams can optionally set this field
     stream_title: str | None = None
@@ -43,13 +44,13 @@ class StreamDetails(DataClassDictMixin):
     duration: int | None = None
     # total size in bytes of the item, calculated at eof when omitted
     size: int | None = None
-    # expires: timestamp this streamdetails expire
-    expires: float = time() + 3600
     # data: provider specific data (not exposed externally)
     # this info is for example used to pass details to the get_audio_stream
     data: Any = None
     # can_seek: bool to indicate that the providers 'get_audio_stream' supports seeking of the item
     can_seek: bool = True
+
+    # stream_type:
 
     # the fields below will be set/controlled by the streamcontroller
     seek_position: int = 0

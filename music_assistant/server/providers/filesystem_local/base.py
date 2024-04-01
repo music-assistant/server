@@ -18,7 +18,7 @@ from music_assistant.common.models.config_entries import (
     ConfigEntryType,
     ConfigValueOption,
 )
-from music_assistant.common.models.enums import ExternalID, ProviderFeature
+from music_assistant.common.models.enums import ExternalID, ProviderFeature, StreamType
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -613,9 +613,11 @@ class FileSystemProviderBase(MusicProvider):
             item_id=item_id,
             audio_format=prov_mapping.audio_format,
             media_type=MediaType.TRACK,
+            stream_type=StreamType.LOCAL_FILE if file_item.local_path else StreamType.CUSTOM,
             duration=library_item.duration,
             size=file_item.file_size,
-            data=file_item.local_path,
+            data=file_item,
+            path=file_item.local_path,
             can_seek=prov_mapping.audio_format.content_type in SEEKABLE_FILES,
         )
 

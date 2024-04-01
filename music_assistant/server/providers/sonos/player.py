@@ -535,7 +535,8 @@ class SonosPlayer:
         """Handle callback for topology change event."""
         if xml := event.variables.get("zone_group_state"):
             zgs = ET.fromstring(xml)
-            for vanished_device in zgs.find("VanishedDevices") or []:
+            vanished_devices = zgs.find("VanishedDevices") or []
+            for vanished_device in vanished_devices:
                 if (reason := vanished_device.get("Reason")) not in SUPPORTED_VANISH_REASONS:
                     self.logger.debug(
                         "Ignoring %s marked %s as vanished with reason: %s",

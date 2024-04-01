@@ -15,7 +15,13 @@ from libopensonic.errors import (
     SonicError,
 )
 
-from music_assistant.common.models.enums import ContentType, ImageType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import (
+    ContentType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -671,6 +677,7 @@ class OpenSonicProvider(MusicProvider):
             provider=self.instance_id,
             can_seek=self._seek_support,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
+            stream_type=StreamType.CUSTOM,
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
         )
 

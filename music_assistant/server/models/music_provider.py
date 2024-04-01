@@ -251,7 +251,11 @@ class MusicProvider(Provider):
     async def get_audio_stream(  # type: ignore[return]
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
+        """
+        Return the (custom) audio stream for the provider item.
+
+        Will only be called when the stream_type is set to CUSTOM.
+        """
         raise NotImplementedError
 
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:

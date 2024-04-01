@@ -28,6 +28,7 @@ from music_assistant.common.models.enums import (
     PlayerType,
     ProviderFeature,
     ProviderType,
+    StreamType,
 )
 from music_assistant.common.models.errors import (
     AlreadyRegisteredError,
@@ -1183,8 +1184,10 @@ class PlayerController(CoreController):
                 audio_format=AudioFormat(
                     content_type=ContentType.try_parse(url),
                 ),
+                stream_type=StreamType.HTTP,
                 media_type=MediaType.ANNOUNCEMENT,
                 data={"url": url, "use_pre_announce": use_pre_announce},
+                path=url,
                 target_loudness=-10,
             ),
         )

@@ -10,7 +10,7 @@ from soundcloudpy import SoundcloudAsyncAPI
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed
 from music_assistant.common.models.media_items import (
     Artist,
@@ -26,11 +26,6 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import (
-    get_hls_stream,
-    get_http_stream,
-    resolve_radio_stream,
-)
 from music_assistant.server.models.music_provider import MusicProvider
 
 CONF_CLIENT_ID = "client_id"
@@ -315,24 +310,9 @@ class SoundcloudMusicProvider(MusicProvider):
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(stream_format),
             ),
+            stream_type=StreamType.HTTP,
             data=url,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        _, _, is_hls = await resolve_radio_stream(self.mass, streamdetails.data)
-        if is_hls:
-            # some soundcloud streams are HLS, prefer the radio streamer
-            async for chunk in get_hls_stream(self.mass, streamdetails.data, streamdetails):
-                yield chunk
-            return
-        # regular stream from http
-        async for chunk in get_http_stream(
-            self.mass, streamdetails.data, streamdetails, seek_position
-        ):
-            yield chunk
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
         """Parse a Soundcloud user response to Artist model object."""

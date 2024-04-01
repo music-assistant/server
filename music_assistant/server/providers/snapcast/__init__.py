@@ -36,7 +36,7 @@ from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.constants import UGP_PREFIX
-from music_assistant.server.helpers.audio import get_ffmpeg_args, get_player_filter_params
+from music_assistant.server.helpers.audio import FFMpeg, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -359,24 +359,16 @@ class SnapCastProvider(PlayerProvider):
             stream.set_callback(stream_callback)
             stream_path = f"tcp://{host}:{port}"
             self.logger.debug("Start streaming to %s", stream_path)
-            ffmpeg_args = get_ffmpeg_args(
-                input_format=input_format,
-                output_format=DEFAULT_SNAPCAST_FORMAT,
-                filter_params=get_player_filter_params(self.mass, player_id),
-                output_path=f"tcp://{host}:{port}",
-                loglevel="fatal",
-            )
             try:
-                async with AsyncProcess(
-                    ffmpeg_args,
-                    stdin=True,
-                    stdout=False,
-                    stderr=self.logger.getChild("ffmpeg"),
+                async with FFMpeg(
+                    audio_input=audio_source,
+                    input_format=input_format,
+                    output_format=DEFAULT_SNAPCAST_FORMAT,
+                    filter_params=get_player_filter_params(self.mass, player_id),
                     name="snapcast_ffmpeg",
+                    audio_output=f"tcp://{host}:{port}",
                 ) as ffmpeg_proc:
-                    async for chunk in audio_source:
-                        await ffmpeg_proc.write(chunk)
-                    await ffmpeg_proc.write_eof()
+                    await ffmpeg_proc.wait()
                     # we need to wait a bit for the stream status to become idle
                     # to ensure that all snapclients have consumed the audio
                     await self.mass.players.wait_for_state(player, PlayerState.IDLE)

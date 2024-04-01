@@ -26,6 +26,7 @@ from music_assistant.common.models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    StreamType,
 )
 from music_assistant.common.models.errors import (
     InvalidDataError,
@@ -52,7 +53,6 @@ from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
 from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import get_http_stream
 
 if TYPE_CHECKING:
     from music_assistant.common.models.provider import ProviderManifest
@@ -725,21 +725,25 @@ class JellyfinProvider(MusicProvider):
         jellyfin_track = API.get_item(self._jellyfin_server.jellyfin, item_id)
         mimetype = self._media_mime_type(jellyfin_track)
         media_stream = jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0]
+        url = API.audio_url(
+            self._jellyfin_server.jellyfin, jellyfin_track[ITEM_KEY_ID], SUPPORTED_CONTAINER_FORMATS
+        )
         if ITEM_KEY_MEDIA_CODEC in media_stream:
-            media_type = ContentType.try_parse(media_stream[ITEM_KEY_MEDIA_CODEC])
+            content_type = ContentType.try_parse(media_stream[ITEM_KEY_MEDIA_CODEC])
         else:
-            media_type = ContentType.try_parse(mimetype)
+            content_type = ContentType.try_parse(mimetype)
         return StreamDetails(
             item_id=jellyfin_track[ITEM_KEY_ID],
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=media_type,
+                content_type=content_type,
                 channels=jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0][ITEM_KEY_MEDIA_CHANNELS],
             ),
+            stream_type=StreamType.HTTP,
             duration=int(
                 jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000
             ),  # 10000000 ticks per millisecond)
-            data=jellyfin_track,
+            path=url,
         )
 
     def _get_thumbnail_url(self, client: JellyfinClient, media_item: dict[str, Any]) -> str | None:
@@ -808,14 +812,3 @@ class JellyfinProvider(MusicProvider):
         mime_type, _ = mimetypes.guess_type(path)
 
         return mime_type
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        url = API.audio_url(
-            self._jellyfin_server.jellyfin, streamdetails.item_id, SUPPORTED_CONTAINER_FORMATS
-        )
-
-        async for chunk in get_http_stream(self.mass, url, streamdetails, seek_position):
-            yield chunk

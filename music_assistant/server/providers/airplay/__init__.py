@@ -265,7 +265,6 @@ class AirplayStream:
             input_format=self.input_format,
             output_format=AIRPLAY_PCM_FORMAT,
             filter_params=get_player_filter_params(self.mass, player_id),
-            loglevel="fatal",
         )
         self._ffmpeg_proc = AsyncProcess(
             ffmpeg_args,

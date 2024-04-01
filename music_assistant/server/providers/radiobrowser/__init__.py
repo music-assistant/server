@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
 
-from music_assistant.common.models.enums import LinkType, ProviderFeature
+from music_assistant.common.models.enums import LinkType, ProviderFeature, StreamType
 from music_assistant.common.models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -22,7 +22,6 @@ from music_assistant.common.models.media_items import (
     SearchResults,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
@@ -290,14 +289,7 @@ class RadioBrowserProvider(MusicProvider):
                 content_type=ContentType.try_parse(stream.codec),
             ),
             media_type=MediaType.RADIO,
-            data=stream.url_resolved,
-            expires=time() + 3600,
+            stream_type=StreamType.HTTP,
+            path=stream.url_resolved,
+            can_seek=False,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        # report playback started as soon as we start streaming
-        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
-            yield chunk
