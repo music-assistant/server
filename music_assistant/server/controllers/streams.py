@@ -986,8 +986,8 @@ class StreamsController(CoreController):
             strip_silence_end = False
         # pcm_sample_size = chunk size = 1 second of pcm audio
         pcm_sample_size = pcm_format.pcm_sample_size
-        buffer_size_begin = pcm_sample_size * 3 if strip_silence_begin else pcm_sample_size * 2
-        buffer_size_end = pcm_sample_size * 6 if strip_silence_end else pcm_sample_size * 2
+        buffer_size_begin = pcm_sample_size * 2 if strip_silence_begin else pcm_sample_size * 1
+        buffer_size_end = pcm_sample_size * 5 if strip_silence_end else pcm_sample_size * 1
 
         # collect all arguments for ffmpeg
         filter_params = []
@@ -1116,7 +1116,7 @@ class StreamsController(CoreController):
             chunk_num = 0
             async for chunk in ffmpeg_proc.iter_chunked(pcm_sample_size):
                 chunk_num += 1
-                required_buffer = buffer_size_begin if chunk_num < 10 else buffer_size_end
+                required_buffer = buffer_size_begin if chunk_num < 60 else buffer_size_end
                 buffer += chunk
                 del chunk
 
@@ -1124,8 +1124,8 @@ class StreamsController(CoreController):
                     # buffer is not full enough, move on
                     continue
 
-                if strip_silence_begin and chunk_num == 3:
-                    # first 3 chunks received, strip silence of beginning
+                if strip_silence_begin and chunk_num == 2:
+                    # first 2 chunks received, strip silence of beginning
                     stripped_audio = await strip_silence(
                         self.mass,
                         buffer,
