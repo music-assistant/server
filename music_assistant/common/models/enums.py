@@ -397,3 +397,11 @@ class ConfigEntryType(StrEnum):
     def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
+
+
+class StreamType(StrEnum):
+    """Enum for the type of streamdetails."""
+
+    HTTP = "http"
+    LOCAL_FILE = "local_file"
+    CUSTOM = "custom"

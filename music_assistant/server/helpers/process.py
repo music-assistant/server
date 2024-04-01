@@ -19,7 +19,7 @@ from signal import SIGINT
 from types import TracebackType
 from typing import TYPE_CHECKING
 
-from music_assistant.constants import MASS_LOGGER_NAME, VERBOSE_LOG_LEVEL
+from music_assistant.constants import MASS_LOGGER_NAME
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
@@ -42,16 +42,16 @@ class AsyncProcess:
         args: list[str],
         stdin: bool | int | AsyncGenerator[bytes, None] | None = None,
         stdout: bool | int | None = None,
-        stderr: bool | int | logging.Logger | None = None,
+        stderr: bool | int | None = False,
         name: str | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
         self.proc: asyncio.subprocess.Process | None = None
-        if isinstance(stderr, logging.Logger):
-            self._stderr_logger = stderr
-            stderr = asyncio.subprocess.PIPE
-        else:
-            self._stderr_logger = None
+        if name is None:
+            name = args[0].split(os.sep)[-1]
+        self.name = name
+        self.attached_tasks: list[asyncio.Task] = []
+        self.logger = LOGGER.getChild(name)
         self._args = args
         self._stdin = stdin
         self._stdout = stdout
@@ -61,10 +61,6 @@ class AsyncProcess:
         self._stderr_enabled = stderr not in (None, False)
         self._close_called = False
         self._returncode: bool | None = None
-        if name is None:
-            name = self._args[0].split(os.sep)[-1]
-        self.name = name
-        self.attached_tasks: list[asyncio.Task] = []
 
     @property
     def closed(self) -> bool:
@@ -100,29 +96,17 @@ class AsyncProcess:
 
     async def start(self) -> None:
         """Perform Async init of process."""
-        if self._stdin is True or isinstance(self._stdin, AsyncGenerator):
-            stdin = asyncio.subprocess.PIPE
-        else:
-            stdin = self._stdin
-        if self._stdout is True or isinstance(self._stdout, AsyncGenerator):
-            stdout = asyncio.subprocess.PIPE
-        else:
-            stdout = self._stdout
-        if self._stderr is True or isinstance(self._stderr, AsyncGenerator):
-            stderr = asyncio.subprocess.PIPE
-        else:
-            stderr = self._stderr
         self.proc = await asyncio.create_subprocess_exec(
             *self._args,
-            stdin=stdin if self._stdin_enabled else None,
-            stdout=stdout if self._stdout_enabled else None,
-            stderr=stderr if self._stderr_enabled else None,
+            stdin=asyncio.subprocess.PIPE
+            if (self._stdin is True or isinstance(self._stdin, AsyncGenerator))
+            else self._stdin,
+            stdout=asyncio.subprocess.PIPE if self._stdout is True else self._stdout,
+            stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
         )
-        LOGGER.debug("Process %s started with PID %s", self.name, self.proc.pid)
-        if not isinstance(self._stdin, int | None):
+        self.logger.debug("Process %s started with PID %s", self.name, self.proc.pid)
+        if isinstance(self._stdin, AsyncGenerator):
             self.attached_tasks.append(asyncio.create_task(self._feed_stdin()))
-        if self._stderr_logger:
-            self.attached_tasks.append(asyncio.create_task(self._read_stderr()))
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
@@ -213,13 +197,13 @@ class AsyncProcess:
                     if self.returncode is not None:
                         break
             except TimeoutError:
-                LOGGER.debug(
+                self.logger.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
                     self.name,
                     self.proc.pid,
                 )
                 self.proc.terminate()
-        LOGGER.debug(
+        self.logger.debug(
             "Process %s with PID %s stopped with returncode %s",
             self.name,
             self.proc.pid,
@@ -240,25 +224,6 @@ class AsyncProcess:
         self._returncode = self.proc.returncode
         return (stdout, stderr)
 
-    async def iter_stderr(self) -> AsyncGenerator[bytes, None]:
-        """Iterate lines from the stderr stream."""
-        while self.returncode is None:
-            try:
-                line = await self.proc.stderr.readline()
-                if line == b"":
-                    break
-                yield line
-            except ValueError as err:
-                # we're waiting for a line (separator found), but the line was too big
-                # this may happen with ffmpeg during a long (radio) stream where progress
-                # gets outputted to the stderr but no newline
-                # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
-                # NOTE: this consumes the line that was too big
-                if "chunk exceed the limit" in str(err):
-                    continue
-                # raise for all other (value) errors
-                raise
-
     async def _feed_stdin(self) -> None:
         """Feed stdin with chunks from an AsyncGenerator."""
         if TYPE_CHECKING:
@@ -269,24 +234,39 @@ class AsyncProcess:
                     return
                 await self.write(chunk)
             await self.write_eof()
-        except asyncio.CancelledError:
+        except Exception as err:
+            if not isinstance(err, asyncio.CancelledError):
+                self.logger.exception(err)
             # make sure the stdin generator is also properly closed
             # by propagating a cancellederror within
             task = asyncio.create_task(self._stdin.__anext__())
             task.cancel()
 
-    async def _read_stderr(self) -> None:
-        """Read stderr and log to logger."""
-        async for line in self.iter_stderr():
-            line = line.decode().strip()  # noqa: PLW2901
+    async def read_stderr(self) -> bytes:
+        """Read line from stderr."""
+        try:
+            return await self.proc.stderr.readline()
+        except ValueError as err:
+            # we're waiting for a line (separator found), but the line was too big
+            # this may happen with ffmpeg during a long (radio) stream where progress
+            # gets outputted to the stderr but no newline
+            # https://stackoverflow.com/questions/55457370/how-to-avoid-valueerror-separator-is-not-found-and-chunk-exceed-the-limit
+            # NOTE: this consumes the line that was too big
+            if "chunk exceed the limit" in str(err):
+                return await self.proc.stderr.readline()
+            # raise for all other (value) errors
+            raise
+
+    async def iter_stderr(self) -> AsyncGenerator[str, None]:
+        """Iterate lines from the stderr stream as string."""
+        while True:
+            line = await self.read_stderr()
+            if line == b"":
+                break
+            line = line.decode().strip()
             if not line:
                 continue
-            if "error" in line.lower():
-                self._stderr_logger.error(line)
-            elif "warning" in line.lower():
-                self._stderr_logger.warning(line)
-            else:
-                self._stderr_logger.log(VERBOSE_LOG_LEVEL, line)
+            yield line
 
 
 async def check_output(args: str | list[str]) -> tuple[int, bytes]:

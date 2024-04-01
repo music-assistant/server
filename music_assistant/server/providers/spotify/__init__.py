@@ -17,7 +17,12 @@ from asyncio_throttle import Throttler
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -396,18 +401,13 @@ class SpotifyProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        # make sure a valid track is requested.
-        track = await self.get_track(item_id)
         return StreamDetails(
-            item_id=track.item_id,
+            item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
                 content_type=ContentType.OGG,
             ),
-            duration=track.duration,
-            # these streamdetails may be cached for a long time,
-            # as there is no time sensitive info in them
-            expires=time.time() + 30 * 24 * 3600,
+            stream_type=StreamType.CUSTOM,
         )
 
     async def get_audio_stream(
@@ -436,16 +436,6 @@ class SpotifyProvider(MusicProvider):
             async for chunk in librespot_proc.iter_any():
                 yield chunk
                 bytes_sent += len(chunk)
-
-        if bytes_sent == 0 and not self._ap_workaround:
-            # AP resolve failure
-            # https://github.com/librespot-org/librespot/issues/972
-            # retry with ap-port set to invalid value, which will force fallback
-            args += ["--ap-port", "12345"]
-            async with AsyncProcess(args, stdout=True) as librespot_proc:
-                async for chunk in librespot_proc.iter_any():
-                    yield chunk
-            self._ap_workaround = True
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""

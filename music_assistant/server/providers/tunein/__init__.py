@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-from time import time
 from typing import TYPE_CHECKING
 
 from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     AudioFormat,
@@ -22,7 +21,6 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -227,8 +225,9 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType.UNKNOWN,
                 ),
                 media_type=MediaType.RADIO,
-                data=item_id,
-                expires=time() + 3600,
+                stream_type=StreamType.HTTP,
+                path=item_id,
+                can_seek=False,
             )
         stream_item_id, media_type = item_id.split("--", 1)
         stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
@@ -242,19 +241,12 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType(stream["media_type"]),
                 ),
                 media_type=MediaType.RADIO,
-                data=stream["url"],
-                expires=time() + 3600,
+                stream_type=StreamType.HTTP,
+                path=stream["url"],
+                can_seek=False,
             )
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        # report playback started as soon as we start streaming
-        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
-            yield chunk
 
     async def __get_data(self, endpoint: str, **kwargs):
         """Get data from api."""

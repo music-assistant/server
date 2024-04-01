@@ -26,6 +26,7 @@ from music_assistant.common.models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    StreamType,
 )
 from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
@@ -450,9 +451,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             audio_format=AudioFormat(
                 content_type=ContentType.try_parse(url_details["format"].split("_")[0])
             ),
+            stream_type=StreamType.CUSTOM,
             duration=int(song_data["DURATION"]),
             data={"url": url, "format": url_details["format"]},
-            expires=url_details["exp"],
             size=int(song_data[f"FILESIZE_{url_details['format']}"]),
         )
 

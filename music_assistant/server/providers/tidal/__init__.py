@@ -27,6 +27,7 @@ from music_assistant.common.models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    StreamType,
 )
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -44,7 +45,6 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
@@ -439,19 +439,10 @@ class TidalProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
                 channels=media_info.channels,
             ),
+            stream_type=StreamType.HTTP,
             duration=track.duration,
-            data=url,
+            path=url,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        # report playback started as soon as we start streaming
-        async for chunk in get_http_stream(
-            self.mass, streamdetails.data, streamdetails, seek_position
-        ):
-            yield chunk
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""

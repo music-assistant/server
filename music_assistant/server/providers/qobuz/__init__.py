@@ -13,7 +13,12 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
@@ -43,7 +48,6 @@ from music_assistant.constants import (
 from music_assistant.server.helpers.app_vars import app_var
 
 # pylint: enable=no-name-in-module
-from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -401,6 +405,7 @@ class QobuzProvider(MusicProvider):
         else:
             msg = f"Unsupported mime type for {item_id}"
             raise MediaNotFoundError(msg)
+        self.mass.create_task(self._report_playback_started(streamdata))
         return StreamDetails(
             item_id=str(item_id),
             provider=self.instance_id,
@@ -409,21 +414,11 @@ class QobuzProvider(MusicProvider):
                 sample_rate=int(streamdata["sampling_rate"] * 1000),
                 bit_depth=streamdata["bit_depth"],
             ),
+            stream_type=StreamType.HTTP,
             duration=streamdata["duration"],
             data=streamdata,  # we need these details for reporting playback
-            expires=time.time() + 300,  # url expires very fast
+            path=streamdata["url"],
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        # report playback started as soon as we start streaming
-        self.mass.create_task(self._report_playback_started(streamdetails.data))
-        async for chunk in get_http_stream(
-            self.mass, streamdetails.data["url"], streamdetails, seek_position
-        ):
-            yield chunk
 
     async def _report_playback_started(self, streamdata: dict) -> None:
         """Report playback start to qobuz."""

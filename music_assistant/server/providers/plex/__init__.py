@@ -28,6 +28,7 @@ from music_assistant.common.models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    StreamType,
 )
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
@@ -46,7 +47,6 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
@@ -755,12 +755,13 @@ class PlexProvider(MusicProvider):
                 content_type=media_type,
                 channels=media.audioChannels,
             ),
+            stream_type=StreamType.HTTP,
             duration=plex_track.duration,
             data=plex_track,
         )
 
         if media_type != ContentType.M4A:
-            stream_details.data = self._plex_server.url(media_part.key, True)
+            stream_details.path = self._plex_server.url(media_part.key, True)
             if audio_stream.samplingRate:
                 stream_details.audio_format.sample_rate = audio_stream.samplingRate
             if audio_stream.bitDepth:
@@ -769,24 +770,13 @@ class PlexProvider(MusicProvider):
         else:
             url = plex_track.getStreamURL()
             media_info = await parse_tags(url)
-
+            stream_details.path = url
             stream_details.audio_format.channels = media_info.channels
             stream_details.audio_format.content_type = ContentType.try_parse(media_info.format)
             stream_details.audio_format.sample_rate = media_info.sample_rate
             stream_details.audio_format.bit_depth = media_info.bits_per_sample
 
         return stream_details
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        if isinstance(streamdetails.data, str):
-            url = streamdetails.data
-        else:
-            url = streamdetails.data.getStreamURL(offset=seek_position)
-        async for chunk in get_http_stream(self.mass, url, streamdetails, 0):
-            yield chunk
 
     async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""

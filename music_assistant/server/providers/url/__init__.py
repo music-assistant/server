@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.enums import ContentType, ImageType, MediaType
+from music_assistant.common.models.enums import ContentType, ImageType, MediaType, StreamType
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Artist,
@@ -17,18 +16,10 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import (
-    get_file_stream,
-    get_http_stream,
-    get_radio_stream,
-    resolve_radio_stream,
-)
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant.common.models.config_entries import (
         ConfigEntry,
         ConfigValueType,
@@ -179,8 +170,7 @@ class URLProvider(MusicProvider):
         if cached_info and not force_refresh:
             return AudioTags.parse(cached_info)
         # parse info with ffprobe (and store in cache)
-        resolved_url, _, _ = await resolve_radio_stream(self.mass, url)
-        media_info = await parse_tags(resolved_url)
+        media_info = await parse_tags(url)
         if "authSig" in url:
             media_info.has_cover_image = False
         await self.mass.cache.set(cache_key, media_info.raw)
@@ -199,28 +189,7 @@ class URLProvider(MusicProvider):
                 bit_depth=media_info.bits_per_sample,
             ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
-            data={"url": item_id},
+            stream_type=StreamType.HTTP,
+            path=item_id,
+            can_seek=not is_radio,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        if streamdetails.media_type == MediaType.RADIO:
-            # radio stream url
-            async for chunk in get_radio_stream(
-                self.mass, streamdetails.data["url"], streamdetails
-            ):
-                yield chunk
-        elif os.path.isfile(streamdetails.data):
-            # local file
-            async for chunk in get_file_stream(
-                self.mass, streamdetails.data["url"], streamdetails, seek_position
-            ):
-                yield chunk
-        else:
-            # regular stream url (without icy meta)
-            async for chunk in get_http_stream(
-                self.mass, streamdetails.data["url"], streamdetails, seek_position
-            ):
-                yield chunk
