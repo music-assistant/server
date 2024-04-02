@@ -22,7 +22,12 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
 )
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS, SYNCGROUP_PREFIX
+from music_assistant.constants import (
+    CONF_GROUP_MEMBERS,
+    CONF_GROUP_PLAYERS,
+    SYNCGROUP_PREFIX,
+    UGP_PREFIX,
+)
 
 from .provider import Provider
 
@@ -49,14 +54,10 @@ class PlayerProvider(Provider):
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
             CONF_ENTRY_HIDE_PLAYER,
             CONF_ENTRY_TTS_PRE_ANNOUNCE,
-            CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
-            CONF_ENTRY_ANNOUNCE_VOLUME,
-            CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
-            CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
         )
         if player_id.startswith(SYNCGROUP_PREFIX):
             # add default entries for syncgroups
-            return (
+            entries = (
                 *entries,
                 ConfigEntry(
                     key=CONF_GROUP_MEMBERS,
@@ -73,6 +74,15 @@ class PlayerProvider(Provider):
                     required=True,
                 ),
                 CONF_ENTRY_PLAYER_ICON_GROUP,
+            )
+        if not player_id.startswith((SYNCGROUP_PREFIX, UGP_PREFIX)):
+            # add default entries for announce feature
+            entries = (
+                *entries,
+                CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
+                CONF_ENTRY_ANNOUNCE_VOLUME,
+                CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
+                CONF_ENTRY_ANNOUNCE_VOLUME_MAX,
             )
         return entries
 
@@ -148,7 +158,7 @@ class PlayerProvider(Provider):
         """
 
     async def play_announcement(
-        self, player_id: str, announcement_url: str, volume_level: int | None = None
+        self, player_id: str, announcement: QueueItem, volume_level: int | None = None
     ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
         # will only be called for players with PLAY_ANNOUNCEMENT feature set.

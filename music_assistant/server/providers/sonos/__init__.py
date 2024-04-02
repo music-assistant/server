@@ -33,7 +33,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_CROSSFADE, VERBOSE_LOG_LEVEL
+from music_assistant.constants import CONF_CROSSFADE, SYNCGROUP_PREFIX, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -397,15 +397,29 @@ class SonosPlayerProvider(PlayerProvider):
         await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
 
     async def play_announcement(
-        self, player_id: str, announcement_url: str, volume_level: int | None = None
+        self, player_id: str, announcement: QueueItem, volume_level: int | None = None
     ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
+        if player_id.startswith(SYNCGROUP_PREFIX):
+            # handle syncgroup, unwrap to all underlying child's
+            async with asyncio.TaskGroup() as tg:
+                if group_player := self.mass.players.get(player_id):
+                    # execute on all child players
+                    for child_player_id in group_player.group_childs:
+                        tg.create_task(
+                            self.play_announcement(child_player_id, announcement, volume_level)
+                        )
+            return
+        announcement_url = self.mass.streams.resolve_stream_url(
+            player_id, announcement, ContentType.MP3
+        )
         sonos_player = self.sonosplayers[player_id]
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",
             announcement_url,
             sonos_player.zone_name,
         )
+        volume_level = self.mass.players.get_announcement_volume(player_id, volume_level)
         try:
             response, _ = await sonos_player.websocket.play_clip(
                 announcement_url,

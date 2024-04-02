@@ -321,14 +321,7 @@ class SnapCastProvider(PlayerProvider):
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
-        if queue_item.queue_id.startswith(UGP_PREFIX):
-            # special case: we got forwarded a request from the UGP
-            # use the existing stream job that was already created by UGP
-            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
-            stream_job.expected_players.add(player_id)
-            input_format = stream_job.pcm_format
-            audio_source = stream_job.subscribe(player_id)
-        elif queue_item.media_type == MediaType.ANNOUNCEMENT:
+        if queue_item.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             input_format = DEFAULT_SNAPCAST_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
@@ -336,6 +329,13 @@ class SnapCastProvider(PlayerProvider):
                 output_format=DEFAULT_SNAPCAST_FORMAT,
                 use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
             )
+        elif queue_item.queue_id.startswith(UGP_PREFIX):
+            # special case: we got forwarded a request from the UGP
+            # use the existing stream job that was already created by UGP
+            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
+            stream_job.expected_players.add(player_id)
+            input_format = stream_job.pcm_format
+            audio_source = stream_job.subscribe(player_id)
         else:
             queue = self.mass.player_queues.get(queue_item.queue_id)
             input_format = DEFAULT_SNAPCAST_FORMAT

@@ -48,11 +48,13 @@ class Player(DataClassDictMixin):
     #   and this may include the player's own id.
     group_childs: set[str] = field(default_factory=set)
 
-    # active_source: return player_id of the active queue for this player
-    # if the player is grouped and a group is active, this will be set to the group's player_id
-    # otherwise it will be set to the own player_id
-    # can also be an actual different source if the player supports that
+    # active_source: return active source for this player
+    # can be set to a MA queue id or some player specific source
     active_source: str | None = None
+
+    # active_source: return player_id of the active group for this player (if any)
+    # if the player is grouped and a group is active, this will be set to the group's player_id
+    active_group: str | None = None
 
     # current_item_id: return item_id/uri of the current active/loaded item on the player
     # this may be a MA queue_item_id, url, uri or some provider specific string

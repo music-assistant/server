@@ -20,6 +20,7 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
+    MediaType,
     PlayerFeature,
     PlayerState,
     PlayerType,
@@ -185,6 +186,10 @@ class UniversalGroupProvider(PlayerProvider):
             name="Music Assistant",
             duration=None,
         )
+        # special case: handle announcement sent to this UGP
+        # we just forward this as-is downstream and let all child players handle this themselves
+        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+            ugp_queue_item = queue_item
 
         # forward the stream job to all group members
         async with asyncio.TaskGroup() as tg:
