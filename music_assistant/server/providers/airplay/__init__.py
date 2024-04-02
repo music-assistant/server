@@ -199,7 +199,7 @@ class AirplayStream:
         self._audio_reader_task: asyncio.Task | None = None
         self._cliraop_proc: AsyncProcess | None = None
         self._ffmpeg_proc: AsyncProcess | None = None
-        self._buffer = asyncio.Queue(10)
+        self._buffer = asyncio.Queue(5)
 
     async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
@@ -337,9 +337,6 @@ class AirplayStream:
         prev_metadata_checksum: str = ""
         prev_progress_report: float = 0
         async for line in self._cliraop_proc.iter_stderr():
-            line = line.decode().strip()  # noqa: PLW2901
-            if not line:
-                continue
             if "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
                 millis = int(line.split("elapsed milliseconds: ")[1])
@@ -611,14 +608,7 @@ class AirplayProvider(PlayerProvider):
                 if airplay_player.active_stream and airplay_player.active_stream.running:
                     tg.create_task(airplay_player.active_stream.stop(wait=wait_stopped))
         # select audio source
-        if queue_item.queue_id.startswith(UGP_PREFIX):
-            # special case: we got forwarded a request from the UGP
-            # use the existing stream job that was already created by UGP
-            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
-            stream_job.expected_players.add(player_id)
-            input_format = stream_job.pcm_format
-            audio_source = stream_job.subscribe(player_id)
-        elif queue_item.media_type == MediaType.ANNOUNCEMENT:
+        if queue_item.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
@@ -626,6 +616,13 @@ class AirplayProvider(PlayerProvider):
                 output_format=AIRPLAY_PCM_FORMAT,
                 use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
             )
+        elif queue_item.queue_id.startswith(UGP_PREFIX):
+            # special case: we got forwarded a request from the UGP
+            # use the existing stream job that was already created by UGP
+            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
+            stream_job.expected_players.add(player_id)
+            input_format = stream_job.pcm_format
+            audio_source = stream_job.subscribe(player_id)
         else:
             queue = self.mass.player_queues.get(queue_item.queue_id)
             input_format = AIRPLAY_PCM_FORMAT

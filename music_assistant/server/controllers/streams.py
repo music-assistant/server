@@ -192,9 +192,11 @@ class MultiClientStreamJob:
             self.subscribed_players[player_id] = sub_queue = asyncio.Queue(2)
 
             if self._all_clients_connected.is_set():
-                # client subscribes while we're already started - we dont support that (for now?)
-                msg = f"Client {player_id} is joining while the stream is already started"
-                raise RuntimeError(msg)
+                # client subscribes while we're already started,
+                # that will most probably lead to a bad experience but support it anyways
+                self.logger.warning(
+                    "Client %s is joining while the stream is already started", player_id
+                )
             self.logger.debug("Subscribed client %s", player_id)
 
             if len(self.subscribed_players) == len(self.expected_players):
@@ -775,6 +777,9 @@ class StreamsController(CoreController):
     ) -> str:
         """Get the url for the special announcement stream."""
         self.announcements[player_id] = announcement_url
+        # use stream server to host announcement on local network
+        # this ensures playback on all players, including ones that do not
+        # like https hosts and it also offers the pre-announce 'bell'
         return f"{self.base_url}/announcement/{player_id}.{content_type.value}?pre_announce={use_pre_announce}"  # noqa: E501
 
     async def get_flow_stream(
