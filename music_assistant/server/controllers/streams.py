@@ -1030,9 +1030,18 @@ class StreamsController(CoreController):
             input_format=streamdetails.audio_format,
             output_format=pcm_format,
             filter_params=filter_params,
-            # we criple ffmpeg a bit on purpose with the filter_threads
-            # option so it doesn't consume all cpu when calculating loudnorm
-            extra_input_args=[*extra_input_args, "-filter_threads", "1"],
+            extra_input_args=[
+                *extra_input_args,
+                # we criple ffmpeg a bit on purpose with the filter_threads
+                # option so it doesn't consume all cpu when calculating loudnorm
+                "-filter_threads",
+                "1",
+                # prevent too much of buffering ahead by applying the read rate limits
+                "-readrate",
+                "1.25",
+                "-readrate_initial_burst",
+                "10",
+            ],
             name="ffmpeg_media_stream",
             stderr_enabled=True,
         ) as ffmpeg_proc:
