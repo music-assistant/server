@@ -794,6 +794,7 @@ class StreamsController(CoreController):
             queue.display_name,
             use_crossfade,
         )
+        total_bytes_sent = 0
 
         while True:
             # get (next) queue item to stream
@@ -833,11 +834,18 @@ class StreamsController(CoreController):
                 queue_track.streamdetails,
                 pcm_format=pcm_format,
                 # strip silence from begin/end if track is being crossfaded
-                strip_silence_begin=use_crossfade and bytes_written > 0,
+                strip_silence_begin=use_crossfade and total_bytes_sent > 0,
                 strip_silence_end=use_crossfade,
             ):
                 # buffer size needs to be big enough to include the crossfade part
-                buffer_size = pcm_sample_size if not use_crossfade else crossfade_size
+                if use_crossfade and total_bytes_sent > (crossfade_size * 2):
+                    buffer_size = crossfade_size + (pcm_sample_size * 5)
+                elif use_crossfade and total_bytes_sent < (pcm_sample_size * 10):
+                    buffer_size = pcm_sample_size * 5
+                elif use_crossfade:
+                    buffer_size = crossfade_size
+                else:
+                    buffer_size = crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -903,6 +911,7 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration = (
                 queue_track.streamdetails.seek_position + seconds_streamed
             )
+            total_bytes_sent += bytes_written
             self.logger.debug(
                 "Finished Streaming queue track: %s (%s) on queue %s",
                 queue_track.streamdetails.uri,
@@ -918,7 +927,7 @@ class StreamsController(CoreController):
             queue_track.streamdetails.seconds_streamed += last_part_seconds
             queue_track.streamdetails.duration += last_part_seconds
             del last_fadeout_part
-
+        total_bytes_sent += bytes_written
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
