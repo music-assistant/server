@@ -8,7 +8,6 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from logging import Logger
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -125,7 +124,6 @@ class CastPlayer:
     cast_info: ChromecastInfo
     cc: pychromecast.Chromecast
     player: Player
-    logger: Logger
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
     active_group: str | None = None
@@ -424,7 +422,6 @@ class ChromecastProvider(PlayerProvider):
                     supports_24bit=not cast_info.is_audio_group,
                     enabled_by_default=enabled_by_default,
                 ),
-                logger=self.logger.getChild(cast_info.friendly_name),
             )
             self.castplayers[player_id] = castplayer
 
@@ -452,8 +449,10 @@ class ChromecastProvider(PlayerProvider):
         """Handle updated CastStatus."""
         if status is None:
             return  # guard
-        castplayer.logger.debug(
-            "Received cast status - app_id: %s - volume: %s",
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Received cast status for %s - app_id: %s - volume: %s",
+            castplayer.player.display_name,
             status.app_id,
             status.volume_level,
         )
@@ -485,7 +484,12 @@ class ChromecastProvider(PlayerProvider):
 
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
-        castplayer.logger.debug("Received media status update: %s", status.player_state)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Received media status for %s update: %s",
+            castplayer.player.display_name,
+            status.player_state,
+        )
         # player state
         castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
@@ -521,7 +525,12 @@ class ChromecastProvider(PlayerProvider):
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
-        castplayer.logger.debug("Received connection status update - status: %s", status.status)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Received connection status update for %s - status: %s",
+            castplayer.player.display_name,
+            status.status,
+        )
 
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             castplayer.player.available = False
@@ -565,7 +574,7 @@ class ChromecastProvider(PlayerProvider):
             # Quit the previous app before starting splash screen or media player
             if castplayer.cc.app_id is not None:
                 castplayer.cc.quit_app()
-            castplayer.logger.debug("Launching App %s.", app_id)
+            self.logger.debug("Launching App %s.", app_id)
             castplayer.cc.socket_client.receiver_controller.launch_app(
                 app_id,
                 force_launch=True,
@@ -577,7 +586,7 @@ class ChromecastProvider(PlayerProvider):
 
     async def _disconnect_chromecast(self, castplayer: CastPlayer) -> None:
         """Disconnect Chromecast object if it is set."""
-        castplayer.logger.debug("Disconnecting from chromecast socket")
+        self.logger.debug("Disconnecting from chromecast socket %s", castplayer.player.display_name)
         await self.mass.loop.run_in_executor(None, castplayer.cc.disconnect, 10)
         castplayer.mz_controller = None
         castplayer.status_listener.invalidate()

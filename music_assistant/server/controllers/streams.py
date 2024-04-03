@@ -838,19 +838,18 @@ class StreamsController(CoreController):
                 strip_silence_end=use_crossfade,
             ):
                 # buffer size needs to be big enough to include the crossfade part
-                if use_crossfade and total_bytes_sent > (crossfade_size * 2):
-                    buffer_size = crossfade_size + (pcm_sample_size * 5)
-                elif use_crossfade and total_bytes_sent < (pcm_sample_size * 10):
-                    buffer_size = pcm_sample_size * 5
-                elif use_crossfade:
-                    buffer_size = crossfade_size
+                # allow it to be a bit smaller when playback just starts
+                if not use_crossfade:
+                    req_buffer_size = pcm_sample_size
+                elif (total_bytes_sent + bytes_written) < crossfade_size:
+                    req_buffer_size = int(crossfade_size / 2)
                 else:
-                    buffer_size = crossfade_size
+                    req_buffer_size = crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
                 del chunk
-                if len(buffer) < buffer_size:
+                if len(buffer) < req_buffer_size:
                     # buffer is not full enough, move on
                     continue
 
@@ -879,10 +878,10 @@ class StreamsController(CoreController):
                     buffer = b""
 
                 #### OTHER: enough data in buffer, feed to output
-                if len(buffer) > buffer_size:
-                    yield buffer[:buffer_size]
-                    bytes_written += buffer_size
-                    buffer = buffer[buffer_size:]
+                while len(buffer) > req_buffer_size:
+                    yield buffer[:pcm_sample_size]
+                    bytes_written += pcm_sample_size
+                    buffer = buffer[pcm_sample_size:]
 
             #### HANDLE END OF TRACK
             if last_fadeout_part:
@@ -1134,10 +1133,10 @@ class StreamsController(CoreController):
                     continue
 
                 #### OTHER: enough data in buffer, feed to output
-                if len(buffer) > buffer_size:
-                    yield buffer[:buffer_size]
-                    state_data["bytes_sent"] += buffer_size
-                    buffer = buffer[buffer_size:]
+                while len(buffer) > buffer_size:
+                    yield buffer[:pcm_sample_size]
+                    state_data["bytes_sent"] += pcm_sample_size
+                    buffer = buffer[pcm_sample_size:]
 
             # all chunks received, strip silence of last part if needed and yield remaining bytes
             if strip_silence_end:
