@@ -843,14 +843,10 @@ class StreamsController(CoreController):
                 if not use_crossfade:
                     buffer_size = pcm_sample_size
                 elif total_chunks < 10:
-                    buffer_size = pcm_sample_size * 2
-                elif total_chunks < 30:
                     buffer_size = pcm_sample_size * 5
-                elif total_chunks < 60:
-                    buffer_size = pcm_sample_size * 8
                 else:
                     # buffer size needs to be big enough to include the crossfade part
-                    buffer_size = crossfade_size + (pcm_sample_size * 2)
+                    buffer_size = crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -1145,12 +1141,10 @@ class StreamsController(CoreController):
                     continue
 
                 #### OTHER: enough data in buffer, feed to output
-                while len(buffer) > buffer_size:
-                    subchunk = buffer[:pcm_sample_size]
-                    buffer = buffer[pcm_sample_size:]
-                    state_data["bytes_sent"] += len(subchunk)
-                    yield subchunk
-                    del subchunk
+                if len(buffer) > buffer_size:
+                    yield buffer[:buffer_size]
+                    state_data["bytes_sent"] += buffer_size
+                    buffer = buffer[buffer_size:]
 
             # all chunks received, strip silence of last part if needed and yield remaining bytes
             if strip_silence_end:
