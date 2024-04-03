@@ -410,21 +410,12 @@ class StreamsController(CoreController):
 
     def resolve_stream_url(
         self,
-        player_id: str,
         queue_item: QueueItem,
-        output_codec: ContentType,
         flow_mode: bool = False,
+        output_codec: ContentType = ContentType.FLAC,
     ) -> str:
         """Resolve the stream URL for the given QueueItem."""
         fmt = output_codec.value
-        # handle announcement item
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
-            return self.get_announcement_url(
-                player_id=queue_item.queue_id,
-                announcement_url=queue_item.streamdetails.data["url"],
-                use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
-                content_type=output_codec,
-            )
         # handle raw pcm without exact format specifiers
         if output_codec.is_pcm() and ";" not in fmt:
             fmt += f";codec=pcm;rate={44100};bitrate={16};channels={2}"

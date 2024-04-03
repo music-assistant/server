@@ -19,6 +19,7 @@ class MediaType(StrEnum):
     RADIO = "radio"
     FOLDER = "folder"
     ANNOUNCEMENT = "announcement"
+    FLOW_STREAM = "flow_stream"
     UNKNOWN = "unknown"
 
     @classmethod
@@ -35,7 +36,6 @@ class MediaType(StrEnum):
             MediaType.TRACK,
             MediaType.PLAYLIST,
             MediaType.RADIO,
-            MediaType.ANNOUNCEMENT,
         )
 
 

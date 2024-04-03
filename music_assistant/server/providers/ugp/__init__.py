@@ -30,17 +30,10 @@ from music_assistant.common.models.enums import (
     PlayerType,
     ProviderFeature,
     QueueOption,
-    StreamType,
 )
-from music_assistant.common.models.media_items import (
-    AudioFormat,
-    MediaItemType,
-    ProviderMapping,
-    Radio,
-)
+from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -197,7 +190,9 @@ class UniversalGroupProvider(PlayerProvider):
         ugp_item = await self.get_item(MediaType.RADIO, player_id)
 
         self._subscribers[player_id] = []
-        self._ugp_streamers[player_id] = asyncio.create_task(self._ugp_streamer(player_id))
+        self._ugp_streamers[player_id] = asyncio.create_task(
+            self._ugp_streamer(player_id, queue_item)
+        )
 
         # insert the fake queue item into all underlying playerqueues
         async with asyncio.TaskGroup() as tg:
@@ -317,51 +312,20 @@ class UniversalGroupProvider(PlayerProvider):
             self.mass.create_task(join_player())
         return None
 
-    async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
-        """Get single MediaItem from provider."""
-        return Radio(
-            item_id=prov_item_id,
-            provider=self.instance_id,
-            name="Music Assistant - UGP",
-            provider_mappings={
-                ProviderMapping(
-                    item_id=prov_item_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=UGP_FORMAT,
-                )
-            },
-        )
-
-    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
-        """Handle callback when an item completed streaming."""
-
-    async def get_stream_details(self, item_id: str) -> StreamDetails:
-        """Return the content details for the given track when it will be streamed."""
-        return StreamDetails(
-            item_id=item_id,
-            provider=self.instance_id,
-            audio_format=UGP_FORMAT,
-            media_type=MediaType.UNKNOWN,
-            stream_type=StreamType.CUSTOM,
-            duration=None,
-            can_seek=False,
-        )
+    def get_audio_format(self, ugp_player_id: str) -> AudioFormat:
+        """Return the audio format for the UGP stream."""
+        # for now we just have one static format at all times
+        return UGP_FORMAT
 
     async def get_audio_stream(  # type: ignore[return]
-        self, streamdetails: StreamDetails, seek_position: int = 0
+        self, ugp_player_id: str
     ) -> AsyncGenerator[bytes, None]:
-        """Return the (custom) audio stream for the provider item."""
-        player_id = streamdetails.item_id
-        if not (stream := self._ugp_streamers.get(player_id, None)) or stream.done():
-            # edge case: player itself requests our stream while we have no ugp session active
-            # just end some silence so the player can move on doing other stuff
-            for _ in range(30):
-                yield b"\0" * int(UGP_FORMAT.sample_rate * (UGP_FORMAT.bit_depth / 8) * 2)
-            return
+        """Return the audio stream for the UGP player."""
+        if not (stream := self._ugp_streamers.get(ugp_player_id, None)) or stream.done():
+            raise RuntimeError(f"There is no active UGP stream for {ugp_player_id}!")
         try:
             queue = asyncio.Queue(1)
-            self._subscribers[player_id].append(queue)
+            self._subscribers[ugp_player_id].append(queue)
             while True:
                 chunk = await queue.get()
                 if not chunk:
@@ -369,9 +333,9 @@ class UniversalGroupProvider(PlayerProvider):
                 yield chunk
         finally:
             with suppress(ValueError):
-                self._subscribers[player_id].remove(queue)
+                self._subscribers[ugp_player_id].remove(queue)
 
-    async def _ugp_streamer(self, player_id: str) -> None:
+    async def _ugp_streamer(self, player_id: str, start_queue_item: QueueItem) -> None:
         """Run the UGP Flow stream."""
         queue = self.mass.player_queues.get(player_id)
         # wait for first subscriber
@@ -385,7 +349,7 @@ class UniversalGroupProvider(PlayerProvider):
                 return
         async for chunk in self.mass.streams.get_flow_stream(
             queue=queue,
-            start_queue_item=queue.current_item,
+            start_queue_item=start_queue_item,
             pcm_format=UGP_FORMAT,
         ):
             if len(self._subscribers[player_id]) == 0:

@@ -22,6 +22,7 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
 )
 from music_assistant.common.models.enums import ConfigEntryType
+from music_assistant.common.models.player import PlayerMedia
 from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
@@ -125,21 +126,21 @@ class PlayerProvider(Provider):
     async def play_media(
         self,
         player_id: str,
-        queue_item: QueueItem,
+        media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player.
 
-        This is called by the Queue controller to start playing a queue item on the given player.
+        This is called by the Players controller to start playing a mediaitem on the given player.
         The provider's own implementation should work out how to handle this request.
 
             - player_id: player_id of the player to handle the command.
-            - queue_item: The QueueItem that needs to be played on the player.
+            - media: Details of the item that needs to be played on the player.
         """
         raise NotImplementedError
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """
-        Handle enqueuing of the next queue item on the player.
+        Handle enqueuing of the next (queue) item on the player.
 
         Only called if the player supports PlayerFeature.ENQUE_NEXT.
         Called about 1 second after a new track started playing.

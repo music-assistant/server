@@ -8,7 +8,7 @@ from typing import Any
 
 from mashumaro import DataClassDictMixin
 
-from .enums import PlayerFeature, PlayerState, PlayerType
+from .enums import MediaType, PlayerFeature, PlayerState, PlayerType
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,22 @@ class DeviceInfo(DataClassDictMixin):
     model: str = "Unknown model"
     address: str = ""
     manufacturer: str = "Unknown Manufacturer"
+
+
+@dataclass
+class PlayerMedia(DataClassDictMixin):
+    """Model for player media."""
+
+    uri: str  # uri or other identifier of the loaded media
+    media_type: MediaType = MediaType.UNKNOWN
+    title: str | None = None  # optional
+    artist: str | None = None  # optional
+    album: str | None = None  # optional
+    image_url: str | None = None  # optional
+    duration: str | None = None  # optional
+    queue_id: str | None = None  # only present for requests from queue controller
+    queue_item_id: str | None = None  # only present for requests from queue controller
+    custom_data: dict | None = None  # optional
 
 
 @dataclass
@@ -58,7 +74,13 @@ class Player(DataClassDictMixin):
 
     # current_item_id: return item_id/uri of the current active/loaded item on the player
     # this may be a MA queue_item_id, url, uri or some provider specific string
+    # deprecated: use current_media instead
     current_item_id: str | None = None
+
+    # current_media: return current active/loaded item on the player
+    # this may be a MA queue item, url, uri or some provider specific string
+    # includes metadata if supported by the provider/player
+    current_media: PlayerMedia | None = None
 
     # can_sync_with: return tuple of player_ids that can be synced to/with this player
     # usually this is just a list of all player_ids within the playerprovider
