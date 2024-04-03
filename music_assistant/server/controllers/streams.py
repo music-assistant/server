@@ -1030,11 +1030,6 @@ class StreamsController(CoreController):
                 # option so it doesn't consume all cpu when calculating loudnorm
                 "-filter_threads",
                 "1",
-                # prevent too much of buffering ahead by applying the read rate limits
-                "-readrate",
-                "1.25",
-                "-readrate_initial_burst",
-                "10",
             ],
             name="ffmpeg_media_stream",
             stderr_enabled=True,
