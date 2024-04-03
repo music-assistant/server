@@ -794,7 +794,6 @@ class StreamsController(CoreController):
             queue.display_name,
             use_crossfade,
         )
-        total_chunks = 0
 
         while True:
             # get (next) queue item to stream
@@ -837,16 +836,8 @@ class StreamsController(CoreController):
                 strip_silence_begin=use_crossfade and bytes_written > 0,
                 strip_silence_end=use_crossfade,
             ):
-                # required buffer size is a bit dynamic,
-                # it needs to be small when the flow stream starts
-                total_chunks += 1
-                if not use_crossfade:
-                    buffer_size = pcm_sample_size
-                elif total_chunks < 10:
-                    buffer_size = pcm_sample_size * 5
-                else:
-                    # buffer size needs to be big enough to include the crossfade part
-                    buffer_size = crossfade_size
+                # buffer size needs to be big enough to include the crossfade part
+                buffer_size = pcm_sample_size if not use_crossfade else crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -978,9 +969,7 @@ class StreamsController(CoreController):
         # pcm_sample_size = chunk size = 1 second of pcm audio
         pcm_sample_size = pcm_format.pcm_sample_size
         buffer_size = (
-            pcm_sample_size * 5
-            if (strip_silence_begin or strip_silence_end)
-            else pcm_sample_size * 1
+            pcm_sample_size * 5 if (strip_silence_begin or strip_silence_end) else pcm_sample_size
         )
 
         # collect all arguments for ffmpeg
