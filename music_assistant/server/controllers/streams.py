@@ -40,7 +40,6 @@ from music_assistant.constants import (
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
     SILENCE_FILE,
-    UGP_PREFIX,
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
 from music_assistant.server.helpers.audio import (
@@ -418,11 +417,6 @@ class StreamsController(CoreController):
     ) -> str:
         """Resolve the stream URL for the given QueueItem."""
         fmt = output_codec.value
-        # handle special stream created by UGP
-        if queue_item.queue_id.startswith(UGP_PREFIX):
-            return self.multi_client_jobs[queue_item.queue_id].resolve_stream_url(
-                player_id, output_codec
-            )
         # handle announcement item
         if queue_item.media_type == MediaType.ANNOUNCEMENT:
             return self.get_announcement_url(
@@ -457,11 +451,6 @@ class StreamsController(CoreController):
         the queue audio to multiple players at once.
         """
         if existing_job := self.multi_client_jobs.pop(queue_id, None):
-            if (
-                queue_id.startswith(UGP_PREFIX)
-                and existing_job.job_id == start_queue_item.queue_item_id
-            ):
-                return existing_job
             # cleanup existing job first
             if not existing_job.finished:
                 existing_job.stop()
@@ -805,6 +794,7 @@ class StreamsController(CoreController):
             queue.display_name,
             use_crossfade,
         )
+        total_chunks = 0
 
         while True:
             # get (next) queue item to stream
@@ -849,16 +839,18 @@ class StreamsController(CoreController):
             ):
                 # required buffer size is a bit dynamic,
                 # it needs to be small when the flow stream starts
-                seconds_streamed = int(bytes_written / pcm_sample_size)
-                if not use_crossfade or seconds_streamed < 5:
+                total_chunks += 1
+                if not use_crossfade:
                     buffer_size = pcm_sample_size
-                elif seconds_streamed < 10:
+                elif total_chunks < 10:
                     buffer_size = pcm_sample_size * 2
-                elif use_crossfade and seconds_streamed < 20:
+                elif total_chunks < 30:
                     buffer_size = pcm_sample_size * 5
+                elif total_chunks < 60:
+                    buffer_size = pcm_sample_size * 8
                 else:
-                    buffer_size = crossfade_size + pcm_sample_size * 2
                     # buffer size needs to be big enough to include the crossfade part
+                    buffer_size = crossfade_size + (pcm_sample_size * 2)
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -892,12 +884,10 @@ class StreamsController(CoreController):
                     buffer = b""
 
                 #### OTHER: enough data in buffer, feed to output
-                while len(buffer) > buffer_size:
-                    subchunk = buffer[:pcm_sample_size]
-                    buffer = buffer[pcm_sample_size:]
-                    bytes_written += len(subchunk)
-                    yield subchunk
-                    del subchunk
+                if len(buffer) > buffer_size:
+                    yield buffer[:buffer_size]
+                    bytes_written += buffer_size
+                    buffer = buffer[buffer_size:]
 
             #### HANDLE END OF TRACK
             if last_fadeout_part:
@@ -991,8 +981,11 @@ class StreamsController(CoreController):
             strip_silence_end = False
         # pcm_sample_size = chunk size = 1 second of pcm audio
         pcm_sample_size = pcm_format.pcm_sample_size
-        buffer_size_begin = pcm_sample_size * 2 if strip_silence_begin else pcm_sample_size * 1
-        buffer_size_end = pcm_sample_size * 5 if strip_silence_end else pcm_sample_size * 1
+        buffer_size = (
+            pcm_sample_size * 5
+            if (strip_silence_begin or strip_silence_end)
+            else pcm_sample_size * 1
+        )
 
         # collect all arguments for ffmpeg
         filter_params = []
@@ -1121,11 +1114,10 @@ class StreamsController(CoreController):
             chunk_num = 0
             async for chunk in ffmpeg_proc.iter_chunked(pcm_sample_size):
                 chunk_num += 1
-                required_buffer = buffer_size_begin if chunk_num < 60 else buffer_size_end
                 buffer += chunk
                 del chunk
 
-                if len(buffer) < required_buffer:
+                if len(buffer) < buffer_size:
                     # buffer is not full enough, move on
                     continue
 
@@ -1144,7 +1136,7 @@ class StreamsController(CoreController):
                     continue
 
                 #### OTHER: enough data in buffer, feed to output
-                while len(buffer) > required_buffer:
+                while len(buffer) > buffer_size:
                     subchunk = buffer[:pcm_sample_size]
                     buffer = buffer[pcm_sample_size:]
                     state_data["bytes_sent"] += len(subchunk)

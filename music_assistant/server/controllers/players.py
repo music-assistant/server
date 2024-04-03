@@ -46,7 +46,6 @@ from music_assistant.constants import (
     CONF_HIDE_PLAYER,
     CONF_PLAYERS,
     SYNCGROUP_PREFIX,
-    UGP_PREFIX,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.models.core_controller import CoreController
@@ -540,14 +539,14 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/group_power")
     async def cmd_group_power(self, player_id: str, power: bool) -> None:
-        """Handle power command for a PlayerGroup/SyncGroup."""
+        """Handle power command for a SyncGroup."""
         group_player = self.get(player_id, True)
 
         if group_player.powered == power:
             return  # nothing to do
 
-        if group_player.type == PlayerType.GROUP and not player_id.startswith(UGP_PREFIX):
-            # this is a native group player (and not UGP), redirect
+        if group_player.type == PlayerType.GROUP:
+            # this is a native group player, redirect
             await self.cmd_power(player_id, power)
             return
 
@@ -564,16 +563,19 @@ class PlayerController(CoreController):
                 any_member_powered = True
                 if power:
                     # set active source to group player if the group (is going to be) powered
-                    member.active_source = group_player.player_id
+                    member.active_group = group_player.player_id
+                    member.active_source = group_player.active_source
                 else:
                     # turn off child player when group turns off
                     tg.create_task(self.cmd_power(member.player_id, False))
                     member.active_source = None
+                    member.active_group = None
             # edge case: group turned on but no members are powered, power them all!
             if not any_member_powered and power:
                 for member in self.iter_group_members(group_player, only_powered=False):
                     tg.create_task(self.cmd_power(member.player_id, True))
-                    member.active_source = group_player.player_id
+                    member.active_group = group_player.player_id
+                    member.active_source = group_player.active_source
 
         if power and group_player.player_id.startswith(SYNCGROUP_PREFIX):
             await self._sync_syncgroup(group_player.player_id)

@@ -6,7 +6,7 @@ import datetime
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.constants import MASS_LOGO_ONLINE, UGP_PREFIX
+from music_assistant.constants import MASS_LOGO_ONLINE
 
 if TYPE_CHECKING:
     from music_assistant.common.models.queue_item import QueueItem
@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 def create_didl_metadata(mass: MusicAssistant, url: str, queue_item: QueueItem) -> str:
     """Create DIDL metadata string from url and (optional) QueueItem."""
     ext = url.split(".")[-1].split("?")[0]
-    if "flow" in url or queue_item.queue_id.startswith(UGP_PREFIX):
+    if "flow" in url:
         # flow stream
         return (
             '<DIDL-Lite xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:upnp="urn:schemas-upnp-org:metadata-1-0/upnp/" xmlns="urn:schemas-upnp-org:metadata-1-0/DIDL-Lite/" xmlns:dlna="urn:schemas-dlna-org:metadata-1-0/">'

@@ -97,4 +97,3 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
 VERBOSE_LOG_LEVEL: Final[int] = 5
-UGP_PREFIX: Final[str] = "ugp_"

@@ -22,12 +22,7 @@ from music_assistant.common.models.config_entries import (
     PlayerConfig,
 )
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.constants import (
-    CONF_GROUP_MEMBERS,
-    CONF_GROUP_PLAYERS,
-    SYNCGROUP_PREFIX,
-    UGP_PREFIX,
-)
+from music_assistant.constants import CONF_GROUP_MEMBERS, CONF_GROUP_PLAYERS, SYNCGROUP_PREFIX
 
 from .provider import Provider
 
@@ -75,7 +70,7 @@ class PlayerProvider(Provider):
                 ),
                 CONF_ENTRY_PLAYER_ICON_GROUP,
             )
-        if not player_id.startswith((SYNCGROUP_PREFIX, UGP_PREFIX)):
+        if not player_id.startswith(SYNCGROUP_PREFIX):
             # add default entries for announce feature
             entries = (
                 *entries,
