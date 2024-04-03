@@ -348,7 +348,7 @@ class SpotifyProvider(MusicProvider):
         """Add item to library."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await self._put_data("me/following", {"ids": [prov_item_id], "type": "artist"})
+            result = await self._put_data("me/following", {"ids": [prov_item_id]}, type="artist")
         elif media_type == MediaType.ALBUM:
             result = await self._put_data("me/albums", {"ids": [prov_item_id]})
         elif media_type == MediaType.TRACK:
@@ -363,9 +363,7 @@ class SpotifyProvider(MusicProvider):
         """Remove item from library."""
         result = False
         if media_type == MediaType.ARTIST:
-            result = await self._delete_data(
-                "me/following", {"ids": [prov_item_id], "type": "artist"}
-            )
+            result = await self._delete_data("me/following", {"ids": [prov_item_id]}, type="artist")
         elif media_type == MediaType.ALBUM:
             result = await self._delete_data("me/albums", {"ids": [prov_item_id]})
         elif media_type == MediaType.TRACK:
