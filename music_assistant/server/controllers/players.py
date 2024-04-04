@@ -691,11 +691,12 @@ class PlayerController(CoreController):
         finally:
             player.announcement_in_progress = False
 
+    @api_command("players/cmd/play_media")
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player.
 
         - player_id: player_id of the player to handle the command.
-        - queue_item: The QueueItem that needs to be played on the player.
+        - media: The Media that needs to be played on the player.
         """
         if player_id.startswith(SYNCGROUP_PREFIX):
             # redirect to syncgroup-leader if needed
@@ -711,6 +712,7 @@ class PlayerController(CoreController):
             media=media,
         )
 
+    @api_command("players/cmd/enqueue_next_media")
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of a next media item on the player."""
         if player_id.startswith(SYNCGROUP_PREFIX):

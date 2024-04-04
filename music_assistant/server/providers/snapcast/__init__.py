@@ -331,8 +331,9 @@ class SnapCastProvider(PlayerProvider):
         elif media.queue_id.startswith("ugp_"):
             # special case: UGP stream
             ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
-            input_format = ugp_provider.get_audio_format(media.queue_id)
-            audio_source = ugp_provider.get_audio_stream(media.queue_id)
+            ugp_stream = ugp_provider.streams[media.queue_id]
+            input_format = ugp_stream.audio_format
+            audio_source = ugp_stream.audio_format
         elif media.queue_id and media.queue_item_id:
             # regular queue stream request
             input_format = DEFAULT_SNAPCAST_FORMAT

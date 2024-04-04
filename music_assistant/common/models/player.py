@@ -22,7 +22,7 @@ class DeviceInfo(DataClassDictMixin):
 
 @dataclass
 class PlayerMedia(DataClassDictMixin):
-    """Model for player media."""
+    """Metadata of Media loading/loaded into a player."""
 
     uri: str  # uri or other identifier of the loaded media
     media_type: MediaType = MediaType.UNKNOWN

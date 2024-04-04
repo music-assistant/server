@@ -8,12 +8,11 @@ allowing the user to create player groups from all players known in the system.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncGenerator
-from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING
 
 import shortuuid
+from aiohttp import web
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -29,12 +28,13 @@ from music_assistant.common.models.enums import (
     PlayerState,
     PlayerType,
     ProviderFeature,
-    QueueOption,
 )
 from music_assistant.common.models.media_items import AudioFormat
-from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.common.models.queue_item import QueueItem
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.server.controllers.streams import DEFAULT_STREAM_HEADERS
+from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
+from music_assistant.server.helpers.multi_client_stream import MultiClientStream
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -89,12 +89,22 @@ class UniversalGroupProvider(PlayerProvider):
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config)
-        self._ugp_streamers: dict[str, asyncio.Task] = {}
-        self._subscribers: dict[str, list[asyncio.Queue]] = {}
+        self._registered_routes: set[str] = set()
+        self.streams: dict[str, MultiClientStream] = {}
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         await self._register_all_players()
+
+    async def unload(self) -> None:
+        """
+        Handle unload/close of the provider.
+
+        Called when provider is deregistered (e.g. MA exiting or config reloading).
+        """
+        for route_path in list(self._registered_routes):
+            self._registered_routes.remove(route_path)
+            self.mass.streams.unregister_dynamic_route(route_path)
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -146,8 +156,8 @@ class UniversalGroupProvider(PlayerProvider):
                 if member.state == PlayerState.IDLE:
                     continue
                 tg.create_task(self.mass.players.cmd_stop(member.player_id))
-        if (stream := self._ugp_streamers.pop(player_id, None)) and not stream.done():
-            stream.cancel()
+        if (stream := self.streams.pop(player_id, None)) and not stream.done:
+            await stream.stop()
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
@@ -163,38 +173,49 @@ class UniversalGroupProvider(PlayerProvider):
     async def play_media(
         self,
         player_id: str,
-        queue_item: QueueItem,
+        media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         # power ON
         await self.cmd_power(player_id, True)
         group_player = self.mass.players.get(player_id)
         # stop any existing stream first
-        if (existing := self._ugp_streamers.pop(player_id, None)) and not existing.done():
-            existing.cancel()
+        if (existing := self.streams.pop(player_id, None)) and not existing.done:
+            existing.task.cancel()
 
-        # special case: handle announcement sent to this UGP
-        # we just forward this as-is downstream and let all child players handle this themselves
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
-            async with asyncio.TaskGroup() as tg:
-                for member in self.mass.players.iter_group_members(group_player, only_powered=True):
-                    if member.player_id.startswith(SYNCGROUP_PREFIX):
-                        member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
-                        if member is None:
-                            continue
-                    player_prov = self.mass.players.get_player_provider(member.player_id)
-                    tg.create_task(player_prov.play_media(member.player_id, queue_item))
-            return
+        # select audio source
+        if media.media_type == MediaType.ANNOUNCEMENT:
+            # special case: stream announcement
+            audio_source = self.mass.streams.get_announcement_stream(
+                media.custom_data["url"],
+                output_format=UGP_FORMAT,
+                use_pre_announce=media.custom_data["use_pre_announce"],
+            )
+        elif media.queue_id and media.queue_item_id:
+            # regular queue stream request
+            audio_source = self.mass.streams.get_flow_stream(
+                queue=self.mass.player_queues.get(media.queue_id),
+                start_queue_item=self.mass.player_queues.get_item(
+                    media.queue_id, media.queue_item_id
+                ),
+                pcm_format=UGP_FORMAT,
+            )
+        else:
+            # assume url or some other direct path
+            # NOTE: this will fail if its an uri not playable by ffmpeg
+            audio_source = get_ffmpeg_stream(
+                audio_input=media.uri,
+                input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                output_format=UGP_FORMAT,
+            )
 
-        # create a fake radio item to forward to downstream play_media commands
-        ugp_item = await self.get_item(MediaType.RADIO, player_id)
-
-        self._subscribers[player_id] = []
-        self._ugp_streamers[player_id] = asyncio.create_task(
-            self._ugp_streamer(player_id, queue_item)
+        # start the stream task
+        self.streams[player_id] = MultiClientStream(
+            audio_source=audio_source, audio_format=UGP_FORMAT
         )
+        base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.flac"
 
-        # insert the fake queue item into all underlying playerqueues
+        # forward to downstream play_media commands
         async with asyncio.TaskGroup() as tg:
             for member in self.mass.players.iter_group_members(group_player, only_powered=True):
                 if member.player_id.startswith(SYNCGROUP_PREFIX):
@@ -202,8 +223,14 @@ class UniversalGroupProvider(PlayerProvider):
                     if member is None:
                         continue
                 tg.create_task(
-                    self.mass.player_queues.play_media(
-                        member.player_id, ugp_item, option=QueueOption.PLAY
+                    self.mass.players.play_media(
+                        member.player_id,
+                        media=PlayerMedia(
+                            uri=f"{base_url}?player_id={member.player_id}",
+                            media_type=MediaType.FLOW_STREAM,
+                            title=group_player.display_name,
+                            queue_id=group_player.player_id,
+                        ),
                     )
                 )
         # set the state optimistically
@@ -267,6 +294,12 @@ class UniversalGroupProvider(PlayerProvider):
             group_childs=set(members),
         )
         self.mass.players.register_or_update(player)
+        # register dynamic routes for the ugp stream (both flac and mp3)
+        for fmt in ("mp3", "flac"):
+            route_path = f"/ugp/{group_player_id}.{fmt}"
+            self.mass.streams.register_dynamic_route(route_path, self._serve_ugp_stream)
+            self._registered_routes.add(route_path)
+
         return player
 
     def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:
@@ -300,62 +333,66 @@ class UniversalGroupProvider(PlayerProvider):
             return False
 
         # if a child player turned ON while the group player is already playing
-        # we just direct it to the existing stream
+        # we just direct it to the existing stream (we dont care about the audio being in sync)
         if new_power and group_player.state == PlayerState.PLAYING:
-
-            async def join_player() -> None:
-                ugp_item = await self.get_item(MediaType.RADIO, player_id)
-                await self.mass.player_queues.play_media(
-                    child_player.player_id, ugp_item, option=QueueOption.PLAY
+            base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.flac"
+            self.mass.create_task(
+                self.mass.players.play_media(
+                    child_player.player_id,
+                    media=PlayerMedia(
+                        uri=f"{base_url}?player_id={child_player.player_id}",
+                        media_type=MediaType.FLOW_STREAM,
+                        title=group_player.display_name,
+                        queue_id=group_player.player_id,
+                    ),
                 )
+            )
 
-            self.mass.create_task(join_player())
         return None
 
-    def get_audio_format(self, ugp_player_id: str) -> AudioFormat:
-        """Return the audio format for the UGP stream."""
-        # for now we just have one static format at all times
-        return UGP_FORMAT
+    async def _serve_ugp_stream(self, request: web.Request) -> web.Response:
+        """Serve the UGP (multi-client) flow stream audio to a player."""
+        ugp_player_id = request.path.rsplit(".")[0].rsplit("/")[-1]
+        fmt = request.path.rsplit(".")[-1]
+        child_player_id = request.query.get("player_id")  # optional!
 
-    async def get_audio_stream(  # type: ignore[return]
-        self, ugp_player_id: str
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the UGP player."""
-        if not (stream := self._ugp_streamers.get(ugp_player_id, None)) or stream.done():
-            raise RuntimeError(f"There is no active UGP stream for {ugp_player_id}!")
-        try:
-            queue = asyncio.Queue(1)
-            self._subscribers[ugp_player_id].append(queue)
-            while True:
-                chunk = await queue.get()
-                if not chunk:
-                    return
-                yield chunk
-        finally:
-            with suppress(ValueError):
-                self._subscribers[ugp_player_id].remove(queue)
+        if not (ugp_player := self.mass.players.get(ugp_player_id)):
+            raise web.HTTPNotFound(reason=f"Unknown UGP player: {ugp_player_id}")
 
-    async def _ugp_streamer(self, player_id: str, start_queue_item: QueueItem) -> None:
-        """Run the UGP Flow stream."""
-        queue = self.mass.player_queues.get(player_id)
-        # wait for first subscriber
-        count = 0
-        while count < 50:
-            await asyncio.sleep(0.5)
-            count += 1
-            if len(self._subscribers[player_id]) > 0:
-                break
-            if count == 50:
-                return
-        async for chunk in self.mass.streams.get_flow_stream(
-            queue=queue,
-            start_queue_item=start_queue_item,
-            pcm_format=UGP_FORMAT,
+        if not (stream := self.streams.get(ugp_player_id, None)) or stream.done:
+            raise web.HTTPNotFound(f"There is no active UGP stream for {ugp_player_id}!")
+
+        resp = web.StreamResponse(
+            status=200,
+            reason="OK",
+            headers={
+                **DEFAULT_STREAM_HEADERS,
+                "Content-Type": f"audio/{fmt}",
+            },
+        )
+        await resp.prepare(request)
+
+        # return early if this is not a GET request
+        if request.method != "GET":
+            return resp
+
+        # all checks passed, start streaming!
+        self.logger.debug(
+            "Start serving UGP flow audio stream for UGP-player %s to %s",
+            ugp_player.display_name,
+            child_player_id or request.remote,
+        )
+
+        async for chunk in stream.get_stream(
+            output_format=AudioFormat(content_type=ContentType.try_parse(fmt)),
+            filter_params=get_player_filter_params(self.mass, child_player_id)
+            if child_player_id
+            else None,
         ):
-            if len(self._subscribers[player_id]) == 0:
-                return
-            async with asyncio.TaskGroup() as tg:
-                for sub in list(self._subscribers[player_id]):
-                    tg.create_task(sub.put(chunk))
-        for sub in list(self._subscribers[player_id]):
-            self.mass.create_task(sub.put(b""))
+            try:
+                await resp.write(chunk)
+            except (BrokenPipeError, ConnectionResetError):
+                # race condition
+                break
+
+        return resp
