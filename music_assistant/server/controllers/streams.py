@@ -604,10 +604,11 @@ class StreamsController(CoreController):
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
                 remaining_bytes = buffer[:-crossfade_size]
-                yield remaining_bytes
-                bytes_written += len(remaining_bytes)
+                if remaining_bytes:
+                    yield remaining_bytes
+                    bytes_written += len(remaining_bytes)
                 del remaining_bytes
-            else:
+            elif buffer:
                 # no crossfade enabled, just yield the buffer last part
                 bytes_written += len(buffer)
                 yield buffer
