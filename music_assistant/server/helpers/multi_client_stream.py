@@ -1,12 +1,15 @@
 """Implementation of a simple multi-client stream task/job."""
 
 import asyncio
+import logging
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 
 from music_assistant.common.helpers.util import empty_queue
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.server.helpers.audio import get_ffmpeg_stream
+
+LOGGER = logging.getLogger(__name__)
 
 
 class MultiClientStream:
@@ -45,7 +48,7 @@ class MultiClientStream:
     ) -> AsyncGenerator[bytes, None]:
         """Get (client specific encoded) ffmpeg stream."""
         async for chunk in get_ffmpeg_stream(
-            audio_input=self.subscribe_raw,
+            audio_input=self.subscribe_raw(),
             input_format=self.audio_format,
             output_format=output_format,
             filter_params=filter_params,
@@ -78,6 +81,11 @@ class MultiClientStream:
                 break
             if count == 50:
                 return
+        LOGGER.debug(
+            "Starting multi-client stream with %s/%s clients",
+            len(self.subscribers),
+            self.expected_clients,
+        )
         async for chunk in self.audio_source:
             if len(self.subscribers) == 0:
                 return

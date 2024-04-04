@@ -144,7 +144,7 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -333,7 +333,7 @@ class SnapCastProvider(PlayerProvider):
             ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
             ugp_stream = ugp_provider.streams[media.queue_id]
             input_format = ugp_stream.audio_format
-            audio_source = ugp_stream.audio_format
+            audio_source = ugp_stream.subscribe_raw()
         elif media.queue_id and media.queue_item_id:
             # regular queue stream request
             input_format = DEFAULT_SNAPCAST_FORMAT

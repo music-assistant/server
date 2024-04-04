@@ -228,14 +228,13 @@ class SlimprotoProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._sync_playpoints = {}
         self._do_not_resync_before = {}
         self._multi_streams = {}
-        self._resync_handle: asyncio.TimerHandle | None = None
         control_port = self.config.get_value(CONF_PORT)
         telnet_port = self.config.get_value(CONF_CLI_TELNET_PORT)
         json_port = self.config.get_value(CONF_CLI_JSON_PORT)
@@ -365,13 +364,6 @@ class SlimprotoProvider(PlayerProvider):
             return
 
         # this is a syncgroup, we need to handle this with a multi client stream
-        if self._resync_handle:
-            # fix race condition where resync and play media
-            # are called at more or less the same time
-            self._resync_handle.cancel()
-            self._resync_handle = None
-
-        # select audio source
         master_audio_format = AudioFormat(
             content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
         )
@@ -386,7 +378,7 @@ class SlimprotoProvider(PlayerProvider):
             # special case: UGP stream
             ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
             ugp_stream = ugp_provider.streams[media.queue_id]
-            audio_source = ugp_stream.audio_format
+            audio_source = ugp_stream.subscribe_raw()
         elif media.queue_id and media.queue_item_id:
             # regular queue stream request
             audio_source = self.mass.streams.get_flow_stream(
@@ -548,18 +540,14 @@ class SlimprotoProvider(PlayerProvider):
         # check if we should (re)start or join a stream session
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if active_queue.state == PlayerState.PLAYING:
-            # playback needs to be restarted to form a new multi slimplayer stream session
-            def resync() -> None:
-                self._resync_handle = None
-                self.mass.create_task(
-                    self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
-                )
-
+            # playback needs to be restarted to form a new multi client stream session
             # this could potentially be called by multiple players at the exact same time
             # so we debounce the resync a bit here with a timer
-            if self._resync_handle:
-                self._resync_handle.cancel()
-            self._resync_handle = self.mass.loop.call_later(0.5, resync)
+            self.mass.call_later(
+                1,
+                self.mass.player_queues.resume(active_queue.queue_id, fade_in=False),
+                task_id=f"resume_{active_queue.queue_id}",
+            )
         else:
             # make sure that the player manager gets an update
             self.mass.players.update(child_player.player_id, skip_forward=True)

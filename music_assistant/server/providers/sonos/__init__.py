@@ -26,7 +26,6 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerType,
     ProviderFeature,
@@ -44,7 +43,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -144,7 +142,7 @@ class SonosPlayerProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -389,7 +387,7 @@ class SonosPlayerProvider(PlayerProvider):
             )
 
     async def play_announcement(
-        self, player_id: str, announcement: QueueItem, volume_level: int | None = None
+        self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
         if player_id.startswith(SYNCGROUP_PREFIX):
@@ -402,19 +400,16 @@ class SonosPlayerProvider(PlayerProvider):
                             self.play_announcement(child_player_id, announcement, volume_level)
                         )
             return
-        announcement_url = self.mass.streams.resolve_stream_url(
-            player_id, announcement, ContentType.MP3
-        )
         sonos_player = self.sonosplayers[player_id]
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",
-            announcement_url,
+            announcement.uri,
             sonos_player.zone_name,
         )
         volume_level = self.mass.players.get_announcement_volume(player_id, volume_level)
         try:
             response, _ = await sonos_player.websocket.play_clip(
-                announcement_url,
+                announcement.uri,
                 volume=volume_level,
             )
         except SonosWebsocketError as exc:
