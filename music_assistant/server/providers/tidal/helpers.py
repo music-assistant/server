@@ -337,12 +337,3 @@ async def search(
         return results
 
     return await asyncio.to_thread(inner)
-
-
-async def get_image_url(item: TidalArtist | TidalAlbum | TidalPlaylist, size: int = 0) -> str:
-    """Async wrapper around the image function of TidalArtist, TidalAlbum and TidalPlaylist."""
-
-    def inner() -> str:
-        return item.image(size)
-
-    return await asyncio.to_thread(inner)
