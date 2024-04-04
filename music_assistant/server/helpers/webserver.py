@@ -53,7 +53,7 @@ class Webserver:
             },
         )
         self.logger.info("Starting server on  %s:%s - base url: %s", bind_ip, bind_port, base_url)
-        self._apprunner = web.AppRunner(self._webapp, access_log=None)
+        self._apprunner = web.AppRunner(self._webapp, access_log=None, shutdown_timeout=10)
         # add static routes
         if self._static_routes:
             for method, path, handler in self._static_routes:
@@ -68,9 +68,7 @@ class Webserver:
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
         host = None if bind_ip == "0.0.0.0" else bind_ip
-        self._tcp_site = web.TCPSite(
-            self._apprunner, host=host, port=bind_port, shutdown_timeout=10
-        )
+        self._tcp_site = web.TCPSite(self._apprunner, host=host, port=bind_port)
         await self._tcp_site.start()
 
     async def close(self) -> None:

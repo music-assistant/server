@@ -65,7 +65,7 @@ HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 class FFMpeg(AsyncProcess):
     """FFMpeg wrapped as AsyncProcess."""
 
-    def __init__(
+    def __init__(  # noqa: PLR0913
         self,
         audio_input: AsyncGenerator[bytes, None] | str | int,
         input_format: AudioFormat,
@@ -76,6 +76,7 @@ class FFMpeg(AsyncProcess):
         name: str = "ffmpeg",
         stderr_enabled: bool = False,
         audio_output: str | int = "-",
+        loglevel: str | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
         ffmpeg_args = get_ffmpeg_args(
@@ -86,7 +87,7 @@ class FFMpeg(AsyncProcess):
             input_path=audio_input if isinstance(audio_input, str) else "-",
             output_path=audio_output if isinstance(audio_output, str) else "-",
             extra_input_args=extra_input_args or [],
-            loglevel="info"
+            loglevel=loglevel or "info"
             if stderr_enabled or LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL)
             else "error",
         )
@@ -807,7 +808,7 @@ def get_ffmpeg_args(
         "-nostats",
         "-ignore_unknown",
         "-protocol_whitelist",
-        "file,http,https,tcp,tls,crypto,pipe,data,fd",
+        "file,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp",
     ]
     # collect input args
     input_args = []

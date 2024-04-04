@@ -32,13 +32,12 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerState,
     PlayerType,
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
-from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import (
     CONF_CROSSFADE,
     CONF_ENFORCE_MP3,
@@ -59,7 +58,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -342,27 +340,17 @@ class DLNAPlayerProvider(PlayerProvider):
         await dlna_player.device.async_play()
 
     @catch_request_errors
-    async def play_media(
-        self,
-        player_id: str,
-        queue_item: QueueItem,
-    ) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            flow_mode=use_flow_mode,
-        )
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
         dlna_player = self.dlnaplayers[player_id]
         # always clear queue (by sending stop) first
         if dlna_player.device.can_stop:
             await self.cmd_stop(player_id)
-        didl_metadata = create_didl_metadata(self.mass, url, queue_item)
-        title = queue_item.name if queue_item else "Music Assistant"
-        await dlna_player.device.async_set_transport_uri(url, title, didl_metadata)
+        didl_metadata = create_didl_metadata(media)
+        title = media.title or media.uri
+        await dlna_player.device.async_set_transport_uri(media.uri, title, didl_metadata)
         # Play it
         await dlna_player.device.async_wait_for_can_play(10)
         # optimistically set this timestamp to help in case of a player
@@ -378,17 +366,14 @@ class DLNAPlayerProvider(PlayerProvider):
             await self.poll_player(dlna_player.udn)
 
     @catch_request_errors
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         dlna_player = self.dlnaplayers[player_id]
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-        )
-        didl_metadata = create_didl_metadata(self.mass, url, queue_item)
-        title = queue_item.name
-        await dlna_player.device.async_set_next_transport_uri(url, title, didl_metadata)
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
+        didl_metadata = create_didl_metadata(media)
+        title = media.title or media.uri
+        await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
         self.logger.debug(
             "Enqued next track (%s) to player %s",
             title,

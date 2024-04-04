@@ -21,13 +21,12 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerState,
     PlayerType,
 )
 from music_assistant.common.models.errors import SetupFailedError
-from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.hass import DOMAIN as HASS_DOMAIN
@@ -42,7 +41,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.hass import HomeAssistant as HomeAssistantProvider
@@ -245,25 +243,15 @@ class HomeAssistantPlayers(PlayerProvider):
             target={"entity_id": player_id},
         )
 
-    async def play_media(
-        self,
-        player_id: str,
-        queue_item: QueueItem,
-    ) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            flow_mode=use_flow_mode,
-        )
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="play_media",
             service_data={
-                "media_content_id": url,
+                "media_content_id": media.uri,
                 "media_content_type": "music",
                 "enqueue": "replace",
             },
@@ -274,30 +262,15 @@ class HomeAssistantPlayers(PlayerProvider):
             player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
-        """
-        Handle enqueuing of the next queue item on the player.
-
-        Only called if the player supports PlayerFeature.ENQUE_NEXT.
-        Called about 1 second after a new track started playing.
-        Called about 15 seconds before the end of the current track.
-
-        A PlayerProvider implementation is in itself responsible for handling this
-        so that the queue items keep playing until its empty or the player stopped.
-
-        This will NOT be called if the end of the queue is reached (and repeat disabled).
-        This will NOT be called if the player is using flow mode to playback the queue.
-        """
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-        )
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next queue item on the player."""
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="play_media",
             service_data={
-                "media_content_id": url,
+                "media_content_id": media.uri,
                 "media_content_type": "music",
                 "enqueue": "next",
             },

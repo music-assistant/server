@@ -26,13 +26,12 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerType,
     ProviderFeature,
 )
 from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnavailableError
-from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_CROSSFADE, SYNCGROUP_PREFIX, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -44,7 +43,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -144,7 +142,7 @@ class SonosPlayerProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -336,7 +334,7 @@ class SonosPlayerProvider(PlayerProvider):
     async def play_media(
         self,
         player_id: str,
-        queue_item: QueueItem,
+        media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         sonos_player = self.sonosplayers[player_id]
@@ -349,36 +347,13 @@ class SonosPlayerProvider(PlayerProvider):
             )
             raise PlayerCommandFailed(msg)
 
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-        )
-        self.mass.create_task(
-            sonos_player.soco.play_uri, url, meta=create_didl_metadata(self.mass, url, queue_item)
-        )
+        didl_metadata = create_didl_metadata(media)
+        self.mass.create_task(sonos_player.soco.play_uri, media.uri, meta=didl_metadata)
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
-        """
-        Handle enqueuing of the next queue item on the player.
-
-        If the player supports PlayerFeature.ENQUE_NEXT:
-          This will be called about 10 seconds before the end of the track.
-        If the player does NOT report support for PlayerFeature.ENQUE_NEXT:
-          This will be called when the end of the track is reached.
-
-        A PlayerProvider implementation is in itself responsible for handling this
-        so that the queue items keep playing until its empty or the player stopped.
-
-        This will NOT be called if the end of the queue is reached (and repeat disabled).
-        This will NOT be called if flow mode is enabled on the queue.
-        """
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next queue item on the player."""
         sonos_player = self.sonosplayers[player_id]
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-        )
+        didl_metadata = create_didl_metadata(media)
         # set crossfade according to player setting
         crossfade = await self.mass.config.get_player_config_value(player_id, CONF_CROSSFADE)
         if sonos_player.crossfade != crossfade:
@@ -394,10 +369,25 @@ class SonosPlayerProvider(PlayerProvider):
 
             await asyncio.to_thread(set_crossfade)
 
-        await self._enqueue_item(sonos_player, url=url, queue_item=queue_item)
+        try:
+            await asyncio.to_thread(
+                sonos_player.soco.avTransport.SetNextAVTransportURI,
+                [("InstanceID", 0), ("NextURI", media.uri), ("NextURIMetaData", didl_metadata)],
+                timeout=60,
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Unable to enqueue next track on player: %s: %s", sonos_player.zone_name, err
+            )
+        else:
+            self.logger.debug(
+                "Enqued next track (%s) to player %s",
+                media.title or media.uri,
+                sonos_player.soco.player_name,
+            )
 
     async def play_announcement(
-        self, player_id: str, announcement: QueueItem, volume_level: int | None = None
+        self, player_id: str, announcement: PlayerMedia, volume_level: int | None = None
     ) -> None:
         """Handle (provider native) playback of an announcement on given player."""
         if player_id.startswith(SYNCGROUP_PREFIX):
@@ -410,19 +400,16 @@ class SonosPlayerProvider(PlayerProvider):
                             self.play_announcement(child_player_id, announcement, volume_level)
                         )
             return
-        announcement_url = self.mass.streams.resolve_stream_url(
-            player_id, announcement, ContentType.MP3
-        )
         sonos_player = self.sonosplayers[player_id]
         self.logger.debug(
             "Playing announcement %s using websocket audioclip on %s",
-            announcement_url,
+            announcement.uri,
             sonos_player.zone_name,
         )
         volume_level = self.mass.players.get_announcement_volume(player_id, volume_level)
         try:
             response, _ = await sonos_player.websocket.play_clip(
-                announcement_url,
+                announcement.uri,
                 volume=volume_level,
             )
         except SonosWebsocketError as exc:
@@ -544,28 +531,3 @@ class SonosPlayerProvider(PlayerProvider):
         self.mass.loop.call_soon_threadsafe(
             self.mass.players.register_or_update, sonos_player.mass_player
         )
-
-    async def _enqueue_item(
-        self,
-        sonos_player: SonosPlayer,
-        url: str,
-        queue_item: QueueItem | None,
-    ) -> None:
-        """Enqueue a queue item to the Sonos player Queue."""
-        metadata = create_didl_metadata(self.mass, url, queue_item)
-        try:
-            await asyncio.to_thread(
-                sonos_player.soco.avTransport.SetNextAVTransportURI,
-                [("InstanceID", 0), ("NextURI", url), ("NextURIMetaData", metadata)],
-                timeout=60,
-            )
-        except Exception as err:
-            self.logger.warning(
-                "Unable to enqueue next track on player: %s: %s", sonos_player.zone_name, err
-            )
-        else:
-            self.logger.debug(
-                "Enqued next track (%s) to player %s",
-                queue_item.name if queue_item else url,
-                sonos_player.soco.player_name,
-            )

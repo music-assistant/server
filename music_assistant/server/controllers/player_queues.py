@@ -30,9 +30,10 @@ from music_assistant.common.models.errors import (
     QueueEmpty,
 )
 from music_assistant.common.models.media_items import MediaItemType, media_from_dict
+from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import FALLBACK_DURATION
+from music_assistant.constants import CONF_FLOW_MODE, FALLBACK_DURATION, MASS_LOGO_ONLINE
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.audio import get_stream_details
 from music_assistant.server.models.core_controller import CoreController
@@ -199,8 +200,11 @@ class PlayerQueuesController(CoreController):
         """Return the current active/synced queue for a player."""
         if player := self.mass.players.get(player_id):
             # account for player that is synced (sync child)
-            if player.synced_to:
+            if player.synced_to and player.synced_to != player.player_id:
                 return self.get_active_queue(player.synced_to)
+            # handle active group player
+            if player.active_group and player.active_group != player.player_id:
+                return self.get_active_queue(player.active_group)
             # active_source may be filled with other queue id
             if player.active_source != player_id and (
                 queue := self.get_active_queue(player.active_source)
@@ -671,14 +675,18 @@ class PlayerQueuesController(CoreController):
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
-        queue.flow_mode = False  # reset
+        queue.flow_mode = self.mass.config.get_raw_player_config_value(
+            queue_id, CONF_FLOW_MODE, False
+        )
         # get streamdetails - do this here to catch unavailable items early
         queue_item.streamdetails = await get_stream_details(
             self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
         )
+        # send play_media request to player
         await self.mass.players.play_media(
             player_id=queue_id,
-            queue_item=queue_item,
+            # transform into PlayerMedia to send to the actual player implementation
+            media=self.player_media_from_queue_item(queue_item, queue.flow_mode),
         )
 
     # Interaction with player
@@ -953,6 +961,27 @@ class PlayerQueuesController(CoreController):
                 return index
         return None
 
+    def player_media_from_queue_item(self, queue_item: QueueItem, flow_mode: bool) -> PlayerMedia:
+        """Parse PlayerMedia from QueueItem."""
+        media = PlayerMedia(
+            uri=self.mass.streams.resolve_stream_url(queue_item, flow_mode=flow_mode),
+            media_type=MediaType.FLOW_STREAM if flow_mode else queue_item.media_type,
+            title="Music Assistant" if flow_mode else queue_item.name,
+            image_url=MASS_LOGO_ONLINE,
+            duration=queue_item.duration,
+            queue_id=queue_item.queue_id,
+            queue_item_id=queue_item.queue_item_id,
+        )
+        if not flow_mode and queue_item.media_item:
+            media.title = queue_item.media_item.name
+            media.artist = getattr(queue_item.media_item, "artist_str", "")
+            media.album = (
+                album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
+            )
+            if queue_item.image:
+                media.image_url = self.mass.metadata.get_image_url(queue_item.image)
+        return media
+
     def _get_next_index(
         self, queue_id: str, cur_index: int | None, is_skip: bool = False
     ) -> int | None:
@@ -1028,8 +1057,9 @@ class PlayerQueuesController(CoreController):
             with suppress(QueueEmpty):
                 next_item = await self.preload_next_item(queue.queue_id, index)
                 if supports_enqueue:
-                    await self.mass.players.enqueue_next_queue_item(
-                        player_id=player.player_id, queue_item=next_item
+                    await self.mass.players.enqueue_next_media(
+                        player_id=player.player_id,
+                        media=self.player_media_from_queue_item(next_item, queue.flow_mode),
                     )
                     return
                 await self.play_index(queue.queue_id, next_item.queue_item_id)

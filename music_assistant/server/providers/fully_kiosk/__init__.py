@@ -16,20 +16,18 @@ from music_assistant.common.models.config_entries import (
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerState,
     PlayerType,
 )
 from music_assistant.common.models.errors import PlayerUnavailableError, SetupFailedError
-from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_PORT
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -181,19 +179,14 @@ class FullyKioskProvider(PlayerProvider):
     async def play_media(
         self,
         player_id: str,
-        queue_item: QueueItem,
+        media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            flow_mode=True,
-        )
-        await self._fully.playSound(url, AUDIOMANAGER_STREAM_MUSIC)
-        player.current_item_id = queue_item.queue_id
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
+        await self._fully.playSound(media.uri, AUDIOMANAGER_STREAM_MUSIC)
+        player.current_media = media
         player.elapsed_time = 0
         player.elapsed_time_last_updated = time.time()
         player.state = PlayerState.PLAYING

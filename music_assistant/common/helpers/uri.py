@@ -19,7 +19,7 @@ def parse_uri(uri: str) -> tuple[MediaType, str, str]:
             media_type_str = uri.split("/")[3]
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[4].split("?")[0]
-        elif uri.startswith(("http://", "https://")):
+        elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
             # Translate a plain URL to the URL provider
             provider_instance_id_or_domain = "url"
             media_type = MediaType.UNKNOWN

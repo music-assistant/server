@@ -40,19 +40,23 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
 )
 from music_assistant.common.models.media_items import AudioFormat
-from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
-from music_assistant.constants import CONF_SYNC_ADJUST, UGP_PREFIX, VERBOSE_LOG_LEVEL
-from music_assistant.server.helpers.audio import get_ffmpeg_args, get_player_filter_params
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.server.helpers.audio import (
+    get_ffmpeg_args,
+    get_ffmpeg_stream,
+    get_player_filter_params,
+)
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+    from music_assistant.server.providers.ugp import UniversalGroupProvider
 
 DOMAIN = "airplay"
 
@@ -463,7 +467,7 @@ class AirplayProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -491,7 +495,6 @@ class AirplayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.aiozc.async_register_service(self._dacp_info)
-        self._resync_handle: asyncio.TimerHandle | None = None
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -590,44 +593,51 @@ class AirplayProvider(PlayerProvider):
     async def play_media(
         self,
         player_id: str,
-        queue_item: QueueItem,
+        media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
-        # fix race condition where resync and play media are called at more or less the same time
-        if self._resync_handle:
-            self._resync_handle.cancel()
-            self._resync_handle = None
         # always stop existing stream first
-        wait_stopped = not queue_item.streamdetails or queue_item.streamdetails.seek_position == 0
         async with asyncio.TaskGroup() as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream and airplay_player.active_stream.running:
-                    tg.create_task(airplay_player.active_stream.stop(wait=wait_stopped))
+                    tg.create_task(airplay_player.active_stream.stop(wait=False))
         # select audio source
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+        if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
-                queue_item.streamdetails.data["url"],
+                media.custom_data["url"],
                 output_format=AIRPLAY_PCM_FORMAT,
-                use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
+                use_pre_announce=media.custom_data["use_pre_announce"],
             )
-        elif queue_item.queue_id.startswith(UGP_PREFIX):
-            # special case: we got forwarded a request from the UGP
-            # use the existing stream job that was already created by UGP
-            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
-            stream_job.expected_players.add(player_id)
-            input_format = stream_job.pcm_format
-            audio_source = stream_job.subscribe(player_id)
-        else:
-            queue = self.mass.player_queues.get(queue_item.queue_id)
+        elif media.queue_id.startswith("ugp_"):
+            # special case: UGP stream
+            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
+            ugp_stream = ugp_provider.streams[media.queue_id]
+            input_format = ugp_stream.audio_format
+            audio_source = ugp_stream.subscribe_raw()
+        elif media.queue_id and media.queue_item_id:
+            # regular queue stream request
             input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_flow_stream(
-                queue, start_queue_item=queue_item, pcm_format=AIRPLAY_PCM_FORMAT
+                queue=self.mass.player_queues.get(media.queue_id),
+                start_queue_item=self.mass.player_queues.get_item(
+                    media.queue_id, media.queue_item_id
+                ),
+                pcm_format=AIRPLAY_PCM_FORMAT,
+            )
+        else:
+            # assume url or some other direct path
+            # NOTE: this will fail if its an uri not playable by ffmpeg
+            input_format = AIRPLAY_PCM_FORMAT
+            audio_source = get_ffmpeg_stream(
+                audio_input=media.uri,
+                input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                output_format=AIRPLAY_PCM_FORMAT,
             )
         self.mass.create_task(self._handle_stream_audio, player_id, audio_source, input_format)
 
@@ -714,17 +724,13 @@ class AirplayProvider(PlayerProvider):
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if active_queue.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
-            def resync() -> None:
-                self._resync_handle = None
-                self.mass.create_task(
-                    self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
-                )
-
             # this could potentially be called by multiple players at the exact same time
             # so we debounce the resync a bit here with a timer
-            if self._resync_handle:
-                self._resync_handle.cancel()
-            self._resync_handle = self.mass.loop.call_later(0.5, resync)
+            self.mass.call_later(
+                1,
+                self.mass.player_queues.resume(active_queue.queue_id, fade_in=False),
+                task_id=f"resume_{active_queue.queue_id}",
+            )
         else:
             # make sure that the player manager gets an update
             self.mass.players.update(child_player.player_id, skip_forward=True)

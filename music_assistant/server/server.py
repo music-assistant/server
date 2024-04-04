@@ -98,6 +98,7 @@ class MusicAssistant:
         self._provider_manifests: dict[str, ProviderManifest] = {}
         self._providers: dict[str, ProviderInstanceType] = {}
         self._tracked_tasks: dict[str, asyncio.Task] = {}
+        self._tracked_timers: dict[str, asyncio.TimerHandle] = {}
         self.closing = False
         self.running_as_hass_addon: bool = False
         self.version: str = "0.0.0"
@@ -363,12 +364,24 @@ class MusicAssistant:
         task_id: str | None = None,
         **kwargs: Any,
     ) -> asyncio.TimerHandle:
-        """Run callable/awaitable after given delay."""
+        """
+        Run callable/awaitable after given delay.
+
+        Use task_id for debouncing.
+        """
+        if not task_id:
+            task_id = uuid4().hex
+
+        if existing := self._tracked_timers.get(task_id):
+            existing.cancel()
 
         def _create_task() -> None:
+            self._tracked_timers.pop(task_id)
             self.create_task(target, *args, task_id=task_id, **kwargs)
 
-        return self.loop.call_later(delay, _create_task)
+        handle = self.loop.call_later(delay, _create_task)
+        self._tracked_timers[task_id] = handle
+        return handle
 
     def get_task(self, task_id: str) -> asyncio.Task | asyncio.Future:
         """Get existing scheduled task."""

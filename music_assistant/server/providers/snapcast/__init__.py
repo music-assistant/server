@@ -34,9 +34,8 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.media_items import AudioFormat
-from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import UGP_PREFIX
-from music_assistant.server.helpers.audio import FFMpeg, get_player_filter_params
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -47,9 +46,9 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+    from music_assistant.server.providers.ugp import UniversalGroupProvider
 
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
@@ -145,7 +144,7 @@ class SnapCastProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -262,10 +261,14 @@ class SnapCastProvider(PlayerProvider):
         )
         player.synced_to = self._synced_to(player_id)
         player.group_childs = self._group_childs(player_id)
-        if player.current_item_id and player_id in player.current_item_id:
-            player.active_source = player_id
-        elif stream := self._get_snapstream(player_id):
-            player.active_source = stream.name
+        if player.active_group is None:
+            if stream := self._get_snapstream(player_id):
+                if stream.name.startswith(("MusicAssistant", "default")):
+                    player.active_source = player_id
+                else:
+                    player.active_source = stream.name
+            else:
+                player.active_source = player_id
         self.mass.players.register_or_update(player)
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
@@ -308,7 +311,7 @@ class SnapCastProvider(PlayerProvider):
         await self._get_snapgroup(player_id).set_stream("default")
         self._handle_update()
 
-    async def play_media(self, player_id: str, queue_item: QueueItem) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
@@ -316,31 +319,43 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError(msg)
         # stop any existing streams first
         await self.cmd_stop(player_id)
-        queue = self.mass.player_queues.get(queue_item.queue_id)
         stream, port = await self._create_stream()
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
-        if queue_item.media_type == MediaType.ANNOUNCEMENT:
+        # select audio source
+        if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             input_format = DEFAULT_SNAPCAST_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
-                queue_item.streamdetails.data["url"],
+                media.custom_data["url"],
                 output_format=DEFAULT_SNAPCAST_FORMAT,
-                use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
+                use_pre_announce=media.custom_data["use_pre_announce"],
             )
-        elif queue_item.queue_id.startswith(UGP_PREFIX):
-            # special case: we got forwarded a request from the UGP
-            # use the existing stream job that was already created by UGP
-            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
-            stream_job.expected_players.add(player_id)
-            input_format = stream_job.pcm_format
-            audio_source = stream_job.subscribe(player_id)
-        else:
-            queue = self.mass.player_queues.get(queue_item.queue_id)
+        elif media.queue_id.startswith("ugp_"):
+            # special case: UGP stream
+            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
+            ugp_stream = ugp_provider.streams[media.queue_id]
+            input_format = ugp_stream.audio_format
+            audio_source = ugp_stream.subscribe_raw()
+        elif media.queue_id and media.queue_item_id:
+            # regular queue stream request
             input_format = DEFAULT_SNAPCAST_FORMAT
             audio_source = self.mass.streams.get_flow_stream(
-                queue, start_queue_item=queue_item, pcm_format=DEFAULT_SNAPCAST_FORMAT
+                queue=self.mass.player_queues.get(media.queue_id),
+                start_queue_item=self.mass.player_queues.get_item(
+                    media.queue_id, media.queue_item_id
+                ),
+                pcm_format=DEFAULT_SNAPCAST_FORMAT,
+            )
+        else:
+            # assume url or some other direct path
+            # NOTE: this will fail if its an uri not playable by ffmpeg
+            input_format = DEFAULT_SNAPCAST_FORMAT
+            audio_source = get_ffmpeg_stream(
+                audio_input=media.uri,
+                input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                output_format=DEFAULT_SNAPCAST_FORMAT,
             )
 
         async def _streamer() -> None:
@@ -350,7 +365,7 @@ class SnapCastProvider(PlayerProvider):
             def stream_callback(_stream) -> None:
                 player.state = PlayerState(_stream.status)
                 if player.state == PlayerState.PLAYING:
-                    player.current_item_id = f"{queue_item.queue_id}.{queue_item.queue_item_id}"
+                    player.current_media = media
                     player.elapsed_time = 0
                     player.elapsed_time_last_updated = time.time()
                 self.mass.players.update(player_id)
