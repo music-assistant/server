@@ -234,7 +234,9 @@ class YoutubeMusicProvider(MusicProvider):
                     parsed_results.albums.append(await self._parse_album(result))
                 elif result["resultType"] == "playlist":
                     parsed_results.playlists.append(await self._parse_playlist(result))
-                elif result["resultType"] == "song" and (track := await self._parse_track(result)):
+                elif result["resultType"] in ("song", "video") and (
+                    track := await self._parse_track(result)
+                ):
                     parsed_results.tracks.append(track)
             except InvalidDataError:
                 pass  # ignore invalid item
