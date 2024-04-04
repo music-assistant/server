@@ -19,6 +19,7 @@ from music_assistant.common.helpers.global_cache import (
     set_global_cache_values,
 )
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
+from music_assistant.common.models.enums import StreamType
 from music_assistant.common.models.errors import (
     AudioError,
     InvalidDataError,
@@ -676,7 +677,9 @@ async def get_preview_stream(
     music_prov = mass.get_provider(provider_instance_id_or_domain)
     streamdetails = await music_prov.get_stream_details(track_id)
     async for chunk in get_ffmpeg_stream(
-        audio_input=music_prov.get_audio_stream(streamdetails, 30),
+        audio_input=music_prov.get_audio_stream(streamdetails, 30)
+        if streamdetails.stream_type == StreamType.CUSTOM
+        else streamdetails.path,
         input_format=streamdetails.audio_format,
         output_format=AudioFormat(content_type=ContentType.MP3),
         extra_input_args=["-to", "30"],
