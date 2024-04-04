@@ -106,6 +106,10 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
     def inner() -> list[TidalAlbum]:
         try:
             artist_obj = TidalArtist(session, prov_artist_id)
+        except (ObjectNotFound, TooManyRequests) as err:
+            msg = f"Artist {prov_artist_id} not found"
+            raise MediaNotFoundError(msg) from err
+        else:
             all_albums = []
             albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
             eps_singles = artist_obj.get_albums_ep_singles(limit=DEFAULT_LIMIT)
@@ -113,10 +117,6 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
             all_albums.extend(albums)
             all_albums.extend(eps_singles)
             all_albums.extend(compilations)
-        except (ObjectNotFound, TooManyRequests) as err:
-            msg = f"Artist {prov_artist_id} not found"
-            raise MediaNotFoundError(msg) from err
-        else:
             return all_albums
 
     return await asyncio.to_thread(inner)
