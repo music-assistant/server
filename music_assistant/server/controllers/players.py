@@ -452,6 +452,8 @@ class PlayerController(CoreController):
         # always optimistically set the power state to update the UI
         # as fast as possible and prevent race conditions
         player.powered = powered
+        # always MA as active source on power ON
+        player.active_source = player_id if powered else None
         self.update(player_id)
         # handle actions when a (sync)group child turns on/off
         if active_group_player := self._get_active_player_group(player):
@@ -640,6 +642,25 @@ class PlayerController(CoreController):
                     player.active_group, url, use_pre_announce, volume_level
                 )
                 return
+            if player.type in (PlayerType.SYNC_GROUP, PlayerType.GROUP) and not player.powered:
+                # announcement request sent to inactive group,
+                # redirect to all underlying players instead
+                self.logger.warning(
+                    "Detected announcement request to an inactive playergroup, "
+                    "this will be redirected to the individual players."
+                )
+                async with asyncio.TaskGroup() as tg:
+                    for group_member in player.group_childs:
+                        tg.create_task(
+                            self.play_announcement(
+                                group_member,
+                                url=url,
+                                use_pre_announce=use_pre_announce,
+                                volume_level=volume_level,
+                            )
+                        )
+                return
+
             # determine pre-announce from (group)player config
             if use_pre_announce is None and "tts" in url:
                 use_pre_announce = self.mass.config.get_raw_player_config_value(
@@ -730,6 +751,8 @@ class PlayerController(CoreController):
         if PlayerFeature.SYNC not in parent_player.supported_features:
             msg = f"Player {parent_player.name} does not support (un)sync commands"
             raise UnsupportedFeaturedException(msg)
+        if player_id == target_player:
+            return
         if child_player.synced_to:
             if child_player.synced_to == parent_player.player_id:
                 # nothing to do: already synced to this parent
@@ -1107,7 +1130,7 @@ class PlayerController(CoreController):
             "Announcement to player %s - playing the announcement on the player...",
             player.display_name,
         )
-        await self.play_media(player_id=player.player_id, queue_item=announcement)
+        await self.play_media(player_id=player.player_id, media=announcement)
         # wait for the player(s) to play
         with suppress(TimeoutError):
             await self.wait_for_state(player, PlayerState.PLAYING, 10)

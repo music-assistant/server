@@ -261,10 +261,14 @@ class SnapCastProvider(PlayerProvider):
         )
         player.synced_to = self._synced_to(player_id)
         player.group_childs = self._group_childs(player_id)
-        if player.current_item_id and player_id in player.current_item_id:
-            player.active_source = player_id
-        elif stream := self._get_snapstream(player_id):
-            player.active_source = stream.name
+        if player.active_group is None:
+            if stream := self._get_snapstream(player_id):
+                if stream.name.startswith(("MusicAssistant", "default")):
+                    player.active_source = player_id
+                else:
+                    player.active_source = stream.name
+            else:
+                player.active_source = player_id
         self.mass.players.register_or_update(player)
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:

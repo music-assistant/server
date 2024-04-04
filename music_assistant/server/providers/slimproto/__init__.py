@@ -54,7 +54,6 @@ from music_assistant.constants import (
     CONF_ENFORCE_MP3,
     CONF_PORT,
     CONF_SYNC_ADJUST,
-    MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
@@ -67,7 +66,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -87,7 +85,7 @@ REPEATMODE_MAP = {RepeatMode.OFF: 0, RepeatMode.ONE: 1, RepeatMode.ALL: 2}
 # sync constants
 MIN_DEVIATION_ADJUST = 8  # 5 milliseconds
 MIN_REQ_PLAYPOINTS = 8  # we need at least 8 measurements
-DEVIATION_JUMP_IGNORE = 5000  # ignore a sudden unrealistic jump
+DEVIATION_JUMP_IGNORE = 500  # ignore a sudden unrealistic jump
 MAX_SKIP_AHEAD_MS = 800  # 0.8 seconds
 
 
@@ -96,7 +94,7 @@ class SyncPlayPoint:
     """Simple structure to describe a Sync Playpoint."""
 
     timestamp: float
-    sync_job_id: str
+    sync_master: str
     diff: int
 
 
@@ -353,11 +351,10 @@ class SlimprotoProvider(PlayerProvider):
         if not player.group_childs:
             slimplayer = self.slimproto.get_player(player_id)
             # simple, single-player playback
-            self._handle_play_url(
+            await self._handle_play_url(
                 slimplayer,
                 url=media.uri,
                 media=media,
-                queue_item=None,
                 send_flush=True,
                 auto_play=False,
             )
@@ -416,27 +413,25 @@ class SlimprotoProvider(PlayerProvider):
                         slimplayer,
                         url=url,
                         media=media,
-                        queue_item=None,
                         send_flush=True,
                         auto_play=False,
                     )
                 )
 
-    async def enqueue_next_media(self, player_id: str, queue_item: QueueItem) -> None:
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         if not (slimplayer := self.slimproto.get_player(player_id)):
             return
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            flow_mode=False,
-        )
+        url = media.uri
+        if self.mass.config.get_raw_player_config_value(
+            slimplayer.player_id, CONF_ENFORCE_MP3, False
+        ):
+            url = url.replace("flac", "mp3")
+
         await self._handle_play_url(
             slimplayer,
             url=url,
-            queue_item=queue_item,
+            media=media,
             enqueue=True,
             send_flush=False,
             auto_play=True,
@@ -446,7 +441,7 @@ class SlimprotoProvider(PlayerProvider):
         self,
         slimplayer: SlimClient,
         url: str,
-        media: PlayerMedia | None = None,
+        media: PlayerMedia,
         enqueue: bool = False,
         send_flush: bool = True,
         auto_play: bool = False,
@@ -460,22 +455,15 @@ class SlimprotoProvider(PlayerProvider):
         else:
             transition_duration = 0
 
-        if media:
-            metadata = {
-                "item_id": media.queue_item_id or media.uri,
-                "title": media.title,
-                "album": media.album,
-                "artist": media.artist,
-                "image_url": media.image_url,
-                "duration": media.duration,
-            }
-        else:
-            metadata = {
-                "item_id": "flow",
-                "title": "Music Assistant",
-                "image_url": MASS_LOGO_ONLINE,
-            }
-        queue = self.mass.player_queues.get(media.queue_id if media else player_id)
+        metadata = {
+            "item_id": media.queue_item_id or media.uri,
+            "title": media.title,
+            "album": media.album,
+            "artist": media.artist,
+            "image_url": media.image_url,
+            "duration": media.duration,
+        }
+        queue = self.mass.player_queues.get(media.queue_id or player_id)
         slimplayer.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
         slimplayer.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
         # slimplayer.extra_data["can_seek"] = 1 if queue_item else 0
@@ -530,7 +518,7 @@ class SlimprotoProvider(PlayerProvider):
         parent_player = self.mass.players.get(target_player)
         assert parent_player  # guard
         if parent_player.synced_to:
-            raise RuntimeError("Player is already synced")
+            raise RuntimeError("Parent player is already synced!")
         if child_player.synced_to and child_player.synced_to != target_player:
             raise RuntimeError("Player is already synced to another player")
         # always make sure that the parent player is part of the sync group
@@ -730,12 +718,6 @@ class SlimprotoProvider(PlayerProvider):
         # average lag/drift so we can adjust accordingly
         sync_playpoints = self._sync_playpoints[slimplayer.player_id]
 
-        active_queue = self.mass.player_queues.get_active_queue(slimplayer.player_id)
-        stream_job = self.mass.streams.multi_client_jobs.get(active_queue.queue_id)
-        if not stream_job:
-            # should not happen, but just in case
-            return
-
         now = time.time()
         if now < self._do_not_resync_before[slimplayer.player_id]:
             return
@@ -744,8 +726,8 @@ class SlimprotoProvider(PlayerProvider):
         if last_playpoint and (now - last_playpoint.timestamp) > 10:
             # last playpoint is too old, invalidate
             sync_playpoints.clear()
-        if last_playpoint and last_playpoint.sync_job_id != stream_job.job_id:
-            # streamjob has changed, invalidate
+        if last_playpoint and last_playpoint.sync_master != sync_master.player_id:
+            # this should not happen, but just in case
             sync_playpoints.clear()
 
         diff = int(
@@ -753,12 +735,15 @@ class SlimprotoProvider(PlayerProvider):
             - self._get_corrected_elapsed_milliseconds(slimplayer)
         )
 
-        if last_playpoint and abs(last_playpoint.diff - diff) > DEVIATION_JUMP_IGNORE:
-            # ignore unexpected spikes
+        # ignore unexpected spikes
+        if (
+            sync_playpoints
+            and abs(statistics.fmean(x.diff for x in sync_playpoints)) > DEVIATION_JUMP_IGNORE
+        ):
             return
 
         # we can now append the current playpoint to our list
-        sync_playpoints.append(SyncPlayPoint(now, stream_job.job_id, diff))
+        sync_playpoints.append(SyncPlayPoint(now, sync_master.player_id, diff))
 
         min_req_playpoints = 2 if sync_master.elapsed_seconds < 2 else MIN_REQ_PLAYPOINTS
         if len(sync_playpoints) < min_req_playpoints:
@@ -824,7 +809,7 @@ class SlimprotoProvider(PlayerProvider):
                 # Instead just start playback on all players and let the sync logic work out
                 # the delays etc.
                 self._do_not_resync_before[_client.player_id] = time.time() + 1
-                tg.create_task(_client.unpause_at(0))
+                tg.create_task(_client.pause_for(200))
 
     async def _handle_connected(self, slimplayer: SlimClient) -> None:
         """Handle a slimplayer connected event."""

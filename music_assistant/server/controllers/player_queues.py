@@ -200,8 +200,11 @@ class PlayerQueuesController(CoreController):
         """Return the current active/synced queue for a player."""
         if player := self.mass.players.get(player_id):
             # account for player that is synced (sync child)
-            if player.synced_to:
+            if player.synced_to and player.synced_to != player.player_id:
                 return self.get_active_queue(player.synced_to)
+            # handle active group player
+            if player.active_group and player.active_group != player.player_id:
+                return self.get_active_queue(player.active_group)
             # active_source may be filled with other queue id
             if player.active_source != player_id and (
                 queue := self.get_active_queue(player.active_source)

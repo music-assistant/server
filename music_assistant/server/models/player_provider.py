@@ -292,7 +292,7 @@ class PlayerProvider(Provider):
                 "Group %s has no more powered members, turning off group player",
                 group_player.display_name,
             )
-            self.mass.create_task(self.cmd_power(player_id, False))
+            self.mass.create_task(self.mass.players.cmd_power(player_id, False))
             return
 
         # the below actions are only suitable for syncgroups
@@ -323,9 +323,10 @@ class PlayerProvider(Provider):
         elif new_power:
             # if a child player turned ON while the group is already active, we need to resync
             sync_leader = self.mass.players.get_sync_leader(group_player)
-            self.mass.create_task(
-                self.mass.players.cmd_sync(child_player_id, sync_leader.player_id),
-            )
+            if sync_leader.player_id != child_player_id:
+                self.mass.create_task(
+                    self.cmd_sync(child_player_id, sync_leader.player_id),
+                )
 
     def register_syncgroup(self, group_player_id: str, name: str, members: Iterable[str]) -> Player:
         """Register a (virtual/fake) syncgroup player."""
