@@ -420,6 +420,8 @@ async def get_icy_stream(
                 audio_chunk = await resp.content.readexactly(meta_int)
                 yield audio_chunk
                 meta_byte = await resp.content.readexactly(1)
+                if meta_byte == b"\x00":
+                    continue
                 meta_length = ord(meta_byte) * 16
                 meta_data = await resp.content.readexactly(meta_length)
             except asyncio.exceptions.IncompleteReadError:
