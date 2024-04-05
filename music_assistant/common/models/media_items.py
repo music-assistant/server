@@ -51,7 +51,8 @@ class AudioFormat(DataClassDictMixin):
             return int(self.sample_rate / 1000) + self.bit_depth
         # lossy content, bit_rate is most important score
         # but prefer some codecs over others
-        score = self.bit_rate / 100
+        # rule out bitrates > 320 as that is just an error (happens e.g. for AC3 stream somehow)
+        score = min(320, self.bit_rate) / 100
         if self.content_type in (ContentType.AAC, ContentType.OGG):
             score += 1
         return int(score)
@@ -86,7 +87,11 @@ class ProviderMapping(DataClassDictMixin):
     @property
     def quality(self) -> int:
         """Return quality score."""
-        return self.audio_format.quality
+        quality = self.audio_format.quality
+        if "filesystem" in self.provider_domain:
+            # always prefer local file over online media
+            quality += 1
+        return quality
 
     def __post_init__(self):
         """Call after init."""
