@@ -49,7 +49,6 @@ from music_assistant.server.helpers.audio import (
     get_icy_stream,
     get_player_filter_params,
     parse_loudnorm,
-    resolve_radio_stream,
     strip_silence,
 )
 from music_assistant.server.helpers.util import get_ips
@@ -682,14 +681,21 @@ class StreamsController(CoreController):
         """
         logger = self.logger.getChild("media_stream")
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
-        if is_radio or streamdetails.seek_position:
+        if is_radio:
+            streamdetails.seek_position = 0
             strip_silence_begin = False
-        if is_radio or streamdetails.duration < 30:
+            strip_silence_end = False
+        if streamdetails.seek_position:
+            strip_silence_begin = False
+        if not streamdetails.duration or streamdetails.duration < 30:
             strip_silence_end = False
         # pcm_sample_size = chunk size = 1 second of pcm audio
         pcm_sample_size = pcm_format.pcm_sample_size
         buffer_size = (
-            pcm_sample_size * 5 if (strip_silence_begin or strip_silence_end) else pcm_sample_size
+            pcm_sample_size * 5
+            if (strip_silence_begin or strip_silence_end)
+            # always require a small amount of buffer to prevent livestreams stuttering
+            else pcm_sample_size * 2
         )
 
         # collect all arguments for ffmpeg
@@ -712,16 +718,10 @@ class StreamsController(CoreController):
                 streamdetails,
                 seek_position=streamdetails.seek_position,
             )
-        elif streamdetails.media_type == MediaType.RADIO:
-            resolved_url, supports_icy, is_hls = await resolve_radio_stream(
-                self.mass, streamdetails.path
-            )
-            if supports_icy:
-                audio_source = get_icy_stream(self.mass, resolved_url, streamdetails)
-            elif is_hls:
-                audio_source = get_hls_stream(self.mass, resolved_url, streamdetails)
-            else:
-                audio_source = resolved_url
+        elif streamdetails.stream_type == StreamType.HLS:
+            audio_source = get_hls_stream(self.mass, streamdetails.path, streamdetails)
+        elif streamdetails.stream_type == StreamType.ICY:
+            audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
         else:
             audio_source = streamdetails.path
         extra_input_args = []
