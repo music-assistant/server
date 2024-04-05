@@ -301,17 +301,17 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        track_details = await self._soundcloud.get_track_details(track_id=item_id)
-        stream_format = track_details[0]["media"]["transcodings"][0]["format"]["mime_type"]
         url = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
+            # let ffmpeg work out the details itself as
+            # soundcloud uses a mix of different content types and streaming methods
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(stream_format),
+                content_type=ContentType.UNKNOWN,
             ),
             stream_type=StreamType.HTTP,
-            data=url,
+            path=url,
         )
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:

@@ -460,8 +460,8 @@ async def get_hls_stream(
         charset = resp.charset or "utf-8"
         master_m3u_data = await resp.text(charset)
     substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.path.endswith(".ts")) or not all(
-        x for x in substreams if x.stream_info is not None
+    if any(x for x in substreams if x.path.endswith(".ts")) or all(
+        x for x in substreams if (x.stream_info or x.length)
     ):
         # the url we got is already a substream
         substream_url = url
