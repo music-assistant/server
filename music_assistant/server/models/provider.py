@@ -5,12 +5,12 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
-from zeroconf import ServiceStateChange
-from zeroconf.asyncio import AsyncServiceInfo
-
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
+    from zeroconf import ServiceStateChange
+    from zeroconf.asyncio import AsyncServiceInfo
+
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.enums import ProviderFeature, ProviderType
     from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
@@ -51,7 +51,6 @@ class Provider:
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
-        await self.run_discovery()
 
     async def unload(self) -> None:
         """
@@ -64,20 +63,6 @@ class Provider:
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
     ) -> None:
         """Handle MDNS service state callback."""
-
-    async def run_discovery(self) -> None:
-        """Run manual/initial discovery of known (mdns) entries for this provider."""
-        if not self.manifest.mdns_discovery:
-            return
-        for mdns_type in self.manifest.mdns_discovery:
-            for mdns_name in tuple(self.mass.aiozc.zeroconf.cache.cache):
-                if mdns_type not in mdns_name or mdns_type == mdns_name:
-                    continue
-                info = AsyncServiceInfo(mdns_type, mdns_name)
-                if await info.async_request(self.mass.aiozc.zeroconf, 3000):
-                    await self.on_mdns_service_state_change(
-                        mdns_name, ServiceStateChange.Added, info
-                    )
 
     @property
     def type(self) -> ProviderType:
