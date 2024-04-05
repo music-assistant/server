@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import logging
 import os
 import platform
@@ -254,7 +255,17 @@ class AirplayStream:
         # one could argue that the intermediate ffmpeg towards cliraop is not needed
         # when there are no player specific filters or extras but in this case
         # ffmpeg serves as a small buffer towards the realtime cliraop streamer
-        read, write = os.pipe()
+
+        # create pipes to interconnect ffmpeg with cliraop
+        def create_pipes() -> tuple[int, int]:
+            read, write = os.pipe()
+            if platform.system() == "Linux":
+                # extend the pipe buffer a bit for smoother playback
+                fcntl.fcntl(read, 1031, 1000000)
+                fcntl.fcntl(write, 1031, 1000000)
+            return (read, write)
+
+        read, write = await asyncio.to_thread(create_pipes)
 
         ffmpeg_args = get_ffmpeg_args(
             input_format=self.input_format,
