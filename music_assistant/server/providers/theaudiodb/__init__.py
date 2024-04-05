@@ -286,6 +286,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             except (
                 aiohttp.client_exceptions.ClientConnectorError,
                 aiohttp.client_exceptions.ServerDisconnectedError,
+                TimeoutError,
             ):
                 self.logger.warning("Failed to retrieve %s", endpoint)
                 return None

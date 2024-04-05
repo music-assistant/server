@@ -402,6 +402,8 @@ class ConfigEntryType(StrEnum):
 class StreamType(StrEnum):
     """Enum for the type of streamdetails."""
 
-    HTTP = "http"
+    HTTP = "http"  # regular http stream
+    HLS = "hls"  # http HLS stream
+    ICY = "icy"  # http stream with icy metadata
     LOCAL_FILE = "local_file"
     CUSTOM = "custom"

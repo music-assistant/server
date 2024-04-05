@@ -242,22 +242,27 @@ def compare_external_ids(
     """Compare external ids and return True if a match was found."""
     for external_id_base in external_ids_base:
         for external_id_compare in external_ids_compare:
-            if external_id_compare[0] != external_id_base[0]:
+            external_id_base_type, external_id_base_value = external_id_base
+            external_id_compare_type, external_id_compare_value = external_id_compare
+            if external_id_compare_type != external_id_base_type:
                 continue
             # handle upc stored as EAN-13 barcode
-            if external_id_base[0] == ExternalID.BARCODE and len(external_id_base[1]) == 12:
-                external_id_base[1] = f"0{external_id_base}"
-            if external_id_compare[1] == ExternalID.BARCODE and len(external_id_compare[1]) == 12:
-                external_id_compare[1] = f"0{external_id_compare}"
-            if external_id_base[0] in (ExternalID.ISRC, ExternalID.BARCODE):
-                if external_id_compare[1] == external_id_base[1]:
+            if external_id_base_type == ExternalID.BARCODE and len(external_id_base_value) == 12:
+                external_id_base_value = f"0{external_id_base_value}"
+            if (
+                external_id_compare_value == ExternalID.BARCODE
+                and len(external_id_compare_value) == 12
+            ):
+                external_id_compare_value = f"0{external_id_compare_value}"
+            if external_id_base_type in (ExternalID.ISRC, ExternalID.BARCODE):
+                if external_id_compare_value == external_id_base_value:
                     # barcode and isrc can be multiple per media item
                     # so we only return early on match as there might be
                     # another entry for this ExternalID type.
                     return True
                 continue
             # other ExternalID types: external id must be exact match.
-            return external_id_compare[1] == external_id_base[1]
+            return external_id_compare_value == external_id_base_value
     # return None to define we did not find the same external id type in both sets
     return None
 

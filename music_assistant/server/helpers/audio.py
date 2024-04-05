@@ -19,6 +19,7 @@ from music_assistant.common.helpers.global_cache import (
     set_global_cache_values,
 )
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
+from music_assistant.common.models.enums import MediaType, StreamType
 from music_assistant.common.models.errors import (
     AudioError,
     InvalidDataError,
@@ -271,6 +272,18 @@ async def get_stream_details(
         else:
             raise MediaNotFoundError(f"Unable to retrieve streamdetails for {queue_item}")
 
+        # work out how to handle radio stream
+        if (
+            streamdetails.media_type == MediaType.RADIO
+            and streamdetails.stream_type == StreamType.HTTP
+        ):
+            resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, streamdetails.path)
+            streamdetails.path = resolved_url
+            if is_hls:
+                streamdetails.stream_type = StreamType.HLS
+            elif is_icy:
+                streamdetails.stream_type = StreamType.ICY
+
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
@@ -358,7 +371,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
 
     Returns tuple;
     - unfolded URL as string
-    - bool if the URL supports ICY metadata.
+    - bool if the URL represents a ICY (radio) stream.
     - bool uf the URL represents a HLS stream/playlist.
     """
     base_url = url.split("?")[0]
@@ -366,7 +379,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     if cache := await mass.cache.get(cache_key):
         return cache
     is_hls = False
-    supports_icy = False
+    is_icy = False
     resolved_url = url
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
@@ -378,7 +391,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
             resp.raise_for_status()
             if not resp.headers:
                 raise InvalidDataError("no headers found")
-        supports_icy = headers.get("icy-metaint") is not None
+        is_icy = headers.get("icy-metaint") is not None
         is_hls = headers.get("content-type") in HLS_CONTENT_TYPES
         if (
             base_url.endswith((".m3u", ".m3u8", ".pls"))
@@ -397,10 +410,10 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
 
     except Exception as err:
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
-        return (resolved_url, supports_icy, is_hls)
+        return (resolved_url, is_icy, is_hls)
 
-    result = (resolved_url, supports_icy, is_hls)
-    cache_expiration = 24 * 3600 if url == resolved_url else 600
+    result = (resolved_url, is_icy, is_hls)
+    cache_expiration = 30 * 24 * 3600 if url == resolved_url else 600
     await mass.cache.set(cache_key, result, expiration=cache_expiration)
     return result
 
@@ -416,9 +429,10 @@ async def get_icy_stream(
         meta_int = int(headers["icy-metaint"])
         while True:
             try:
-                audio_chunk = await resp.content.readexactly(meta_int)
-                yield audio_chunk
+                yield await resp.content.readexactly(meta_int)
                 meta_byte = await resp.content.readexactly(1)
+                if meta_byte == b"\x00":
+                    continue
                 meta_length = ord(meta_byte) * 16
                 meta_data = await resp.content.readexactly(meta_length)
             except asyncio.exceptions.IncompleteReadError:
@@ -676,7 +690,9 @@ async def get_preview_stream(
     music_prov = mass.get_provider(provider_instance_id_or_domain)
     streamdetails = await music_prov.get_stream_details(track_id)
     async for chunk in get_ffmpeg_stream(
-        audio_input=music_prov.get_audio_stream(streamdetails, 30),
+        audio_input=music_prov.get_audio_stream(streamdetails, 30)
+        if streamdetails.stream_type == StreamType.CUSTOM
+        else streamdetails.path,
         input_format=streamdetails.audio_format,
         output_format=AudioFormat(content_type=ContentType.MP3),
         extra_input_args=["-to", "30"],

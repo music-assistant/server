@@ -151,10 +151,12 @@ class MusicAssistant:
         await self.streams.setup(await self.config.get_core_config("streams"))
         # register all api commands (methods with decorator)
         self._register_api_commands()
-        # load providers
-        await self._load_providers()
+        # load all available providers from manifest files
+        await self.__load_provider_manifests()
         # setup discovery
         self.create_task(self._setup_discovery())
+        # load providers
+        await self._load_providers()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -463,6 +465,16 @@ class MusicAssistant:
         self.config.set(f"{CONF_PROVIDERS}/{conf.instance_id}/last_error", None)
         self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
         await self._update_available_providers_cache()
+        # run initial discovery after load
+        for mdns_type in provider.manifest.mdns_discovery or []:
+            for mdns_name in set(self.aiozc.zeroconf.cache.cache):
+                if mdns_type not in mdns_name or mdns_type == mdns_name:
+                    continue
+                info = AsyncServiceInfo(mdns_type, mdns_name)
+                if await info.async_request(self.aiozc.zeroconf, 3000):
+                    await provider.on_mdns_service_state_change(
+                        mdns_name, ServiceStateChange.Added, info
+                    )
         # if this is a music provider, start sync
         if provider.type == ProviderType.MUSIC:
             self.music.start_sync(providers=[provider.instance_id])
@@ -512,9 +524,6 @@ class MusicAssistant:
 
     async def _load_providers(self) -> None:
         """Load providers from config."""
-        # load all available providers from manifest files
-        await self.__load_provider_manifests()
-
         # create default config for any 'load_by_default' providers (e.g. URL provider)
         for prov_manifest in self._provider_manifests.values():
             if not prov_manifest.load_by_default:

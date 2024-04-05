@@ -18,7 +18,7 @@ from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.helpers.datetime import utc
-from music_assistant.common.helpers.util import empty_queue, get_ip_pton, select_free_port
+from music_assistant.common.helpers.util import get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -203,7 +203,6 @@ class AirplayStream:
         self._audio_reader_task: asyncio.Task | None = None
         self._cliraop_proc: AsyncProcess | None = None
         self._ffmpeg_proc: AsyncProcess | None = None
-        self._buffer = asyncio.Queue(5)
 
     async def start(self, start_ntp: int) -> None:
         """Initialize CLIRaop process for a player."""
@@ -257,14 +256,6 @@ class AirplayStream:
         # ffmpeg serves as a small buffer towards the realtime cliraop streamer
         read, write = os.pipe()
 
-        async def read_from_buffer() -> AsyncGenerator[bytes, None]:
-            while True:
-                next_chunk = await self._buffer.get()
-                if not next_chunk:
-                    break
-                yield next_chunk
-                del next_chunk
-
         ffmpeg_args = get_ffmpeg_args(
             input_format=self.input_format,
             output_format=AIRPLAY_PCM_FORMAT,
@@ -272,7 +263,7 @@ class AirplayStream:
         )
         self._ffmpeg_proc = AsyncProcess(
             ffmpeg_args,
-            stdin=read_from_buffer(),
+            stdin=True,
             stdout=write,
             name="cliraop_ffmpeg",
         )
@@ -289,7 +280,6 @@ class AirplayStream:
     async def stop(self, wait: bool = True):
         """Stop playback and cleanup."""
         self.running = False
-        empty_queue(self._buffer)
 
         async def _stop() -> None:
             # ffmpeg MUST be stopped before cliraop due to the chained pipes
@@ -309,11 +299,11 @@ class AirplayStream:
 
     async def write_chunk(self, chunk: bytes) -> None:
         """Write a (pcm) audio chunk to ffmpeg."""
-        await self._buffer.put(chunk)
+        await self._ffmpeg_proc.write(chunk)
 
     async def write_eof(self) -> None:
         """Write EOF to the ffmpeg stdin."""
-        await self._buffer.put(b"")
+        await self._ffmpeg_proc.write_eof()
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""

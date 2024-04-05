@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from typing import TYPE_CHECKING
 
@@ -22,7 +23,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError, SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_PORT
+from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_PORT, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -101,6 +102,11 @@ class FullyKioskProvider(PlayerProvider):
         except Exception as err:
             msg = f"Unable to start the FullyKiosk connection ({err!s}"
             raise SetupFailedError(msg) from err
+        # set-up fullykiosk logging
+        if self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            logging.getLogger("fullykiosk").setLevel(logging.DEBUG)
+        else:
+            logging.getLogger("fullykiosk").setLevel(self.logger.level + 10)
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""

@@ -447,7 +447,6 @@ class ArtistsController(MediaControllerBase[Artist]):
             for search_str in (
                 f"{db_artist.name} - {provider_ref_track.name}",
                 f"{db_artist.name} {provider_ref_track.name}",
-                f"{db_artist.sort_name} {provider_ref_track.sort_name}",
                 provider_ref_track.name,
             ):
                 search_results = await self.mass.music.tracks.search(search_str, provider.domain)
