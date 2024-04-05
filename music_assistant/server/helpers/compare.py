@@ -243,7 +243,7 @@ def compare_external_ids(
     for external_id_base in external_ids_base:
         for external_id_compare in external_ids_compare:
             external_id_base_type, external_id_base_value = external_id_base
-            external_id_compare_type, external_id_compare_value = external_id_base
+            external_id_compare_type, external_id_compare_value = external_id_compare
             if external_id_compare_type != external_id_base_type:
                 continue
             # handle upc stored as EAN-13 barcode
