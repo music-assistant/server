@@ -360,6 +360,14 @@ class MusicController(CoreController):
             full_item.item_id,
             True,
         )
+        # ensure item is added to provider library
+        for provider_mapping in full_item.provider_mappings:
+            prov_controller = self.mass.get_provider(provider_mapping.provider_instance)
+            if prov_controller and prov_controller.library_edit_supported(full_item.media_type):
+                with suppress(NotImplementedError):
+                    await prov_controller.library_add(
+                        provider_mapping.item_id, full_item.media_type
+                    )
 
     @api_command("music/favorites/remove_item")
     async def remove_item_from_favorites(
