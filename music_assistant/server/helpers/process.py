@@ -24,7 +24,7 @@ from music_assistant.constants import MASS_LOGGER_NAME
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
 
-DEFAULT_CHUNKSIZE = 128000
+DEFAULT_CHUNKSIZE = 64000
 
 # pylint: disable=invalid-name
 
