@@ -345,6 +345,14 @@ class MusicController(CoreController):
         """Add an item to the favorites."""
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
+        # ensure item is added to streaming provider library
+        prov_controller = self.mass.get_provider(item.provider)
+        if (
+            prov_controller
+            and prov_controller.is_streaming_provider
+            and prov_controller.library_edit_supported(item.media_type)
+        ):
+            await prov_controller.library_add(item.item_id, item.media_type)
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -360,14 +368,6 @@ class MusicController(CoreController):
             full_item.item_id,
             True,
         )
-        # ensure item is added to provider library
-        for provider_mapping in full_item.provider_mappings:
-            prov_controller = self.mass.get_provider(provider_mapping.provider_instance)
-            if prov_controller and prov_controller.library_edit_supported(full_item.media_type):
-                with suppress(NotImplementedError):
-                    await prov_controller.library_add(
-                        provider_mapping.item_id, full_item.media_type
-                    )
 
     @api_command("music/favorites/remove_item")
     async def remove_item_from_favorites(
