@@ -23,6 +23,7 @@ from music_assistant.constants import MASS_LOGGER_NAME
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
 
+
 DEFAULT_CHUNKSIZE = 128000
 
 # pylint: disable=invalid-name
@@ -103,6 +104,10 @@ class AsyncProcess:
             else self._stdin,
             stdout=asyncio.subprocess.PIPE if self._stdout is True else self._stdout,
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
+            # because we're exchanging big amounts of (audio) data with pipes
+            # it makes sense to extend the pipe size and (buffer) limits a bit
+            limit=1000000,
+            pipesize=1000000,
         )
         self.logger.debug("Process %s started with PID %s", self.name, self.proc.pid)
         if isinstance(self._stdin, AsyncGenerator):
