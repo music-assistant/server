@@ -43,7 +43,7 @@ class AsyncProcess:
         args: list[str],
         stdin: bool | int | AsyncGenerator[bytes, None] | None = None,
         stdout: bool | int | None = None,
-        stderr: bool | int | None = False,
+        stderr: bool | int | None = None,
         name: str | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
@@ -54,12 +54,9 @@ class AsyncProcess:
         self.attached_tasks: list[asyncio.Task] = []
         self.logger = LOGGER.getChild(name)
         self._args = args
-        self._stdin = stdin
-        self._stdout = stdout
-        self._stderr = stderr
-        self._stdin_enabled = stdin not in (None, False)
-        self._stdout_enabled = stdout not in (None, False)
-        self._stderr_enabled = stderr not in (None, False)
+        self._stdin = None if stdin is False else stdin
+        self._stdout = None if stdout is False else stdout
+        self._stderr = asyncio.subprocess.DEVNULL if stderr is False else stderr
         self._close_called = False
         self._returncode: bool | None = None
 
@@ -177,12 +174,16 @@ class AsyncProcess:
         for task in self.attached_tasks:
             if not task.done():
                 task.cancel()
-                with suppress(asyncio.CancelledError):
-                    await task
         if send_signal and self.returncode is None:
             self.proc.send_signal(SIGINT)
-            # allow the process a bit of time to respond to the signal before we go nuclear
-            await asyncio.sleep(0.5)
+
+        # abort existing readers on stderr/stdout first before we send communicate
+        if self.proc.stdout and self.proc.stdout._waiter is not None:
+            self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
+            self.proc.stdout._waiter = None
+        if self.proc.stderr and self.proc.stderr._waiter is not None:
+            self.proc.stderr._waiter.set_exception(asyncio.CancelledError())
+            self.proc.stderr._waiter = None
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
@@ -190,13 +191,6 @@ class AsyncProcess:
         while True:
             try:
                 async with asyncio.timeout(5):
-                    # abort existing readers on stderr/stdout first before we send communicate
-                    if self.proc.stdout and self.proc.stdout._waiter is not None:
-                        self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
-                        self.proc.stdout._waiter = None
-                    if self.proc.stderr and self.proc.stderr._waiter is not None:
-                        self.proc.stderr._waiter.set_exception(asyncio.CancelledError())
-                        self.proc.stderr._waiter = None
                     # use communicate to flush all pipe buffers
                     await self.proc.communicate()
                     if self.returncode is not None:
@@ -218,9 +212,8 @@ class AsyncProcess:
 
     async def wait(self) -> int:
         """Wait for the process and return the returncode."""
-        if self.returncode is not None:
-            return self.returncode
-        self._returncode = await self.proc.wait()
+        if self._returncode is None:
+            self._returncode = await self.proc.wait()
         return self._returncode
 
     async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:

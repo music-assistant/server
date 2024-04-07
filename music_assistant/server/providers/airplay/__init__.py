@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import fcntl
 import logging
 import os
 import platform
@@ -11,7 +10,6 @@ import socket
 import time
 from contextlib import suppress
 from dataclasses import dataclass
-from pathlib import Path
 from random import randint, randrange
 from typing import TYPE_CHECKING
 
@@ -204,7 +202,6 @@ class AirplayStream:
         self._log_reader_task: asyncio.Task | None = None
         self._cliraop_proc: AsyncProcess | None = None
         self._ffmpeg_proc: AsyncProcess | None = None
-        self._fd: int | None = None
 
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLIRaop process for a player."""
@@ -228,20 +225,6 @@ class AirplayStream:
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
 
-        # create named pipe to interconnect ffmpeg with cliraop for the audio
-        named_pipe = f"/tmp/raop-{self.active_remote_id}"  # noqa: S108
-
-        def create_named_pipe() -> None:
-            os.mkfifo(named_pipe, 777)
-
-            if platform.system() == "Linux":
-                # extend the pipe buffer (available on Linux only)
-                self._fd = os.open(named_pipe, os.O_RDWR)
-                max_pipe_size = int(Path("/proc/sys/fs/pipe-max-size").read_text())
-                fcntl.fcntl(self._fd, 1031, min(max_pipe_size, 1000000))
-
-        pipe_fd = await asyncio.to_thread(create_named_pipe)
-
         cliraop_args = [
             self.prov.cliraop_bin,
             "-ntpstart",
@@ -260,62 +243,49 @@ class AirplayStream:
             "-udn",
             self.airplay_player.discovery_info.name,
             self.airplay_player.address,
-            named_pipe,
+            "-",
         ]
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
 
         # ffmpeg handles the player specific stream + filters and pipes
         # audio to the cliraop process
-
+        read, write = await asyncio.to_thread(os.pipe)
         ffmpeg_args = get_ffmpeg_args(
             input_format=self.input_format,
             output_format=AIRPLAY_PCM_FORMAT,
-            output_path=named_pipe,
             filter_params=get_player_filter_params(self.mass, player_id),
-            extra_args=["-y"],
+            loglevel="fatal",
         )
         self._ffmpeg_proc = AsyncProcess(
             ffmpeg_args,
             stdin=True,
-            stdout=pipe_fd,
+            stdout=write,
             name="cliraop_ffmpeg",
         )
         await self._ffmpeg_proc.start()
+        await asyncio.to_thread(os.close, write)
 
         self._cliraop_proc = AsyncProcess(
-            cliraop_args, stdin=True, stdout=False, stderr=True, name="cliraop"
+            cliraop_args, stdin=read, stdout=False, stderr=True, name="cliraop"
         )
         await self._cliraop_proc.start()
+        await asyncio.to_thread(os.close, read)
         self._log_reader_task = asyncio.create_task(self._log_watcher())
 
-    async def stop(self, wait: bool = True):
+    async def stop(self):
         """Stop playback and cleanup."""
         self.running = False
         if self.audio_source_task and not self.audio_source_task.done():
             self.audio_source_task.cancel()
+        if not self._cliraop_proc.closed:
+            await self.send_cli_command("ACTION=STOP")
+        await self._cliraop_proc.wait()
 
-        async def _stop() -> None:
-            # ffmpeg MUST be stopped before cliraop due to the chained pipes
-            if not self._ffmpeg_proc.closed:
-                await self._ffmpeg_proc.close(True)
-            # allow the cliraop process to stop gracefully first
-            if not self._cliraop_proc.closed:
-                await self.send_cli_command("ACTION=STOP")
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(self._cliraop_proc.wait(), 5)
-            # send regular close anyway (which also logs the returncode)
-            await self._cliraop_proc.close(True)
-            # close the file descriptor to the named pipe
-            if self._fd is not None:
-                await asyncio.to_thread(os.close, self._fd)
-            pipe_path = "/tmp/raop-{self.active_remote_id}"  # noqa: S108
-            if await asyncio.to_thread(os.path.isfile):
-                await asyncio.to_thread(os.remove, pipe_path)
-
-        task = self.mass.create_task(_stop())
-        if wait:
-            await task
+        # ffmpeg can sometimes hang due to the connected pipes
+        # we handle closing it but it can be a bit slow so do that in the background
+        if not self._ffmpeg_proc.closed:
+            self.mass.create_task(self._ffmpeg_proc.close(True))
 
     async def write_chunk(self, chunk: bytes) -> None:
         """Write a (pcm) audio chunk."""
@@ -333,8 +303,13 @@ class AirplayStream:
         if not command.endswith("\n"):
             command += "\n"
 
+        def send_data():
+            with suppress(BrokenPipeError), open(named_pipe, "w") as f:
+                f.write(command)
+
+        named_pipe = f"/tmp/raop-{self.active_remote_id}"  # noqa: S108
         self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
-        await self._cliraop_proc.write(command)
+        await self.mass.create_task(send_data)
 
     async def _log_watcher(self) -> None:
         """Monitor stderr for the running CLIRaop process."""
@@ -387,9 +362,9 @@ class AirplayStream:
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:
-                    logger.error("High packet loss detected, stopping playback...")
-                    await self.stop(False)
-                elif lost_packets % 10 == 0:
+                    logger.error("High packet loss detected, restarting playback...")
+                    self.mass.create_task(self.mass.player_queues.resume(queue.queue_id))
+                else:
                     logger.warning("Packet loss detected!")
 
             logger.log(VERBOSE_LOG_LEVEL, line)
@@ -399,9 +374,8 @@ class AirplayStream:
         if airplay_player.active_stream == self:
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(airplay_player.player_id)
-        # ensure we're cleaned up afterwards
-        if self._ffmpeg_proc.returncode is None or self._cliraop_proc.returncode is None:
-            await self.stop()
+        # ensure we're cleaned up afterwards (this also logs the returncode)
+        await self.stop()
 
     async def _send_metadata(self, queue: PlayerQueue) -> None:
         """Send metadata to player (and connected sync childs)."""
@@ -609,7 +583,7 @@ class AirplayProvider(PlayerProvider):
         async with asyncio.TaskGroup() as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream and airplay_player.active_stream.running:
-                    tg.create_task(airplay_player.active_stream.stop(wait=False))
+                    tg.create_task(airplay_player.active_stream.stop())
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
@@ -678,12 +652,16 @@ class AirplayProvider(PlayerProvider):
                         for airplay_player in sync_clients:
                             tg.create_task(airplay_player.active_stream.write_chunk(chunk))
 
-                # entire stream consumed: send EOF (empty chunk)
+                # entire stream consumed: send EOF
                 for airplay_player in sync_clients:
                     self.mass.create_task(airplay_player.active_stream.write_eof())
             finally:
                 if not fill_buffer_task.done():
                     fill_buffer_task.cancel()
+                    # make sure the stdin generator is also properly closed
+                    # by propagating a cancellederror within
+                    task = asyncio.create_task(audio_source.__anext__())
+                    task.cancel()
                 empty_queue(buffer)
 
         # get current ntp and start cliraop
