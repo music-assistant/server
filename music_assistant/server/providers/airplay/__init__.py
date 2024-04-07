@@ -273,6 +273,7 @@ class AirplayStream:
             output_format=AIRPLAY_PCM_FORMAT,
             output_path=named_pipe,
             filter_params=get_player_filter_params(self.mass, player_id),
+            extra_args=["-y"],
         )
         self._ffmpeg_proc = AsyncProcess(
             ffmpeg_args,
