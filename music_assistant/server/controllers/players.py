@@ -861,7 +861,8 @@ class PlayerController(CoreController):
                 CONF_ENTRY_ANNOUNCE_VOLUME_MAX.default_value,
             )
             volume_level = min(announce_volume_max, volume_level)
-        return volume_level
+        # ensure the result is an integer
+        return int(volume_level)
 
     def _check_redirect(self, player_id: str) -> str:
         """Check if playback related command should be redirected."""
