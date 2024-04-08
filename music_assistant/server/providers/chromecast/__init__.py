@@ -36,6 +36,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE,
     CONF_FLOW_MODE,
     CONF_PLAYERS,
+    MASS_LOGO_ONLINE,
     VERBOSE_LOG_LEVEL,
 )
 from music_assistant.server.models.player_provider import PlayerProvider
@@ -618,7 +619,9 @@ class ChromecastProvider(PlayerProvider):
         # update metadata of current item chromecast
         if media_controller.status.media_custom_data["queue_item_id"] != current_item.queue_item_id:
             image_url = (
-                self.mass.metadata.get_image_url(current_item.image) if current_item.image else None
+                self.mass.metadata.get_image_url(current_item.image)
+                if current_item.image
+                else MASS_LOGO_ONLINE
             )
             if (streamdetails := current_item.streamdetails) and streamdetails.stream_title:
                 album = current_item.media_item.name
@@ -645,7 +648,7 @@ class ChromecastProvider(PlayerProvider):
                         "songName": title,
                         "artist": artist,
                         "title": title,
-                        "images": [{"url": image_url}] if image_url else None,
+                        "images": [{"url": image_url}],
                     }
                 },
             }
