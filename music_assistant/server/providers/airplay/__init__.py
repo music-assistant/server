@@ -280,7 +280,14 @@ class AirplayStream:
             self.audio_source_task.cancel()
         if not self._cliraop_proc.closed:
             await self.send_cli_command("ACTION=STOP")
-        await self._cliraop_proc.wait()
+        try:
+            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
+        except TimeoutError:
+            self.prov.logger.warning(
+                "Raop process for %s did not stop in time, is the player offline?",
+                self.airplay_player.player_id,
+            )
+            await self._cliraop_proc.close(True)
 
         # ffmpeg can sometimes hang due to the connected pipes
         # we handle closing it but it can be a bit slow so do that in the background
