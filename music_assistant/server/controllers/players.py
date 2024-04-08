@@ -643,24 +643,26 @@ class PlayerController(CoreController):
                 )
                 return
             if player.type in (PlayerType.SYNC_GROUP, PlayerType.GROUP) and not player.powered:
-                # announcement request sent to inactive group,
-                # redirect to all underlying players instead
-                self.logger.warning(
-                    "Detected announcement request to an inactive playergroup, "
-                    "this will be redirected to the individual players."
-                )
-                async with asyncio.TaskGroup() as tg:
-                    for group_member in player.group_childs:
-                        tg.create_task(
-                            self.play_announcement(
-                                group_member,
-                                url=url,
-                                use_pre_announce=use_pre_announce,
-                                volume_level=volume_level,
+                # announcement request sent to inactive group, check if any child's are playing
+                if len(list(self.iter_group_members(player, True, True))) > 0:
+                    # just for the sake of simplicity we handle this request per-player
+                    # so we can restore the individual players again.
+                    self.logger.warning(
+                        "Detected announcement request to an inactive playergroup, "
+                        "while one or more individual players are playing. "
+                        "This announcement will be redirected to the individual players."
+                    )
+                    async with asyncio.TaskGroup() as tg:
+                        for group_member in player.group_childs:
+                            tg.create_task(
+                                self.play_announcement(
+                                    group_member,
+                                    url=url,
+                                    use_pre_announce=use_pre_announce,
+                                    volume_level=volume_level,
+                                )
                             )
-                        )
-                return
-
+                    return
             # determine pre-announce from (group)player config
             if use_pre_announce is None and "tts" in url:
                 use_pre_announce = self.mass.config.get_raw_player_config_value(
