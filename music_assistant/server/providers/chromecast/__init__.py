@@ -70,8 +70,7 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_DURATION,
 )
 
-DEFAULT_APP_ID = "CC1AD845"
-ALT_APP_ID = "46C1A819"
+MASS_APP_ID = "46C1A819"  # use the cast receiver app from philippe44 for now until we get our own
 
 
 # Monkey patch the Media controller here to store the queue items
@@ -237,14 +236,12 @@ class ChromecastProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         castplayer = self.castplayers[player_id]
-        is_flow_mode = "/flow/" in media.uri
         queuedata = {
             "type": "LOAD",
             "media": self._create_cc_media_item(media),
         }
-        # make sure that the media controller app is launched
-        app_id = ALT_APP_ID if is_flow_mode else DEFAULT_APP_ID
-        await self._launch_app(castplayer, app_id)
+        # make sure that our media controller app is launched
+        await self._launch_app(castplayer)
         # send queue info to the CC
         media_controller = castplayer.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
@@ -542,7 +539,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Helpers / utils
 
-    async def _launch_app(self, castplayer: CastPlayer, app_id: str = DEFAULT_APP_ID) -> None:
+    async def _launch_app(self, castplayer: CastPlayer, app_id: str = MASS_APP_ID) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
 
@@ -610,27 +607,44 @@ class ChromecastProvider(PlayerProvider):
             return
         if castplayer.player.state != PlayerState.PLAYING:
             return
-        if castplayer.cc.app_id != ALT_APP_ID:
+        if castplayer.player.announcement_in_progress:
             return
         queue = self.mass.player_queues.get_active_queue(castplayer.player_id)
         if not (current_item := queue.current_item):
             return
+        if not (queue.flow_mode or current_item.media_type == MediaType.RADIO):
+            return
         media_controller = castplayer.cc.media_controller
         # update metadata of current item chromecast
         if media_controller.status.media_custom_data["queue_item_id"] != current_item.queue_item_id:
-            image_url = self.mass.metadata.get_image_url(current_item.image)
+            image_url = (
+                self.mass.metadata.get_image_url(current_item.image) if current_item.image else None
+            )
+            if (streamdetails := current_item.streamdetails) and streamdetails.stream_title:
+                album = current_item.media_item.name
+                if " - " in streamdetails.stream_title:
+                    artist, title = streamdetails.stream_title.split(" - ", 1)
+                else:
+                    artist = ""
+                    title = streamdetails.stream_title
+            elif media_item := current_item.media_item:
+                album = _album.name if (_album := getattr(media_item, "album", None)) else ""
+                artist = getattr(media_item, "artist_str", "")
+                title = media_item.name
+            else:
+                album = ""
+                artist = ""
+                title = current_item.name
             queuedata = {
                 "type": "PLAY",
                 "mediaSessionId": media_controller.status.media_session_id,
                 "customData": {
                     "metadata": {
                         "metadataType": 3,
-                        "albumName": album.name
-                        if (album := getattr(current_item.media_item, "album", None))
-                        else "",
-                        "songName": current_item.media_item.name,
-                        "artist": getattr(current_item.media_item, "artist_str", ""),
-                        "title": current_item.media_item.name,
+                        "albumName": album,
+                        "songName": title,
+                        "artist": artist,
+                        "title": title,
                         "images": [{"url": image_url}] if image_url else None,
                     }
                 },
