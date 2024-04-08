@@ -345,6 +345,13 @@ class MusicController(CoreController):
         """Add an item to the favorites."""
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
+        # ensure item is added to streaming provider library
+        if (
+            (provider := self.mass.get_provider(item.provider))
+            and provider.is_streaming_provider
+            and provider.library_edit_supported(item.media_type)
+        ):
+            await provider.library_add(item.item_id, item.media_type)
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
