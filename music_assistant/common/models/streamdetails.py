@@ -50,8 +50,6 @@ class StreamDetails(DataClassDictMixin):
     # can_seek: bool to indicate that the providers 'get_audio_stream' supports seeking of the item
     can_seek: bool = True
 
-    # stream_type:
-
     # the fields below will be set/controlled by the streamcontroller
     seek_position: int = 0
     fade_in: bool = False
