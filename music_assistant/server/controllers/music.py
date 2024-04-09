@@ -10,6 +10,8 @@ from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
 
+import aiohttp.client_exceptions
+
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -36,6 +38,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
+    PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
@@ -157,6 +160,33 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
+        # Check if the search query is a streaming provider public shareable URL
+        try:
+            media_type, provider_instance_id_or_domain, item_id = parse_uri(search_query)
+        except MusicAssistantError:
+            pass
+        else:
+            if provider_instance_id_or_domain in PROVIDERS_WITH_SHAREABLE_URLS:
+                try:
+                    item = await self.get_item(
+                        media_type=media_type,
+                        item_id=item_id,
+                        provider_instance_id_or_domain=provider_instance_id_or_domain,
+                    )
+                except (MusicAssistantError, aiohttp.client_exceptions.ClientResponseError):
+                    return SearchResults()
+                else:
+                    if media_type == MediaType.ARTIST:
+                        return SearchResults(artists=[item])
+                    elif media_type == MediaType.ALBUM:
+                        return SearchResults(albums=[item])
+                    elif media_type == MediaType.TRACK:
+                        return SearchResults(tracks=[item])
+                    elif media_type == MediaType.PLAYLIST:
+                        return SearchResults(playlists=[item])
+                    else:
+                        return SearchResults()
+
         # include results from all (unique) music providers
         results_per_provider: list[SearchResults] = await asyncio.gather(
             *[
