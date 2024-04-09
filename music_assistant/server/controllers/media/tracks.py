@@ -161,6 +161,7 @@ class TracksController(MediaControllerBase[Track]):
                     # existing item found: update it
                     library_item = await self.update_item_in_library(db_item.item_id, item)
                     break
+                await asyncio.sleep(0)  # yield to eventloop
         if not library_item:
             # actually add a new item in the library db
             # use the lock to prevent a race condition of the same item being added twice

@@ -595,6 +595,7 @@ class StreamsController(CoreController):
                 #### OTHER: enough data in buffer, feed to output
                 while len(buffer) > req_buffer_size:
                     yield buffer[:pcm_sample_size]
+                    await asyncio.sleep(0)  # yield to eventloop
                     bytes_written += pcm_sample_size
                     buffer = buffer[pcm_sample_size:]
 
@@ -852,6 +853,7 @@ class StreamsController(CoreController):
                 #### OTHER: enough data in buffer, feed to output
                 while len(buffer) > buffer_size:
                     yield buffer[:pcm_sample_size]
+                    await asyncio.sleep(0)  # yield to eventloop
                     state_data["bytes_sent"] += pcm_sample_size
                     buffer = buffer[pcm_sample_size:]
 

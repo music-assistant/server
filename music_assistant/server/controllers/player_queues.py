@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import time
 from collections.abc import AsyncGenerator
@@ -325,6 +326,7 @@ class PlayerQueuesController(CoreController):
             elif media_item.media_type == MediaType.PLAYLIST:
                 async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
                     tracks.append(playlist_track)
+                    await asyncio.sleep(0)  # yield to eventloop
                 await self.mass.music.mark_item_played(
                     media_item.media_type, media_item.item_id, media_item.provider
                 )

@@ -198,6 +198,7 @@ class MetaDataController(CoreController):
                     if genre not in playlist_genres:
                         playlist_genres[genre] = 0
                     playlist_genres[genre] += 1
+                await asyncio.sleep(0)  # yield to eventloop
 
             playlist_genres_filtered = {
                 genre for genre, count in playlist_genres.items() if count > 5
