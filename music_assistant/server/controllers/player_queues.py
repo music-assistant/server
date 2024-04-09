@@ -512,6 +512,8 @@ class PlayerQueuesController(CoreController):
         if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
+        if queue := self.get(queue_id):
+            queue.stream_finished = False
         # simply forward the command to underlying player
         await self.mass.players.cmd_stop(queue_id)
 
@@ -569,10 +571,8 @@ class PlayerQueuesController(CoreController):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         current_index = self._queues[queue_id].current_index
-        next_index = self._get_next_index(queue_id, current_index, True)
-        if next_index is None:
-            return
-        await self.play_index(queue_id, next_index)
+        if (next_index := self._get_next_index(queue_id, current_index, True)) is not None:
+            await self.play_index(queue_id, next_index)
 
     @api_command("players/queue/previous")
     async def previous(self, queue_id: str) -> None:
@@ -675,9 +675,11 @@ class PlayerQueuesController(CoreController):
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
-        queue.flow_mode = self.mass.config.get_raw_player_config_value(
+        player_needs_flow_mode = self.mass.config.get_raw_player_config_value(
             queue_id, CONF_FLOW_MODE, False
         )
+        next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+        queue.flow_mode = player_needs_flow_mode and next_index is not None
         # get streamdetails - do this here to catch unavailable items early
         queue_item.streamdetails = await get_stream_details(
             self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
@@ -792,7 +794,7 @@ class PlayerQueuesController(CoreController):
         if len(changed_keys) == 0:
             return
         # handle enqueuing of next item to play
-        if not queue.flow_mode:
+        if not queue.flow_mode or queue.stream_finished:
             self._check_enqueue_next(player, queue, prev_state, new_state)
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
@@ -835,7 +837,10 @@ class PlayerQueuesController(CoreController):
         self._queue_items.pop(player_id, None)
 
     async def preload_next_item(
-        self, queue_id: str, current_item_id_or_index: str | int | None = None
+        self,
+        queue_id: str,
+        current_item_id_or_index: str | int | None = None,
+        allow_repeat: bool = True,
     ) -> QueueItem:
         """Call when a player wants to (pre)load the next item into the buffer.
 
@@ -853,10 +858,9 @@ class PlayerQueuesController(CoreController):
             cur_index = current_item_id_or_index
         idx = 0
         while True:
-            next_index = self._get_next_index(queue_id, cur_index + idx)
+            next_index = self._get_next_index(queue_id, cur_index + idx, allow_repeat=allow_repeat)
             if next_index is None:
-                msg = "No more tracks left in the queue."
-                raise QueueEmpty(msg)
+                raise QueueEmpty("No more tracks left in the queue.")
             next_item = self.get_item(queue_id, next_index)
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
@@ -873,8 +877,7 @@ class PlayerQueuesController(CoreController):
                 next_item = None
                 idx += 1
         if next_item is None:
-            msg = "No more (playable) tracks left in the queue."
-            raise QueueEmpty(msg)
+            raise QueueEmpty("No more (playable) tracks left in the queue.")
         return next_item
 
     # Main queue manipulation methods
@@ -983,7 +986,7 @@ class PlayerQueuesController(CoreController):
         return media
 
     def _get_next_index(
-        self, queue_id: str, cur_index: int | None, is_skip: bool = False
+        self, queue_id: str, cur_index: int | None, is_skip: bool = False, allow_repeat: bool = True
     ) -> int | None:
         """
         Return the next index for the queue, accounting for repeat settings.
@@ -997,11 +1000,14 @@ class PlayerQueuesController(CoreController):
             return None
         # handle repeat single track
         if queue.repeat_mode == RepeatMode.ONE and not is_skip:
-            return cur_index
+            return cur_index if allow_repeat else None
         # handle cur_index is last index of the queue
         if cur_index >= (len(queue_items) - 1):
-            # if repeat all is enabled, we simply start again from the beginning
-            return 0 if queue.repeat_mode == RepeatMode.ALL else None
+            if allow_repeat and queue.repeat_mode == RepeatMode.ALL:
+                # if repeat all is enabled, we simply start again from the beginning
+                return 0
+            return None
+        # all other: just the next index
         return cur_index + 1
 
     def _get_next_item(self, queue_id: str, cur_index: int | None = None) -> QueueItem | None:
@@ -1048,14 +1054,14 @@ class PlayerQueuesController(CoreController):
             duration = current_item.duration
         seconds_remaining = int(duration - player.corrected_elapsed_time)
 
-        async def _enqueue_next(index: int, supports_enqueue: bool = False) -> None:
+        async def _enqueue_next(current_index: int, supports_enqueue: bool = False) -> None:
             if (
                 player := self.mass.players.get(queue.queue_id)
             ) and player.announcement_in_progress:
                 self.logger.warning("Ignore queue command: An announcement is in progress")
                 return
             with suppress(QueueEmpty):
-                next_item = await self.preload_next_item(queue.queue_id, index)
+                next_item = await self.preload_next_item(queue.queue_id, current_index)
                 if supports_enqueue:
                     await self.mass.players.enqueue_next_media(
                         player_id=player.player_id,
@@ -1064,8 +1070,18 @@ class PlayerQueuesController(CoreController):
                     return
                 await self.play_index(queue.queue_id, next_item.queue_item_id)
 
+        # handle queue fully played - clear it completely once the player stopped
+        if (
+            queue.stream_finished
+            and queue.state == PlayerState.IDLE
+            and self._get_next_index(queue.queue_id, queue.current_index) is None
+        ):
+            self.logger.debug("End of queue reached for %s", queue.display_name)
+            self.clear(queue.queue_id)
+            return
+
+        # handle native enqueue next support of player
         if PlayerFeature.ENQUEUE_NEXT in player.supported_features:
-            # player supports enqueue next feature.
             # we enqueue the next track after a new track
             # has started playing and (repeat) before the current track ends
             new_track_started = new_state.get("state") == PlayerState.PLAYING and prev_state.get(
@@ -1079,14 +1095,11 @@ class PlayerQueuesController(CoreController):
                 self.mass.create_task(_enqueue_next(queue.current_index, True))
             return
 
-        # player does not support enqueue next feature.
+        # player does not support enqueue next feature (or stream finished)
         # we wait for the player to stop after it reaches the end of the track
-        prev_seconds_remaining = prev_state.get("seconds_remaining", seconds_remaining)
-        if prev_seconds_remaining <= 6 and queue.state == PlayerState.IDLE:
+        if queue.stream_finished and queue.state == PlayerState.IDLE:
             self.mass.create_task(_enqueue_next(queue.current_index, False))
             return
-
-        new_state["seconds_remaining"] = seconds_remaining
 
     async def _get_radio_tracks(self, queue_id: str) -> list[MediaItemType]:
         """Call the registered music providers for dynamic tracks."""

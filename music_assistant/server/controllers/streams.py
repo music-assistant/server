@@ -349,6 +349,7 @@ class StreamsController(CoreController):
 
         # all checks passed, start streaming!
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
+        queue.stream_finished = False
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
@@ -397,6 +398,7 @@ class StreamsController(CoreController):
             length_b = chr(int(length / 16)).encode()
             await resp.write(length_b + metadata)
 
+        queue.stream_finished = True
         return resp
 
     async def serve_command_request(self, request: web.Request) -> web.Response:
@@ -493,6 +495,7 @@ class StreamsController(CoreController):
         queue_track = None
         last_fadeout_part = b""
         queue.flow_mode = True
+        queue.stream_finished = False
         use_crossfade = self.mass.config.get_raw_player_config_value(
             queue.queue_id, CONF_CROSSFADE, False
         )
@@ -512,7 +515,9 @@ class StreamsController(CoreController):
                 queue_track = start_queue_item
             else:
                 try:
-                    queue_track = await self.mass.player_queues.preload_next_item(queue.queue_id)
+                    queue_track = await self.mass.player_queues.preload_next_item(
+                        queue.queue_id, allow_repeat=False
+                    )
                 except QueueEmpty:
                     break
 
@@ -638,6 +643,7 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration += last_part_seconds
             del last_fadeout_part
         total_bytes_sent += bytes_written
+        queue.stream_finished = True
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
@@ -697,7 +703,6 @@ class StreamsController(CoreController):
             # always require a small amount of buffer to prevent livestreams stuttering
             else pcm_sample_size * 2
         )
-
         # collect all arguments for ffmpeg
         filter_params = []
         if streamdetails.target_loudness is not None:
