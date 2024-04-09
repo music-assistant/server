@@ -10,8 +10,6 @@ from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
 
-import aiohttp.client_exceptions
-
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -22,7 +20,11 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant.common.models.errors import (
+    InvalidProviderURI,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
@@ -162,7 +164,12 @@ class MusicController(CoreController):
         """
         # Check if the search query is a streaming provider public shareable URL
         try:
-            media_type, provider_instance_id_or_domain, item_id = parse_uri(search_query)
+            media_type, provider_instance_id_or_domain, item_id = parse_uri(
+                search_query, validate_id=True
+            )
+        except InvalidProviderURI as err:
+            self.logger.warning("%s", str(err))
+            return SearchResults()
         except MusicAssistantError:
             pass
         else:
@@ -173,7 +180,8 @@ class MusicController(CoreController):
                         item_id=item_id,
                         provider_instance_id_or_domain=provider_instance_id_or_domain,
                     )
-                except (MusicAssistantError, aiohttp.client_exceptions.ClientResponseError):
+                except MusicAssistantError as err:
+                    self.logger.warning("%s", str(err))
                     return SearchResults()
                 else:
                     if media_type == MediaType.ARTIST:
