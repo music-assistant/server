@@ -1095,7 +1095,7 @@ class PlayerQueuesController(CoreController):
                 self.mass.create_task(_enqueue_next(queue.current_index, True))
             return
 
-        # player does not support enqueue next feature (or stream finished)
+        # player does not support enqueue next feature.
         # we wait for the player to stop after it reaches the end of the track
         if queue.stream_finished and queue.state == PlayerState.IDLE:
             self.mass.create_task(_enqueue_next(queue.current_index, False))
