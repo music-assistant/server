@@ -550,14 +550,14 @@ class StreamsController(CoreController):
                 pcm_format=pcm_format,
                 # strip silence from begin/end if track is being crossfaded
                 strip_silence_begin=use_crossfade and total_bytes_sent > 0,
-                strip_silence_end=use_crossfade,
+                strip_silence_end=use_crossfade and total_bytes_sent > 0,
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 # allow it to be a bit smaller when playback just starts
-                if not use_crossfade:
-                    req_buffer_size = pcm_sample_size
+                if not use_crossfade or (total_bytes_sent + bytes_written == 0):
+                    req_buffer_size = pcm_sample_size * 2
                 elif (total_bytes_sent + bytes_written) < crossfade_size:
-                    req_buffer_size = int(crossfade_size / 2)
+                    req_buffer_size = pcm_sample_size * 5
                 else:
                     req_buffer_size = crossfade_size
 
