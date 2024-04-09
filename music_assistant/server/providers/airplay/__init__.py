@@ -692,7 +692,7 @@ class AirplayProvider(PlayerProvider):
         # get current ntp and start cliraop
         _, stdout = await check_output(f"{self.cliraop_bin} -ntp")
         start_ntp = int(stdout.strip())
-        wait_start = 1000 + (500 * len(sync_clients))
+        wait_start = 1250 + (250 * len(sync_clients))
         async with asyncio.TaskGroup() as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 tg.create_task(airplay_player.active_stream.start(start_ntp, wait_start))
