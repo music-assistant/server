@@ -204,6 +204,11 @@ class AirplayStream:
         self._started = asyncio.Event()
         self._stopped = False
 
+    @property
+    def running(self) -> bool:
+        """Return boolean if this stream is running."""
+        return not self._stopped and self._started.is_set()
+
     async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLIRaop process for a player."""
         extra_args = []
@@ -388,7 +393,6 @@ class AirplayStream:
             logger.log(VERBOSE_LOG_LEVEL, line)
 
         # if we reach this point, the process exited
-        self.running = False
         if airplay_player.active_stream == self:
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(airplay_player.player_id)
@@ -562,6 +566,9 @@ class AirplayProvider(PlayerProvider):
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream:
                     tg.create_task(airplay_player.active_stream.stop())
+                if mass_player := self.mass.players.get(airplay_player.player_id):
+                    mass_player.state = PlayerState.IDLE
+                    self.mass.players.update(mass_player.player_id)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
@@ -739,7 +746,9 @@ class AirplayProvider(PlayerProvider):
             # so we debounce the resync a bit here with a timer
             self.mass.call_later(
                 1,
-                self.mass.player_queues.resume(active_queue.queue_id, fade_in=False),
+                self.mass.player_queues.resume,
+                active_queue.queue_id,
+                fade_in=False,
                 task_id=f"resume_{active_queue.queue_id}",
             )
         else:
