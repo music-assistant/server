@@ -28,6 +28,7 @@ from music_assistant.constants import (
     CONF_ICON,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
+    CONF_PROVIDER_LANGUAGE,
     CONF_SYNC_ADJUST,
     CONF_TTS_PRE_ANNOUNCE,
     CONF_VOLUME_NORMALIZATION,
@@ -527,4 +528,16 @@ CONF_ENTRY_PLAYER_ICON = ConfigEntry(
 
 CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
     {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "mdi-speaker-multiple"}
+)
+
+CONF_ENTRY_PROVIDER_LANGUAGE = ConfigEntry(
+    key=CONF_PROVIDER_LANGUAGE,
+    type=ConfigEntryType.STRING,
+    label="Override language",
+    required=False,
+    default_value="",
+    description="Override the default language to use for this provider, "
+    "impacting metadata and/or default playlists such as daily mixes etc. \n\n"
+    "Leave blank for auto select (based on your account).",
+    category="advanced",
 )
