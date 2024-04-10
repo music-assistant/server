@@ -13,7 +13,11 @@ from urllib.parse import unquote
 
 import pytube
 
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_PROVIDER_LANGUAGE,
+    ConfigEntry,
+    ConfigValueType,
+)
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import (
     InvalidDataError,
@@ -39,6 +43,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.constants import CONF_PROVIDER_LANGUAGE
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -176,6 +181,7 @@ async def get_config_entries(
             hidden=True,
             value=values.get(CONF_TOKEN_TYPE) if values else None,
         ),
+        CONF_ENTRY_PROVIDER_LANGUAGE,
     )
 
 
@@ -198,6 +204,7 @@ class YoutubeMusicProvider(MusicProvider):
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
         self._signature_timestamp = await self._get_signature_timestamp()
+        self.language = self.config.get_value(CONF_PROVIDER_LANGUAGE) or "en"
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -224,7 +231,9 @@ class YoutubeMusicProvider(MusicProvider):
                 ytm_filter = "songs"
             if media_types[0] == MediaType.PLAYLIST:
                 ytm_filter = "playlists"
-        results = await search(query=search_query, ytm_filter=ytm_filter, limit=limit)
+        results = await search(
+            query=search_query, ytm_filter=ytm_filter, limit=limit, language=self.language
+        )
         parsed_results = SearchResults()
         for result in results:
             try:
@@ -245,36 +254,28 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve all library artists from Youtube Music."""
         await self._check_oauth_token()
-        artists_obj = await get_library_artists(
-            headers=self._headers,
-        )
+        artists_obj = await get_library_artists(headers=self._headers, language=self.language)
         for artist in artists_obj:
             yield await self._parse_artist(artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Youtube Music."""
         await self._check_oauth_token()
-        albums_obj = await get_library_albums(
-            headers=self._headers,
-        )
+        albums_obj = await get_library_albums(headers=self._headers, language=self.language)
         for album in albums_obj:
             yield await self._parse_album(album, album["browseId"])
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         await self._check_oauth_token()
-        playlists_obj = await get_library_playlists(
-            headers=self._headers,
-        )
+        playlists_obj = await get_library_playlists(headers=self._headers, language=self.language)
         for playlist in playlists_obj:
             yield await self._parse_playlist(playlist)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Youtube Music."""
         await self._check_oauth_token()
-        tracks_obj = await get_library_tracks(
-            headers=self._headers,
-        )
+        tracks_obj = await get_library_tracks(headers=self._headers, language=self.language)
         for track in tracks_obj:
             # Library tracks sometimes do not have a valid artist id
             # In that case, call the API for track details based on track id
@@ -287,7 +288,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         await self._check_oauth_token()
-        if album_obj := await get_album(prov_album_id=prov_album_id):
+        if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
             return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
@@ -295,7 +296,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
         """Get album tracks for given album id."""
         await self._check_oauth_token()
-        album_obj = await get_album(prov_album_id=prov_album_id)
+        album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
         if not album_obj.get("tracks"):
             return []
         tracks = []
@@ -312,7 +313,9 @@ class YoutubeMusicProvider(MusicProvider):
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         await self._check_oauth_token()
-        if artist_obj := await get_artist(prov_artist_id=prov_artist_id, headers=self._headers):
+        if artist_obj := await get_artist(
+            prov_artist_id=prov_artist_id, headers=self._headers, language=self.language
+        ):
             return await self._parse_artist(artist_obj=artist_obj)
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
@@ -324,6 +327,7 @@ class YoutubeMusicProvider(MusicProvider):
             prov_track_id=prov_track_id,
             headers=self._headers,
             signature_timestamp=self._signature_timestamp,
+            language=self.language,
         ):
             return await self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
@@ -336,7 +340,7 @@ class YoutubeMusicProvider(MusicProvider):
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
             prov_playlist_id = prov_playlist_id.split(YT_PLAYLIST_ID_DELIMITER)[0]
         if playlist_obj := await get_playlist(
-            prov_playlist_id=prov_playlist_id, headers=self._headers
+            prov_playlist_id=prov_playlist_id, headers=self._headers, language=self.language
         ):
             return await self._parse_playlist(playlist_obj)
         msg = f"Item {prov_playlist_id} not found"
