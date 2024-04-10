@@ -130,6 +130,7 @@ class FFMpeg(AsyncProcess):
             self.proc.send_signal(SIGINT)
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
+            await asyncio.sleep(0)  # yield to loop
         # abort existing readers on stdout first before we send communicate
         if self.proc.stdout:
             if self.proc.stdout._waiter is not None:
