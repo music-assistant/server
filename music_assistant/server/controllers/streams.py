@@ -19,7 +19,12 @@ from typing import TYPE_CHECKING
 from aiofiles.os import wrap
 from aiohttp import web
 
-from music_assistant.common.helpers.util import get_ip, select_free_port, try_parse_bool
+from music_assistant.common.helpers.util import (
+    get_ip,
+    select_free_port,
+    try_parse_bool,
+    try_parse_duration,
+)
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -254,7 +259,7 @@ class StreamsController(CoreController):
             output_format_str=request.match_info["fmt"],
             queue_player=queue_player,
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
-            default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
+            default_bit_depth=24,  # always prefer 24 bits to prevent dithering
         )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -279,21 +284,10 @@ class StreamsController(CoreController):
             queue.display_name,
         )
         queue.index_in_buffer = self.mass.player_queues.index_by_id(queue_id, queue_item_id)
-        pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(
-                queue_item.streamdetails.audio_format.bit_depth
-            ),
-            sample_rate=queue_item.streamdetails.audio_format.sample_rate,
-            bit_depth=queue_item.streamdetails.audio_format.bit_depth,
-        )
-        async for chunk in get_ffmpeg_stream(
-            audio_input=self._get_media_stream(
-                streamdetails=queue_item.streamdetails,
-                pcm_format=pcm_format,
-            ),
-            input_format=pcm_format,
+        async for chunk in self.get_media_stream(
+            streamdetails=queue_item.streamdetails,
             output_format=output_format,
-            filter_params=get_player_filter_params(self.mass, queue_player.player_id),
+            extra_filter_params=get_player_filter_params(self.mass, queue_player.player_id),
         ):
             try:
                 await resp.write(chunk)
@@ -320,7 +314,7 @@ class StreamsController(CoreController):
             output_format_str=request.match_info["fmt"],
             queue_player=queue_player,
             default_sample_rate=FLOW_DEFAULT_SAMPLE_RATE,
-            default_bit_depth=FLOW_DEFAULT_BIT_DEPTH,
+            default_bit_depth=24,  # always prefer 24 bits to prevent dithering
         )
         # play it safe: only allow icy metadata for mp3 and aac
         enable_icy = request.headers.get(
@@ -542,15 +536,14 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
+            strip_silence_begin = use_crossfade and total_bytes_sent > 0
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
-            async for chunk in self._get_media_stream(
+            async for chunk in self.get_media_stream(
                 queue_track.streamdetails,
-                pcm_format=pcm_format,
-                # strip silence from begin/end if track is being crossfaded
-                strip_silence_begin=use_crossfade and total_bytes_sent > 0,
-                strip_silence_end=use_crossfade and total_bytes_sent > 0,
+                output_format=pcm_format,
+                strip_silence_begin=strip_silence_begin,
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 # allow it to be a bit smaller when playback just starts
@@ -559,7 +552,8 @@ class StreamsController(CoreController):
                 elif (total_bytes_sent + bytes_written) < crossfade_size:
                     req_buffer_size = pcm_sample_size * 5
                 else:
-                    req_buffer_size = crossfade_size
+                    # additional 3 seconds to strip silence from last part
+                    req_buffer_size = crossfade_size + pcm_sample_size * 3
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -606,6 +600,14 @@ class StreamsController(CoreController):
                 bytes_written += len(last_fadeout_part)
                 last_fadeout_part = b""
             if use_crossfade:
+                # strip silence from last part
+                buffer = await strip_silence(
+                    self.mass,
+                    buffer,
+                    sample_rate=pcm_format.sample_rate,
+                    bit_depth=pcm_format.bit_depth,
+                    reverse=True,
+                )
                 # if crossfade is enabled, save fadeout part to pickup for next track
                 last_fadeout_part = buffer[-crossfade_size:]
                 remaining_bytes = buffer[:-crossfade_size]
@@ -661,7 +663,7 @@ class StreamsController(CoreController):
                 "-i",
                 ANNOUNCE_ALERT_FILE,
                 "-filter_complex",
-                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=11:TP=-2",
+                "[1:a][0:a]concat=n=2:v=0:a=1,loudnorm=I=-10:LRA=11:TP=-1.5",
             ]
             filter_params = []
         async for chunk in get_ffmpeg_stream(
@@ -673,52 +675,42 @@ class StreamsController(CoreController):
         ):
             yield chunk
 
-    async def _get_media_stream(
+    async def get_media_stream(
         self,
         streamdetails: StreamDetails,
-        pcm_format: AudioFormat,
+        output_format: AudioFormat,
         strip_silence_begin: bool = False,
-        strip_silence_end: bool = False,
+        extra_filter_params: list[str] | None = None,
     ) -> AsyncGenerator[tuple[bool, bytes], None]:
-        """
-        Get the (raw PCM) audio stream for the given streamdetails.
-
-        Other than stripping silence at end and beginning and optional
-        volume normalization this is the pure, unaltered audio data as PCM chunks.
-        """
+        """Get the audio stream for the given streamdetails."""
         logger = self.logger.getChild("media_stream")
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
         if is_radio:
             streamdetails.seek_position = 0
             strip_silence_begin = False
-            strip_silence_end = False
         if streamdetails.seek_position:
             strip_silence_begin = False
-        if not streamdetails.duration or streamdetails.duration < 30:
-            strip_silence_end = False
-        # pcm_sample_size = chunk size = 1 second of pcm audio
-        pcm_sample_size = pcm_format.pcm_sample_size
-        buffer_size = (
-            pcm_sample_size * 5
-            if (strip_silence_begin or strip_silence_end)
-            # always require a small amount of buffer to prevent livestreams stuttering
-            else pcm_sample_size * 2
-        )
         # collect all arguments for ffmpeg
-        filter_params = []
+        filter_params = extra_filter_params or []
+        if strip_silence_begin:
+            filter_params.append(
+                "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02"
+            )
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
-            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:LRA=11:TP=-2"
+            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-1.5:LRA=11"
             if streamdetails.loudness:
                 filter_rule += f":measured_I={streamdetails.loudness.integrated}"
                 filter_rule += f":measured_LRA={streamdetails.loudness.lra}"
                 filter_rule += f":measured_tp={streamdetails.loudness.true_peak}"
                 filter_rule += f":measured_thresh={streamdetails.loudness.threshold}"
+                if streamdetails.loudness.target_offset is not None:
+                    filter_rule += f":offset={streamdetails.loudness.target_offset}"
+                filter_rule += ":linear=true"
             filter_rule += ":print_format=json"
             filter_params.append(filter_rule)
         if streamdetails.fade_in:
             filter_params.append("afade=type=in:start_time=0:duration=3")
-
         if streamdetails.stream_type == StreamType.CUSTOM:
             audio_source = self.mass.get_provider(streamdetails.provider).get_audio_stream(
                 streamdetails,
@@ -740,7 +732,7 @@ class StreamsController(CoreController):
         async with FFMpeg(
             audio_input=audio_source,
             input_format=streamdetails.audio_format,
-            output_format=pcm_format,
+            output_format=output_format,
             filter_params=filter_params,
             extra_input_args=[
                 *extra_input_args,
@@ -753,60 +745,11 @@ class StreamsController(CoreController):
             logger=logger,
         ) as ffmpeg_proc:
             try:
-                # get pcm chunks from stdout
-                # we always stay buffer_size of bytes behind
-                # so we can strip silence at the beginning and end of a track
-                buffer = b""
-                chunk_num = 0
-                async for chunk in ffmpeg_proc.iter_chunked(pcm_sample_size):
-                    chunk_num += 1
-                    buffer += chunk
+                async for chunk in ffmpeg_proc.iter_any():
+                    bytes_sent += len(chunk)
+                    yield chunk
                     del chunk
-
-                    if len(buffer) < buffer_size:
-                        # buffer is not full enough, move on
-                        continue
-
-                    if strip_silence_begin and chunk_num == 2:
-                        # first 2 chunks received, strip silence of beginning
-                        stripped_audio = await strip_silence(
-                            self.mass,
-                            buffer,
-                            sample_rate=pcm_format.sample_rate,
-                            bit_depth=pcm_format.bit_depth,
-                        )
-                        yield stripped_audio
-                        bytes_sent += len(stripped_audio)
-                        buffer = b""
-                        del stripped_audio
-                        continue
-
-                    #### OTHER: enough data in buffer, feed to output
-                    while len(buffer) > buffer_size:
-                        yield buffer[:pcm_sample_size]
-                        await asyncio.sleep(0)  # yield to eventloop
-                        bytes_sent += pcm_sample_size
-                        buffer = buffer[pcm_sample_size:]
-
-                # all chunks received,
-                # strip silence of last part if needed and yield remaining bytes
-                if strip_silence_end:
-                    final_chunk = await strip_silence(
-                        self.mass,
-                        buffer,
-                        sample_rate=pcm_format.sample_rate,
-                        bit_depth=pcm_format.bit_depth,
-                        reverse=True,
-                    )
-                else:
-                    final_chunk = buffer
-
-                # yield final chunk to output (as one big chunk)
-                yield final_chunk
-                bytes_sent += len(final_chunk)
                 finished = True
-                del final_chunk
-                del buffer
             finally:
                 await ffmpeg_proc.close()
                 logger.debug(
@@ -815,10 +758,20 @@ class StreamsController(CoreController):
                     ffmpeg_proc.returncode,
                     streamdetails.uri,
                 )
-                seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-                streamdetails.seconds_streamed = seconds_streamed
+                # try to determine how many seconds we've streamed
+                seconds_streamed = 0
+                if output_format.content_type.is_pcm():
+                    seconds_streamed = (
+                        bytes_sent / output_format.pcm_sample_size if bytes_sent else 0
+                    )
+                elif line := next((x for x in ffmpeg_proc.log_history if "time=" in x), None):
+                    duration_str = line.split("time=")[1].split(" ")[0]
+                    seconds_streamed = try_parse_duration(duration_str)
+
+                if seconds_streamed:
+                    streamdetails.seconds_streamed = seconds_streamed
                 # store accurate duration
-                if finished and not streamdetails.seek_position:
+                if finished and not streamdetails.seek_position and seconds_streamed:
                     streamdetails.duration = seconds_streamed
 
                 # parse loudnorm data if we have that collected

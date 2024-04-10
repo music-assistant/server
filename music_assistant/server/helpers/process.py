@@ -194,6 +194,8 @@ class AsyncProcess:
         self._close_called = True
         if send_signal and self.returncode is None:
             self.proc.send_signal(SIGINT)
+        if self.proc.stdin and not self.proc.stdin.is_closing():
+            self.proc.stdin.close()
         # abort existing readers on stderr/stdout first before we send communicate
         if self.proc.stdout and self.proc.stdout._waiter is not None:
             with suppress(asyncio.exceptions.InvalidStateError):

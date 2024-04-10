@@ -19,6 +19,7 @@ class LoudnessMeasurement(DataClassDictMixin):
     true_peak: float
     lra: float
     threshold: float
+    target_offset: float | None = None
 
 
 @dataclass(kw_only=True)

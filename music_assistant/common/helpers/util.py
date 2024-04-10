@@ -46,6 +46,19 @@ def try_parse_bool(possible_bool: Any) -> str:
     return possible_bool in ["true", "True", "1", "on", "ON", 1]
 
 
+def try_parse_duration(duration_str: str) -> float:
+    """Try to parse a duration in seconds from a duration (HH:MM:SS) string."""
+    milliseconds = float("0." + duration_str.split(".")[-1]) if "." in duration_str else 0.0
+    duration_parts = duration_str.split(".")[0].split(",")[0].split(":")
+    if len(duration_parts) == 3:
+        seconds = sum(x * int(t) for x, t in zip([3600, 60, 1], duration_parts, strict=False))
+    elif len(duration_parts) == 2:
+        seconds = sum(x * int(t) for x, t in zip([60, 1], duration_parts, strict=False))
+    else:
+        seconds = int(duration_parts[0])
+    return seconds + milliseconds
+
+
 def create_sort_name(input_str: str) -> str:
     """Create sort name/title from string."""
     input_str = input_str.lower().strip()

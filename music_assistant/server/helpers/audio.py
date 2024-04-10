@@ -128,7 +128,7 @@ class FFMpeg(AsyncProcess):
         self._close_called = True
         if send_signal and self.returncode is None:
             self.proc.send_signal(SIGINT)
-        if self.proc.stdin:
+        if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         # abort existing readers on stdout first before we send communicate
         if self.proc.stdout:
@@ -966,11 +966,28 @@ def get_ffmpeg_args(
         output_args = ["-f", "wav", output_path]
     else:
         # use explicit format identifier for all other
-        output_args = ["-f", output_format.content_type.value, output_path]
+        output_args = [
+            "-f",
+            output_format.content_type.value,
+            "-ar",
+            str(output_format.sample_rate),
+            output_path,
+        ]
 
-    # prefer libsoxr high quality resampler (if present) for sample rate conversions
-    if input_format.sample_rate != output_format.sample_rate and libsoxr_support:
-        filter_params.append("aresample=resampler=soxr")
+    # determine if we need to do resampling
+    if (
+        input_format.sample_rate != output_format.sample_rate
+        or input_format.bit_depth != output_format.bit_depth
+    ):
+        # prefer resampling with libsoxr due to its high quality
+        resample_filter = f'aresample=resampler={"soxr" if libsoxr_support else "swr"}'
+        if output_format.bit_depth < input_format.bit_depth:
+            # apply dithering when going down to 16 bits
+            resample_filter += ":osf=s16:dither_method=triangular_hp"
+        if not output_format.content_type.is_pcm():
+            # specify sample rate if output format is not pcm
+            resample_filter += f":osr={output_format.sample_rate}"
+        filter_params.append(resample_filter)
 
     if filter_params and "-filter_complex" not in extra_args:
         extra_args += ["-af", ",".join(filter_params)]
@@ -995,4 +1012,5 @@ def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
         true_peak=float(loudness_data["input_tp"]),
         lra=float(loudness_data["input_lra"]),
         threshold=float(loudness_data["input_thresh"]),
+        target_offset=float(loudness_data["target_offset"]),
     )

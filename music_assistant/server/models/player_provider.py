@@ -13,6 +13,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME_MIN,
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_AUTO_PLAY,
+    CONF_ENTRY_FLOW_MODE,
     CONF_ENTRY_HIDE_PLAYER,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
@@ -48,6 +49,7 @@ class PlayerProvider(Provider):
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         entries = (
             CONF_ENTRY_PLAYER_ICON,
+            CONF_ENTRY_FLOW_MODE,
             CONF_ENTRY_VOLUME_NORMALIZATION,
             CONF_ENTRY_AUTO_PLAY,
             CONF_ENTRY_VOLUME_NORMALIZATION_TARGET,
