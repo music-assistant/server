@@ -15,7 +15,9 @@ import shortuuid
 from aiohttp import web
 
 from music_assistant.common.models.config_entries import (
+    CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -31,7 +33,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_CROSSFADE, CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
+from music_assistant.constants import CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 from music_assistant.server.controllers.streams import DEFAULT_STREAM_HEADERS
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.multi_client_stream import MultiClientStream
@@ -111,6 +113,7 @@ class UniversalGroupProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         return (
             *base_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
             ConfigEntry(
                 key=CONF_GROUP_MEMBERS,
                 type=ConfigEntryType.STRING,
@@ -132,16 +135,7 @@ class UniversalGroupProvider(PlayerProvider):
                 "allows you to group any player, it will not enable audio sync "
                 "between players of different ecosystems.",
             ),
-            ConfigEntry(
-                key=CONF_CROSSFADE,
-                type=ConfigEntryType.BOOLEAN,
-                label="Enable crossfade",
-                default_value=False,
-                description="Enable a crossfade transition between (queue) tracks. \n\n"
-                "Note that DLNA does not natively support crossfading so you need to enable "
-                "the 'flow mode' workaround to use crossfading with DLNA players.",
-                category="audio",
-            ),
+            CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
         )
 

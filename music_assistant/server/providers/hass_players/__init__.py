@@ -14,7 +14,8 @@ from typing import TYPE_CHECKING, Any
 from music_assistant.common.helpers.datetime import from_iso_string
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_ENFORCE_MP3,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -27,7 +28,6 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.hass import DOMAIN as HASS_DOMAIN
 
@@ -89,30 +89,9 @@ class MediaPlayerEntityFeature(IntFlag):
 CONF_ENFORCE_MP3 = "enforce_mp3"
 
 PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade",
-        default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n\n"
-        "Note that you need to enable the 'flow mode' workaround to use "
-        "crossfading with Home Assistant players.",
-        category="audio",
-        depends_on=CONF_FLOW_MODE,
-    ),
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
-    ConfigEntry(
-        key=CONF_ENFORCE_MP3,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enforce (lossy) mp3 stream",
-        default_value=False,
-        description="By default, Music Assistant sends lossless, high quality audio "
-        "to all players. Some players can not deal with that and require the stream to be packed "
-        "into a lossy mp3 codec. \n\n "
-        "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
-        category="audio",
-    ),
+    CONF_ENTRY_ENFORCE_MP3,
 )
 
 

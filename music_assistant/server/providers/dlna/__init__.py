@@ -25,8 +25,8 @@ from async_upnp_client.search import async_search
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENFORCE_MP3,
-    CONF_ENTRY_FLOW_MODE,
     ConfigEntry,
     ConfigValueType,
 )
@@ -38,13 +38,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_ENFORCE_MP3,
-    CONF_FLOW_MODE,
-    CONF_PLAYERS,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import CONF_ENFORCE_MP3, CONF_PLAYERS, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -77,20 +71,10 @@ PLAYER_CONFIG_ENTRIES = (
         default_value=False,
         description="If the player supports enqueuing the next item for fluid/gapless playback. "
         "\n\nUnfortunately this feature is missing or broken on many DLNA players. \n"
-        "Enable it with care. If music stops after one song, disable this setting.",
+        "Enable it with care. If music stops after one song, "
+        "disable this setting (and use flow-mode instead).",
     ),
-    ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade",
-        default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n\n"
-        "Note that DLNA does not natively support crossfading so you need to enable "
-        "the 'flow mode' workaround to use crossfading with DLNA players.",
-        category="audio",
-        depends_on=CONF_FLOW_MODE,
-    ),
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENFORCE_MP3,
 )

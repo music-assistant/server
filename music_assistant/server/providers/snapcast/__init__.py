@@ -20,6 +20,7 @@ from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
     ConfigEntry,
     ConfigValueType,
 )
@@ -274,7 +275,12 @@ class SnapCastProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
+        return (
+            *base_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
+            CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_CROSSFADE_DURATION,
+        )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""

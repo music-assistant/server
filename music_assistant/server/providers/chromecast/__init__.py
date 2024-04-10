@@ -19,26 +19,14 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     ConfigEntry,
     ConfigValueType,
 )
-from music_assistant.common.models.enums import (
-    ConfigEntryType,
-    MediaType,
-    PlayerFeature,
-    PlayerState,
-    PlayerType,
-)
+from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_FLOW_MODE,
-    CONF_PLAYERS,
-    MASS_LOGO_ONLINE,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -56,18 +44,7 @@ if TYPE_CHECKING:
 
 
 PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade",
-        default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n\n"
-        "Note that Cast does not natively support crossfading so you need to enable "
-        "the 'flow mode' workaround to use crossfading with Cast players.",
-        category="audio",
-        depends_on=CONF_FLOW_MODE,
-    ),
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
 )
 

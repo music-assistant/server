@@ -12,6 +12,8 @@ from fullykiosk import FullyKiosk
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_ENFORCE_MP3,
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
     ConfigEntry,
     ConfigValueType,
 )
@@ -154,18 +156,10 @@ class FullyKioskProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         return (
             *base_entries,
+            CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
-            ConfigEntry(
-                key=CONF_ENFORCE_MP3,
-                type=ConfigEntryType.BOOLEAN,
-                label="Enforce (lossy) mp3 stream",
-                default_value=False,
-                description="By default, Music Assistant sends lossless, high quality audio "
-                "to all players. Some devices can not deal with that and require "
-                "the stream to be packed into a lossy mp3 codec. Only enable when needed.",
-                category="advanced",
-            ),
+            CONF_ENTRY_ENFORCE_MP3,
         )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:

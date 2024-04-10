@@ -321,6 +321,13 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     default_value=False,
 )
 
+CONF_ENTRY_FLOW_MODE_ENFORCED = ConfigEntry(
+    key=CONF_FLOW_MODE,
+    type=ConfigEntryType.BOOLEAN,
+    label=CONF_FLOW_MODE,
+    default_value=True,
+    value=True,
+)
 
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
     key=CONF_AUTO_PLAY,
@@ -403,6 +410,17 @@ CONF_ENTRY_CROSSFADE = ConfigEntry(
     default_value=False,
     description="Enable a crossfade transition between (queue) tracks.",
     category="audio",
+)
+
+CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED = ConfigEntry(
+    key=CONF_CROSSFADE,
+    type=ConfigEntryType.BOOLEAN,
+    label="Enable crossfade",
+    default_value=False,
+    description="Enable a crossfade transition between (queue) tracks.\n\n "
+    "Requires flow-mode to be enabled",
+    category="audio",
+    depends_on=CONF_FLOW_MODE,
 )
 
 CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
