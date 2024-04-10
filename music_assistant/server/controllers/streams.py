@@ -733,9 +733,10 @@ class StreamsController(CoreController):
         extra_input_args = []
         if streamdetails.seek_position and streamdetails.stream_type != StreamType.CUSTOM:
             extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
-        logger.debug("start media stream for: %s", streamdetails.uri)
-        state_data = {"finished": asyncio.Event(), "bytes_sent": 0}
 
+        logger.debug("start media stream for: %s", streamdetails.uri)
+        bytes_sent = 0
+        finished = False
         async with FFMpeg(
             audio_input=audio_source,
             input_format=streamdetails.audio_format,
@@ -748,61 +749,92 @@ class StreamsController(CoreController):
                 "-filter_threads",
                 "1",
             ],
-            name="ffmpeg_media_stream",
-            stderr_enabled=True,
+            collect_log_history=True,
+            logger=logger,
         ) as ffmpeg_proc:
+            try:
+                # get pcm chunks from stdout
+                # we always stay buffer_size of bytes behind
+                # so we can strip silence at the beginning and end of a track
+                buffer = b""
+                chunk_num = 0
+                async for chunk in ffmpeg_proc.iter_chunked(pcm_sample_size):
+                    chunk_num += 1
+                    buffer += chunk
+                    del chunk
 
-            async def log_reader():
-                # To prevent stderr locking up, we must keep reading it
-                stderr_data = ""
-                async for line in ffmpeg_proc.iter_stderr():
-                    if "error" in line or "warning" in line:
-                        logger.warning(line)
-                    elif "critical" in line:
-                        logger.critical(line)
-                    elif (
-                        streamdetails.audio_format.content_type == ContentType.UNKNOWN
-                        and line.startswith("Stream #0:0: Audio: ")
-                    ):
-                        # if streamdetails contenttype is unknown, try parse it from the ffmpeg log
-                        streamdetails.audio_format.content_type = ContentType.try_parse(
-                            line.split("Stream #0:0: Audio: ")[1].split(" ")[0]
+                    if len(buffer) < buffer_size:
+                        # buffer is not full enough, move on
+                        continue
+
+                    if strip_silence_begin and chunk_num == 2:
+                        # first 2 chunks received, strip silence of beginning
+                        stripped_audio = await strip_silence(
+                            self.mass,
+                            buffer,
+                            sample_rate=pcm_format.sample_rate,
+                            bit_depth=pcm_format.bit_depth,
                         )
-                    elif stderr_data or "loudnorm" in line:
-                        stderr_data += line
-                    else:
-                        logger.debug(line)
-                    del line
+                        yield stripped_audio
+                        bytes_sent += len(stripped_audio)
+                        buffer = b""
+                        del stripped_audio
+                        continue
 
-                # if we reach this point, the process is finished (completed or aborted)
-                if ffmpeg_proc.returncode == 0:
-                    await state_data["finished"].wait()
-                finished = state_data["finished"].is_set()
-                bytes_sent = state_data["bytes_sent"]
+                    #### OTHER: enough data in buffer, feed to output
+                    while len(buffer) > buffer_size:
+                        yield buffer[:pcm_sample_size]
+                        await asyncio.sleep(0)  # yield to eventloop
+                        bytes_sent += pcm_sample_size
+                        buffer = buffer[pcm_sample_size:]
+
+                # all chunks received,
+                # strip silence of last part if needed and yield remaining bytes
+                if strip_silence_end:
+                    final_chunk = await strip_silence(
+                        self.mass,
+                        buffer,
+                        sample_rate=pcm_format.sample_rate,
+                        bit_depth=pcm_format.bit_depth,
+                        reverse=True,
+                    )
+                else:
+                    final_chunk = buffer
+
+                # yield final chunk to output (as one big chunk)
+                yield final_chunk
+                bytes_sent += len(final_chunk)
+                finished = True
+                del final_chunk
+                del buffer
+            finally:
+                await ffmpeg_proc.close()
+                logger.debug(
+                    "stream %s (with code %s) for %s",
+                    "finished" if finished else "aborted",
+                    ffmpeg_proc.returncode,
+                    streamdetails.uri,
+                )
                 seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
                 streamdetails.seconds_streamed = seconds_streamed
-                state_str = "finished" if finished else "aborted"
-                logger.debug(
-                    "stream %s for: %s (%s seconds streamed, exitcode %s)",
-                    state_str,
-                    streamdetails.uri,
-                    seconds_streamed,
-                    ffmpeg_proc.returncode,
-                )
                 # store accurate duration
                 if finished and not streamdetails.seek_position:
                     streamdetails.duration = seconds_streamed
 
                 # parse loudnorm data if we have that collected
-                if stderr_data and (loudness_details := parse_loudnorm(stderr_data)):
+                if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
                     required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
                     if finished or (seconds_streamed >= required_seconds):
                         logger.debug(
-                            "Loudness measurement for %s: %s", streamdetails.uri, loudness_details
+                            "Loudness measurement for %s: %s",
+                            streamdetails.uri,
+                            loudness_details,
                         )
                         streamdetails.loudness = loudness_details
-                        await self.mass.music.set_track_loudness(
-                            streamdetails.item_id, streamdetails.provider, loudness_details
+                        self.mass.create_task(
+                            self.mass.music.set_track_loudness(
+                                streamdetails.item_id, streamdetails.provider, loudness_details
+                            )
                         )
 
                 # report playback
@@ -810,71 +842,15 @@ class StreamsController(CoreController):
                 if finished or seconds_streamed > 30:
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
-                            streamdetails.media_type, streamdetails.item_id, streamdetails.provider
+                            streamdetails.media_type,
+                            streamdetails.item_id,
+                            streamdetails.provider,
                         )
                     )
                     if music_prov := self.mass.get_provider(streamdetails.provider):
                         self.mass.create_task(
                             music_prov.on_streamed(streamdetails, seconds_streamed)
                         )
-                # cleanup
-                del stderr_data
-
-            self.mass.create_task(log_reader())
-
-            # get pcm chunks from stdout
-            # we always stay buffer_size of bytes behind
-            # so we can strip silence at the beginning and end of a track
-            buffer = b""
-            chunk_num = 0
-            async for chunk in ffmpeg_proc.iter_chunked(pcm_sample_size):
-                chunk_num += 1
-                buffer += chunk
-                del chunk
-
-                if len(buffer) < buffer_size:
-                    # buffer is not full enough, move on
-                    continue
-
-                if strip_silence_begin and chunk_num == 2:
-                    # first 2 chunks received, strip silence of beginning
-                    stripped_audio = await strip_silence(
-                        self.mass,
-                        buffer,
-                        sample_rate=pcm_format.sample_rate,
-                        bit_depth=pcm_format.bit_depth,
-                    )
-                    yield stripped_audio
-                    state_data["bytes_sent"] += len(stripped_audio)
-                    buffer = b""
-                    del stripped_audio
-                    continue
-
-                #### OTHER: enough data in buffer, feed to output
-                while len(buffer) > buffer_size:
-                    yield buffer[:pcm_sample_size]
-                    await asyncio.sleep(0)  # yield to eventloop
-                    state_data["bytes_sent"] += pcm_sample_size
-                    buffer = buffer[pcm_sample_size:]
-
-            # all chunks received, strip silence of last part if needed and yield remaining bytes
-            if strip_silence_end:
-                final_chunk = await strip_silence(
-                    self.mass,
-                    buffer,
-                    sample_rate=pcm_format.sample_rate,
-                    bit_depth=pcm_format.bit_depth,
-                    reverse=True,
-                )
-            else:
-                final_chunk = buffer
-
-            # yield final chunk to output (as one big chunk)
-            yield final_chunk
-            state_data["bytes_sent"] += len(final_chunk)
-            state_data["finished"].set()
-            del final_chunk
-            del buffer
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""

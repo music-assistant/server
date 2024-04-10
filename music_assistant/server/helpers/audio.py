@@ -8,7 +8,10 @@ import os
 import re
 import struct
 from collections import deque
+from collections.abc import AsyncGenerator
+from contextlib import suppress
 from io import BytesIO
+from signal import SIGINT
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -46,12 +49,10 @@ from music_assistant.server.helpers.playlists import (
 )
 from music_assistant.server.helpers.tags import parse_tags
 
-from .process import AsyncProcess, check_output
+from .process import AsyncProcess, check_output, communicate
 from .util import create_tempfile
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant.common.models.player_queue import QueueItem
     from music_assistant.server import MusicAssistant
 
@@ -66,7 +67,7 @@ HTTP_HEADERS_ICY = {**HTTP_HEADERS, "Icy-MetaData": "1"}
 class FFMpeg(AsyncProcess):
     """FFMpeg wrapped as AsyncProcess."""
 
-    def __init__(  # noqa: PLR0913
+    def __init__(
         self,
         audio_input: AsyncGenerator[bytes, None] | str | int,
         input_format: AudioFormat,
@@ -74,10 +75,9 @@ class FFMpeg(AsyncProcess):
         filter_params: list[str] | None = None,
         extra_args: list[str] | None = None,
         extra_input_args: list[str] | None = None,
-        name: str = "ffmpeg",
-        stderr_enabled: bool = False,
         audio_output: str | int = "-",
-        loglevel: str | None = None,
+        collect_log_history: bool = False,
+        logger: logging.Logger | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
         ffmpeg_args = get_ffmpeg_args(
@@ -88,17 +88,91 @@ class FFMpeg(AsyncProcess):
             input_path=audio_input if isinstance(audio_input, str) else "-",
             output_path=audio_output if isinstance(audio_output, str) else "-",
             extra_input_args=extra_input_args or [],
-            loglevel=loglevel or "info"
-            if stderr_enabled or LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL)
-            else "error",
+            loglevel="info",
         )
+        self.audio_input = audio_input
+        self.input_format = input_format
+        self.collect_log_history = collect_log_history
+        self.log_history: deque[str] = deque(maxlen=100)
+        self._stdin_task: asyncio.Task | None = None
+        self._logger_task: asyncio.Task | None = None
         super().__init__(
             ffmpeg_args,
-            stdin=True if isinstance(audio_input, str) else audio_input,
+            stdin=True if isinstance(audio_input, str | AsyncGenerator) else audio_input,
             stdout=True if isinstance(audio_output, str) else audio_output,
-            stderr=stderr_enabled,
-            name=name,
+            stderr=True,
         )
+        self.logger = logger or LOGGER.getChild("ffmpeg")
+
+    async def start(self) -> None:
+        """Perform Async init of process."""
+        await super().start()
+        self._logger_task = asyncio.create_task(self._log_reader_task())
+        if isinstance(self.audio_input, AsyncGenerator):
+            self._stdin_task = asyncio.create_task(self._feed_stdin())
+
+    async def close(self, send_signal: bool = True) -> None:
+        """Close/terminate the process and wait for exit."""
+        if self._stdin_task and not self._stdin_task.done():
+            self._stdin_task.cancel()
+            with suppress(asyncio.CancelledError):
+                await self._stdin_task
+            # make sure the stdin generator is also properly closed
+            # by propagating a cancellederror within
+            task = asyncio.create_task(self.audio_input.__anext__())
+            task.cancel()
+        if not self.collect_log_history:
+            await super().close(send_signal)
+            return
+        # override close logic to make sure we catch all logging
+        self._close_called = True
+        if send_signal and self.returncode is None:
+            self.proc.send_signal(SIGINT)
+        if self.proc.stdin:
+            self.proc.stdin.close()
+        # abort existing readers on stdout first before we send communicate
+        if self.proc.stdout:
+            if self.proc.stdout._waiter is not None:
+                with suppress(asyncio.exceptions.InvalidStateError):
+                    self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
+            # read reamaing bytes to unblock pipe
+            await self.read(-1)
+        # wait for log task to complete that reads the remaining data from stderr
+        with suppress(TimeoutError):
+            await asyncio.wait_for(self._logger_task, 5)
+        await super().close(False)
+
+    async def _log_reader_task(self) -> None:
+        """Read ffmpeg log from stderr."""
+        async for line in self.iter_stderr():
+            if self.collect_log_history:
+                self.log_history.append(line)
+            if "error" in line or "warning" in line:
+                self.logger.warning(line)
+            elif "critical" in line:
+                self.logger.critical(line)
+            else:
+                self.logger.log(VERBOSE_LOG_LEVEL, line)
+
+            # if streamdetails contenttype is unknown, try parse it from the ffmpeg log
+            if line.startswith("Stream #0:0: Audio: "):
+                if self.input_format.content_type == ContentType.UNKNOWN:
+                    content_type_raw = line.split("Stream #0:0: Audio: ")[1].split(" ")[0]
+                    content_type = ContentType.try_parse(content_type_raw)
+                    self.logger.info(
+                        "Detected (input) content type: %s (%s)", content_type, content_type_raw
+                    )
+                    self.input_format.content_type = content_type
+            del line
+
+    async def _feed_stdin(self) -> None:
+        """Feed stdin with audio chunks from an AsyncGenerator."""
+        if TYPE_CHECKING:
+            self.audio_input: AsyncGenerator[bytes, None]
+        async for chunk in self.audio_input:
+            await self.write(chunk)
+        # write EOF once we've reached the end of the input stream
+        await self.write_eof()
 
 
 async def crossfade_pcm_parts(
@@ -151,26 +225,24 @@ async def crossfade_pcm_parts(
         fmt,
         "-",
     ]
-    async with AsyncProcess(args, stdin=True, stdout=True) as proc:
-        crossfade_data, _ = await proc.communicate(fade_in_part)
-        if crossfade_data:
-            LOGGER.log(
-                5,
-                "crossfaded 2 pcm chunks. fade_in_part: %s - "
-                "fade_out_part: %s - fade_length: %s seconds",
-                len(fade_in_part),
-                len(fade_out_part),
-                fade_length,
-            )
-            return crossfade_data
-        # no crossfade_data, return original data instead
-        LOGGER.debug(
-            "crossfade of pcm chunks failed: not enough data? "
-            "fade_in_part: %s - fade_out_part: %s",
+    _returncode, crossfaded_audio, _stderr = await communicate(args, fade_in_part)
+    if crossfaded_audio:
+        LOGGER.log(
+            5,
+            "crossfaded 2 pcm chunks. fade_in_part: %s - "
+            "fade_out_part: %s - fade_length: %s seconds",
             len(fade_in_part),
             len(fade_out_part),
+            fade_length,
         )
-        return fade_out_part + fade_in_part
+        return crossfaded_audio
+    # no crossfade_data, return original data instead
+    LOGGER.debug(
+        "crossfade of pcm chunks failed: not enough data? " "fade_in_part: %s - fade_out_part: %s",
+        len(fade_in_part),
+        len(fade_out_part),
+    )
+    return fade_out_part + fade_in_part
 
 
 async def strip_silence(
@@ -208,8 +280,7 @@ async def strip_silence(
         ]
     # output args
     args += ["-f", fmt, "-"]
-    async with AsyncProcess(args, stdin=True, stdout=True) as proc:
-        stripped_data, _ = await proc.communicate(audio_data)
+    _returncode, stripped_data, _stderr = await communicate(args, audio_data)
 
     # return stripped audio
     bytes_stripped = len(audio_data) - len(stripped_data)
@@ -643,7 +714,7 @@ async def get_ffmpeg_stream(
     extra_args: list[str] | None = None,
     chunk_size: int | None = None,
     extra_input_args: list[str] | None = None,
-    name: str = "ffmpeg",
+    logger: logging.Logger | None = None,
 ) -> AsyncGenerator[bytes, None]:
     """
     Get the ffmpeg audio stream as async generator.
@@ -658,7 +729,7 @@ async def get_ffmpeg_stream(
         filter_params=filter_params,
         extra_args=extra_args,
         extra_input_args=extra_input_args,
-        name=name,
+        logger=logger,
     ) as ffmpeg_proc:
         # read final chunks from stdout
         iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()

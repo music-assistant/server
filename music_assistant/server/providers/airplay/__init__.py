@@ -42,11 +42,7 @@ from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
-from music_assistant.server.helpers.audio import (
-    get_ffmpeg_args,
-    get_ffmpeg_stream,
-    get_player_filter_params,
-)
+from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -231,6 +227,23 @@ class AirplayStream:
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
 
+        # create os pipes to pipe ffmpeg to cliraop
+        read, write = await asyncio.to_thread(os.pipe)
+
+        # ffmpeg handles the player specific stream + filters and pipes
+        # audio to the cliraop process
+        self._ffmpeg_proc = FFMpeg(
+            audio_input="-",
+            input_format=self.input_format,
+            output_format=AIRPLAY_PCM_FORMAT,
+            filter_params=get_player_filter_params(self.mass, player_id),
+            audio_output=write,
+            logger=self.airplay_player.logger.getChild("ffmpeg"),
+        )
+        await self._ffmpeg_proc.start()
+        await asyncio.to_thread(os.close, write)
+
+        # cliraop is the binary that handles the actual raop streaming to the player
         cliraop_args = [
             self.prov.cliraop_bin,
             "-ntpstart",
@@ -251,30 +264,9 @@ class AirplayStream:
             self.airplay_player.address,
             "-",
         ]
+        self._cliraop_proc = AsyncProcess(cliraop_args, stdin=read, stderr=True, name="cliraop")
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
-
-        # ffmpeg handles the player specific stream + filters and pipes
-        # audio to the cliraop process
-        read, write = await asyncio.to_thread(os.pipe)
-        ffmpeg_args = get_ffmpeg_args(
-            input_format=self.input_format,
-            output_format=AIRPLAY_PCM_FORMAT,
-            filter_params=get_player_filter_params(self.mass, player_id),
-            loglevel="fatal",
-        )
-        self._ffmpeg_proc = AsyncProcess(
-            ffmpeg_args,
-            stdin=True,
-            stdout=write,
-            name="cliraop_ffmpeg",
-        )
-        await self._ffmpeg_proc.start()
-        await asyncio.to_thread(os.close, write)
-
-        self._cliraop_proc = AsyncProcess(
-            cliraop_args, stdin=read, stdout=False, stderr=True, name="cliraop"
-        )
         await self._cliraop_proc.start()
         await asyncio.to_thread(os.close, read)
         self._started.set()
@@ -783,14 +775,10 @@ class AirplayProvider(PlayerProvider):
 
         async def check_binary(cliraop_path: str) -> str | None:
             try:
-                cliraop = await asyncio.create_subprocess_exec(
-                    *[cliraop_path, "-check"],
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
+                returncode, output = await check_output(
+                    [cliraop_path, "-check"],
                 )
-                stdout, _ = await cliraop.communicate()
-                stdout = stdout.strip().decode()
-                if cliraop.returncode == 0 and stdout == "cliraop check":
+                if returncode == 0 and output.strip().decode() == "cliraop check":
                     self.cliraop_bin = cliraop_path
                     return cliraop_path
             except OSError:

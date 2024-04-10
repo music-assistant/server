@@ -47,7 +47,7 @@ from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.app_vars import app_var
 
 # pylint: enable=no-name-in-module
-from music_assistant.server.helpers.process import AsyncProcess
+from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -430,7 +430,7 @@ class SpotifyProvider(MusicProvider):
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
         bytes_sent = 0
-        async with AsyncProcess(args, stdout=True) as librespot_proc:
+        async with AsyncProcess(args, stdout=True, name="librespot") as librespot_proc:
             async for chunk in librespot_proc.iter_any():
                 yield chunk
                 bytes_sent += len(chunk)
@@ -677,9 +677,8 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        async with AsyncProcess(args, stdout=True) as librespot:
-            stdout = await librespot.read(-1)
-        if stdout.decode().strip() != "authorized":
+        _returncode, output = await check_output(args)
+        if _returncode == 0 and output.decode().strip() != "authorized":
             raise LoginFailed(f"Login failed for username {self.config.get_value(CONF_USERNAME)}")
         # get token with (authorized) librespot
         scopes = [
@@ -713,16 +712,15 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        async with AsyncProcess(args, stdout=True) as librespot:
-            stdout = await librespot.read(-1)
+        _returncode, output = await check_output(args)
         duration = round(time.time() - time_start, 2)
         try:
-            result = json.loads(stdout)
+            result = json.loads(output)
         except JSONDecodeError:
             self.logger.warning(
                 "Error while retrieving Spotify token after %s seconds, details: %s",
                 duration,
-                stdout.decode(),
+                output.decode(),
             )
             return None
         self.logger.debug(
@@ -847,15 +845,8 @@ class SpotifyProvider(MusicProvider):
 
         async def check_librespot(librespot_path: str) -> str | None:
             try:
-                librespot = await asyncio.create_subprocess_exec(
-                    *[librespot_path, "--check"], stdout=asyncio.subprocess.PIPE
-                )
-                stdout, _ = await librespot.communicate()
-                if (
-                    librespot.returncode == 0
-                    and b"ok spotty" in stdout
-                    and b"using librespot" in stdout
-                ):
+                returncode, output = await check_output([librespot_path, "--check"])
+                if returncode == 0 and b"ok spotty" in output and b"using librespot" in output:
                     self._librespot_bin = librespot_path
                     return librespot_path
             except OSError:
