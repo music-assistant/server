@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import platform
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
@@ -14,6 +13,7 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.audio import get_file_stream
+from music_assistant.server.helpers.process import check_output
 from music_assistant.server.providers.filesystem_local import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     LocalFileSystemProvider,
@@ -204,21 +204,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
         self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
 
-        proc = await asyncio.create_subprocess_shell(
-            mount_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            msg = f"SMB mount failed with error: {stderr.decode()}"
+        returncode, output = await check_output(mount_cmd)
+        if returncode != 0:
+            msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
-        proc = await asyncio.create_subprocess_shell(
-            f"umount {self.base_path}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0 and not ignore_error:
-            self.logger.warning("SMB unmount failed with error: %s", stderr.decode())
+        returncode, output = await check_output(f"umount {self.base_path}")
+        if returncode != 0 and not ignore_error:
+            self.logger.warning("SMB unmount failed with error: %s", output.decode())

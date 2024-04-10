@@ -478,6 +478,7 @@ class MusicController(CoreController):
                     "true_peak": loudness.true_peak,
                     "lra": loudness.lra,
                     "threshold": loudness.threshold,
+                    "target_offset": loudness.target_offset,
                 },
                 allow_replace=True,
             )
@@ -659,7 +660,7 @@ class MusicController(CoreController):
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
             # handle db migration from previous schema to this one
-            if prev_version == 27:
+            if prev_version in (27, 28):
                 self.logger.info(
                     "Performing database migration from %s to %s",
                     prev_version,
@@ -727,6 +728,7 @@ class MusicController(CoreController):
                     true_peak REAL,
                     lra REAL,
                     threshold REAL,
+                    target_offset REAL,
                     UNIQUE(item_id, provider));"""
         )
         await self.database.execute(

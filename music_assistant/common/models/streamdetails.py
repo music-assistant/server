@@ -19,6 +19,7 @@ class LoudnessMeasurement(DataClassDictMixin):
     true_peak: float
     lra: float
     threshold: float
+    target_offset: float | None = None
 
 
 @dataclass(kw_only=True)
@@ -49,8 +50,6 @@ class StreamDetails(DataClassDictMixin):
     data: Any = None
     # can_seek: bool to indicate that the providers 'get_audio_stream' supports seeking of the item
     can_seek: bool = True
-
-    # stream_type:
 
     # the fields below will be set/controlled by the streamcontroller
     seek_position: int = 0

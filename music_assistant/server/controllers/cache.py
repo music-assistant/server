@@ -164,6 +164,7 @@ class CacheController(CoreController):
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
                 cleaned_records += 1
+            await asyncio.sleep(0)  # yield to eventloop
         if cleaned_records > 50:
             self.logger.debug("Compacting database...")
             await self.database.vacuum()

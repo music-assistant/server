@@ -87,6 +87,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     # overhead of grabbing the musicbrainz id upfront
                     library_item = await self.update_item_in_library(db_item.item_id, item)
                     break
+                await asyncio.sleep(0)  # yield to eventloop
         if not library_item:
             # actually add (or update) the item in the library db
             # use the lock to prevent a race condition of the same item being added twice

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -172,6 +173,7 @@ class DatabaseConnection:
                 yield item
             if len(next_items) < limit:
                 break
+            await asyncio.sleep(0)  # yield to eventloop
             offset += limit
 
     async def vacuum(self) -> None:

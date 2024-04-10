@@ -18,12 +18,7 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import (
-    ItemMapping,
-    Playlist,
-    PlaylistTrack,
-    Track,
-)
+from music_assistant.common.models.media_items import ItemMapping, Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.server.helpers.compare import compare_strings
 
@@ -93,7 +88,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 library_item = await self._add_library_item(item)
         # preload playlist tracks listing (do not load them in the db)
         async for _ in self.tracks(item.item_id, item.provider):
-            pass
+            await asyncio.sleep(0)  # yield to eventloop
         # metadata lookup we need to do after adding it to the db
         if metadata_lookup:
             await self.mass.metadata.get_playlist_metadata(library_item)
@@ -228,6 +223,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     if i.provider_instance == playlist_prov.provider_instance
                 }
             )
+            await asyncio.sleep(0)  # yield to eventloop
         # check for duplicates
         for track_prov in track.provider_mappings:
             if (

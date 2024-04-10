@@ -17,7 +17,7 @@ from collections.abc import AsyncGenerator
 from contextlib import suppress
 from signal import SIGINT
 from types import TracebackType
-from typing import TYPE_CHECKING
+from typing import Self
 
 from music_assistant.constants import MASS_LOGGER_NAME
 
@@ -41,9 +41,9 @@ class AsyncProcess:
     def __init__(
         self,
         args: list[str],
-        stdin: bool | int | AsyncGenerator[bytes, None] | None = None,
+        stdin: bool | int | None = None,
         stdout: bool | int | None = None,
-        stderr: bool | int | None = None,
+        stderr: bool | int | None = False,
         name: str | None = None,
     ) -> None:
         """Initialize AsyncProcess."""
@@ -51,7 +51,6 @@ class AsyncProcess:
         if name is None:
             name = args[0].split(os.sep)[-1]
         self.name = name
-        self.attached_tasks: list[asyncio.Task] = []
         self.logger = LOGGER.getChild(name)
         self._args = args
         self._stdin = None if stdin is False else stdin
@@ -76,7 +75,7 @@ class AsyncProcess:
             self._returncode = ret_code
         return ret_code
 
-    async def __aenter__(self) -> AsyncProcess:
+    async def __aenter__(self) -> Self:
         """Enter context manager."""
         await self.start()
         return self
@@ -96,9 +95,7 @@ class AsyncProcess:
         """Perform Async init of process."""
         self.proc = await asyncio.create_subprocess_exec(
             *self._args,
-            stdin=asyncio.subprocess.PIPE
-            if (self._stdin is True or isinstance(self._stdin, AsyncGenerator))
-            else self._stdin,
+            stdin=asyncio.subprocess.PIPE if self._stdin is True else self._stdin,
             stdout=asyncio.subprocess.PIPE if self._stdout is True else self._stdout,
             stderr=asyncio.subprocess.PIPE if self._stderr is True else self._stderr,
             # because we're exchanging big amounts of (audio) data with pipes
@@ -107,12 +104,10 @@ class AsyncProcess:
             pipesize=1000000,
         )
         self.logger.debug("Process %s started with PID %s", self.name, self.proc.pid)
-        if isinstance(self._stdin, AsyncGenerator):
-            self.attached_tasks.append(asyncio.create_task(self._feed_stdin()))
 
     async def iter_chunked(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks of n size from the process stdout."""
-        while not self._close_called:
+        while True:
             chunk = await self.readexactly(n)
             if chunk == b"":
                 break
@@ -120,7 +115,7 @@ class AsyncProcess:
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
-        while not self._close_called:
+        while True:
             chunk = await self.read(n)
             if chunk == b"":
                 break
@@ -145,7 +140,8 @@ class AsyncProcess:
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
         if self._close_called:
-            raise RuntimeError("write called while process already done")
+            self.logger.warning("write called while process already done")
+            return
         self.proc.stdin.write(data)
         with suppress(BrokenPipeError, ConnectionResetError):
             await self.proc.stdin.drain()
@@ -166,79 +162,6 @@ class AsyncProcess:
         ):
             # already exited, race condition
             pass
-
-    async def close(self, send_signal: bool = False) -> int:
-        """Close/terminate the process and wait for exit."""
-        self._close_called = True
-        # close any/all attached (writer) tasks
-        for task in self.attached_tasks:
-            if not task.done():
-                task.cancel()
-        if send_signal and self.returncode is None:
-            self.proc.send_signal(SIGINT)
-
-        # abort existing readers on stderr/stdout first before we send communicate
-        if self.proc.stdout and self.proc.stdout._waiter is not None:
-            self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
-            self.proc.stdout._waiter = None
-        if self.proc.stderr and self.proc.stderr._waiter is not None:
-            self.proc.stderr._waiter.set_exception(asyncio.CancelledError())
-            self.proc.stderr._waiter = None
-
-        # make sure the process is really cleaned up.
-        # especially with pipes this can cause deadlocks if not properly guarded
-        # we need to ensure stdout and stderr are flushed and stdin closed
-        while True:
-            try:
-                async with asyncio.timeout(5):
-                    # use communicate to flush all pipe buffers
-                    await self.proc.communicate()
-                    if self.returncode is not None:
-                        break
-            except TimeoutError:
-                self.logger.debug(
-                    "Process %s with PID %s did not stop in time. Sending terminate...",
-                    self.name,
-                    self.proc.pid,
-                )
-                self.proc.terminate()
-        self.logger.debug(
-            "Process %s with PID %s stopped with returncode %s",
-            self.name,
-            self.proc.pid,
-            self.returncode,
-        )
-        return self.returncode
-
-    async def wait(self) -> int:
-        """Wait for the process and return the returncode."""
-        if self._returncode is None:
-            self._returncode = await self.proc.wait()
-        return self._returncode
-
-    async def communicate(self, input_data: bytes | None = None) -> tuple[bytes, bytes]:
-        """Write bytes to process and read back results."""
-        stdout, stderr = await self.proc.communicate(input_data)
-        self._returncode = self.proc.returncode
-        return (stdout, stderr)
-
-    async def _feed_stdin(self) -> None:
-        """Feed stdin with chunks from an AsyncGenerator."""
-        if TYPE_CHECKING:
-            self._stdin: AsyncGenerator[bytes, None]
-        try:
-            async for chunk in self._stdin:
-                if self._close_called or self.proc.stdin.is_closing():
-                    return
-                await self.write(chunk)
-            await self.write_eof()
-        except Exception as err:
-            if not isinstance(err, asyncio.CancelledError):
-                self.logger.exception(err)
-            # make sure the stdin generator is also properly closed
-            # by propagating a cancellederror within
-            task = asyncio.create_task(self._stdin.__anext__())
-            task.cancel()
 
     async def read_stderr(self) -> bytes:
         """Read line from stderr."""
@@ -266,9 +189,52 @@ class AsyncProcess:
                 continue
             yield line
 
+    async def close(self, send_signal: bool = False) -> None:
+        """Close/terminate the process and wait for exit."""
+        self._close_called = True
+        if send_signal and self.returncode is None:
+            self.proc.send_signal(SIGINT)
+        if self.proc.stdin and not self.proc.stdin.is_closing():
+            self.proc.stdin.close()
+            await asyncio.sleep(0)  # yield to loop
+        # abort existing readers on stderr/stdout first before we send communicate
+        if self.proc.stdout and self.proc.stdout._waiter is not None:
+            with suppress(asyncio.exceptions.InvalidStateError):
+                self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
+        if self.proc.stderr and self.proc.stderr._waiter is not None:
+            with suppress(asyncio.exceptions.InvalidStateError):
+                self.proc.stderr._waiter.set_exception(asyncio.CancelledError())
+
+        # make sure the process is really cleaned up.
+        # especially with pipes this can cause deadlocks if not properly guarded
+        # we need to ensure stdout and stderr are flushed and stdin closed
+        while self.returncode is None:
+            try:
+                # use communicate to flush all pipe buffers
+                await asyncio.wait_for(self.proc.communicate(), 5)
+            except TimeoutError:
+                self.logger.debug(
+                    "Process %s with PID %s did not stop in time. Sending terminate...",
+                    self.name,
+                    self.proc.pid,
+                )
+                self.proc.terminate()
+        self.logger.debug(
+            "Process %s with PID %s stopped with returncode %s",
+            self.name,
+            self.proc.pid,
+            self.returncode,
+        )
+
+    async def wait(self) -> int:
+        """Wait for the process and return the returncode."""
+        if self._returncode is None:
+            self._returncode = await self.proc.wait()
+        return self._returncode
+
 
 async def check_output(args: str | list[str]) -> tuple[int, bytes]:
-    """Run subprocess and return output."""
+    """Run subprocess and return returncode and output."""
     if isinstance(args, str):
         proc = await asyncio.create_subprocess_shell(
             args,
@@ -283,3 +249,26 @@ async def check_output(args: str | list[str]) -> tuple[int, bytes]:
         )
     stdout, _ = await proc.communicate()
     return (proc.returncode, stdout)
+
+
+async def communicate(
+    args: str | list[str],
+    input: bytes | None = None,  # noqa: A002
+) -> tuple[int, bytes, bytes]:
+    """Communicate with subprocess and return returncode, stdout and stderr output."""
+    if isinstance(args, str):
+        proc = await asyncio.create_subprocess_shell(
+            args,
+            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if input is not None else None,
+        )
+    else:
+        proc = await asyncio.create_subprocess_exec(
+            *args,
+            stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE,
+            stdin=asyncio.subprocess.PIPE if input is not None else None,
+        )
+    stdout, stderr = await proc.communicate(input)
+    return (proc.returncode, stdout, stderr)

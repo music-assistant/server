@@ -533,7 +533,9 @@ class SlimprotoProvider(PlayerProvider):
             # so we debounce the resync a bit here with a timer
             self.mass.call_later(
                 1,
-                self.mass.player_queues.resume(active_queue.queue_id, fade_in=False),
+                self.mass.player_queues.resume,
+                active_queue.queue_id,
+                fade_in=False,
                 task_id=f"resume_{active_queue.queue_id}",
             )
         else:

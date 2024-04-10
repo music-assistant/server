@@ -295,6 +295,7 @@ class FileSystemProviderBase(MusicProvider):
                     provider=self.instance_id,
                     name=item.name,
                 )
+            await asyncio.sleep(0)  # yield to eventloop
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
@@ -308,6 +309,7 @@ class FileSystemProviderBase(MusicProvider):
                     if x.provider_instance == self.instance_id
                 )
                 prev_checksums[file_name] = db_item.metadata.checksum
+                await asyncio.sleep(0)  # yield to eventloop
 
         # process all deleted (or renamed) files first
         cur_filenames = set()
@@ -320,6 +322,7 @@ class FileSystemProviderBase(MusicProvider):
                 # unsupported file extension
                 continue
             cur_filenames.add(item.path)
+            await asyncio.sleep(0)  # yield to eventloop
         # work out deletions
         deleted_files = set(prev_checksums.keys()) - cur_filenames
         await self._process_deletions(deleted_files)

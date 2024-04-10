@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
@@ -411,6 +412,7 @@ class MusicProvider(Provider):
                             library_item.item_id, prov_item
                         )
                     cur_db_ids.add(library_item.item_id)
+                    await asyncio.sleep(0)  # yield to eventloop
                 except MusicAssistantError as err:
                     self.logger.warning(
                         "Skipping sync of item %s - error details: %s", prov_item.uri, str(err)
@@ -442,6 +444,7 @@ class MusicProvider(Provider):
                         else:
                             # otherwise: just unmark favorite
                             await controller.set_favorite(db_id, False)
+                await asyncio.sleep(0)  # yield to eventloop
             await self.mass.cache.set(cache_key, list(cur_db_ids))
 
     # DO NOT OVERRIDE BELOW

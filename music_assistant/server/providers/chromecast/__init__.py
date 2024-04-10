@@ -71,7 +71,7 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_DURATION,
 )
 
-MASS_APP_ID = "46C1A819"  # use the cast receiver app from philippe44 for now until we get our own
+MASS_APP_ID = "C35B0678"
 
 
 # Monkey patch the Media controller here to store the queue items
@@ -491,11 +491,7 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.elapsed_time = status.current_time
 
         # active source
-        if (
-            status.content_id
-            and self.mass.streams.base_url in status.content_id
-            and castplayer.player_id in status.content_id
-        ):
+        if castplayer.cc.app_id == MASS_APP_ID:
             castplayer.player.active_source = castplayer.player_id
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name

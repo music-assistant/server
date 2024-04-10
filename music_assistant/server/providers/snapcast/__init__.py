@@ -380,8 +380,8 @@ class SnapCastProvider(PlayerProvider):
                     input_format=input_format,
                     output_format=DEFAULT_SNAPCAST_FORMAT,
                     filter_params=get_player_filter_params(self.mass, player_id),
-                    name="snapcast_ffmpeg",
                     audio_output=f"tcp://{host}:{port}",
+                    logger=self.logger.getChild("ffmpeg"),
                 ) as ffmpeg_proc:
                     await ffmpeg_proc.wait()
                     # we need to wait a bit for the stream status to become idle
@@ -505,7 +505,7 @@ class SnapCastProvider(PlayerProvider):
             "--tcp.enabled=true",
             "--tcp.port=1705",
         ]
-        async with AsyncProcess(args, stdin=False, stdout=True, stderr=False) as snapserver_proc:
+        async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
             async for data in snapserver_proc.iter_any():
                 data = data.decode().strip()  # noqa: PLW2901
