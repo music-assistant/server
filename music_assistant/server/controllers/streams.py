@@ -536,24 +536,22 @@ class StreamsController(CoreController):
                 queue.queue_id, CONF_CROSSFADE_DURATION, 8
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
-            strip_silence_begin = use_crossfade and total_bytes_sent > 0
             bytes_written = 0
             buffer = b""
             # handle incoming audio chunks
             async for chunk in self.get_media_stream(
                 queue_track.streamdetails,
                 output_format=pcm_format,
-                strip_silence_begin=strip_silence_begin,
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 # allow it to be a bit smaller when playback just starts
                 if not use_crossfade or (total_bytes_sent + bytes_written == 0):
                     req_buffer_size = pcm_sample_size * 2
-                elif (total_bytes_sent + bytes_written) < crossfade_size:
+                elif (total_bytes_sent + bytes_written) < (crossfade_size * 2):
                     req_buffer_size = pcm_sample_size * 5
                 else:
-                    # additional 3 seconds to strip silence from last part
-                    req_buffer_size = crossfade_size + pcm_sample_size * 3
+                    # additional 5 seconds to strip silence from last part
+                    req_buffer_size = crossfade_size + pcm_sample_size * 5
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -564,6 +562,14 @@ class StreamsController(CoreController):
 
                 ####  HANDLE CROSSFADE OF PREVIOUS TRACK AND NEW TRACK
                 if last_fadeout_part:
+                    # strip silence from last part
+                    buffer = await strip_silence(
+                        self.mass,
+                        buffer,
+                        sample_rate=pcm_format.sample_rate,
+                        bit_depth=pcm_format.bit_depth,
+                        reverse=False,
+                    )
                     # perform crossfade
                     fadein_part = buffer[:crossfade_size]
                     remaining_bytes = buffer[crossfade_size:]
@@ -679,7 +685,6 @@ class StreamsController(CoreController):
         self,
         streamdetails: StreamDetails,
         output_format: AudioFormat,
-        strip_silence_begin: bool = False,
         extra_filter_params: list[str] | None = None,
     ) -> AsyncGenerator[tuple[bool, bytes], None]:
         """Get the audio stream for the given streamdetails."""
@@ -687,15 +692,8 @@ class StreamsController(CoreController):
         is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
         if is_radio:
             streamdetails.seek_position = 0
-            strip_silence_begin = False
-        if streamdetails.seek_position:
-            strip_silence_begin = False
         # collect all arguments for ffmpeg
         filter_params = extra_filter_params or []
-        if strip_silence_begin:
-            filter_params.append(
-                "atrim=start=0.2,silenceremove=start_periods=1:start_silence=0.1:start_threshold=0.02"
-            )
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
             filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-1.5:LRA=11"
