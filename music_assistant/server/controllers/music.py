@@ -21,6 +21,7 @@ from music_assistant.common.models.enums import (
     ProviderType,
 )
 from music_assistant.common.models.errors import (
+    InvalidProviderID,
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
@@ -167,11 +168,11 @@ class MusicController(CoreController):
             media_type, provider_instance_id_or_domain, item_id = parse_uri(
                 search_query, validate_id=True
             )
-        except InvalidProviderURI as err:
+        except InvalidProviderURI:
+            pass
+        except InvalidProviderID as err:
             self.logger.warning("%s", str(err))
             return SearchResults()
-        except MusicAssistantError:
-            pass
         else:
             if provider_instance_id_or_domain in PROVIDERS_WITH_SHAREABLE_URLS:
                 try:

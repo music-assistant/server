@@ -4,7 +4,7 @@ import os
 import re
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.errors import InvalidProviderURI, MusicAssistantError
+from music_assistant.common.models.errors import InvalidProviderID, InvalidProviderURI
 
 base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
 
@@ -60,11 +60,10 @@ def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]
             raise KeyError
     except (TypeError, AttributeError, ValueError, KeyError) as err:
         msg = f"Not a valid Music Assistant uri: {uri}"
-        raise MusicAssistantError(msg) from err
-    if validate_id:
-        if not valid_id(provider_instance_id_or_domain, item_id):
-            msg = f"Invalid {provider_instance_id_or_domain} ID: {item_id}"
-            raise InvalidProviderURI(msg)
+        raise InvalidProviderURI(msg) from err
+    if validate_id and not valid_id(provider_instance_id_or_domain, item_id):
+        msg = f"Invalid {provider_instance_id_or_domain} ID: {item_id} found in URI: {uri}"
+        raise InvalidProviderID(msg)
     return (media_type, provider_instance_id_or_domain, item_id)
 
 
