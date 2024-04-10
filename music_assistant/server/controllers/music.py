@@ -478,6 +478,7 @@ class MusicController(CoreController):
                     "true_peak": loudness.true_peak,
                     "lra": loudness.lra,
                     "threshold": loudness.threshold,
+                    "target_offset": loudness.target_offset,
                 },
                 allow_replace=True,
             )
