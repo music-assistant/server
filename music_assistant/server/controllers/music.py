@@ -20,7 +20,12 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant.common.models.errors import (
+    InvalidProviderID,
+    InvalidProviderURI,
+    MediaNotFoundError,
+    MusicAssistantError,
+)
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
@@ -36,6 +41,7 @@ from music_assistant.constants import (
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
+    PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
@@ -157,6 +163,39 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
+        # Check if the search query is a streaming provider public shareable URL
+        try:
+            media_type, provider_instance_id_or_domain, item_id = await parse_uri(
+                search_query, validate_id=True
+            )
+        except InvalidProviderURI:
+            pass
+        except InvalidProviderID as err:
+            self.logger.warning("%s", str(err))
+            return SearchResults()
+        else:
+            if provider_instance_id_or_domain in PROVIDERS_WITH_SHAREABLE_URLS:
+                try:
+                    item = await self.get_item(
+                        media_type=media_type,
+                        item_id=item_id,
+                        provider_instance_id_or_domain=provider_instance_id_or_domain,
+                    )
+                except MusicAssistantError as err:
+                    self.logger.warning("%s", str(err))
+                    return SearchResults()
+                else:
+                    if media_type == MediaType.ARTIST:
+                        return SearchResults(artists=[item])
+                    elif media_type == MediaType.ALBUM:
+                        return SearchResults(albums=[item])
+                    elif media_type == MediaType.TRACK:
+                        return SearchResults(tracks=[item])
+                    elif media_type == MediaType.PLAYLIST:
+                        return SearchResults(playlists=[item])
+                    else:
+                        return SearchResults()
+
         # include results from all (unique) music providers
         results_per_provider: list[SearchResults] = await asyncio.gather(
             *[
@@ -306,7 +345,7 @@ class MusicController(CoreController):
     @api_command("music/item_by_uri")
     async def get_item_by_uri(self, uri: str) -> MediaItemType:
         """Fetch MediaItem by uri."""
-        media_type, provider_instance_id_or_domain, item_id = parse_uri(uri)
+        media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,

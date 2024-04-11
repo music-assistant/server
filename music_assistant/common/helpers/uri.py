@@ -1,12 +1,29 @@
 """Helpers for creating/parsing URI's."""
 
+import asyncio
 import os
+import re
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.errors import MusicAssistantError
+from music_assistant.common.models.errors import InvalidProviderID, InvalidProviderURI
+
+base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
 
 
-def parse_uri(uri: str) -> tuple[MediaType, str, str]:
+def valid_base62_length22(item_id) -> bool:
+    """Validate Spotify style ID."""
+    return bool(base62_length22_id_pattern.match(item_id))
+
+
+def valid_id(provider: str, item_id: str) -> bool:
+    """Validate Provider ID."""
+    if provider == "spotify":
+        return valid_base62_length22(item_id)
+    else:
+        return True
+
+
+async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]:
     """Try to parse URI to Mass identifiers.
 
     Returns Tuple: MediaType, provider_instance_id_or_domain, item_id
@@ -35,7 +52,7 @@ def parse_uri(uri: str) -> tuple[MediaType, str, str]:
             # spotify new-style uri
             provider_instance_id_or_domain, media_type_str, item_id = uri.split(":")
             media_type = MediaType(media_type_str)
-        elif os.path.isfile(uri):
+        elif "/" in uri and await asyncio.to_thread(os.path.isfile, uri):
             # Translate a local file (which is not from file provider) to the URL provider
             provider_instance_id_or_domain = "url"
             media_type = MediaType.TRACK
@@ -44,7 +61,10 @@ def parse_uri(uri: str) -> tuple[MediaType, str, str]:
             raise KeyError
     except (TypeError, AttributeError, ValueError, KeyError) as err:
         msg = f"Not a valid Music Assistant uri: {uri}"
-        raise MusicAssistantError(msg) from err
+        raise InvalidProviderURI(msg) from err
+    if validate_id and not valid_id(provider_instance_id_or_domain, item_id):
+        msg = f"Invalid {provider_instance_id_or_domain} ID: {item_id} found in URI: {uri}"
+        raise InvalidProviderID(msg)
     return (media_type, provider_instance_id_or_domain, item_id)
 
 

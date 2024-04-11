@@ -92,3 +92,15 @@ class UnplayableMediaError(MusicAssistantError):
     """Error thrown when a MediaItem cannot be played properly."""
 
     error_code = 13
+
+
+class InvalidProviderURI(MusicAssistantError):
+    """Error thrown when a provider URI does not match a known format."""
+
+    error_code = 14
+
+
+class InvalidProviderID(MusicAssistantError):
+    """Error thrown when a provider media item identifier does not match a known format."""
+
+    error_code = 15
