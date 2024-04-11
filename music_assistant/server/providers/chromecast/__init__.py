@@ -583,7 +583,8 @@ class ChromecastProvider(PlayerProvider):
             return
         if castplayer.player.announcement_in_progress:
             return
-        queue = self.mass.player_queues.get_active_queue(castplayer.player_id)
+        if not (queue := self.mass.player_queues.get_active_queue(castplayer.player_id)):
+            return
         if not (current_item := queue.current_item):
             return
         if not (queue.flow_mode or current_item.media_type == MediaType.RADIO):
