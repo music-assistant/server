@@ -113,7 +113,7 @@ class Webserver:
         key = f"{method}.{path}"
         self._dynamic_routes.pop(key)
 
-    async def serve_static(self, file_path: str, _request: web.Request) -> web.FileResponse:
+    async def serve_static(self, file_path: str, request: web.Request) -> web.FileResponse:
         """Serve file response."""
         headers = {"Cache-Control": "no-cache"}
         return web.FileResponse(file_path, headers=headers)

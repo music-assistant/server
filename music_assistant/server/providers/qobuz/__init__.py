@@ -669,7 +669,7 @@ class QobuzProvider(MusicProvider):
             self.logger.info(
                 "Successfully logged in to Qobuz as %s", details["user"]["display_name"]
             )
-            self.mass.metadata.preferred_language = details["user"]["country_code"]
+            self.mass.metadata.set_default_preferred_language(details["user"]["country_code"])
             return details["user_auth_token"]
         return None
 
@@ -698,6 +698,9 @@ class QobuzProvider(MusicProvider):
         # pylint: disable=too-many-branches
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
         headers = {"X-App-Id": app_var(0)}
+        locale = self.mass.metadata.locale.replace("_", "-")
+        language = locale.split("-")[0]
+        headers["Accept-Language"] = f"{locale}, {language};q=0.9, *;q=0.5"
         if endpoint != "user/login":
             auth_token = await self._auth_token()
             if not auth_token:

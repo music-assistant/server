@@ -311,6 +311,8 @@ class MusicController(CoreController):
         # handle regular provider listing, always add back folder first
         if not prov or not sub_path:
             yield BrowseFolder(item_id="root", provider="library", path="root", name="..")
+            if not prov:
+                return
         else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             yield BrowseFolder(

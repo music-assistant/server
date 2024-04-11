@@ -609,7 +609,7 @@ class SpotifyProvider(MusicProvider):
         # return existing token if we have one in memory
         if (
             self._auth_token
-            and asyncio.to_thread(os.path.isdir, self._cache_dir)
+            and await asyncio.to_thread(os.path.isdir, self._cache_dir)
             and (self._auth_token["expiresAt"] > int(time.time()) + 600)
         ):
             return self._auth_token
@@ -639,7 +639,7 @@ class SpotifyProvider(MusicProvider):
         if tokeninfo and userinfo:
             self._auth_token = tokeninfo
             self._sp_user = userinfo
-            self.mass.metadata.preferred_language = userinfo["country"]
+            self.mass.metadata.set_default_preferred_language(userinfo["country"])
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["id"])
             self._auth_token = tokeninfo
             return tokeninfo
@@ -758,6 +758,9 @@ class SpotifyProvider(MusicProvider):
         if tokeninfo is None:
             tokeninfo = await self.login()
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
+        locale = self.mass.metadata.locale.replace("_", "-")
+        language = locale.split("-")[0]
+        headers["Accept-Language"] = f"{locale}, {language};q=0.9, *;q=0.5"
         async with (
             self._throttler,
             self.mass.http_session.get(

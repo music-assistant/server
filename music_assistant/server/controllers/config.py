@@ -620,7 +620,18 @@ class ConfigController:
             # only allow setting raw values if main entry exists
             msg = f"Invalid provider_instance: {provider_instance}"
             raise KeyError(msg)
-        self.set(f"{CONF_PROVIDERS}/{provider_instance}/{key}", value)
+        self.set(f"{CONF_PROVIDERS}/{provider_instance}/values/{key}", value)
+
+    def set_raw_core_config_value(self, core_module: str, key: str, value: ConfigValueType) -> None:
+        """
+        Set (raw) single config(entry) value for a core controller.
+
+        Note that this only stores the (raw) value without any validation or default.
+        """
+        if not self.get(f"{CONF_CORE}/{core_module}"):
+            # create base object first if needed
+            self.set(f"{CONF_CORE}/{core_module}", CoreConfig({}, core_module).to_raw())
+        self.set(f"{CONF_CORE}/{core_module}/values/{key}", value)
 
     def set_raw_player_config_value(self, player_id: str, key: str, value: ConfigValueType) -> None:
         """

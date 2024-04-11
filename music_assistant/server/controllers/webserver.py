@@ -216,6 +216,8 @@ class WebserverController(CoreController):
 
     async def _handle_ws_client(self, request: web.Request) -> web.WebSocketResponse:
         connection = WebsocketClientHandler(self, request)
+        if lang := request.headers.get("Accept-Language"):
+            self.mass.metadata.set_default_preferred_language(lang.split(",")[0])
         try:
             self.clients.add(connection)
             return await connection.handle_client()
