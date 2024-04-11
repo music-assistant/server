@@ -119,8 +119,9 @@ class FFMpeg(AsyncProcess):
                 await self._stdin_task
             # make sure the stdin generator is also properly closed
             # by propagating a cancellederror within
-            task = asyncio.create_task(self.audio_input.__anext__())
-            task.cancel()
+            with suppress(RuntimeError):
+                task = asyncio.create_task(self.audio_input.__anext__())
+                task.cancel()
         if not self.collect_log_history:
             await super().close(send_signal)
             return
