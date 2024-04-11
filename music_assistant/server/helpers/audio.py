@@ -950,19 +950,8 @@ def get_ffmpeg_args(
 
     # collect output args
     if output_path.upper() == "NULL":
+        # devnull stream
         output_args = ["-f", "null", "-"]
-    elif output_format.content_type.is_pcm():
-        output_args = [
-            "-acodec",
-            output_format.content_type.name.lower(),
-            "-f",
-            output_format.content_type.value,
-            "-ac",
-            str(output_format.channels),
-            "-ar",
-            str(output_format.sample_rate),
-            output_path,
-        ]
     elif output_format.content_type == ContentType.UNKNOWN:
         # use wav so we at least have some headers for the rest of the chain
         output_args = ["-f", "wav", output_path]
@@ -973,8 +962,12 @@ def get_ffmpeg_args(
             output_format.content_type.value,
             "-ar",
             str(output_format.sample_rate),
+            "-ac",
+            str(output_format.channels),
             output_path,
         ]
+        if output_format.content_type.is_pcm():
+            output_args += ["-acodec", output_format.content_type.name.lower()]
 
     # determine if we need to do resampling
     if (
