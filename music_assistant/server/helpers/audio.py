@@ -103,6 +103,16 @@ class FFMpeg(AsyncProcess):
             stderr=True,
         )
         self.logger = logger or LOGGER.getChild("ffmpeg")
+        clean_args = []
+        for arg in ffmpeg_args[1:]:
+            if arg.startswith("http"):
+                clean_args.append("<URL>")
+            elif "/" in arg and "." in arg:
+                clean_args.append("<FILE>")
+            else:
+                clean_args.append(arg)
+        args_str = " ".join(clean_args)
+        self.logger.debug("starting ffmpeg with args: %s", args_str)
 
     async def start(self) -> None:
         """Perform Async init of process."""
