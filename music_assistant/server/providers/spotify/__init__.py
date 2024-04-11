@@ -609,7 +609,7 @@ class SpotifyProvider(MusicProvider):
         # return existing token if we have one in memory
         if (
             self._auth_token
-            and os.path.isdir(self._cache_dir)
+            and asyncio.to_thread(os.path.isdir, self._cache_dir)
             and (self._auth_token["expiresAt"] > int(time.time()) + 600)
         ):
             return self._auth_token

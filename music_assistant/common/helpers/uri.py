@@ -1,5 +1,6 @@
 """Helpers for creating/parsing URI's."""
 
+import asyncio
 import os
 import re
 
@@ -22,7 +23,7 @@ def valid_id(provider: str, item_id: str) -> bool:
         return True
 
 
-def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]:
+async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]:
     """Try to parse URI to Mass identifiers.
 
     Returns Tuple: MediaType, provider_instance_id_or_domain, item_id
@@ -51,7 +52,7 @@ def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str, str]
             # spotify new-style uri
             provider_instance_id_or_domain, media_type_str, item_id = uri.split(":")
             media_type = MediaType(media_type_str)
-        elif os.path.isfile(uri):
+        elif "/" in uri and await asyncio.to_thread(os.path.isfile, uri):
             # Translate a local file (which is not from file provider) to the URL provider
             provider_instance_id_or_domain = "url"
             media_type = MediaType.TRACK

@@ -165,7 +165,7 @@ class MusicController(CoreController):
         """
         # Check if the search query is a streaming provider public shareable URL
         try:
-            media_type, provider_instance_id_or_domain, item_id = parse_uri(
+            media_type, provider_instance_id_or_domain, item_id = await parse_uri(
                 search_query, validate_id=True
             )
         except InvalidProviderURI:
@@ -343,7 +343,7 @@ class MusicController(CoreController):
     @api_command("music/item_by_uri")
     async def get_item_by_uri(self, uri: str) -> MediaItemType:
         """Fetch MediaItem by uri."""
-        media_type, provider_instance_id_or_domain, item_id = parse_uri(uri)
+        media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,

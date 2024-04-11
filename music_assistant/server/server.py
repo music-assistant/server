@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
 
 import aiofiles
+from aiofiles.os import wrap
 from aiohttp import ClientSession, TCPConnector
 from zeroconf import IPVersion, NonUniqueNameException, ServiceStateChange, Zeroconf
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
@@ -55,6 +56,8 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.server.models.core_controller import CoreController
 
+isdir = wrap(os.path.isdir)
+isfile = wrap(os.path.isfile)
 
 EventCallBackType = Callable[[MassEvent], None]
 EventSubscriptionType = tuple[
@@ -561,7 +564,7 @@ class MusicAssistant:
             # get files in subdirectory
             for file_str in os.listdir(provider_path):
                 file_path = os.path.join(provider_path, file_str)
-                if not os.path.isfile(file_path):
+                if not await isfile(file_path):
                     continue
                 if file_str != "manifest.json":
                     continue
@@ -570,12 +573,12 @@ class MusicAssistant:
                     # check for icon.svg file
                     if not provider_manifest.icon_svg:
                         icon_path = os.path.join(provider_path, "icon.svg")
-                        if os.path.isfile(icon_path):
+                        if await isfile(icon_path):
                             provider_manifest.icon_svg = await get_icon_string(icon_path)
                     # check for dark_icon file
                     if not provider_manifest.icon_svg_dark:
                         icon_path = os.path.join(provider_path, "icon_dark.svg")
-                        if os.path.isfile(icon_path):
+                        if await isfile(icon_path):
                             provider_manifest.icon_svg_dark = await get_icon_string(icon_path)
                     self._provider_manifests[provider_manifest.domain] = provider_manifest
                     LOGGER.debug("Loaded manifest for provider %s", provider_manifest.name)
@@ -589,7 +592,7 @@ class MusicAssistant:
         async with asyncio.TaskGroup() as tg:
             for dir_str in os.listdir(PROVIDERS_PATH):
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
-                if not os.path.isdir(dir_path):
+                if not await isdir(dir_path):
                     continue
                 tg.create_task(load_provider_manifest(dir_str, dir_path))
 
