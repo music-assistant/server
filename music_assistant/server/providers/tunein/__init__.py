@@ -258,9 +258,12 @@ class TuneInProvider(MusicProvider):
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
+        locale = self.mass.metadata.locale.replace("_", "-")
+        language = locale.split("-")[0]
+        headers = {"Accept-Language": f"{locale}, {language};q=0.9, *;q=0.5"}
         async with (
             self._throttler,
-            self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
+            self.mass.http_session.get(url, params=kwargs, headers=headers, ssl=False) as response,
         ):
             result = await response.json()
             if not result or "error" in result:
