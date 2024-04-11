@@ -669,7 +669,7 @@ class QobuzProvider(MusicProvider):
             self.logger.info(
                 "Successfully logged in to Qobuz as %s", details["user"]["display_name"]
             )
-            self.mass.metadata.preferred_language = details["user"]["country_code"]
+            self.mass.metadata.set_default_preferred_language(details["user"]["country_code"])
             return details["user_auth_token"]
         return None
 

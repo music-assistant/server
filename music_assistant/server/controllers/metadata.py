@@ -8,13 +8,24 @@ import urllib.parse
 from base64 import b64encode
 from contextlib import suppress
 from time import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
 import aiofiles
 from aiohttp import web
 
-from music_assistant.common.models.enums import ImageType, MediaType, ProviderFeature, ProviderType
+from music_assistant.common.models.config_entries import (
+    ConfigEntry,
+    ConfigValueOption,
+    ConfigValueType,
+)
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    ProviderType,
+)
 from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
@@ -26,7 +37,8 @@ from music_assistant.common.models.media_items import (
     Radio,
     Track,
 )
-from music_assistant.constants import VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.constants import CONF_LANGUAGE, VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
 from music_assistant.server.models.core_controller import CoreController
@@ -35,6 +47,42 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.metadata_provider import MetadataProvider
     from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
+
+LOCALES = {
+    "af_ZA": "African",
+    "ar_AE": "Arabic (United Arab Emirates)",
+    "ar_EG": "Arabic (Egypt)",
+    "ar_SA": "Saudi Arabia",
+    "bg_BG": "Bulgarian",
+    "cs_CZ": "Czech",
+    "zh_CN": "Chinese",
+    "hr_HR": "Croatian",
+    "da_DK": "Danish",
+    "de_DE": "German",
+    "el_GR": "Greek",
+    "en_US": "English (US)",
+    "en_UK": "English (UK)",
+    "es_ES": "Spanish",
+    "et_EE": "Estonian",
+    "fi_FI": "Finnish",
+    "fr_FR": "French",
+    "hu_HU": "Hungarian",
+    "it_IT": "Italian",
+    "lt_LT": "Lithuanian",
+    "lv_LV": "Latvian",
+    "nl_NL": "Dutch",
+    "no_NO": "Norwegian",
+    "pl_PL": "Polish",
+    "pt_PT": "Portuguese",
+    "ro_RO": "Romanian",
+    "ru_RU": "Russian",
+    "sk_SK": "Slovak",
+    "sl_SI": "Slovenian",
+    "sv_SE": "Swedish",
+    "tr_TR": "Turkish",
+}
+
+DEFAULT_LANGUAGE = "en_US"
 
 
 class MetaDataController(CoreController):
@@ -54,6 +102,26 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "book-information-variant"
 
+    async def get_config_entries(
+        self,
+        action: str | None = None,
+        values: dict[str, ConfigValueType] | None = None,
+    ) -> tuple[ConfigEntry, ...]:
+        """Return all Config Entries for this core module (if any)."""
+        return (
+            ConfigEntry(
+                key=CONF_LANGUAGE,
+                type=ConfigEntryType.STRING,
+                label="Preferred language",
+                required=False,
+                default_value=DEFAULT_LANGUAGE,
+                description="Preferred language for metadata.\n\n"
+                "Note that English will always be used as fallback when content "
+                "in your preferred language is not available.",
+                options=tuple(ConfigValueOption(value, key) for key, value in LOCALES.items()),
+            ),
+        )
+
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
@@ -65,24 +133,51 @@ class MetaDataController(CoreController):
     @property
     def providers(self) -> list[MetadataProvider]:
         """Return all loaded/running MetadataProviders."""
-        return self.mass.get_providers(ProviderType.METADATA)  # type: ignore[return-value]
+        if TYPE_CHECKING:
+            return cast(list[MetadataProvider], self.mass.get_providers(ProviderType.METADATA))
+        return self.mass.get_providers(ProviderType.METADATA)
 
     @property
     def preferred_language(self) -> str:
-        """Return preferred language for metadata as 2 letter country code (uppercase).
+        """Return preferred language for metadata (as 2 letter language code 'en')."""
+        return self.locale.split("_")[0]
 
-        Defaults to English (EN).
+    @property
+    def locale(self) -> str:
+        """Return preferred language for metadata (as full locale code 'en_EN')."""
+        return self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_LANGUAGE, DEFAULT_LANGUAGE
+        )
+
+    @api_command("metadata/set_default_preferred_language")
+    def set_default_preferred_language(self, lang: str) -> None:
         """
-        return self._pref_lang or "EN"
+        Set the (default) preferred language.
 
-    @preferred_language.setter
-    def preferred_language(self, lang: str) -> None:
-        """Set preferred language to 2 letter country code.
-
-        Can only be set once.
+        Reasoning behind this is that the backend can not make a wise choice for the default,
+        so relies on some external source that knows better to set this info, like the frontend
+        or a streaming provider.
+        Can only be set once (by this call or the user).
         """
-        if self._pref_lang is None:
-            self._pref_lang = lang.upper()
+        if self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE):
+            return  # already set
+        if lang in LOCALES:
+            self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
+            return
+        lang = lang.lower()
+        # try strict match first
+        for locale_code, lang_name in LOCALES.items():
+            if lang in (locale_code.lower(), lang_name.lower()):
+                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+                return
+        # attempt loose match on either language or country code
+        for locale_code in tuple(LOCALES):
+            language_code, region_code = locale_code.lower().split("_", 1)
+            if lang in (language_code, region_code):
+                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
+                return
+        # if we reach this point, we couldn't match the language
+        self.logger.warning("%s is not a valid language", lang)
 
     def start_scan(self) -> None:
         """Start background scan for missing metadata."""

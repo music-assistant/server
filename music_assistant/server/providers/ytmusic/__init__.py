@@ -12,12 +12,9 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 import pytube
+from ytmusicapi.constants import SUPPORTED_LANGUAGES
 
-from music_assistant.common.models.config_entries import (
-    CONF_ENTRY_PROVIDER_LANGUAGE,
-    ConfigEntry,
-    ConfigValueType,
-)
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import (
     InvalidDataError,
@@ -43,7 +40,6 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import CONF_PROVIDER_LANGUAGE
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -181,7 +177,6 @@ async def get_config_entries(
             hidden=True,
             value=values.get(CONF_TOKEN_TYPE) if values else None,
         ),
-        CONF_ENTRY_PROVIDER_LANGUAGE,
     )
 
 
@@ -204,7 +199,14 @@ class YoutubeMusicProvider(MusicProvider):
         await self._initialize_context()
         self._cookies = {"CONSENT": "YES+1"}
         self._signature_timestamp = await self._get_signature_timestamp()
-        self.language = self.config.get_value(CONF_PROVIDER_LANGUAGE) or "en"
+        # get default language (that is supported by YTM)
+        mass_locale = self.mass.metadata.locale
+        for lang_code in SUPPORTED_LANGUAGES:
+            if lang_code in (mass_locale, mass_locale.split("_")[0]):
+                self.language = lang_code
+                break
+        else:
+            self.language = "en"
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:

@@ -16,11 +16,7 @@ from asyncio_throttle import Throttler
 
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.config_entries import (
-    CONF_ENTRY_PROVIDER_LANGUAGE,
-    ConfigEntry,
-    ConfigValueType,
-)
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ExternalID,
@@ -45,7 +41,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import CONF_PASSWORD, CONF_PROVIDER_LANGUAGE, CONF_USERNAME
+from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
@@ -119,7 +115,6 @@ async def get_config_entries(
             label="Password",
             required=True,
         ),
-        CONF_ENTRY_PROVIDER_LANGUAGE,
     )
 
 
@@ -614,7 +609,7 @@ class SpotifyProvider(MusicProvider):
         # return existing token if we have one in memory
         if (
             self._auth_token
-            and asyncio.to_thread(os.path.isdir, self._cache_dir)
+            and await asyncio.to_thread(os.path.isdir, self._cache_dir)
             and (self._auth_token["expiresAt"] > int(time.time()) + 600)
         ):
             return self._auth_token
@@ -644,7 +639,7 @@ class SpotifyProvider(MusicProvider):
         if tokeninfo and userinfo:
             self._auth_token = tokeninfo
             self._sp_user = userinfo
-            self.mass.metadata.preferred_language = userinfo["country"]
+            self.mass.metadata.set_default_preferred_language(userinfo["country"])
             self.logger.info("Successfully logged in to Spotify as %s", userinfo["id"])
             self._auth_token = tokeninfo
             return tokeninfo
@@ -763,10 +758,9 @@ class SpotifyProvider(MusicProvider):
         if tokeninfo is None:
             tokeninfo = await self.login()
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
-        if language := self.mass.config.get_raw_provider_config_value(
-            self.instance_id, CONF_PROVIDER_LANGUAGE
-        ):
-            headers["Accept-Language"] = language
+        locale = self.mass.metadata.locale.replace("_", "-")
+        language = locale.split("-")[0]
+        headers["Accept-Language"] = f"{locale}, {language};q=0.9, *;q=0.5"
         async with (
             self._throttler,
             self.mass.http_session.get(

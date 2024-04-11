@@ -191,7 +191,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             if link := artist_obj.get(key):
                 metadata.links.add(MediaItemLink(type=link_type, url=link))
         # description/biography
-        if desc := artist_obj.get(f"strBiography{self.mass.metadata.preferred_language}"):
+        lang_code, lang_country = self.mass.metadata.locale.split("_")
+        if desc := artist_obj.get(f"strBiography{lang_country}") or (
+            desc := artist_obj.get(f"strBiography{lang_code.upper()}")
+        ):
             metadata.description = desc
         else:
             metadata.description = artist_obj.get("strBiographyEN")
@@ -226,7 +229,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             )
 
         # description
-        if desc := album_obj.get(f"strDescription{self.mass.metadata.preferred_language}"):
+        lang_code, lang_country = self.mass.metadata.locale.split("_")
+        if desc := album_obj.get(f"strDescription{lang_country}") or (
+            desc := album_obj.get(f"strDescription{lang_code.upper()}")
+        ):
             metadata.description = desc
         else:
             metadata.description = album_obj.get("strDescriptionEN")
@@ -251,7 +257,10 @@ class AudioDbMetadataProvider(MetadataProvider):
             metadata.genres = {genre}
         metadata.mood = track_obj.get("strMood")
         # description
-        if desc := track_obj.get(f"strDescription{self.mass.metadata.preferred_language}"):
+        lang_code, lang_country = self.mass.metadata.locale.split("_")
+        if desc := track_obj.get(f"strDescription{lang_country}") or (
+            desc := track_obj.get(f"strDescription{lang_code.upper()}")
+        ):
             metadata.description = desc
         else:
             metadata.description = track_obj.get("strDescriptionEN")
