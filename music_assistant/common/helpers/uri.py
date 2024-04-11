@@ -44,10 +44,9 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
         elif "://" in uri and len(uri.split("/")) >= 4:
             # music assistant-style uri
             # provider://media_type/item_id
-            provider_instance_id_or_domain = uri.split("://")[0]
-            media_type_str = uri.split("/")[2]
+            provider_instance_id_or_domain, rest = uri.split("://", 1)
+            media_type_str, item_id = rest.split("/", 1)
             media_type = MediaType(media_type_str)
-            item_id = uri.split(f"{media_type_str}/")[1]
         elif ":" in uri:
             # spotify new-style uri
             provider_instance_id_or_domain, media_type_str, item_id = uri.split(":")
