@@ -434,11 +434,9 @@ class SpotifyProvider(MusicProvider):
             args += ["--start-position", str(int(seek_position))]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        bytes_sent = 0
         async with AsyncProcess(args, stdout=True, name="librespot") as librespot_proc:
             async for chunk in librespot_proc.iter_any():
                 yield chunk
-                bytes_sent += len(chunk)
 
     async def _parse_artist(self, artist_obj):
         """Parse spotify artist object to generic layout."""

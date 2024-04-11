@@ -109,17 +109,17 @@ class AsyncProcess:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
-            if chunk == b"":
-                break
             yield chunk
+            if len(chunk) == 0:
+                break
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
-            if chunk == b"":
-                break
             yield chunk
+            if len(chunk) == 0:
+                break
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
@@ -139,7 +139,7 @@ class AsyncProcess:
 
     async def write(self, data: bytes) -> None:
         """Write data to process stdin."""
-        if self._close_called:
+        if self.closed:
             self.logger.warning("write called while process already done")
             return
         self.proc.stdin.write(data)
@@ -148,7 +148,7 @@ class AsyncProcess:
 
     async def write_eof(self) -> None:
         """Write end of file to to process stdin."""
-        if self._close_called:
+        if self.closed:
             return
         try:
             if self.proc.stdin.can_write_eof():
@@ -165,6 +165,8 @@ class AsyncProcess:
 
     async def read_stderr(self) -> bytes:
         """Read line from stderr."""
+        if self.closed:
+            return b""
         try:
             return await self.proc.stderr.readline()
         except ValueError as err:
@@ -196,7 +198,6 @@ class AsyncProcess:
             self.proc.send_signal(SIGINT)
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
-            await asyncio.sleep(0)  # yield to loop
         # abort existing readers on stderr/stdout first before we send communicate
         if self.proc.stdout and self.proc.stdout._waiter is not None:
             with suppress(asyncio.exceptions.InvalidStateError):
@@ -204,6 +205,7 @@ class AsyncProcess:
         if self.proc.stderr and self.proc.stderr._waiter is not None:
             with suppress(asyncio.exceptions.InvalidStateError):
                 self.proc.stderr._waiter.set_exception(asyncio.CancelledError())
+        await asyncio.sleep(0)  # yield to loop
 
         # make sure the process is really cleaned up.
         # especially with pipes this can cause deadlocks if not properly guarded
@@ -212,6 +214,11 @@ class AsyncProcess:
             try:
                 # use communicate to flush all pipe buffers
                 await asyncio.wait_for(self.proc.communicate(), 5)
+            except RuntimeError as err:
+                if "read() called while another coroutine" in str(err):
+                    # race condition
+                    continue
+                raise
             except TimeoutError:
                 self.logger.debug(
                     "Process %s with PID %s did not stop in time. Sending terminate...",
