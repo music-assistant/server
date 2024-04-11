@@ -171,8 +171,11 @@ class StreamsController(CoreController):
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
         ffmpeg_present, libsoxr_support, version = await check_audio_support()
+        major_version = int("".join(char for char in version.split(".")[0] if not char.isalpha()))
         if not ffmpeg_present:
             self.logger.error("FFmpeg binary not found on your system, playback will NOT work!.")
+        elif major_version < 6:
+            self.logger.error("FFMpeg version is too old, you may run into playback issues.")
         elif not libsoxr_support:
             self.logger.warning(
                 "FFmpeg version found without libsoxr support, "
