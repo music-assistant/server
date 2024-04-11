@@ -49,6 +49,7 @@ from music_assistant.server.helpers.audio import (
     FFMpeg,
     check_audio_support,
     crossfade_pcm_parts,
+    get_chunksize,
     get_ffmpeg_stream,
     get_hls_stream,
     get_icy_stream,
@@ -743,19 +744,17 @@ class StreamsController(CoreController):
             logger=logger,
         ) as ffmpeg_proc:
             try:
-                async for chunk in ffmpeg_proc.iter_any():
+                async for chunk in ffmpeg_proc.iter_any(get_chunksize(output_format)):
                     bytes_sent += len(chunk)
                     yield chunk
                     del chunk
                 finished = True
             finally:
-                await ffmpeg_proc.close()
-                logger.debug(
-                    "stream %s (with code %s) for %s",
-                    "finished" if finished else "aborted",
-                    ffmpeg_proc.returncode,
-                    streamdetails.uri,
-                )
+                if finished:
+                    await ffmpeg_proc.wait()
+                else:
+                    await ffmpeg_proc.close()
+
                 # try to determine how many seconds we've streamed
                 seconds_streamed = 0
                 if output_format.content_type.is_pcm():
@@ -765,6 +764,14 @@ class StreamsController(CoreController):
                 elif line := next((x for x in ffmpeg_proc.log_history if "time=" in x), None):
                     duration_str = line.split("time=")[1].split(" ")[0]
                     seconds_streamed = try_parse_duration(duration_str)
+
+                logger.debug(
+                    "stream %s (with code %s) for %s - seconds streamed: %s",
+                    "finished" if finished else "aborted",
+                    ffmpeg_proc.returncode,
+                    streamdetails.uri,
+                    seconds_streamed,
+                )
 
                 if seconds_streamed:
                     streamdetails.seconds_streamed = seconds_streamed
