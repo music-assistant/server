@@ -161,9 +161,9 @@ class FFMpeg(AsyncProcess):
             if self.collect_log_history:
                 self.log_history.append(line)
             if "error" in line or "warning" in line:
-                self.logger.warning(line)
+                self.logger.debug(line)
             elif "critical" in line:
-                self.logger.critical(line)
+                self.logger.warning(line)
             else:
                 self.logger.log(VERBOSE_LOG_LEVEL, line)
 
@@ -323,6 +323,9 @@ async def get_stream_details(
     Do not try to request streamdetails in advance as this is expiring data.
         param media_item: The QueueItem for which to request the streamdetails for.
     """
+    if seek_position and (queue_item.media_type == MediaType.RADIO or not queue_item.duration):
+        LOGGER.warning("seeking is not possible on duration-less streams!")
+        seek_position = 0
     if queue_item.streamdetails and seek_position:
         LOGGER.debug(f"Using (pre)cached streamdetails from queue_item for {queue_item.uri}")
         # we already have (fresh?) streamdetails stored on the queueitem, use these.
@@ -367,6 +370,13 @@ async def get_stream_details(
                 streamdetails.stream_type = StreamType.HLS
             elif is_icy:
                 streamdetails.stream_type = StreamType.ICY
+        # pre-select the best substream for HLS
+        if streamdetails.stream_type == StreamType.HLS:
+            streamdetails.path = await get_hls_substream(mass, streamdetails.path)
+
+    # seek position workaround for HLS streams
+    if seek_position and streamdetails.stream_type == StreamType.HLS:
+        streamdetails.path = f"hls+{streamdetails.path}"
 
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
@@ -502,6 +512,34 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     return result
 
 
+async def get_hls_substream(
+    mass: MusicAssistant,
+    url: str,
+) -> str:
+    """Select the (highest quality) HLS substream for given HLS playlist/URL."""
+    timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
+    # fetch master playlist and select (best) child playlist
+    # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
+    async with mass.http_session.get(url, headers=HTTP_HEADERS, timeout=timeout) as resp:
+        charset = resp.charset or "utf-8"
+        master_m3u_data = await resp.text(charset)
+    substreams = parse_m3u(master_m3u_data)
+    if any(x for x in substreams if x.path.endswith(".ts")) or all(
+        x for x in substreams if (x.stream_info or x.length)
+    ):
+        # the url we got is already a substream
+        return url
+    # sort substreams on best quality (highest bandwidth)
+    substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
+    substream = substreams[0]
+    substream_url = substream.path
+    if not substream_url.startswith("http"):
+        # path is relative, stitch it together
+        base_path = url.rsplit("/", 1)[0]
+        substream_url = base_path + "/" + substream.path
+    return substream_url
+
+
 async def get_icy_stream(
     mass: MusicAssistant, url: str, streamdetails: StreamDetails
 ) -> AsyncGenerator[bytes, None]:
@@ -533,42 +571,23 @@ async def get_icy_stream(
 
 
 async def get_hls_stream(
-    mass: MusicAssistant, url: str, streamdetails: StreamDetails
+    mass: MusicAssistant,
+    url: str,
+    streamdetails: StreamDetails,
+    seek_position: int = 0,
 ) -> AsyncGenerator[bytes, None]:
     """Get audio stream from HTTP HLS stream."""
+    # this method is a WIP and not yet in use
+    # for now ffmpeg is used for streaming of HLS
+    # (with a lack of metadata support)
     logger = LOGGER.getChild("hls_stream")
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
-    # fetch master playlist and select (best) child playlist
-    # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
-    async with mass.http_session.get(url, headers=HTTP_HEADERS, timeout=timeout) as resp:
-        charset = resp.charset or "utf-8"
-        master_m3u_data = await resp.text(charset)
-    substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.path.endswith(".ts")) or all(
-        x for x in substreams if (x.stream_info or x.length)
-    ):
-        # the url we got is already a substream
-        substream_url = url
-    else:
-        # sort substreams on best quality (highest bandwidth)
-        substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
-        substream = substreams[0]
-        substream_url = substream.path
-        if not substream_url.startswith("http"):
-            # path is relative, stitch it together
-            base_path = url.rsplit("/", 1)[0]
-            substream_url = base_path + "/" + substream.path
-
-    logger.debug(
-        "Start streaming HLS stream for url %s (selected substream %s)", url, substream_url
-    )
-
-    if streamdetails.audio_format.content_type == ContentType.UNKNOWN:
-        streamdetails.audio_format = AudioFormat(content_type=ContentType.AAC)
-
-    prev_chunks: deque[str] = deque(maxlen=30)
+    substream_url = await get_hls_substream(mass, url)
+    logger.debug("Start streaming HLS stream for url %s", substream_url)
+    prev_chunks: deque[str] = deque(maxlen=50)
     has_playlist_metadata: bool | None = None
     has_id3_metadata: bool | None = None
+    seconds_skipped = 0
     while True:
         async with mass.http_session.get(
             substream_url, headers=HTTP_HEADERS, timeout=timeout
@@ -579,6 +598,15 @@ async def get_hls_stream(
         hls_chunks = parse_m3u(substream_m3u_data)
         for chunk_item in hls_chunks:
             if chunk_item.path in prev_chunks:
+                return  # we looped through
+            # try to support seeking here
+            if (
+                seek_position
+                and chunk_item.length
+                and (seconds_skipped + int(chunk_item.length)) < seek_position
+            ):
+                seconds_skipped += int(chunk_item.length)
+                prev_chunks.append(chunk_item.path)
                 continue
             chunk_item_url = chunk_item.path
             if not chunk_item_url.startswith("http"):
@@ -908,7 +936,7 @@ def get_ffmpeg_args(
         "-nostats",
         "-ignore_unknown",
         "-protocol_whitelist",
-        "file,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp",
+        "file,hls,http,https,tcp,tls,crypto,pipe,data,fd,rtp,udp",
     ]
     # collect input args
     input_args = []
@@ -954,7 +982,7 @@ def get_ffmpeg_args(
         ContentType.MP4,
     ):
         # let ffmpeg guess/auto detect the content type
-        input_args += ["-i", input_path]
+        input_args += ["-probesize", "1M", "-i", input_path]
     else:
         # use explicit format identifier for all other
         input_args += ["-f", input_format.content_type.value, "-i", input_path]
@@ -987,12 +1015,14 @@ def get_ffmpeg_args(
         or input_format.bit_depth != output_format.bit_depth
     ):
         # prefer resampling with libsoxr due to its high quality
-        resample_filter = f'aresample=resampler={"soxr" if libsoxr_support else "swr"}'
+        if libsoxr_support:
+            resample_filter = "aresample=resampler=swr"
+        else:
+            resample_filter = "aresample=resampler=soxr:precision=28"
         if output_format.bit_depth < input_format.bit_depth:
             # apply dithering when going down to 16 bits
             resample_filter += ":osf=s16:dither_method=triangular_hp"
-        if not output_format.content_type.is_pcm():
-            # specify sample rate if output format is not pcm
+        if input_format.sample_rate != output_format.sample_rate:
             resample_filter += f":osr={output_format.sample_rate}"
         filter_params.append(resample_filter)
 

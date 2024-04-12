@@ -45,7 +45,6 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_ffmpeg_stream,
-    get_hls_stream,
     get_icy_stream,
     get_player_filter_params,
     parse_loudnorm,
@@ -710,6 +709,7 @@ class StreamsController(CoreController):
             streamdetails.seek_position = 0
         # collect all arguments for ffmpeg
         filter_params = []
+        extra_input_args = []
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
             filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-1.5:LRA=11"
@@ -730,15 +730,12 @@ class StreamsController(CoreController):
                 streamdetails,
                 seek_position=streamdetails.seek_position,
             )
-        elif streamdetails.stream_type == StreamType.HLS:
-            audio_source = get_hls_stream(self.mass, streamdetails.path, streamdetails)
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
         else:
             audio_source = streamdetails.path
-        extra_input_args = []
-        if streamdetails.seek_position and streamdetails.stream_type != StreamType.CUSTOM:
-            extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
+            if streamdetails.seek_position:
+                extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
 
         logger.debug("start media stream for: %s", streamdetails.uri)
         bytes_sent = 0
@@ -779,8 +776,7 @@ class StreamsController(CoreController):
                     streamdetails.uri,
                     seconds_streamed,
                 )
-                if seconds_streamed:
-                    streamdetails.seconds_streamed = seconds_streamed
+                streamdetails.seconds_streamed = seconds_streamed
                 # store accurate duration
                 if finished and not streamdetails.seek_position and seconds_streamed:
                     streamdetails.duration = seconds_streamed
