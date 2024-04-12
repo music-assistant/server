@@ -305,7 +305,8 @@ class StreamsController(CoreController):
                 await resp.write(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 break
-
+        if queue.stream_finished is not None:
+            queue.stream_finished = True
         return resp
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.Response:
@@ -355,7 +356,6 @@ class StreamsController(CoreController):
 
         # all checks passed, start streaming!
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
-        queue.stream_finished = False
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
@@ -409,7 +409,6 @@ class StreamsController(CoreController):
             length_b = chr(int(length / 16)).encode()
             await resp.write(length_b + metadata)
 
-        queue.stream_finished = True
         return resp
 
     async def serve_command_request(self, request: web.Request) -> web.Response:
@@ -669,7 +668,8 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration += last_part_seconds
             del last_fadeout_part
         total_bytes_sent += bytes_written
-        queue.stream_finished = True
+        if queue.stream_finished is not None:
+            queue.stream_finished = True
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
