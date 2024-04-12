@@ -766,9 +766,6 @@ class StreamsController(CoreController):
                     yield chunk
                     del chunk
                 finished = True
-        except GeneratorExit:
-            await ffmpeg_proc.close()
-            raise
         finally:
             if finished and not ffmpeg_proc.closed:
                 await asyncio.wait_for(ffmpeg_proc.wait(), 60)

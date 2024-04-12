@@ -383,11 +383,6 @@ async def get_stream_details(
                 streamdetails.stream_type = StreamType.HLS
             elif is_icy:
                 streamdetails.stream_type = StreamType.ICY
-    # the contenttype for radio and hls streams is
-    # so often wrong that we just let ffmpeg auto detect what it is.
-    if is_hls or is_icy:
-        # let ffmpeg work out what content type this is.
-        streamdetails.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
@@ -1017,8 +1012,7 @@ def get_ffmpeg_args(
         # devnull stream
         output_args = ["-f", "null", "-"]
     elif output_format.content_type == ContentType.UNKNOWN:
-        # use wav so we at least have some headers for the rest of the chain
-        output_args = ["-f", "wav", output_path]
+        raise RuntimeError("Invalid output format specified")
     else:
         if output_format.content_type.is_pcm():
             output_args += ["-acodec", output_format.content_type.name.lower()]
@@ -1031,6 +1025,13 @@ def get_ffmpeg_args(
             "-ac",
             str(output_format.channels),
             output_path,
+        ]
+
+    # edge case: source file is not stereo - downmix to stereo
+    if input_format.channels > 2 and output_format.channels == 2:
+        filter_params = [
+            "pan=stereo|FL=1.0*FL+0.707*FC+0.707*SL+0.707*LFE|FR=1.0*FR+0.707*FC+0.707*SR+0.707*LFE",
+            *filter_params,
         ]
 
     # determine if we need to do resampling
