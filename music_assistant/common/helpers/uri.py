@@ -54,7 +54,7 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
         elif "/" in uri and await asyncio.to_thread(os.path.isfile, uri):
             # Translate a local file (which is not from file provider) to the URL provider
             provider_instance_id_or_domain = "url"
-            media_type = MediaType.TRACK
+            media_type = MediaType.UNKNOWN
             item_id = uri
         else:
             raise KeyError
