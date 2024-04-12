@@ -496,6 +496,7 @@ class PlayerQueuesController(CoreController):
             return
         queue = self._queues[queue_id]
         queue.radio_source = []
+        queue.stream_finished = None
         if queue.state != PlayerState.IDLE:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -515,7 +516,7 @@ class PlayerQueuesController(CoreController):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if queue := self.get(queue_id):
-            queue.stream_finished = False
+            queue.stream_finished = None
         # simply forward the command to underlying player
         await self.mass.players.cmd_stop(queue_id)
 
@@ -682,6 +683,7 @@ class PlayerQueuesController(CoreController):
         )
         next_index = self._get_next_index(queue_id, index, allow_repeat=False)
         queue.flow_mode = player_needs_flow_mode and next_index is not None
+        queue.stream_finished = False
         # get streamdetails - do this here to catch unavailable items early
         queue_item.streamdetails = await get_stream_details(
             self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
@@ -1100,6 +1102,7 @@ class PlayerQueuesController(CoreController):
         # player does not support enqueue next feature.
         # we wait for the player to stop after it reaches the end of the track
         if queue.stream_finished and queue.state == PlayerState.IDLE:
+            queue.stream_finished = None
             self.mass.create_task(_enqueue_next(queue.current_index, False))
             return
 
