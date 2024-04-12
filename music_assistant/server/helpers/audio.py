@@ -143,11 +143,12 @@ class FFMpeg(AsyncProcess):
             self.proc.stdin.close()
             await asyncio.sleep(0)  # yield to loop
         # abort existing readers on stdout first before we send communicate
-        if self.proc.stdout:
-            if self.proc.stdout._waiter is not None:
-                with suppress(asyncio.exceptions.InvalidStateError):
-                    self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
-            # read reamaing bytes to unblock pipe
+        waiter: asyncio.Future
+        if self.proc.stdout and (waiter := self.proc.stdout._waiter):
+            self.proc.stdout._waiter = None
+            if waiter and not waiter.done():
+                waiter.set_exception(asyncio.CancelledError())
+            # read remaining bytes to unblock pipe
             await self.read(-1)
         # wait for log task to complete that reads the remaining data from stderr
         with suppress(TimeoutError):
