@@ -393,12 +393,12 @@ class FileSystemProviderBase(MusicProvider):
                 await controller.remove_item_from_library(library_item.item_id)
         # check if any albums need to be cleaned up
         for album_id in album_ids:
-            if not self.mass.music.albums.tracks(album_id, "library"):
+            if not await self.mass.music.albums.tracks(album_id, "library"):
                 await self.mass.music.albums.remove_item_from_library(album_id)
         # check if any artists need to be cleaned up
         for artist_id in artist_ids:
             artist_albums = await self.mass.music.artists.albums(artist_id, "library")
-            artist_tracks = self.mass.music.artists.tracks(artist_id, "library")
+            artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
             if not (artist_albums or artist_tracks):
                 await self.mass.music.artists.remove_item_from_library(album_id)
 
@@ -672,6 +672,7 @@ class FileSystemProviderBase(MusicProvider):
                         content_type=ContentType.try_parse(tags.format),
                         sample_rate=tags.sample_rate,
                         bit_depth=tags.bits_per_sample,
+                        channels=tags.channels,
                         bit_rate=tags.bit_rate,
                     ),
                 )
