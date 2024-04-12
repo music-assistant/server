@@ -109,20 +109,22 @@ class AsyncProcess:
         """Yield chunks of n size from the process stdout."""
         while True:
             chunk = await self.readexactly(n)
-            yield chunk
             if len(chunk) == 0:
                 break
+            yield chunk
 
     async def iter_any(self, n: int = DEFAULT_CHUNKSIZE) -> AsyncGenerator[bytes, None]:
         """Yield chunks as they come in from process stdout."""
         while True:
             chunk = await self.read(n)
-            yield chunk
             if len(chunk) == 0:
                 break
+            yield chunk
 
     async def readexactly(self, n: int) -> bytes:
         """Read exactly n bytes from the process stdout (or less if eof)."""
+        if self._close_called:
+            return b""
         try:
             return await self.proc.stdout.readexactly(n)
         except asyncio.IncompleteReadError as err:
@@ -135,6 +137,8 @@ class AsyncProcess:
         and may return less or equal bytes than requested, but at least one byte.
         If EOF was received before any byte is read, this function returns empty byte object.
         """
+        if self._close_called:
+            return b""
         return await self.proc.stdout.read(n)
 
     async def write(self, data: bytes) -> None:
@@ -165,7 +169,7 @@ class AsyncProcess:
 
     async def read_stderr(self) -> bytes:
         """Read line from stderr."""
-        if self.closed:
+        if self._close_called:
             return b""
         try:
             return await self.proc.stderr.readline()
@@ -199,12 +203,15 @@ class AsyncProcess:
         if self.proc.stdin and not self.proc.stdin.is_closing():
             self.proc.stdin.close()
         # abort existing readers on stderr/stdout first before we send communicate
-        if self.proc.stdout and self.proc.stdout._waiter is not None:
-            with suppress(asyncio.exceptions.InvalidStateError):
-                self.proc.stdout._waiter.set_exception(asyncio.CancelledError())
-        if self.proc.stderr and self.proc.stderr._waiter is not None:
-            with suppress(asyncio.exceptions.InvalidStateError):
-                self.proc.stderr._waiter.set_exception(asyncio.CancelledError())
+        waiter: asyncio.Future
+        if self.proc.stdout and (waiter := self.proc.stdout._waiter):
+            self.proc.stdout._waiter = None
+            if waiter and not waiter.done():
+                waiter.set_exception(asyncio.CancelledError())
+        if self.proc.stderr and (waiter := self.proc.stderr._waiter):
+            self.proc.stderr._waiter = None
+            if waiter and not waiter.done():
+                waiter.set_exception(asyncio.CancelledError())
         await asyncio.sleep(0)  # yield to loop
 
         # make sure the process is really cleaned up.
