@@ -126,8 +126,6 @@ class FFMpeg(AsyncProcess):
         """Close/terminate the process and wait for exit."""
         if self._stdin_task and not self._stdin_task.done():
             self._stdin_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._stdin_task
             # make sure the stdin generator is also properly closed
             # by propagating a cancellederror within
             with suppress(RuntimeError):
@@ -158,6 +156,7 @@ class FFMpeg(AsyncProcess):
 
     async def _log_reader_task(self) -> None:
         """Read ffmpeg log from stderr."""
+        decode_errors = 0
         async for line in self.iter_stderr():
             if self.collect_log_history:
                 self.log_history.append(line)
@@ -168,10 +167,16 @@ class FFMpeg(AsyncProcess):
             else:
                 self.logger.log(VERBOSE_LOG_LEVEL, line)
 
+            if "Invalid data found when processing input" in line:
+                decode_errors += 1
+            if decode_errors >= 50:
+                self.logger.error(line)
+                await super().close(True)
+
             # if streamdetails contenttype is unknown, try parse it from the ffmpeg log
-            if line.startswith("Stream #0:0: Audio: "):
+            if line.startswith("Stream #") and ": Audio: " in line:
                 if self.input_format.content_type == ContentType.UNKNOWN:
-                    content_type_raw = line.split("Stream #0:0: Audio: ")[1].split(" ")[0]
+                    content_type_raw = line.split(": Audio: ")[1].split(" ")[0]
                     content_type = ContentType.try_parse(content_type_raw)
                     self.logger.info(
                         "Detected (input) content type: %s (%s)", content_type, content_type_raw
@@ -183,10 +188,17 @@ class FFMpeg(AsyncProcess):
         """Feed stdin with audio chunks from an AsyncGenerator."""
         if TYPE_CHECKING:
             self.audio_input: AsyncGenerator[bytes, None]
-        async for chunk in self.audio_input:
-            await self.write(chunk)
-        # write EOF once we've reached the end of the input stream
-        await self.write_eof()
+        try:
+            async for chunk in self.audio_input:
+                await self.write(chunk)
+            # write EOF once we've reached the end of the input stream
+            await self.write_eof()
+        except Exception as err:
+            # make sure we dont swallow any exceptions and we bail out
+            # once our audio source fails.
+            if isinstance(err, asyncio.CancelledError):
+                self.logger.exception(err)
+                await self.close(True)
 
 
 async def crossfade_pcm_parts(
@@ -371,7 +383,11 @@ async def get_stream_details(
                 streamdetails.stream_type = StreamType.HLS
             elif is_icy:
                 streamdetails.stream_type = StreamType.ICY
-
+    # the contenttype for radio and hls streams is
+    # so often wrong that we just let ffmpeg auto detect what it is.
+    if is_hls or is_icy:
+        # let ffmpeg work out what content type this is.
+        streamdetails.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
     # set queue_id on the streamdetails so we know what is being streamed
     streamdetails.queue_id = queue_item.queue_id
     # handle skip/fade_in details
@@ -546,12 +562,15 @@ async def get_hls_stream(
     logger = LOGGER.getChild("hls_stream")
     logger.debug("Start streaming HLS stream for url %s", url)
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
-    # let ffmpeg work out what content type this is.
-    streamdetails.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
     prev_chunks: deque[str] = deque(maxlen=50)
     has_playlist_metadata: bool | None = None
     has_id3_metadata: bool | None = None
     is_live_stream = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
+    # we simply select the best quality substream here
+    # if we ever want to support adaptive stream selection based on bandwidth
+    # we need to move the substream selection into the loop below and make it
+    # bandwidth aware. For now we just assume domestic high bandwidth where
+    # the user wants the best quality possible at all times.
     substream_url = await get_hls_substream(mass, url)
     seconds_skipped = 0
     empty_loops = 0
@@ -560,6 +579,7 @@ async def get_hls_stream(
         async with mass.http_session.get(
             substream_url, headers=HTTP_HEADERS, timeout=timeout
         ) as resp:
+            resp.raise_for_status()
             charset = resp.charset or "utf-8"
             substream_m3u_data = await resp.text(charset)
         # get chunk-parts from the substream
@@ -606,13 +626,20 @@ async def get_hls_stream(
         if not is_live_stream:
             return
         # safeguard for an endless loop
-        empty_loops = empty_loops + 1 if chunk_seconds == 0 else 0
-        if empty_loops == 25:
+        # this may happen if we're simply going too fast for the live stream
+        # we already throttle it a bit but we may end up in a situation where something is wrong
+        # and we want to break out of this loop, hence this check
+        if chunk_seconds == 0:
+            empty_loops += 1
+            await asyncio.sleep(1)
+        else:
+            empty_loops = 0
+        if empty_loops == 50:
             logger.warning("breaking out of endless loop")
             break
         # ensure that we're not going to fast - otherwise we get the same substream playlist
         while (time.time() - time_start) < (chunk_seconds - 1):
-            await asyncio.sleep(0.8)
+            await asyncio.sleep(0.5)
 
 
 async def get_hls_substream(
@@ -624,6 +651,7 @@ async def get_hls_substream(
     # fetch master playlist and select (best) child playlist
     # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
     async with mass.http_session.get(url, headers=HTTP_HEADERS, timeout=timeout) as resp:
+        resp.raise_for_status()
         charset = resp.charset or "utf-8"
         master_m3u_data = await resp.text(charset)
     substreams = parse_m3u(master_m3u_data)
@@ -979,17 +1007,9 @@ def get_ffmpeg_args(
             "-i",
             input_path,
         ]
-    elif input_format.content_type in (
-        ContentType.UNKNOWN,
-        ContentType.M4A,
-        ContentType.M4B,
-        ContentType.MP4,
-    ):
-        # let ffmpeg guess/auto detect the content type
-        input_args += ["-i", input_path]
     else:
-        # use explicit format identifier for all other
-        input_args += ["-f", input_format.content_type.value, "-i", input_path]
+        # let ffmpeg auto detect the content type from the metadata/headers
+        input_args += ["-i", input_path]
 
     # collect output args
     output_args = []
@@ -1020,9 +1040,9 @@ def get_ffmpeg_args(
     ):
         # prefer resampling with libsoxr due to its high quality
         if libsoxr_support:
-            resample_filter = "aresample=resampler=swr"
-        else:
             resample_filter = "aresample=resampler=soxr:precision=28"
+        else:
+            resample_filter = "aresample=resampler=swr"
         if output_format.bit_depth < input_format.bit_depth:
             # apply dithering when going down to 16 bits
             resample_filter += ":osf=s16:dither_method=triangular_hp"
