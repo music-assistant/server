@@ -204,7 +204,7 @@ class SnapCastProvider(PlayerProvider):
         """Call (by config manager) when the configuration of a player is removed."""
         super().on_player_config_removed(player_id)
         if self._use_builtin_server:
-            self.mass.create_task(self._snapserver.delete_client(player_id.replace("-","#")))
+            self.mass.create_task(self._snapserver.delete_client(player_id.replace("-", "#")))
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
@@ -223,10 +223,10 @@ class SnapCastProvider(PlayerProvider):
 
     def _handle_player_init(self, snap_client: Snapclient) -> None:
         """Process Snapcast add to Player controller."""
-        player_id = snap_client.identifier.replace("#","-")
+        player_id = snap_client.identifier.replace("#", "-")
         player = self.mass.players.get(player_id, raise_unavailable=False)
         if not player:
-            snap_client = cast(Snapclient, self._snapserver.client(player_id.replace("-","#")))
+            snap_client = cast(Snapclient, self._snapserver.client(player_id.replace("-", "#")))
             player = Player(
                 player_id=player_id,
                 provider=self.instance_id,
@@ -249,16 +249,16 @@ class SnapCastProvider(PlayerProvider):
 
     def _handle_player_update(self, snap_client: Snapclient) -> None:
         """Process Snapcast update to Player controller."""
-        player_id = snap_client.identifier.replace("#","-")
+        player_id = snap_client.identifier.replace("#", "-")
         player = self.mass.players.get(player_id)
         player.name = snap_client.friendly_name
         player.volume_level = snap_client.volume
         player.volume_muted = snap_client.muted
         player.available = snap_client.connected
         player.can_sync_with = tuple(
-            x.identifier.replace("#","-")
+            x.identifier.replace("#", "-")
             for x in self._snapserver.clients
-            if x.identifier.replace("#","-") != player_id and x.connected
+            if x.identifier.replace("#", "-") != player_id and x.connected
         )
         player.synced_to = self._synced_to(player_id)
         player.group_childs = self._group_childs(player_id)
@@ -282,11 +282,10 @@ class SnapCastProvider(PlayerProvider):
             CONF_ENTRY_CROSSFADE_DURATION,
         )
 
-
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         await self._snapserver.client_volume(
-            player_id.replace("-","#"), {"percent": volume_level, "muted": volume_level == 0}
+            player_id.replace("-", "#"), {"percent": volume_level, "muted": volume_level == 0}
         )
 
     async def cmd_stop(self, player_id: str) -> None:
@@ -303,7 +302,7 @@ class SnapCastProvider(PlayerProvider):
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send MUTE command to given player."""
-        await self._snapserver.client(player_id.replace("-","#")).set_muted(muted)
+        await self._snapserver.client(player_id.replace("-", "#")).set_muted(muted)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Sync Snapcast player."""
@@ -407,7 +406,7 @@ class SnapCastProvider(PlayerProvider):
 
     def _get_snapgroup(self, player_id: str) -> Snapgroup:
         """Get snapcast group for given player_id."""
-        client: Snapclient = self._snapserver.client(player_id.replace("-","#"))
+        client: Snapclient = self._snapserver.client(player_id.replace("-", "#"))
         return client.group
 
     def _get_snapstream(self, player_id: str) -> Snapstream | None:
@@ -450,7 +449,7 @@ class SnapCastProvider(PlayerProvider):
             return (stream, port)
         msg = "Unable to create stream - No free port found?"
         raise RuntimeError(msg)
-    
+
     def _get_player_state(self, player_id: str) -> PlayerState:
         """Return the state of the player."""
         snap_group = self._get_snapgroup(player_id)
