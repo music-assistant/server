@@ -548,13 +548,14 @@ async def get_hls_stream(
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     # let ffmpeg work out what content type this is.
     streamdetails.audio_format = AudioFormat(content_type=ContentType.UNKNOWN)
-    prev_chunks: deque[str] = deque(maxlen=30)
+    prev_chunks: deque[str] = deque(maxlen=50)
     has_playlist_metadata: bool | None = None
     has_id3_metadata: bool | None = None
-    is_radio = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
+    is_live_stream = streamdetails.media_type == MediaType.RADIO or not streamdetails.duration
+    substream_url = await get_hls_substream(mass, url)
     seconds_skipped = 0
+    empty_loops = 0
     while True:
-        substream_url = await get_hls_substream(mass, url)
         logger.log(VERBOSE_LOG_LEVEL, "start streaming chunks from substream %s", substream_url)
         async with mass.http_session.get(
             substream_url, headers=HTTP_HEADERS, timeout=timeout
@@ -563,14 +564,11 @@ async def get_hls_stream(
             substream_m3u_data = await resp.text(charset)
         # get chunk-parts from the substream
         hls_chunks = parse_m3u(substream_m3u_data)
-        time_start = time.time()
         chunk_seconds = 0
+        time_start = time.time()
         for chunk_item in hls_chunks:
             if chunk_item.path in prev_chunks:
-                if is_radio:
-                    continue
-                else:
-                    return  # we looped through
+                continue
             chunk_length = int(chunk_item.length) if chunk_item.length else 6
             # try to support seeking here
             if seek_position and (seconds_skipped + chunk_length) < seek_position:
@@ -594,8 +592,7 @@ async def get_hls_stream(
             async with mass.http_session.get(
                 chunk_item_url, headers=HTTP_HEADERS, timeout=timeout
             ) as resp:
-                async for chunk in resp.content.iter_any():
-                    yield chunk
+                yield await resp.content.read()
             chunk_seconds += chunk_length
             # handle (optional) in-band (m3u) metadata
             if has_id3_metadata is not None and has_playlist_metadata:
@@ -604,9 +601,18 @@ async def get_hls_stream(
                 tags = await parse_tags(chunk_item_url)
                 has_id3_metadata = tags.title and tags.title not in chunk_item.path
                 logger.debug("Station support for in-band (ID3) metadata: %s", has_id3_metadata)
+        # end of stream reached - for non livestreams, we are ready and should return
+        # for livestreams we loop around to get the next playlist with chunks
+        if not is_live_stream:
+            return
+        # safeguard for an endless loop
+        empty_loops = empty_loops + 1 if chunk_seconds == 0 else 0
+        if empty_loops == 25:
+            logger.warning("breaking out of endless loop")
+            break
         # ensure that we're not going to fast - otherwise we get the same substream playlist
         while (time.time() - time_start) < (chunk_seconds - 1):
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(0.8)
 
 
 async def get_hls_substream(
