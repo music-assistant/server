@@ -102,6 +102,8 @@ class CastPlayer:
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
     active_group: str | None = None
+    last_poll: float = 0
+    flow_meta_checksum: str | None = None
 
 
 class ChromecastProvider(PlayerProvider):
@@ -286,7 +288,10 @@ class ChromecastProvider(PlayerProvider):
         if not castplayer.cc.media_controller.is_active:
             return
         try:
-            await asyncio.to_thread(castplayer.cc.media_controller.update_status)
+            now = time.time()
+            if (now - castplayer.last_poll) >= 30:
+                castplayer.last_poll = now
+                await asyncio.to_thread(castplayer.cc.media_controller.update_status)
             await self.update_flow_metadata(castplayer)
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
@@ -375,8 +380,8 @@ class ChromecastProvider(PlayerProvider):
                     # originally/officially cast supports 96k sample rate
                     # but it seems a (recent?) update broke this
                     # for now use 48k as max sample rate to play safe
-                    max_sample_rate=44100 if cast_info.is_audio_group else 48000,
-                    supports_24bit=not cast_info.is_audio_group,
+                    max_sample_rate=48000,
+                    supports_24bit=True,
                     enabled_by_default=enabled_by_default,
                 ),
             )
@@ -612,6 +617,10 @@ class ChromecastProvider(PlayerProvider):
                 album = ""
                 artist = ""
                 title = current_item.name
+            flow_meta_checksum = title + image_url
+            if castplayer.flow_meta_checksum == flow_meta_checksum:
+                return
+            castplayer.flow_meta_checksum = flow_meta_checksum
             queuedata = {
                 "type": "PLAY",
                 "mediaSessionId": media_controller.status.media_session_id,

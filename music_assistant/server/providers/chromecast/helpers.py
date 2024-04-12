@@ -10,6 +10,8 @@ from uuid import UUID
 from pychromecast import dial
 from pychromecast.const import CAST_TYPE_GROUP
 
+from music_assistant.constants import VERBOSE_LOG_LEVEL
+
 if TYPE_CHECKING:
     from pychromecast.controllers.media import MediaStatus
     from pychromecast.controllers.multizone import MultizoneManager
@@ -192,8 +194,11 @@ class CastStatusListener:
             elif group_uuid == self.castplayer.active_group:
                 self.castplayer.active_group = None
                 self.castplayer.player.active_source = self.castplayer.player.player_id
-        self.prov.logger.debug(
-            "%s got new cast status for group: %s", self.castplayer.player.display_name, group_uuid
+        self.prov.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "%s got new cast status for group: %s",
+            self.castplayer.player.display_name,
+            group_uuid,
         )
         self.new_cast_status(self.castplayer.cc.status)
 
@@ -201,8 +206,11 @@ class CastStatusListener:
         """Handle reception of a new MediaStatus for a group."""
         if not self._valid:
             return
-        self.prov.logger.debug(
-            "%s got new media_status for group: %s", self.castplayer.player.display_name, group_uuid
+        self.prov.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "%s got new media_status for group: %s",
+            self.castplayer.player.display_name,
+            group_uuid,
         )
 
     def load_media_failed(self, queue_item_id, error_code) -> None:
