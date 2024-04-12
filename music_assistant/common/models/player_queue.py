@@ -39,7 +39,7 @@ class PlayerQueue(DataClassDictMixin):
     flow_mode: bool = False
     # flow_mode_start_index: index of the first item of the flow stream
     flow_mode_start_index: int = 0
-    stream_finished: bool = False
+    stream_finished: bool | None = None
 
     @property
     def corrected_elapsed_time(self) -> float:
