@@ -301,7 +301,7 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        url = await self._soundcloud.get_stream_url(track_id=item_id)
+        url: str = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
@@ -310,7 +310,9 @@ class SoundcloudMusicProvider(MusicProvider):
             audio_format=AudioFormat(
                 content_type=ContentType.UNKNOWN,
             ),
-            stream_type=StreamType.HTTP,
+            stream_type=StreamType.HLS
+            if url.startswith("https://cf-hls-media.sndcdn.com")
+            else StreamType.HTTP,
             path=url,
         )
 

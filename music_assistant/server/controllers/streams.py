@@ -305,7 +305,8 @@ class StreamsController(CoreController):
                 await resp.write(chunk)
             except (BrokenPipeError, ConnectionResetError):
                 break
-
+        if queue.stream_finished is not None:
+            queue.stream_finished = True
         return resp
 
     async def serve_queue_flow_stream(self, request: web.Request) -> web.Response:
@@ -355,7 +356,6 @@ class StreamsController(CoreController):
 
         # all checks passed, start streaming!
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
-        queue.stream_finished = False
 
         # collect player specific ffmpeg args to re-encode the source PCM stream
         pcm_format = AudioFormat(
@@ -409,7 +409,6 @@ class StreamsController(CoreController):
             length_b = chr(int(length / 16)).encode()
             await resp.write(length_b + metadata)
 
-        queue.stream_finished = True
         return resp
 
     async def serve_command_request(self, request: web.Request) -> web.Response:
@@ -669,7 +668,8 @@ class StreamsController(CoreController):
             queue_track.streamdetails.duration += last_part_seconds
             del last_fadeout_part
         total_bytes_sent += bytes_written
-        queue.stream_finished = True
+        if queue.stream_finished is not None:
+            queue.stream_finished = True
         self.logger.info("Finished Queue Flow stream for Queue %s", queue.display_name)
 
     async def get_announcement_stream(
@@ -710,6 +710,7 @@ class StreamsController(CoreController):
             streamdetails.seek_position = 0
         # collect all arguments for ffmpeg
         filter_params = []
+        extra_input_args = []
         if streamdetails.target_loudness is not None:
             # add loudnorm filters
             filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-1.5:LRA=11"
@@ -730,89 +731,87 @@ class StreamsController(CoreController):
                 streamdetails,
                 seek_position=streamdetails.seek_position,
             )
-        elif streamdetails.stream_type == StreamType.HLS:
-            audio_source = get_hls_stream(self.mass, streamdetails.path, streamdetails)
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
+        elif streamdetails.stream_type == StreamType.HLS:
+            audio_source = get_hls_stream(
+                self.mass, streamdetails.path, streamdetails, streamdetails.seek_position
+            )
         else:
             audio_source = streamdetails.path
-        extra_input_args = []
-        if streamdetails.seek_position and streamdetails.stream_type != StreamType.CUSTOM:
-            extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
+            if streamdetails.seek_position:
+                extra_input_args += ["-ss", str(int(streamdetails.seek_position))]
 
         logger.debug("start media stream for: %s", streamdetails.uri)
         bytes_sent = 0
         finished = False
-        async with FFMpeg(
-            audio_input=audio_source,
-            input_format=streamdetails.audio_format,
-            output_format=pcm_format,
-            filter_params=filter_params,
-            extra_input_args=[
-                *extra_input_args,
-                # we criple ffmpeg a bit on purpose with the filter_threads
-                # option so it doesn't consume all cpu when calculating loudnorm
-                "-filter_threads",
-                "2",
-            ],
-            collect_log_history=True,
-            logger=logger,
-        ) as ffmpeg_proc:
-            try:
+        try:
+            async with FFMpeg(
+                audio_input=audio_source,
+                input_format=streamdetails.audio_format,
+                output_format=pcm_format,
+                filter_params=filter_params,
+                extra_input_args=[
+                    *extra_input_args,
+                    # we criple ffmpeg a bit on purpose with the filter_threads
+                    # option so it doesn't consume all cpu when calculating loudnorm
+                    "-filter_threads",
+                    "2",
+                ],
+                collect_log_history=True,
+                logger=logger,
+            ) as ffmpeg_proc:
                 async for chunk in ffmpeg_proc.iter_any(pcm_format.pcm_sample_size):
                     bytes_sent += len(chunk)
                     yield chunk
                     del chunk
                 finished = True
-            finally:
-                if finished:
-                    await ffmpeg_proc.wait()
-                else:
-                    await ffmpeg_proc.close()
+        finally:
+            if finished and not ffmpeg_proc.closed:
+                await asyncio.wait_for(ffmpeg_proc.wait(), 60)
+            elif not ffmpeg_proc.closed:
+                await ffmpeg_proc.close()
 
-                # try to determine how many seconds we've streamed
-                seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
-                logger.debug(
-                    "stream %s (with code %s) for %s - seconds streamed: %s",
-                    "finished" if finished else "aborted",
-                    ffmpeg_proc.returncode,
-                    streamdetails.uri,
-                    seconds_streamed,
-                )
-                if seconds_streamed:
-                    streamdetails.seconds_streamed = seconds_streamed
-                # store accurate duration
-                if finished and not streamdetails.seek_position and seconds_streamed:
-                    streamdetails.duration = seconds_streamed
+            # try to determine how many seconds we've streamed
+            seconds_streamed = bytes_sent / pcm_format.pcm_sample_size if bytes_sent else 0
+            logger.debug(
+                "stream %s (with code %s) for %s - seconds streamed: %s",
+                "finished" if finished else "aborted",
+                ffmpeg_proc.returncode,
+                streamdetails.uri,
+                seconds_streamed,
+            )
+            streamdetails.seconds_streamed = seconds_streamed
+            # store accurate duration
+            if finished and not streamdetails.seek_position and seconds_streamed:
+                streamdetails.duration = seconds_streamed
 
-                # parse loudnorm data if we have that collected
-                if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
-                    required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
-                    if finished or (seconds_streamed >= required_seconds):
-                        logger.debug(
-                            "Loudness measurement for %s: %s",
-                            streamdetails.uri,
-                            loudness_details,
-                        )
-                        streamdetails.loudness = loudness_details
-                        self.mass.create_task(
-                            self.mass.music.set_track_loudness(
-                                streamdetails.item_id, streamdetails.provider, loudness_details
-                            )
-                        )
-                # report playback
-                if finished or seconds_streamed > 30:
+            # parse loudnorm data if we have that collected
+            if loudness_details := parse_loudnorm(" ".join(ffmpeg_proc.log_history)):
+                required_seconds = 600 if streamdetails.media_type == MediaType.RADIO else 120
+                if finished or (seconds_streamed >= required_seconds):
+                    logger.debug(
+                        "Loudness measurement for %s: %s",
+                        streamdetails.uri,
+                        loudness_details,
+                    )
+                    streamdetails.loudness = loudness_details
                     self.mass.create_task(
-                        self.mass.music.mark_item_played(
-                            streamdetails.media_type,
-                            streamdetails.item_id,
-                            streamdetails.provider,
+                        self.mass.music.set_track_loudness(
+                            streamdetails.item_id, streamdetails.provider, loudness_details
                         )
                     )
-                    if music_prov := self.mass.get_provider(streamdetails.provider):
-                        self.mass.create_task(
-                            music_prov.on_streamed(streamdetails, seconds_streamed)
-                        )
+            # report playback
+            if finished or seconds_streamed > 30:
+                self.mass.create_task(
+                    self.mass.music.mark_item_played(
+                        streamdetails.media_type,
+                        streamdetails.item_id,
+                        streamdetails.provider,
+                    )
+                )
+                if music_prov := self.mass.get_provider(streamdetails.provider):
+                    self.mass.create_task(music_prov.on_streamed(streamdetails, seconds_streamed))
 
     def _log_request(self, request: web.Request) -> None:
         """Log request."""
