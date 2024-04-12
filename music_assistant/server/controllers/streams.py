@@ -45,6 +45,7 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_ffmpeg_stream,
+    get_hls_stream,
     get_icy_stream,
     get_player_filter_params,
     parse_loudnorm,
@@ -732,6 +733,10 @@ class StreamsController(CoreController):
             )
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
+        elif streamdetails.stream_type == StreamType.HLS:
+            audio_source = get_hls_stream(
+                self.mass, streamdetails.path, streamdetails, streamdetails.seek_position
+            )
         else:
             audio_source = streamdetails.path
             if streamdetails.seek_position:
