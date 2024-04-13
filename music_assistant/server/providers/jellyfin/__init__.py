@@ -34,23 +34,21 @@ from music_assistant.common.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
+from music_assistant.common.models.media_items import Album
+from music_assistant.common.models.media_items import Album as JellyfinAlbum
+from music_assistant.common.models.media_items import AlbumTrack
+from music_assistant.common.models.media_items import Artist
+from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import (
-    Album,
-    AlbumTrack,
-    Artist,
     AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemImage,
-    Playlist,
-    PlaylistTrack,
-    ProviderMapping,
-    SearchResults,
-    Track,
 )
-from music_assistant.common.models.media_items import Album as JellyfinAlbum
-from music_assistant.common.models.media_items import Artist as JellyfinArtist
+from music_assistant.common.models.media_items import Playlist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
+from music_assistant.common.models.media_items import PlaylistTrack, ProviderMapping, SearchResults
+from music_assistant.common.models.media_items import Track
 from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
 
@@ -208,17 +206,9 @@ class JellyfinProvider(MusicProvider):
         )
 
     @property
-    def is_unique(self) -> bool:
-        """
-        Return True if the (non user related) data in this provider instance is unique.
-
-        For example on a global streaming provider (like Spotify),
-        the data on all instances is the same.
-        For a file provider each instance has other items.
-        Setting this to False will only query one instance of the provider for search and lookups.
-        Setting this to True will query all instances of this provider for search and lookups.
-        """
-        return True
+    def is_streaming_provider(self) -> bool:
+        """Return True if the provider is a streaming provider."""
+        return False
 
     async def _run_async(self, call: Callable, *args, **kwargs):
         return await self.mass.create_task(call, *args, **kwargs)
