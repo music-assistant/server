@@ -193,7 +193,7 @@ class SnapCastProvider(PlayerProvider):
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         for client in self._snapserver.clients:
-            await self.cmd_stop(client.identifier)
+            await self.cmd_stop(self._get_player_id(client.identifier))
         self._snapserver.stop()
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
@@ -307,12 +307,12 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Sync Snapcast player."""
         group = self._get_snapgroup(target_player)
-        await group.add_client(player_id)
+        await group.add_client(self._get_player_id(player_id))
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
         group = self._get_snapgroup(player_id)
-        await group.remove_client(player_id)
+        await group.remove_client(self._get_player_id(player_id))
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
         self._handle_update()
@@ -419,14 +419,18 @@ class SnapCastProvider(PlayerProvider):
     def _synced_to(self, player_id: str) -> str | None:
         """Return player_id of the player this player is synced to."""
         snap_group = self._get_snapgroup(player_id)
-        if player_id != snap_group.clients[0]:
-            return snap_group.clients[0]
+        if self._get_player_id(player_id) != snap_group.clients[0]:
+            return self._get_player_id(snap_group.clients[0])
         return None
 
     def _group_childs(self, player_id: str) -> set[str]:
         """Return player_ids of the players synced to this player."""
         snap_group = self._get_snapgroup(player_id)
-        return {snap_client for snap_client in snap_group.clients if snap_client != player_id}
+        return {
+            snap_client
+            for snap_client in snap_group.clients
+            if snap_client != self._get_player_id(player_id)
+        }
 
     async def _create_stream(self) -> tuple[Snapstream, int]:
         """Create new stream on snapcast server."""
@@ -452,7 +456,7 @@ class SnapCastProvider(PlayerProvider):
 
     def _get_player_state(self, player_id: str) -> PlayerState:
         """Return the state of the player."""
-        snap_group = self._get_snapgroup(player_id)
+        snap_group = self._get_snapgroup(self._get_player_id(player_id))
         return SNAP_STREAM_STATUS_MAP.get(snap_group.stream_status)
 
     def _set_childs_state(self, player_id: str, state: PlayerState) -> None:
