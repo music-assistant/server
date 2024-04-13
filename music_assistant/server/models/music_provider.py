@@ -155,30 +155,30 @@ class MusicProvider(Provider):
             raise NotImplementedError
         yield  # type: ignore
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
         if (
-            media_type == MediaType.ARTIST
+            item.media_type == MediaType.ARTIST
             and ProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.ALBUM
+            item.media_type == MediaType.ALBUM
             and ProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.TRACK
+            item.media_type == MediaType.TRACK
             and ProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.PLAYLIST
+            item.media_type == MediaType.PLAYLIST
             and ProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.RADIO
+            item.media_type == MediaType.RADIO
             and ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         ):
             raise NotImplementedError

@@ -33,6 +33,7 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
+    MediaItemType,
     MediaType,
     Playlist,
     PlaylistTrack,
@@ -344,18 +345,18 @@ class SpotifyProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def library_add(self, prov_item_id, media_type: MediaType):
+    async def library_add(self, item: MediaItemType):
         """Add item to library."""
         result = False
-        if media_type == MediaType.ARTIST:
-            result = await self._put_data("me/following", {"ids": [prov_item_id]}, type="artist")
-        elif media_type == MediaType.ALBUM:
-            result = await self._put_data("me/albums", {"ids": [prov_item_id]})
-        elif media_type == MediaType.TRACK:
-            result = await self._put_data("me/tracks", {"ids": [prov_item_id]})
-        elif media_type == MediaType.PLAYLIST:
+        if item.media_type == MediaType.ARTIST:
+            result = await self._put_data("me/following", {"ids": [item.item_id]}, type="artist")
+        elif item.media_type == MediaType.ALBUM:
+            result = await self._put_data("me/albums", {"ids": [item.item_id]})
+        elif item.media_type == MediaType.TRACK:
+            result = await self._put_data("me/tracks", {"ids": [item.item_id]})
+        elif item.media_type == MediaType.PLAYLIST:
             result = await self._put_data(
-                f"playlists/{prov_item_id}/followers", data={"public": False}
+                f"playlists/{item.item_id}/followers", data={"public": False}
             )
         return result
 

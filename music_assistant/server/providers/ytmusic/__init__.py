@@ -32,6 +32,7 @@ from music_assistant.common.models.media_items import (
     ImageType,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     MediaType,
     Playlist,
     PlaylistTrack,
@@ -403,23 +404,23 @@ class YoutubeMusicProvider(MusicProvider):
             return playlist_tracks[:25]
         return []
 
-    async def library_add(self, prov_item_id, media_type: MediaType) -> None:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the library."""
         await self._check_oauth_token()
         result = False
-        if media_type == MediaType.ARTIST:
+        if item.media_type == MediaType.ARTIST:
             result = await library_add_remove_artist(
-                headers=self._headers, prov_artist_id=prov_item_id, add=True
+                headers=self._headers, prov_artist_id=item.item_id, add=True
             )
-        elif media_type == MediaType.ALBUM:
+        elif item.media_type == MediaType.ALBUM:
             result = await library_add_remove_album(
-                headers=self._headers, prov_item_id=prov_item_id, add=True
+                headers=self._headers, prov_item_id=item.item_id, add=True
             )
-        elif media_type == MediaType.PLAYLIST:
+        elif item.media_type == MediaType.PLAYLIST:
             result = await library_add_remove_playlist(
-                headers=self._headers, prov_item_id=prov_item_id, add=True
+                headers=self._headers, prov_item_id=item.item_id, add=True
             )
-        elif media_type == MediaType.TRACK:
+        elif item.media_type == MediaType.TRACK:
             raise NotImplementedError
         return result
 

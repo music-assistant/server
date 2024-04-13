@@ -40,6 +40,7 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Playlist,
     PlaylistTrack,
     ProviderMapping,
@@ -368,14 +369,14 @@ class TidalProvider(MusicProvider):
                 for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
             ]
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         tidal_session = await self._get_tidal_session()
         return await library_items_add_remove(
             tidal_session,
             str(self._tidal_user_id),
-            prov_item_id,
-            media_type,
+            item.item_id,
+            item.media_type,
             add=True,
         )
 

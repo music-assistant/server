@@ -37,6 +37,7 @@ from music_assistant.common.models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemType,
     Playlist,
     PlaylistTrack,
     ProviderMapping,
@@ -356,24 +357,24 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             async for track in await artist.get_top(limit=50)
         ]
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the provider's library/favorites."""
         result = False
-        if media_type == MediaType.ARTIST:
+        if item.media_type == MediaType.ARTIST:
             result = await self.client.add_user_artist(
-                artist_id=int(prov_item_id),
+                artist_id=int(item.item_id),
             )
-        elif media_type == MediaType.ALBUM:
+        elif item.media_type == MediaType.ALBUM:
             result = await self.client.add_user_album(
-                album_id=int(prov_item_id),
+                album_id=int(item.item_id),
             )
-        elif media_type == MediaType.TRACK:
+        elif item.media_type == MediaType.TRACK:
             result = await self.client.add_user_track(
-                track_id=int(prov_item_id),
+                track_id=int(item.item_id),
             )
-        elif media_type == MediaType.PLAYLIST:
+        elif item.media_type == MediaType.PLAYLIST:
             result = await self.client.add_user_playlist(
-                playlist_id=int(prov_item_id),
+                playlist_id=int(item.item_id),
             )
         else:
             raise NotImplementedError

@@ -29,6 +29,7 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
+    MediaItemType,
     MediaType,
     Playlist,
     PlaylistTrack,
@@ -324,17 +325,17 @@ class QobuzProvider(MusicProvider):
         """Get similar artists for given artist."""
         # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
 
-    async def library_add(self, prov_item_id, media_type: MediaType):
+    async def library_add(self, item: MediaItemType):
         """Add item to library."""
         result = None
-        if media_type == MediaType.ARTIST:
-            result = await self._get_data("favorite/create", artist_id=prov_item_id)
-        elif media_type == MediaType.ALBUM:
-            result = await self._get_data("favorite/create", album_ids=prov_item_id)
-        elif media_type == MediaType.TRACK:
-            result = await self._get_data("favorite/create", track_ids=prov_item_id)
-        elif media_type == MediaType.PLAYLIST:
-            result = await self._get_data("playlist/subscribe", playlist_id=prov_item_id)
+        if item.media_type == MediaType.ARTIST:
+            result = await self._get_data("favorite/create", artist_id=item.item_id)
+        elif item.media_type == MediaType.ALBUM:
+            result = await self._get_data("favorite/create", album_ids=item.item_id)
+        elif item.media_type == MediaType.TRACK:
+            result = await self._get_data("favorite/create", track_ids=item.item_id)
+        elif item.media_type == MediaType.PLAYLIST:
+            result = await self._get_data("playlist/subscribe", playlist_id=item.item_id)
         return result
 
     async def library_remove(self, prov_item_id, media_type: MediaType):
