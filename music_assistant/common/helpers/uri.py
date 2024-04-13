@@ -37,8 +37,8 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             media_type = MediaType(media_type_str)
             item_id = uri.split("/")[4].split("?")[0]
         elif uri.startswith(("http://", "https://", "rtsp://", "rtmp://")):
-            # Translate a plain URL to the URL provider
-            provider_instance_id_or_domain = "url"
+            # Translate a plain URL to the builtin provider
+            provider_instance_id_or_domain = "builtin"
             media_type = MediaType.UNKNOWN
             item_id = uri
         elif "://" in uri and len(uri.split("/")) >= 4:
@@ -52,8 +52,8 @@ async def parse_uri(uri: str, validate_id: bool = False) -> tuple[MediaType, str
             provider_instance_id_or_domain, media_type_str, item_id = uri.split(":")
             media_type = MediaType(media_type_str)
         elif "/" in uri and await asyncio.to_thread(os.path.isfile, uri):
-            # Translate a local file (which is not from file provider) to the URL provider
-            provider_instance_id_or_domain = "url"
+            # Translate a local file (which is not from a file provider!) to the builtin provider
+            provider_instance_id_or_domain = "builtin"
             media_type = MediaType.UNKNOWN
             item_id = uri
         else:

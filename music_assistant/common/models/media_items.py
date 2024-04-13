@@ -137,7 +137,7 @@ class MediaItemImage(DataClassDictMixin):
     type: ImageType
     path: str
     # set to instance_id of provider if the path needs to be resolved
-    # if the path is just a plain (remotely accessible) URL, set it to 'url'
+    # if the path is just a plain (remotely accessible!) URL, set it to 'url'
     provider: str = "url"
 
     def __hash__(self) -> int:

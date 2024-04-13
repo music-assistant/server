@@ -1,4 +1,4 @@
-"""Basic provider allowing for external URL's to be streamed."""
+"""Built-in/generic provider to handle media from files and (remote) urls."""
 
 from __future__ import annotations
 
@@ -34,7 +34,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    return URLProvider(mass, manifest, config)
+    return BuiltinProvider(mass, manifest, config)
 
 
 async def get_config_entries(
@@ -54,15 +54,14 @@ async def get_config_entries(
     return ()  # we do not have any config entries (yet)
 
 
-class URLProvider(MusicProvider):
-    """Music Provider for manual URL's/files added to the queue."""
+class BuiltinProvider(MusicProvider):
+    """Built-in/generic provider to handle (manually added) media from files and (remote) urls."""
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
     ) -> None:
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config)
-        self._full_url = {}
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""

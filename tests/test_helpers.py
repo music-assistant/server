@@ -42,17 +42,17 @@ async def test_uri_parsing() -> None:
     assert media_type == media_items.MediaType.TRACK
     assert provider == "filesystem"
     assert item_id == "Artist/Album/Track.flac"
-    # test regular url to URL provider
+    # test regular url to builtin provider
     test_uri = "http://radiostream.io/stream.mp3"
     media_type, provider, item_id = await uri.parse_uri(test_uri)
     assert media_type == media_items.MediaType.UNKNOWN
-    assert provider == "url"
+    assert provider == "builtin"
     assert item_id == "http://radiostream.io/stream.mp3"
-    # test local file to URL provider
+    # test local file to builtin provider
     test_uri = SILENCE_FILE
     media_type, provider, item_id = await uri.parse_uri(test_uri)
     assert media_type == media_items.MediaType.UNKNOWN
-    assert provider == "url"
+    assert provider == "builtin"
     assert item_id == SILENCE_FILE
     # test invalid uri
     with pytest.raises(MusicAssistantError):

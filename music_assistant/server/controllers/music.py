@@ -372,9 +372,9 @@ class MusicController(CoreController):
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
-        if provider_instance_id_or_domain == "url":
-            # handle special case of 'URL' MusicProvider which allows us to play regular url's
-            return await self.mass.get_provider("url").parse_item(item_id)
+        if provider_instance_id_or_domain == "builtin":
+            # handle special case of 'builtin' MusicProvider which allows us to play regular url's
+            return await self.mass.get_provider("builtin").parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
