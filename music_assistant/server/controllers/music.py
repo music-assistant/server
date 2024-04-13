@@ -59,6 +59,7 @@ if TYPE_CHECKING:
 
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
+CONF_DELETED_PROVIDERS = "deleted_providers"
 
 
 class MusicController(CoreController):
@@ -111,6 +112,11 @@ class MusicController(CoreController):
         await self._setup_database()
         sync_interval = config.get_value(CONF_SYNC_INTERVAL)
         self.logger.info("Using a sync interval of %s minutes.", sync_interval)
+        # make sure to finish any removal jobs
+        for removed_provider in self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_DELETED_PROVIDERS, []
+        ):
+            await self.cleanup_provider(removed_provider)
         self._schedule_sync()
 
     async def close(self) -> None:
@@ -654,10 +660,26 @@ class MusicController(CoreController):
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""
+        deleted_providers = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_DELETED_PROVIDERS, []
+        )
+        # we add the provider to this hidden config setting just to make sure that
+        # we can survive this over a restart to make sure that entries are cleaned up
+        if provider_instance not in deleted_providers:
+            deleted_providers.append(provider_instance)
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_DELETED_PROVIDERS, deleted_providers
+            )
+            self.mass.config.save(True)
+
         # clean cache items from deleted provider(s)
         await self.mass.cache.clear(provider_instance)
 
         # cleanup media items from db matched to deleted provider
+        self.logger.info(
+            "Removing provider %s from library, this can take a a while...", provider_instance
+        )
+        errors = 0
         for ctrl in (
             # order is important here to recursively cleanup bottom up
             self.mass.music.radio,
@@ -668,7 +690,25 @@ class MusicController(CoreController):
         ):
             prov_items = await ctrl.get_library_items_by_prov_id(provider_instance)
             for item in prov_items:
-                await ctrl.remove_provider_mappings(item.item_id, provider_instance)
+                try:
+                    await ctrl.remove_provider_mappings(item.item_id, provider_instance)
+                except Exception as err:
+                    # we dont want the whole removal process to stall on one item
+                    # so in case of an unexpected error, we log and move on.
+                    self.logger.warning("Error while removing %s: %s", item.uri, str(err))
+                    errors += 1
+
+        if errors == 0:
+            # cleanup successful, remove from the deleted_providers setting
+            self.logger.info("Provider %s removed from library", provider_instance)
+            deleted_providers.remove(provider_instance)
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_DELETED_PROVIDERS, deleted_providers
+            )
+        else:
+            self.logger.warning(
+                "Provider %s was not not fully removed from library", provider_instance
+            )
 
     def _schedule_sync(self) -> None:
         """Schedule the periodic sync."""

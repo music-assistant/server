@@ -493,7 +493,6 @@ class MusicAssistant:
             for sync_task in self.music.in_progress_syncs:
                 if sync_task.provider_instance == instance_id:
                     sync_task.task.cancel()
-                    await sync_task.task
             # check if there are no other providers dependent of this provider
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:

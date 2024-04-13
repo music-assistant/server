@@ -161,11 +161,12 @@ class MetaDataController(CoreController):
         """
         if self.mass.config.get_raw_core_config_value(self.domain, CONF_LANGUAGE):
             return  # already set
+        # prefer exact match
         if lang in LOCALES:
             self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, lang)
             return
-        lang = lang.lower()
-        # try strict match first
+        # try strict matching on either locale code or region
+        lang = lang.lower().replace("-", "_")
         for locale_code, lang_name in LOCALES.items():
             if lang in (locale_code.lower(), lang_name.lower()):
                 self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)

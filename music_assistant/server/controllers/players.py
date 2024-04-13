@@ -862,7 +862,7 @@ class PlayerController(CoreController):
             )
             volume_level = min(announce_volume_max, volume_level)
         # ensure the result is an integer
-        return int(volume_level)
+        return None if volume_level is None else int(volume_level)
 
     def _check_redirect(self, player_id: str) -> str:
         """Check if playback related command should be redirected."""
