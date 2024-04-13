@@ -420,7 +420,12 @@ class PlexProvider(MusicProvider):
             album.year = plex_album.year
         if thumb := plex_album.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             album.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
             ]
         if plex_album.summary:
             album.metadata.description = plex_album.summary
@@ -457,7 +462,12 @@ class PlexProvider(MusicProvider):
             artist.metadata.description = plex_artist.summary
         if thumb := plex_artist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             artist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
             ]
         return artist
 
@@ -480,7 +490,12 @@ class PlexProvider(MusicProvider):
             playlist.metadata.description = plex_playlist.summary
         if thumb := plex_playlist.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             playlist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
             ]
         playlist.is_editable = True
         return playlist
@@ -545,7 +560,12 @@ class PlexProvider(MusicProvider):
 
         if thumb := plex_track.firstAttr("thumb", "parentThumb", "grandparentThumb"):
             track.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
             ]
         if plex_track.parentKey:
             track.album = self._get_item_mapping(

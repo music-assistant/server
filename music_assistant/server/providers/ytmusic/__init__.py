@@ -871,11 +871,17 @@ class YoutubeMusicProvider(MusicProvider):
             artist_id = VARIOUS_ARTISTS_YTM_ID
         return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
 
-    @classmethod
-    async def _parse_thumbnails(cls, thumbnails_obj: dict) -> list[MediaItemImage]:
+    async def _parse_thumbnails(self, thumbnails_obj: dict) -> list[MediaItemImage]:
         """Parse and sort a list of thumbnails and return the highest quality."""
         thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
-        return [MediaItemImage(type=ImageType.THUMB, path=thumb["url"])]
+        return [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=thumb["url"],
+                provider=self.instance_id,
+                remotely_accessible=True,
+            )
+        ]
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:

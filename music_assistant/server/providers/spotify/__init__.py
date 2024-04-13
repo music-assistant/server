@@ -455,7 +455,14 @@ class SpotifyProvider(MusicProvider):
             for img in artist_obj["images"]:
                 img_url = img["url"]
                 if "2a96cbd8b46e442fc41c2b86b821562f" not in img_url:
-                    artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img_url)]
+                    artist.metadata.images = [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=img_url,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
                     break
         return artist
 
@@ -494,7 +501,12 @@ class SpotifyProvider(MusicProvider):
             album.metadata.genre = set(album_obj["genres"])
         if album_obj.get("images"):
             album.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=album_obj["images"][0]["url"])
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=album_obj["images"][0]["url"],
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]
@@ -569,6 +581,8 @@ class SpotifyProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=track_obj["album"]["images"][0]["url"],
+                        provider=self.instance_id,
+                        remotely_accessible=True,
                     )
                 ]
         if track_obj.get("copyright"):
@@ -600,7 +614,12 @@ class SpotifyProvider(MusicProvider):
         )
         if playlist_obj.get("images"):
             playlist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=playlist_obj["images"][0]["url"])
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=playlist_obj["images"][0]["url"],
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         playlist.metadata.checksum = str(playlist_obj["snapshot_id"])
         return playlist

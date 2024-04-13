@@ -76,8 +76,7 @@ class MusicAssistantClient:
 
     def get_image_url(self, image: MediaItemImage) -> str:
         """Get (proxied) URL for MediaItemImage."""
-        if image.provider == "url":
-            # image should already be a remotely accessible URL
+        if image.remotely_accessible:
             return image.path
         # return imageproxy url for images that need to be resolved
         # the original path is double encoded

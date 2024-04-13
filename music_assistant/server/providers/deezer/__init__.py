@@ -514,6 +514,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=track.album.cover_big,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
         return metadata
@@ -522,13 +524,27 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Parse the album metadata."""
         return MediaItemMetadata(
             explicit=album.explicit_lyrics,
-            images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
+            images=[
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=album.cover_big,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ],
         )
 
     def parse_metadata_artist(self, artist: deezer.Artist) -> MediaItemMetadata:
         """Parse the artist metadata."""
         return MediaItemMetadata(
-            images=[MediaItemImage(type=ImageType.THUMB, path=artist.picture_big)],
+            images=[
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=artist.picture_big,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ],
         )
 
     ### PARSING FUNCTIONS ###
@@ -594,7 +610,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 )
             },
             metadata=MediaItemMetadata(
-                images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
+                images=[
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=playlist.picture_big,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
+                ],
                 checksum=playlist.checksum,
             ),
             is_editable=creator.id == self.user.id,

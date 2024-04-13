@@ -95,7 +95,14 @@ class FanartTvMetadataProvider(MetadataProvider):
                 if not items:
                     continue
                 for item in items:
-                    metadata.images.append(MediaItemImage(type=img_type, path=item["url"]))
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=item["url"],
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
             return metadata
         return None
 
@@ -114,7 +121,14 @@ class FanartTvMetadataProvider(MetadataProvider):
                     if not items:
                         continue
                     for item in items:
-                        metadata.images.append(MediaItemImage(type=img_type, path=item["url"]))
+                        metadata.images.append(
+                            MediaItemImage(
+                                type=img_type,
+                                path=item["url"],
+                                provider=self.instance_id,
+                                remotely_accessible=True,
+                            )
+                        )
                 return metadata
         return None
 

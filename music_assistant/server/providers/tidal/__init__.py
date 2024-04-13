@@ -570,6 +570,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -623,6 +625,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -690,6 +694,8 @@ class TidalProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
                     )
                 ]
         return track
@@ -725,6 +731,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
