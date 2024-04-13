@@ -63,6 +63,11 @@ class BuiltinProvider(MusicProvider):
         """Initialize MusicProvider."""
         super().__init__(mass, manifest, config)
 
+    @property
+    def is_streaming_provider(self) -> bool:
+        """Return True if the provider is a streaming provider."""
+        return False
+
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         # always prefer db item for existing items to not overwrite user customizations
@@ -186,6 +191,7 @@ class BuiltinProvider(MusicProvider):
                 content_type=ContentType.try_parse(media_info.format),
                 sample_rate=media_info.sample_rate,
                 bit_depth=media_info.bits_per_sample,
+                channels=media_info.channels,
             ),
             media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
             stream_type=StreamType.HTTP,
