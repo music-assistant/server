@@ -72,6 +72,20 @@ BUILTIN_PLAYLISTS = {
 
 COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, ALL_LIBRARY_TRACKS, RANDOM_TRACKS)
 
+DEFAULT_THUMB = MediaItemImage(
+    type=ImageType.THUMB,
+    path=MASS_LOGO_ONLINE,
+    provider="builtin",
+    remotely_accessible=True,
+)
+
+DEFAULT_FANART = MediaItemImage(
+    type=ImageType.FANART,
+    path="https://images.fanart.tv/fanart/various-artists-5075a5c07a2ac.jpg",
+    provider="fanarttv",
+    remotely_accessible=True,
+)
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -214,18 +228,11 @@ class BuiltinProvider(MusicProvider):
                 owner="Music Assistant",
                 is_editable=False,
                 metadata=MediaItemMetadata(
-                    images=None
+                    images=[DEFAULT_THUMB]
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
-                    else [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=MASS_LOGO_ONLINE,
-                            provider=self.instance_id,
-                            remotely_accessible=True,
-                        )
-                    ],
-                    checksum=str(int(time.time())),
+                    else [DEFAULT_THUMB, DEFAULT_FANART]
                 ),
+                cache_checksum=str(int(time.time())),
             )
         # user created universal playlist
         # always prefer db item for existing items
