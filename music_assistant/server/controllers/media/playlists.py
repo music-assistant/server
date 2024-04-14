@@ -153,7 +153,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async for track in self._get_provider_playlist_tracks(
             prov.item_id,
             prov.provider_instance,
-            cache_checksum=(str(time.time()) if force_refresh else playlist.metadata.checksum),
+            cache_checksum=(str(time.time()) if force_refresh else playlist.cache_checksum),
         ):
             yield track
 

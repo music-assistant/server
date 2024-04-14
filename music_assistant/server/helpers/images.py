@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import itertools
 import random
 from io import BytesIO
 from typing import TYPE_CHECKING
@@ -11,6 +12,7 @@ import aiofiles
 from PIL import Image
 
 from music_assistant.server.helpers.tags import get_embedded_image
+from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.media_items import MediaItemImage
@@ -20,8 +22,8 @@ if TYPE_CHECKING:
 
 async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str = "url") -> bytes:
     """Create thumbnail from image url."""
-    if provider != "url" and (prov := mass.get_provider(provider)):
-        prov: MusicProvider
+    if prov := mass.get_provider(provider):
+        prov: MusicProvider | MetadataProvider
         if resolved_data := await prov.resolve_image(path_or_url):
             if isinstance(resolved_data, bytes):
                 return resolved_data
@@ -69,9 +71,14 @@ async def create_collage(mass: MusicAssistant, images: list[MediaItemImage]) -> 
         photo = photo.resize((500, 500))
         collage.paste(photo, (coord_x, coord_y))
 
+    # prevent duplicates with a set
+    images = list(set(images))
+    random.shuffle(images)
+    iter_images = itertools.cycle(images)
+
     for x_co in range(0, 1500, 500):
         for y_co in range(0, 1500, 500):
-            img = random.choice(images)
+            img = next(iter_images)
             img_data = await get_image_data(mass, img.path, img.provider)
             await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
 

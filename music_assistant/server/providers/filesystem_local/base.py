@@ -308,7 +308,7 @@ class FileSystemProviderBase(MusicProvider):
                     for x in db_item.provider_mappings
                     if x.provider_instance == self.instance_id
                 )
-                prev_checksums[file_name] = db_item.metadata.checksum
+                prev_checksums[file_name] = db_item.cache_checksum
                 await asyncio.sleep(0)  # yield to eventloop
 
         # process all deleted (or renamed) files first
@@ -350,7 +350,7 @@ class FileSystemProviderBase(MusicProvider):
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
-                    playlist.metadata.checksum = item.checksum
+                    playlist.cache_checksum = item.checksum
                     # playlist is always in-library
                     playlist.favorite = True
                     await self.mass.music.playlists.add_item_to_library(
@@ -458,7 +458,7 @@ class FileSystemProviderBase(MusicProvider):
         playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
         playlist.owner = self.name
         checksum = f"{DB_SCHEMA_VERSION}.{file_item.checksum}"
-        playlist.metadata.checksum = checksum
+        playlist.cache_checksum = checksum
         return playlist
 
     async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
@@ -834,12 +834,12 @@ class FileSystemProviderBase(MusicProvider):
             track.album.album_type = tags.album_type
             track.album.metadata.explicit = track.metadata.explicit
         # set checksum to invalidate any cached listings
-        track.metadata.checksum = file_item.checksum
+        track.cache_checksum = file_item.checksum
         if track.album:
             # use track checksum for album(artists) too
-            track.album.metadata.checksum = track.metadata.checksum
+            track.album.cache_checksum = track.cache_checksum
             for artist in track.album.artists:
-                artist.metadata.checksum = track.metadata.checksum
+                artist.cache_checksum = track.cache_checksum
 
         return track
 

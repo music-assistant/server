@@ -280,10 +280,7 @@ class AlbumsController(MediaControllerBase[Album]):
         full_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
         # prefer cache items (if any) for streaming providers only
         cache_key = f"{prov.instance_id}.albumtracks.{item_id}"
-        if isinstance(full_album, ItemMapping):
-            cache_checksum = None
-        else:
-            cache_checksum = full_album.metadata.checksum
+        cache_checksum = None if isinstance(full_album, ItemMapping) else full_album.checksum
         if prov.is_streaming_provider and (
             cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)
         ):

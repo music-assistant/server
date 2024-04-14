@@ -439,7 +439,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
     )
 
     writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True)
+    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True, name="ffmpeg_image")
     await ffmpeg_proc.start()
 
     async def writer() -> None:

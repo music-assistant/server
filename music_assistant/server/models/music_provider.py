@@ -271,7 +271,7 @@ class MusicProvider(Provider):
         This either returns (a generator to get) raw bytes of the image or
         a string with an http(s) URL or local path that is accessible from the server.
         """
-        raise NotImplementedError
+        return path
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
@@ -407,8 +407,8 @@ class MusicProvider(Provider):
                             prov_item, metadata_lookup=False, **extra_kwargs
                         )
                     elif (
-                        library_item.metadata.checksum and prov_item.metadata.checksum
-                    ) and library_item.metadata.checksum != prov_item.metadata.checksum:
+                        library_item.cache_checksum and prov_item.cache_checksum
+                    ) and library_item.cache_checksum != prov_item.cache_checksum:
                         # existing dbitem checksum changed
                         library_item = await controller.update_item_in_library(
                             library_item.item_id, prov_item

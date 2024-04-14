@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING, NotRequired, TypedDict
@@ -21,6 +22,7 @@ from music_assistant.common.models.media_items import (
     Artist,
     AudioFormat,
     MediaItemImage,
+    MediaItemMetadata,
     MediaItemType,
     Playlist,
     PlaylistTrack,
@@ -29,6 +31,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -66,6 +69,8 @@ BUILTIN_PLAYLISTS = {
     RANDOM_ALBUM: "Random Album (from library)",
     RANDOM_TRACKS: "100 Random tracks (from library)",
 }
+
+COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, ALL_LIBRARY_TRACKS, RANDOM_TRACKS)
 
 
 async def setup(
@@ -144,7 +149,7 @@ class BuiltinProvider(MusicProvider):
                         type=ImageType.THUMB,
                         path=image_url,
                         provider=self.instance_id,
-                        remotely_accessible=True,
+                        remotely_accessible=image_url.startswith("http"),
                     )
                 ]
         return parsed_item
@@ -168,7 +173,7 @@ class BuiltinProvider(MusicProvider):
                         type=ImageType.THUMB,
                         path=image_url,
                         provider=self.instance_id,
-                        remotely_accessible=True,
+                        remotely_accessible=image_url.startswith("http"),
                     )
                 ]
         return parsed_item
@@ -208,6 +213,19 @@ class BuiltinProvider(MusicProvider):
                 },
                 owner="Music Assistant",
                 is_editable=False,
+                metadata=MediaItemMetadata(
+                    images=None
+                    if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
+                    else [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=MASS_LOGO_ONLINE,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ],
+                    checksum=str(int(time.time())),
+                ),
             )
         # user created universal playlist
         # always prefer db item for existing items
@@ -232,13 +250,15 @@ class BuiltinProvider(MusicProvider):
             owner="Music Assistant",
             is_editable=True,
         )
+        if stored_item.items:
+            playlist.cache_checksum = f"{len(stored_item.items)}.{stored_item.items[-1][:-5]}"
         if image_url := stored_item.get("image_url"):
             playlist.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=image_url.startswith("http"),
                 )
             ]
         return playlist

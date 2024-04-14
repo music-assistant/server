@@ -260,7 +260,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         items = []
         assert provider_instance_id_or_domain != "library"
         artist = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
-        cache_checksum = artist.metadata.checksum
+        cache_checksum = artist.cache_checksum
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
@@ -309,7 +309,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         items = []
         assert provider_instance_id_or_domain != "library"
         artist = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        cache_checksum = artist.metadata.checksum
+        cache_checksum = artist.cache_checksum
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []

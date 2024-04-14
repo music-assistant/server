@@ -137,7 +137,7 @@ class MediaItemImage(DataClassDictMixin):
     type: ImageType
     path: str
     provider: str
-    remotely_accessible: bool = True  # url that is accessible from anywhere
+    remotely_accessible: bool = False  # url that is accessible from anywhere
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -187,8 +187,6 @@ class MediaItemMetadata(DataClassDictMixin):
     popularity: int | None = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: int | None = None
-    # checksum: optional value to detect changes (e.g. playlists)
-    checksum: str | None = None
 
     def update(
         self,
@@ -209,7 +207,7 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set) and isinstance(new_val, list):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
+            elif new_val and fld.name in ("popularity", "last_refresh"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
@@ -282,6 +280,8 @@ class MediaItem(_MediaItemBase):
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
+    # cache_checksum: optional value to (in)validate cache / detect changes (e.g. for playlists)
+    cache_checksum: str | None = None
     # timestamps to determine when the item was added/modified to the db
     timestamp_added: int = 0
     timestamp_modified: int = 0
