@@ -1,7 +1,7 @@
 {
   "type": "music",
   "domain": "builtin",
-  "name": "Built-in",
+  "name": "Music Assistant",
   "description": "Built-in/generic provider to handle media from files and (remote) urls.",
   "codeowners": [
     "@music-assistant"

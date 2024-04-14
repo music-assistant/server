@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import random
-import time
 from collections.abc import AsyncGenerator
 from typing import Any
 
@@ -147,13 +146,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ) -> AsyncGenerator[PlaylistTrack, None]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(
-            item_id, provider_instance_id_or_domain, force_refresh=force_refresh
+            item_id,
+            provider_instance_id_or_domain,
+            force_refresh=force_refresh,
         )
         prov = next(x for x in playlist.provider_mappings)
         async for track in self._get_provider_playlist_tracks(
             prov.item_id,
             prov.provider_instance,
-            cache_checksum=(str(time.time()) if force_refresh else playlist.cache_checksum),
+            cache_checksum=playlist.metadata.cache_checksum,
         ):
             yield track
 
@@ -240,8 +241,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         for track_version in sorted(track.provider_mappings, key=lambda x: x.quality, reverse=True):
             if not track.available:
                 continue
-            if playlist_prov.provider_domain.startswith("filesystem"):
-                # the file provider can handle uri's from all providers so simply add the uri
+            if playlist_prov.provider_domain == "builtin":
+                # the builtin provider can handle uri's from all providers so simply add the uri
                 track_id_to_add = track_version.url or create_uri(
                     MediaType.TRACK,
                     track_version.provider_instance,
@@ -258,7 +259,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider = self.mass.get_provider(playlist_prov.provider_instance)
         await provider.add_playlist_tracks(playlist_prov.item_id, [track_id_to_add])
         # invalidate cache by updating the checksum
-        await self.get(db_id, "library", force_refresh=True)
+        self.mass.call_later(
+            1,
+            self.get,
+            item_id=db_id,
+            provider_instance_id_or_domain="library",
+            force_refresh=True,
+            task_id=f"refresh_playlist_{db_id}",
+        )
 
     async def remove_playlist_tracks(
         self, db_playlist_id: str | int, positions_to_remove: tuple[int, ...]
@@ -282,7 +290,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             await provider.remove_playlist_tracks(prov_mapping.item_id, positions_to_remove)
         # invalidate cache by updating the checksum
-        await self.get(db_id, "library", force_refresh=True)
+        self.mass.call_later(
+            1,
+            self.get,
+            item_id=db_id,
+            provider_instance_id_or_domain="library",
+            force_refresh=True,
+            task_id=f"refresh_playlist_{db_id}",
+        )
 
     async def _add_library_item(self, item: Playlist) -> Playlist:
         """Add a new record to the database."""
@@ -335,11 +350,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
             yield item
             all_items.append(item)
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(
-                cache_key, [x.to_dict() for x in all_items], checksum=cache_checksum
+        if cache_checksum != "no_cache":
+            self.mass.create_task(
+                self.mass.cache.set(
+                    cache_key, [x.to_dict() for x in all_items], checksum=cache_checksum
+                )
             )
-        )
 
     async def _get_provider_dynamic_tracks(
         self,

@@ -120,15 +120,11 @@ class ConfigController:
         subkeys = key.split("/")
         for index, subkey in enumerate(subkeys):
             if index == (len(subkeys) - 1):
-                cur_value = parent.get(subkey)
-                if cur_value == value:
-                    # no need to save if value did not change
-                    return
                 parent[subkey] = value
-                self.save()
             else:
                 parent.setdefault(subkey, {})
                 parent = parent[subkey]
+        self.save()
 
     def set_default(self, key: str, default_value: Any) -> None:
         """Set default value(s) for a specific key/path in persistent storage."""

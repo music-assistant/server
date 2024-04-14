@@ -134,6 +134,11 @@ class MetaDataController(CoreController):
         if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             # silence PIL logger
             logging.getLogger("PIL").setLevel(logging.WARNING)
+        # make sure that our directory with collage images exists
+        self._collage_images_dir = os.path.join(self.mass.storage_path, "collage_images")
+        if not await asyncio.to_thread(os.path.exists, self._collage_images_dir):
+            await asyncio.to_thread(os.mkdir, self._collage_images_dir)
+
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
 
     async def close(self) -> None:
@@ -301,29 +306,37 @@ class MetaDataController(CoreController):
         playlist_genres_filtered = {genre for genre, count in playlist_genres.items() if count > 5}
         playlist.metadata.genres.update(playlist_genres_filtered)
         # create collage images
-        images = playlist.metadata.images or []
-        thumb_image = next((x for x in images if x.type == ImageType.THUMB), None)
-        if not thumb_image or "collage_" in thumb_image.path:
+        cur_images = playlist.metadata.images or []
+        new_images = []
+        thumb_image = next((x for x in cur_images if x.type == ImageType.THUMB), None)
+        if not thumb_image or self._collage_images_dir in thumb_image.path:
             thumb_image_path = (
                 thumb_image.path
                 if thumb_image
-                else os.path.join(self.mass.storage_path, f"collage_{uuid4().hex}.jpg")
+                else os.path.join(self._collage_images_dir, f"{uuid4().hex}_thumb.jpg")
             )
-            thumb_image = await self.create_collage_image(
+            if collage_thumb_image := await self.create_collage_image(
                 all_playlist_tracks_images, thumb_image_path
-            )
-        fanart_image = next((x for x in images if x.type == ImageType.FANART), None)
-        if not fanart_image or "collage_" in fanart_image.path:
+            ):
+                new_images.append(collage_thumb_image)
+            elif thumb_image:
+                # just use old image
+                new_images.append(thumb_image)
+        fanart_image = next((x for x in cur_images if x.type == ImageType.FANART), None)
+        if not fanart_image or self._collage_images_dir in fanart_image.path:
             fanart_image_path = (
                 fanart_image.path
                 if fanart_image
-                else os.path.join(self.mass.storage_path, f"collage_{uuid4().hex}.jpg")
+                else os.path.join(self._collage_images_dir, f"{uuid4().hex}_fanart.jpg")
             )
-            fanart_image = await self.create_collage_image(
+            if collage_fanart_image := await self.create_collage_image(
                 all_playlist_tracks_images, fanart_image_path, fanart=True
-            )
-        playlist.metadata.images = [thumb_image, fanart_image]
-
+            ):
+                new_images.append(collage_fanart_image)
+            elif fanart_image:
+                # just use old image
+                new_images.append(fanart_image)
+        playlist.metadata.images = new_images
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())
 
@@ -479,7 +492,7 @@ class MetaDataController(CoreController):
                 path, size=size, provider=provider, image_format=image_format
             )
             # we set the cache header to 1 year (forever)
-            # the client can use the cache_checksum value to refresh when content changes
+            # assuming that images do not/rarely change
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000"},

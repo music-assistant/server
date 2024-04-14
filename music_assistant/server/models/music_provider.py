@@ -406,9 +406,7 @@ class MusicProvider(Provider):
                         library_item = await controller.add_item_to_library(
                             prov_item, metadata_lookup=False, **extra_kwargs
                         )
-                    elif (
-                        library_item.cache_checksum and prov_item.cache_checksum
-                    ) and library_item.cache_checksum != prov_item.cache_checksum:
+                    elif library_item.metadata.cache_checksum != prov_item.metadata.cache_checksum:
                         # existing dbitem checksum changed
                         library_item = await controller.update_item_in_library(
                             library_item.item_id, prov_item

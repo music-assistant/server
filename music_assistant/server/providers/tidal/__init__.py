@@ -722,7 +722,7 @@ class TidalProvider(MusicProvider):
         is_editable = bool(creator_id and str(creator_id) == self._tidal_user_id)
         playlist.is_editable = is_editable
         # metadata
-        playlist.cache_checksum = str(playlist_obj.last_updated)
+        playlist.metadata.cache_checksum = str(playlist_obj.last_updated)
         playlist.metadata.popularity = playlist_obj.popularity
         if picture := (playlist_obj.square_picture or playlist_obj.picture):
             picture_id = picture.replace("-", "/")

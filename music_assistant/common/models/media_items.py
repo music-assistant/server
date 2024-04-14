@@ -185,6 +185,8 @@ class MediaItemMetadata(DataClassDictMixin):
     performers: set[str] | None = None
     preview: str | None = None
     popularity: int | None = None
+    # cache_checksum: optional value to (in)validate cache / detect changes (used for playlists)
+    cache_checksum: str | None = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: int | None = None
 
@@ -207,7 +209,7 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set) and isinstance(new_val, list):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif new_val and fld.name in ("popularity", "last_refresh"):
+            elif new_val and fld.name in ("popularity", "last_refresh", "cache_checksum"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
@@ -280,8 +282,6 @@ class MediaItem(_MediaItemBase):
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
-    # cache_checksum: optional value to (in)validate cache / detect changes (e.g. for playlists)
-    cache_checksum: str | None = None
     # timestamps to determine when the item was added/modified to the db
     timestamp_added: int = 0
     timestamp_modified: int = 0

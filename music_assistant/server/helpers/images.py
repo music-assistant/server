@@ -46,6 +46,8 @@ async def get_image_thumb(
 ) -> bytes:
     """Get (optimized) PNG thumbnail from image url."""
     img_data = await get_image_data(mass, path_or_url, provider)
+    if not img_data:
+        raise FileNotFoundError(f"Image not found: {path_or_url}")
 
     def _create_image():
         data = BytesIO()
@@ -82,9 +84,12 @@ async def create_collage(
 
     for x_co in range(0, dimensions[0], image_size):
         for y_co in range(0, dimensions[1], image_size):
-            img = next(iter_images)
-            img_data = await get_image_data(mass, img.path, img.provider)
-            await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
+            for _ in range(5):
+                img = next(iter_images)
+                img_data = await get_image_data(mass, img.path, img.provider)
+                if img_data:
+                    await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
+                    break
 
     def _save_collage():
         final_data = BytesIO()

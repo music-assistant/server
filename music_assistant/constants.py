@@ -20,6 +20,8 @@ RESOURCES_DIR: Final[pathlib.Path] = (
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
+VARIOUS_ARTISTS_FANART: Final[str] = str(RESOURCES_DIR.joinpath("fallback_fanart.jpeg"))
+MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
 
 # if duration is None (e.g. radio stream):Final[str] = 48 hours
 FALLBACK_DURATION: Final[int] = 172800

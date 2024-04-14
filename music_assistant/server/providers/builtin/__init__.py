@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import time
 from collections.abc import AsyncGenerator
-from contextlib import suppress
 from typing import TYPE_CHECKING, NotRequired, TypedDict
+
+import shortuuid
 
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
@@ -16,7 +17,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     AlbumTrack,
     Artist,
@@ -31,7 +32,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import MASS_LOGO_ONLINE
+from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -45,10 +46,11 @@ if TYPE_CHECKING:
 class StoredItem(TypedDict):
     """Definition of an media item (for the builtin provider) stored in persistent storage."""
 
-    path: str  # url or (locally accessible) file path
+    item_id: str  # url or (locally accessible) file path (or id in case of playlist)
     name: str
     image_url: NotRequired[str]
     items: NotRequired[list[str]]  # playlists only
+    last_updated: NotRequired[int]  # playlists only
 
 
 CONF_KEY_RADIOS = "stored_radios"
@@ -74,16 +76,16 @@ COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, ALL_LIBRARY_TRACKS, RANDOM_TRACK
 
 DEFAULT_THUMB = MediaItemImage(
     type=ImageType.THUMB,
-    path=MASS_LOGO_ONLINE,
+    path=MASS_LOGO,
     provider="builtin",
-    remotely_accessible=True,
+    remotely_accessible=False,
 )
 
 DEFAULT_FANART = MediaItemImage(
     type=ImageType.FANART,
-    path="https://images.fanart.tv/fanart/various-artists-5075a5c07a2ac.jpg",
-    provider="fanarttv",
-    remotely_accessible=True,
+    path=VARIOUS_ARTISTS_FANART,
+    provider="builtin",
+    remotely_accessible=False,
 )
 
 
@@ -137,21 +139,18 @@ class BuiltinProvider(MusicProvider):
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
         return (
+            ProviderFeature.BROWSE,
             ProviderFeature.LIBRARY_TRACKS,
             ProviderFeature.LIBRARY_RADIOS,
             ProviderFeature.LIBRARY_PLAYLISTS,
             ProviderFeature.LIBRARY_TRACKS_EDIT,
             ProviderFeature.LIBRARY_RADIOS_EDIT,
+            ProviderFeature.PLAYLIST_CREATE,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
         )
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        # always prefer db item for existing items
-        if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
-            prov_track_id, self.instance_id
-        ):
-            return db_item
-        # fallback to parsing (assuming the id is an url or local file path)
         parsed_item = await self.parse_item(prov_track_id)
         stored_item: StoredItem
         if stored_item := self.mass.config.get(f"{CONF_KEY_TRACKS}/{parsed_item.item_id}"):
@@ -170,12 +169,6 @@ class BuiltinProvider(MusicProvider):
 
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
-        # always prefer db item for existing items
-        if db_item := await self.mass.music.radio.get_library_item_by_prov_id(
-            prov_radio_id, self.instance_id
-        ):
-            return db_item
-        # fallback to parsing (assuming the id is an url or local file path)
         parsed_item = await self.parse_item(prov_radio_id, force_radio=True)
         stored_item: StoredItem
         if stored_item := self.mass.config.get(f"{CONF_KEY_RADIOS}/{parsed_item.item_id}"):
@@ -230,16 +223,11 @@ class BuiltinProvider(MusicProvider):
                 metadata=MediaItemMetadata(
                     images=[DEFAULT_THUMB]
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
-                    else [DEFAULT_THUMB, DEFAULT_FANART]
+                    else [DEFAULT_THUMB, DEFAULT_FANART],
+                    cache_checksum="no_cache",
                 ),
-                cache_checksum=str(int(time.time())),
             )
         # user created universal playlist
-        # always prefer db item for existing items
-        if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
-            prov_playlist_id, self.instance_id
-        ):
-            return db_item
         stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
         if not stored_item:
             raise MediaNotFoundError
@@ -257,8 +245,7 @@ class BuiltinProvider(MusicProvider):
             owner="Music Assistant",
             is_editable=True,
         )
-        if stored_item.items:
-            playlist.cache_checksum = f"{len(stored_item.items)}.{stored_item.items[-1][:-5]}"
+        playlist.metadata.cache_checksum = str(stored_item.get("last_updated", 0))
         if image_url := stored_item.get("image_url"):
             playlist.metadata.images = [
                 MediaItemImage(
@@ -316,7 +303,7 @@ class BuiltinProvider(MusicProvider):
             key = f"{CONF_KEY_RADIOS}/{item.item_id}"
         else:
             return False
-        stored_item = StoredItem(path=item.item_id, name=item.name)
+        stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image
         self.mass.config.set(key, stored_item)
@@ -327,11 +314,11 @@ class BuiltinProvider(MusicProvider):
         if media_type == MediaType.TRACK:
             # regular manual track URL/path
             key = f"{CONF_KEY_TRACKS}/{prov_item_id}"
-            self.mass.config.remove(key, key)
+            self.mass.config.remove(key)
         elif media_type == MediaType.RADIO:
             # regular manual radio URL/path
             key = f"{CONF_KEY_PLAYLISTS}/{prov_item_id}"
-            self.mass.config.remove(key, key)
+            self.mass.config.remove(key)
         elif media_type == MediaType.PLAYLIST and prov_item_id in BUILTIN_PLAYLISTS:
             # user wants to disable/remove one of our builtin playlists
             # to prevent it comes back, we mark it as disabled in config
@@ -339,7 +326,7 @@ class BuiltinProvider(MusicProvider):
         elif media_type == MediaType.PLAYLIST:
             # manually added (multi provider) playlist removal
             key = f"{CONF_KEY_PLAYLISTS}/{prov_item_id}"
-            self.mass.config.remove(key, key)
+            self.mass.config.remove(key)
         else:
             return False
         return True
@@ -356,29 +343,57 @@ class BuiltinProvider(MusicProvider):
         # user created universal playlist
         stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
         if not stored_item:
+            # should not happen, but just in case
             raise MediaNotFoundError
         playlist_items = stored_item.get("items", [])
         for count, playlist_item_uri in enumerate(playlist_items, 1):
-            with suppress(MediaNotFoundError):
+            try:
                 base_item = await self.mass.music.get_item_by_uri(playlist_item_uri)
                 yield PlaylistTrack.from_dict({**base_item.to_dict(), "position": count})
+            except (MediaNotFoundError, InvalidDataError) as err:
+                self.logger.warning("Skipping item in playlist: %s:%s", playlist_item_uri, str(err))
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        if ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
-            raise NotImplementedError
+        stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
+        if not stored_item:
+            # should not happen, but just in case
+            raise MediaNotFoundError
+        playlist_items = stored_item.get("items", [])
+        for uri in prov_track_ids:
+            if uri not in playlist_items:
+                playlist_items.append(uri)
+        stored_item["items"] = playlist_items
+        stored_item["last_updated"] = int(time.time())
+        key = f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}"
+        self.mass.config.set(key, stored_item)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        if ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features:
-            raise NotImplementedError
+        # get current contents first
+        stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
+        if not stored_item:
+            # should not happen, but just in case
+            raise MediaNotFoundError
+        playlist_items = stored_item.get("items", [])
+        # remove items by index
+        for i in sorted(positions_to_remove, reverse=True):
+            del playlist_items[i]
+        # store updated data
+        stored_item["items"] = playlist_items
+        stored_item["last_updated"] = int(time.time())
+        key = f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}"
+        self.mass.config.set(key, stored_item)
 
     async def create_playlist(self, name: str) -> Playlist:  # type: ignore[return]
         """Create a new playlist on provider with given name."""
-        if ProviderFeature.PLAYLIST_CREATE in self.supported_features:
-            raise NotImplementedError
+        item_id = shortuuid.random(8)
+        stored_item = StoredItem(item_id=item_id, name=name)
+        key = f"{CONF_KEY_PLAYLISTS}/{item_id}"
+        self.mass.config.set(key, stored_item)
+        return await self.get_playlist(item_id)
 
     async def parse_item(
         self,
@@ -388,7 +403,7 @@ class BuiltinProvider(MusicProvider):
     ) -> Track | Radio:
         """Parse plain URL to MediaItem of type Radio or Track."""
         media_info = await self._get_media_info(url, force_refresh)
-        is_radio = media_info.get("icy-name") or not media_info.duration
+        is_radio = media_info.get("icyname") or not media_info.duration
         provider_mappings = {
             ProviderMapping(
                 item_id=url,
@@ -407,7 +422,10 @@ class BuiltinProvider(MusicProvider):
             media_item = Radio(
                 item_id=url,
                 provider=self.domain,
-                name=media_info.get("icy-name") or url,
+                name=media_info.get("icyname")
+                or media_info.get("programtitle")
+                or media_info.title
+                or url,
                 provider_mappings=provider_mappings,
             )
         else:
@@ -430,10 +448,6 @@ class BuiltinProvider(MusicProvider):
                 )
             ]
         return media_item
-
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
-        """Resolve the image."""
-        return path
 
     async def _get_media_info(self, url: str, force_refresh: bool = False) -> AudioTags:
         """Retrieve mediainfo for url."""
@@ -490,7 +504,7 @@ class BuiltinProvider(MusicProvider):
                 count += 1
                 yield PlaylistTrack.from_dict({**item.to_dict(), "position": count})
                 if count == 100:
-                    break
+                    return
             return
         if builtin_playlist_id == RANDOM_ALBUM:
             async for random_album in self.mass.music.albums.iter_library_items(
@@ -503,14 +517,16 @@ class BuiltinProvider(MusicProvider):
                     yield PlaylistTrack.from_dict({**album_track.to_dict(), "position": count})
                 if count > 0:
                     return
+            return
         if builtin_playlist_id == RANDOM_ARTIST:
-            async for random_album in self.mass.music.artists.iter_library_items(
+            async for random_artist in self.mass.music.artists.iter_library_items(
                 order_by="RANDOM()"
             ):
                 for artist_track in await self.mass.music.artists.tracks(
-                    random_album.item_id, random_album.provider
+                    random_artist.item_id, random_artist.provider
                 ):
                     count += 1
                     yield PlaylistTrack.from_dict({**artist_track.to_dict(), "position": count})
                 if count > 0:
                     return
+            return

@@ -312,7 +312,9 @@ class AudioTags:
         if audio_stream is None:
             msg = "No audio stream found"
             raise InvalidDataError(msg)
-        has_cover_image = any(x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png"))
+        has_cover_image = any(
+            x for x in raw["streams"] if x.get("codec_name", "") in ("mjpeg", "png")
+        )
         # convert all tag-keys (gathered from all streams) to lowercase without spaces
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
@@ -426,7 +428,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "fatal",
+        "error",
         "-i",
         file_path,
         "-map",
@@ -439,7 +441,9 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
     )
 
     writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True, name="ffmpeg_image")
+    ffmpeg_proc = AsyncProcess(
+        args, stdin=file_path == "-", stdout=True, stderr=None, name="ffmpeg_image"
+    )
     await ffmpeg_proc.start()
 
     async def writer() -> None:
