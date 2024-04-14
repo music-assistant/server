@@ -49,13 +49,13 @@ class StoredItem(TypedDict):
     item_id: str  # url or (locally accessible) file path (or id in case of playlist)
     name: str
     image_url: NotRequired[str]
-    items: NotRequired[list[str]]  # playlists only
-    last_updated: NotRequired[int]  # playlists only
+    last_updated: NotRequired[int]
 
 
 CONF_KEY_RADIOS = "stored_radios"
 CONF_KEY_TRACKS = "stored_tracks"
 CONF_KEY_PLAYLISTS = "stored_playlists"
+CONF_KEY_PLAYLIST_ITEMS = "stored_playlists_items"
 
 
 ALL_LIBRARY_TRACKS = "all_library_tracks"
@@ -152,8 +152,8 @@ class BuiltinProvider(MusicProvider):
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         parsed_item = await self.parse_item(prov_track_id)
-        stored_item: StoredItem
-        if stored_item := self.mass.config.get(f"{CONF_KEY_TRACKS}/{parsed_item.item_id}"):
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
+        if stored_item := next((x for x in stored_items if x["item_id"] == prov_track_id), None):
             # always prefer the stored info, such as the name
             parsed_item.name = stored_item["name"]
             if image_url := stored_item.get("image_url"):
@@ -170,8 +170,8 @@ class BuiltinProvider(MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get full radio details by id."""
         parsed_item = await self.parse_item(prov_radio_id, force_radio=True)
-        stored_item: StoredItem
-        if stored_item := self.mass.config.get(f"{CONF_KEY_RADIOS}/{parsed_item.item_id}"):
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
+        if stored_item := next((x for x in stored_items if x["item_id"] == prov_radio_id), None):
             # always prefer the stored info, such as the name
             parsed_item.name = stored_item["name"]
             if image_url := stored_item.get("image_url"):
@@ -228,7 +228,8 @@ class BuiltinProvider(MusicProvider):
                 ),
             )
         # user created universal playlist
-        stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
+        stored_item = next((x for x in stored_items if x["item_id"] == prov_playlist_id), None)
         if not stored_item:
             raise MediaNotFoundError
         playlist = Playlist(
@@ -273,16 +274,16 @@ class BuiltinProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
         """Retrieve library tracks from the provider."""
-        stored_items: dict[str, StoredItem] = self.mass.config.get(f"{CONF_KEY_TRACKS}", {})
-        for item_id in stored_items:
-            yield await self.get_track(item_id)
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
+        for item in stored_items:
+            yield await self.get_track(item["item_id"])
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve library/subscribed playlists from the provider."""
         # return user stored playlists
-        stored_items: dict[str, StoredItem] = self.mass.config.get(f"{CONF_KEY_RADIOS}", {})
-        for item_id in stored_items:
-            yield await self.get_playlist(item_id)
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
+        for item in stored_items:
+            yield await self.get_playlist(item["item_id"])
         # return builtin playlists
         for item_id in BUILTIN_PLAYLISTS:
             if self.config.get_value(item_id) is False:
@@ -291,44 +292,49 @@ class BuiltinProvider(MusicProvider):
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
-        stored_items: dict[str, StoredItem] = self.mass.config.get(f"{CONF_KEY_RADIOS}", {})
-        for item_id in stored_items:
-            yield await self.get_radio(item_id)
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_RADIOS, [])
+        for item in stored_items:
+            yield await self.get_radio(item["item_id"])
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
         if item.media_type == MediaType.TRACK:
-            key = f"{CONF_KEY_TRACKS}/{item.item_id}"
+            key = CONF_KEY_TRACKS
         elif item.media_type == MediaType.RADIO:
-            key = f"{CONF_KEY_RADIOS}/{item.item_id}"
+            key = CONF_KEY_RADIOS
         else:
             return False
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
             stored_item["image_url"] = item.image
-        self.mass.config.set(key, stored_item)
+        stored_items: list[StoredItem] = self.mass.config.get(key, [])
+        # filter out existing
+        stored_items = [x for x in stored_items if x["item_id"] != item.item_id]
+        stored_items.append(stored_item)
+        self.mass.config.set(key, stored_items)
         return True
 
     async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
         """Remove item from provider's library. Return true on success."""
-        if media_type == MediaType.TRACK:
-            # regular manual track URL/path
-            key = f"{CONF_KEY_TRACKS}/{prov_item_id}"
-            self.mass.config.remove(key)
-        elif media_type == MediaType.RADIO:
-            # regular manual radio URL/path
-            key = f"{CONF_KEY_PLAYLISTS}/{prov_item_id}"
-            self.mass.config.remove(key)
-        elif media_type == MediaType.PLAYLIST and prov_item_id in BUILTIN_PLAYLISTS:
+        if media_type == MediaType.PLAYLIST and prov_item_id in BUILTIN_PLAYLISTS:
             # user wants to disable/remove one of our builtin playlists
             # to prevent it comes back, we mark it as disabled in config
             await self.mass.config.set_provider_config_value(self.instance_id, prov_item_id, False)
+            return True
+        if media_type == MediaType.TRACK:
+            # regular manual track URL/path
+            key = CONF_KEY_TRACKS
+        elif media_type == MediaType.RADIO:
+            # regular manual radio URL/path
+            key = CONF_KEY_RADIOS
         elif media_type == MediaType.PLAYLIST:
             # manually added (multi provider) playlist removal
-            key = f"{CONF_KEY_PLAYLISTS}/{prov_item_id}"
-            self.mass.config.remove(key)
+            key = CONF_KEY_PLAYLISTS
         else:
             return False
+        stored_items: list[StoredItem] = self.mass.config.get(key, [])
+        stored_items = [x for x in stored_items if x["item_id"] != prov_item_id]
+        self.mass.config.set(key, stored_items)
         return True
 
     async def get_playlist_tracks(
@@ -341,11 +347,8 @@ class BuiltinProvider(MusicProvider):
                 yield item
             return
         # user created universal playlist
-        stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
-        if not stored_item:
-            # should not happen, but just in case
-            raise MediaNotFoundError
-        playlist_items = stored_item.get("items", [])
+        conf_key = f"{CONF_KEY_PLAYLIST_ITEMS}/{prov_playlist_id}"
+        playlist_items: list[str] = self.mass.config.get(conf_key, [])
         for count, playlist_item_uri in enumerate(playlist_items, 1):
             try:
                 base_item = await self.mass.music.get_item_by_uri(playlist_item_uri)
@@ -355,44 +358,41 @@ class BuiltinProvider(MusicProvider):
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
-        stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
-        if not stored_item:
-            # should not happen, but just in case
-            raise MediaNotFoundError
-        playlist_items = stored_item.get("items", [])
+        conf_key = f"{CONF_KEY_PLAYLIST_ITEMS}/{prov_playlist_id}"
+        playlist_items: list[str] = self.mass.config.get(conf_key, [])
         for uri in prov_track_ids:
             if uri not in playlist_items:
                 playlist_items.append(uri)
-        stored_item["items"] = playlist_items
+        self.mass.config.set(conf_key, playlist_items)
+        # mark last_updated on playlist object
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
+        stored_item = next((x for x in stored_items if x["item_id"] == prov_playlist_id), None)
         stored_item["last_updated"] = int(time.time())
-        key = f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}"
-        self.mass.config.set(key, stored_item)
+        self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove track(s) from playlist."""
-        # get current contents first
-        stored_item: StoredItem = self.mass.config.get(f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}")
-        if not stored_item:
-            # should not happen, but just in case
-            raise MediaNotFoundError
-        playlist_items = stored_item.get("items", [])
+        conf_key = f"{CONF_KEY_PLAYLIST_ITEMS}/{prov_playlist_id}"
+        playlist_items: list[str] = self.mass.config.get(conf_key, [])
         # remove items by index
         for i in sorted(positions_to_remove, reverse=True):
             del playlist_items[i]
-        # store updated data
-        stored_item["items"] = playlist_items
+        self.mass.config.set(conf_key, playlist_items)
+        # mark last_updated on playlist object
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
+        stored_item = next((x for x in stored_items if x["item_id"] == prov_playlist_id), None)
         stored_item["last_updated"] = int(time.time())
-        key = f"{CONF_KEY_PLAYLISTS}/{prov_playlist_id}"
-        self.mass.config.set(key, stored_item)
+        self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
 
     async def create_playlist(self, name: str) -> Playlist:  # type: ignore[return]
         """Create a new playlist on provider with given name."""
         item_id = shortuuid.random(8)
         stored_item = StoredItem(item_id=item_id, name=name)
-        key = f"{CONF_KEY_PLAYLISTS}/{item_id}"
-        self.mass.config.set(key, stored_item)
+        stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_PLAYLISTS, [])
+        stored_items.append(stored_item)
+        self.mass.config.set(CONF_KEY_PLAYLISTS, stored_items)
         return await self.get_playlist(item_id)
 
     async def parse_item(
