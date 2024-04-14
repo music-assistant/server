@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import itertools
 import random
+from collections.abc import Iterable
 from io import BytesIO
 from typing import TYPE_CHECKING
 
@@ -57,18 +58,21 @@ async def get_image_thumb(
     return await asyncio.to_thread(_create_image)
 
 
-async def create_collage(mass: MusicAssistant, images: list[MediaItemImage]) -> bytes:
+async def create_collage(
+    mass: MusicAssistant, images: Iterable[MediaItemImage], dimensions: tuple[int] = (1500, 1500)
+) -> bytes:
     """Create a basic collage image from multiple image urls."""
+    image_size = 250
 
     def _new_collage():
-        return Image.new("RGBA", (1500, 1500), color=(255, 255, 255, 255))
+        return Image.new("RGBA", (dimensions[0], dimensions[1]), color=(255, 255, 255, 255))
 
     collage = await asyncio.to_thread(_new_collage)
 
     def _add_to_collage(img_data: bytes, coord_x: int, coord_y: int) -> None:
         data = BytesIO(img_data)
         photo = Image.open(data).convert("RGBA")
-        photo = photo.resize((500, 500))
+        photo = photo.resize((image_size, image_size))
         collage.paste(photo, (coord_x, coord_y))
 
     # prevent duplicates with a set
@@ -76,15 +80,15 @@ async def create_collage(mass: MusicAssistant, images: list[MediaItemImage]) -> 
     random.shuffle(images)
     iter_images = itertools.cycle(images)
 
-    for x_co in range(0, 1500, 500):
-        for y_co in range(0, 1500, 500):
+    for x_co in range(0, dimensions[0], image_size):
+        for y_co in range(0, dimensions[1], image_size):
             img = next(iter_images)
             img_data = await get_image_data(mass, img.path, img.provider)
             await asyncio.to_thread(_add_to_collage, img_data, x_co, y_co)
 
     def _save_collage():
         final_data = BytesIO()
-        collage.convert("RGB").save(final_data, "PNG", optimize=True)
+        collage.convert("RGB").save(final_data, "JPEG", optimize=True)
         return final_data.getvalue()
 
     return await asyncio.to_thread(_save_collage)
