@@ -49,6 +49,7 @@ async def setup(
         raise SetupFailedError(msg)
     prov = LocalFileSystemProvider(mass, manifest, config)
     prov.base_path = config.get_value(CONF_PATH)
+    await prov.check_write_access()
     return prov
 
 

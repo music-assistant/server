@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
+import os
 import platform
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
+
+import aiofiles
+import shortuuid
 
 from music_assistant.common.helpers.util import get_ip_from_host
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -50,6 +55,7 @@ async def setup(
         raise LoginFailed(msg)
     prov = SMBFileSystemProvider(mass, manifest, config)
     await prov.handle_async_init()
+    await prov.check_write_access()
     return prov
 
 
@@ -149,6 +155,16 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         except Exception as err:
             msg = f"Connection failed for the given details: {err}"
             raise LoginFailed(msg) from err
+
+        # verify write access to determine we have playlist create/edit support
+        temp_file_name = f"{shortuuid.random(8)}.txt"
+        try:
+            async with aiofiles.open(temp_file_name, "wb") as _file:
+                await _file.write(b"")
+            await asyncio.to_thread(os.remove, temp_file_name)
+            self.write_access = True
+        except Exception as err:
+            self.logger.debug("Write access disabled: %s", str(err))
 
     async def unload(self) -> None:
         """

@@ -223,7 +223,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 track_prov.provider_domain == playlist_prov.provider_domain
                 and track_prov.item_id in cur_playlist_track_ids
             ):
-                msg = "Track already exists in playlist {playlist.name}"
+                msg = f"Track already exists in playlist {playlist.name}"
                 raise InvalidDataError(msg)
         # add track to playlist
         # we can only add a track to a provider playlist if track is available on that provider
