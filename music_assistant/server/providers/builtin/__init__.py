@@ -521,23 +521,19 @@ class BuiltinProvider(MusicProvider):
             async for random_album in self.mass.music.albums.iter_library_items(
                 order_by="RANDOM()"
             ):
-                for album_track in await self.mass.music.albums.tracks(
-                    random_album.item_id, random_album.provider
-                ):
+                # use the function specified in the queue controller as that
+                # already handles unwrapping an album by user preference
+                for album_track in await self.mass.player_queues.get_album_tracks(random_album):
                     count += 1
                     yield PlaylistTrack.from_dict({**album_track.to_dict(), "position": count})
-                if count > 0:
-                    return
-            return
+                return
         if builtin_playlist_id == RANDOM_ARTIST:
             async for random_artist in self.mass.music.artists.iter_library_items(
                 order_by="RANDOM()"
             ):
-                for artist_track in await self.mass.music.artists.tracks(
-                    random_artist.item_id, random_artist.provider
-                ):
+                # use the function specified in the queue controller as that
+                # already handles unwrapping an artist by user preference
+                for artist_track in await self.mass.player_queues.get_artist_tracks(random_artist):
                     count += 1
                     yield PlaylistTrack.from_dict({**artist_track.to_dict(), "position": count})
-                if count > 0:
-                    return
-            return
+                return

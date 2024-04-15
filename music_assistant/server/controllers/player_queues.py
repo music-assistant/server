@@ -331,12 +331,12 @@ class PlayerQueuesController(CoreController):
                     media_item.media_type, media_item.item_id, media_item.provider
                 )
             elif media_item.media_type == MediaType.ARTIST:
-                tracks += await self._get_artist_tracks(media_item)
+                tracks += await self.get_artist_tracks(media_item)
                 await self.mass.music.mark_item_played(
                     media_item.media_type, media_item.item_id, media_item.provider
                 )
             elif media_item.media_type == MediaType.ALBUM:
-                tracks += await self._get_album_tracks(media_item)
+                tracks += await self.get_album_tracks(media_item)
                 await self.mass.music.mark_item_played(
                     media_item.media_type, media_item.item_id, media_item.provider
                 )
@@ -1121,7 +1121,7 @@ class PlayerQueuesController(CoreController):
                 break
         return tracks
 
-    async def _get_artist_tracks(self, artist: Artist) -> list[Track]:
+    async def get_artist_tracks(self, artist: Artist) -> list[Track]:
         """Return tracks for given artist, based on user preference."""
         artist_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
@@ -1193,7 +1193,7 @@ class PlayerQueuesController(CoreController):
             return all_items
         return []
 
-    async def _get_album_tracks(self, album: Album) -> list[Track]:
+    async def get_album_tracks(self, album: Album) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
