@@ -38,7 +38,7 @@ server = [
   "xmltodict==0.13.0",
   "orjson==3.10.0",
   "shortuuid==1.0.13",
-  "zeroconf==0.132.0",
+  "zeroconf==0.132.2",
   "cryptography==42.0.5",
   "ifaddr==0.2.0",
 ]
