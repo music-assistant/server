@@ -349,8 +349,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # if this is a complete track object, pre-cache it as
             # that will save us an (expensive) lookup later
             if item.image and item.artist_str and item.album and provider.domain != "builtin":
-                cache_key = f"provider_item.track.{provider.lookup_key}.{item_id}"
-                await self.mass.cache.set(cache_key, item.to_dict())
+                await self.mass.cache.set(
+                    f"provider_item.track.{provider.lookup_key}.{item_id}", item.to_dict()
+                )
         # store (serializable items) in cache
         if cache_checksum != "no_cache":
             self.mass.create_task(
