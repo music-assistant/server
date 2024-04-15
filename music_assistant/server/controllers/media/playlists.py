@@ -143,12 +143,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
             force_refresh=force_refresh,
         )
         prov = next(x for x in playlist.provider_mappings)
+        count = 0
         async for track in self._get_provider_playlist_tracks(
             prov.item_id,
             prov.provider_instance,
             cache_checksum=playlist.metadata.cache_checksum,
         ):
+            count += 1
             yield track
+            if count == 2500:
+                self.logger.warning(
+                    "Playlist %s has more than 2500 tracks - this will hurt performance!",
+                    playlist.name,
+                )
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
