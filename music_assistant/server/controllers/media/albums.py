@@ -13,6 +13,7 @@ from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.media_items import (
@@ -76,17 +77,25 @@ class AlbumsController(MediaControllerBase[Album]):
             details=details,
             add_to_library=add_to_library,
         )
-        # append full artist details to full album item
-        album.artists = [
-            await self.mass.music.artists.get(
-                item.item_id,
-                item.provider,
-                lazy=lazy,
-                details=item,
-                add_to_library=add_to_library,
-            )
-            for item in album.artists
-        ]
+        # append artist details to full track item (resolve ItemMappings)
+        album_artists = []
+        for artist in album.artists:
+            if not isinstance(artist, ItemMapping):
+                album_artists.append(artist)
+                continue
+            try:
+                album_artists.append(
+                    await self.mass.music.artists.get(
+                        artist.item_id,
+                        artist.provider,
+                        lazy=lazy,
+                        add_to_library=False,  # TODO: make this configurable
+                    )
+                )
+            except MusicAssistantError as err:
+                # edge case where playlist track has invalid artistdetails
+                self.logger.warning("Unable to fetch artist details %s - %s", artist.uri, str(err))
+        album.artists = album_artists
         return album
 
     async def add_item_to_library(

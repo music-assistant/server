@@ -12,6 +12,7 @@ from music_assistant.common.models.enums import AlbumType, EventType, MediaType,
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
+    MusicAssistantError,
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.media_items import Album, ItemMapping, Track
@@ -75,18 +76,10 @@ class TracksController(MediaControllerBase[Track]):
             details=details,
             add_to_library=add_to_library,
         )
-        # append full album details to full track item
+        # append full album details to full track item (resolve ItemMappings)
         try:
             if album_uri and (album := await self.mass.music.get_item_by_uri(album_uri)):
                 track.album = album
-            elif track.album:
-                track.album = await self.mass.music.albums.get(
-                    track.album.item_id,
-                    track.album.provider,
-                    lazy=lazy,
-                    details=None if isinstance(track.album, ItemMapping) else track.album,
-                    add_to_library=add_to_library,
-                )
             elif provider_instance_id_or_domain == "library":
                 # grab the first album this track is attached to
                 for album_track_row in await self.mass.music.database.get_rows(
@@ -95,9 +88,17 @@ class TracksController(MediaControllerBase[Track]):
                     track.album = await self.mass.music.albums.get_library_item(
                         album_track_row["album_id"]
                     )
-        except MediaNotFoundError:
+            elif isinstance(track.album, ItemMapping) or track.album and not track.album.image:
+                track.album = await self.mass.music.albums.get(
+                    track.album.item_id,
+                    track.album.provider,
+                    lazy=lazy,
+                    details=None if isinstance(track.album, ItemMapping) else track.album,
+                    add_to_library=False,  # TODO: make this configurable
+                )
+        except MusicAssistantError as err:
             # edge case where playlist track has invalid albumdetails
-            self.logger.warning("Unable to fetch album details %s", track.album.uri)
+            self.logger.warning("Unable to fetch album details %s - %s", track.album.uri, str(err))
         # prefer album image if album explicitly given or track has no image on its own
         if (
             (album_uri or not track.metadata.images)
@@ -105,19 +106,25 @@ class TracksController(MediaControllerBase[Track]):
             and track.album.image
         ):
             track.metadata.images = [track.album.image]
-        # append full artist details to full track item
-        full_artists = []
+        # append artist details to full track item (resolve ItemMappings)
+        track_artists = []
         for artist in track.artists:
-            full_artists.append(
-                await self.mass.music.artists.get(
-                    artist.item_id,
-                    artist.provider,
-                    lazy=lazy,
-                    details=None if isinstance(artist, ItemMapping) else artist,
-                    add_to_library=add_to_library,
+            if not isinstance(artist, ItemMapping):
+                track_artists.append(artist)
+                continue
+            try:
+                track_artists.append(
+                    await self.mass.music.artists.get(
+                        artist.item_id,
+                        artist.provider,
+                        lazy=lazy,
+                        add_to_library=False,  # TODO: make this configurable
+                    )
                 )
-            )
-        track.artists = full_artists
+            except MusicAssistantError as err:
+                # edge case where playlist track has invalid artistdetails
+                self.logger.warning("Unable to fetch artist details %s - %s", artist.uri, str(err))
+        track.artists = track_artists
         return track
 
     async def add_item_to_library(self, item: Track, metadata_lookup: bool = True) -> Track:
@@ -236,7 +243,7 @@ class TracksController(MediaControllerBase[Track]):
     ) -> list[Track]:
         """Return all versions of a track we can find on all providers."""
         track = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
-        search_query = f"{track.artists[0].name} - {track.name}"
+        search_query = f"{track.artist_str} - {track.name}"
         result: list[Track] = []
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)

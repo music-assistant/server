@@ -276,7 +276,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 # returns the first provider that is available
                 if not prov_mapping.available:
                     continue
-                if provider := self.mass.get_provider(prov_mapping.provider_instance):
+                if provider := self.mass.get_provider(
+                    prov_mapping.provider_instance
+                    if prefer_unique
+                    else prov_mapping.provider_domain
+                ):
                     if prefer_unique and provider.is_streaming_provider:
                         continue
                     return (prov_mapping.provider_instance, prov_mapping.item_id)

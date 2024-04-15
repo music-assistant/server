@@ -25,6 +25,7 @@ from music_assistant.common.models.errors import (
     InvalidProviderURI,
     MediaNotFoundError,
     MusicAssistantError,
+    ProviderUnavailableError,
 )
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
@@ -342,7 +343,7 @@ class MusicController(CoreController):
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[MediaItemType] = []
         for db_row in db_rows:
-            with suppress(MediaNotFoundError):
+            with suppress(MediaNotFoundError, ProviderUnavailableError):
                 media_type = MediaType(db_row["media_type"])
                 item = await self.get_item(media_type, db_row["item_id"], db_row["provider"])
                 result.append(item)

@@ -68,6 +68,7 @@ ALL_FAVORITE_TRACKS = "all_favorite_tracks"
 RANDOM_ARTIST = "random_artist"
 RANDOM_ALBUM = "random_album"
 RANDOM_TRACKS = "random_tracks"
+RECENTLY_PLAYED = "recently_played"
 
 BUILTIN_PLAYLISTS = {
     ALL_LIBRARY_TRACKS: "All library tracks",
@@ -75,6 +76,7 @@ BUILTIN_PLAYLISTS = {
     RANDOM_ARTIST: "Random Artist (from library)",
     RANDOM_ALBUM: "Random Album (from library)",
     RANDOM_TRACKS: "100 Random tracks (from library)",
+    RECENTLY_PLAYED: "Recently played tracks",
 }
 
 COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, ALL_LIBRARY_TRACKS, RANDOM_TRACKS)
@@ -537,3 +539,8 @@ class BuiltinProvider(MusicProvider):
                     count += 1
                     yield PlaylistTrack.from_dict({**artist_track.to_dict(), "position": count})
                 return
+        if builtin_playlist_id == RECENTLY_PLAYED:
+            for track in await self.mass.music.recently_played(250, [MediaType.TRACK]):
+                count += 1
+                yield PlaylistTrack.from_dict({**track.to_dict(), "position": count})
+            return
