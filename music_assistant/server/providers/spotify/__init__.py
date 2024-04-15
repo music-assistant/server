@@ -259,7 +259,10 @@ class SpotifyProvider(MusicProvider):
 
         liked_songs.metadata.images = [
             MediaItemImage(
-                type=ImageType.THUMB, path="https://misc.scdn.co/liked-songs/liked-songs-64.png"
+                type=ImageType.THUMB,
+                path="https://misc.scdn.co/liked-songs/liked-songs-64.png",
+                provider=self.domain,
+                remotely_accessible=True,
             )
         ]
 

@@ -10,7 +10,6 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import cchardet
-import shortuuid
 import xmltodict
 
 from music_assistant.common.helpers.util import create_sort_name, parse_title_and_version
@@ -52,7 +51,7 @@ from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
 from music_assistant.server.models.music_provider import MusicProvider
 
-from .helpers import get_absolute_path, get_parentdir
+from .helpers import get_parentdir
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -194,18 +193,6 @@ class FileSystemProviderBase(MusicProvider):
     @abstractmethod
     async def write_file_content(self, file_path: str, data: bytes) -> None:
         """Write entire file content as bytes (e.g. for playlists)."""
-
-    async def check_write_access(self) -> None:
-        """Perform check if we have write access."""
-        # verify write access to determine we have playlist create/edit support
-        # overwrite with provider specific implementation if needed
-        temp_file_name = get_absolute_path(self.base_path, f"{shortuuid.random(8)}.txt")
-        try:
-            await self.write_file_content(temp_file_name, b"")
-            await asyncio.to_thread(os.remove, temp_file_name)
-            self.write_access = True
-        except Exception as err:
-            self.logger.debug("Write access disabled: %s", str(err))
 
     ##############################################
     # DEFAULT/GENERIC IMPLEMENTATION BELOW
