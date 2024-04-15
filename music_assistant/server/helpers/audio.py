@@ -833,7 +833,7 @@ async def get_preview_stream(
         if streamdetails.stream_type == StreamType.CUSTOM
         else streamdetails.path,
         input_format=streamdetails.audio_format,
-        output_format=AudioFormat(content_type=ContentType.MP3),
+        output_format=AudioFormat(content_type=ContentType.AAC),
         extra_input_args=["-to", "30"],
     ):
         yield chunk
@@ -1013,6 +1013,8 @@ def get_ffmpeg_args(
         output_args = ["-f", "null", "-"]
     elif output_format.content_type == ContentType.UNKNOWN:
         raise RuntimeError("Invalid output format specified")
+    elif output_format.content_type == ContentType.AAC:
+        output_args = ["-f", "adts", output_path]
     else:
         if output_format.content_type.is_pcm():
             output_args += ["-acodec", output_format.content_type.name.lower()]

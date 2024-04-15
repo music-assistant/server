@@ -204,7 +204,7 @@ class WebserverController(CoreController):
         """Serve short preview sample."""
         provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
-        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
         async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
             await resp.write(chunk)
