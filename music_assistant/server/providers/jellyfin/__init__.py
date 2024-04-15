@@ -34,21 +34,23 @@ from music_assistant.common.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
-from music_assistant.common.models.media_items import Album
-from music_assistant.common.models.media_items import Album as JellyfinAlbum
-from music_assistant.common.models.media_items import AlbumTrack
-from music_assistant.common.models.media_items import Artist
-from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import (
+    Album,
+    AlbumTrack,
+    Artist,
     AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemImage,
+    Playlist,
+    PlaylistTrack,
+    ProviderMapping,
+    SearchResults,
+    Track,
 )
-from music_assistant.common.models.media_items import Playlist
+from music_assistant.common.models.media_items import Album as JellyfinAlbum
+from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
-from music_assistant.common.models.media_items import PlaylistTrack, ProviderMapping, SearchResults
-from music_assistant.common.models.media_items import Track
 from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
 
