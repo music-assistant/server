@@ -19,7 +19,6 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import ItemMapping, Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
-from music_assistant.server.helpers.compare import compare_strings
 
 from .base import MediaControllerBase
 
@@ -73,13 +72,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             library_item = await self.update_item_in_library(cur_item.item_id, item)
-        else:
-            # search by name
-            async for db_item in self.iter_library_items(search=item.name):
-                if compare_strings(db_item.name, item.name):
-                    # existing item found: update it
-                    library_item = await self.update_item_in_library(db_item.item_id, item)
-                    break
         if not library_item:
             # actually add a new item in the library db
             # use the lock to prevent a race condition of the same item being added twice
