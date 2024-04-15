@@ -99,4 +99,5 @@ class Provider:
             "instance_id": self.instance_id,
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
+            "is_streaming_provider": getattr(self, "is_streaming_provider", None),
         }

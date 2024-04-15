@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import urllib.parse
 from base64 import b64encode
+from collections.abc import Iterable
 from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING, cast
@@ -37,7 +39,12 @@ from music_assistant.common.models.media_items import (
     Radio,
     Track,
 )
-from music_assistant.constants import CONF_LANGUAGE, VARIOUS_ARTISTS_ID_MBID, VARIOUS_ARTISTS_NAME
+from music_assistant.constants import (
+    CONF_LANGUAGE,
+    VARIOUS_ARTISTS_ID_MBID,
+    VARIOUS_ARTISTS_NAME,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.images import create_collage, get_image_thumb
@@ -124,6 +131,14 @@ class MetaDataController(CoreController):
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
+            # silence PIL logger
+            logging.getLogger("PIL").setLevel(logging.WARNING)
+        # make sure that our directory with collage images exists
+        self._collage_images_dir = os.path.join(self.mass.storage_path, "collage_images")
+        if not await asyncio.to_thread(os.path.exists, self._collage_images_dir):
+            await asyncio.to_thread(os.mkdir, self._collage_images_dir)
+
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
 
     async def close(self) -> None:
@@ -268,59 +283,60 @@ class MetaDataController(CoreController):
 
     async def get_playlist_metadata(self, playlist: Playlist) -> None:
         """Get/update rich metadata for a playlist."""
-        # retrieve genres from tracks
-        # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
-        images = set()
-        try:
-            playlist_genres: dict[str, int] = {}
-            async for track in self.mass.music.playlists.tracks(
-                playlist.item_id, playlist.provider
-            ):
-                if track.image:
-                    images.add(track.image)
-                if track.media_type != MediaType.TRACK:
-                    # filter out radio items
-                    continue
-                if not isinstance(track, Track):
-                    continue
-                if track.metadata.genres:
-                    genres = track.metadata.genres
-                elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
-                    genres = track.album.metadata.genres
-                else:
-                    genres = set()
-                for genre in genres:
-                    if genre not in playlist_genres:
-                        playlist_genres[genre] = 0
-                    playlist_genres[genre] += 1
-                await asyncio.sleep(0)  # yield to eventloop
+        all_playlist_tracks_images = set()
+        playlist_genres: dict[str, int] = {}
+        # retrieve metedata for the playlist from the tracks (such as genres etc.)
+        # TODO: retrieve style/mood ?
+        async for track in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
+            if track.image:
+                all_playlist_tracks_images.add(track.image)
+            if track.metadata.genres:
+                genres = track.metadata.genres
+            elif track.album and isinstance(track.album, Album) and track.album.metadata.genres:
+                genres = track.album.metadata.genres
+            else:
+                genres = set()
+            for genre in genres:
+                if genre not in playlist_genres:
+                    playlist_genres[genre] = 0
+                playlist_genres[genre] += 1
+            await asyncio.sleep(0)  # yield to eventloop
 
-            playlist_genres_filtered = {
-                genre for genre, count in playlist_genres.items() if count > 5
-            }
-            playlist.metadata.genres.update(playlist_genres_filtered)
-
-            # create collage thumb/fanart from playlist tracks
-            # if playlist has no default image (e.g. a local playlist)
-            if images and (not playlist.image or playlist.image.provider != "url"):
-                if playlist.image and self.mass.storage_path in playlist.image.path:
-                    # reuse previous created path
-                    img_path = playlist.image.path
-                else:
-                    img_path = os.path.join(self.mass.storage_path, f"{uuid4().hex}.png")
-                img_data = await create_collage(self.mass, list(images))
-                async with aiofiles.open(img_path, "wb") as _file:
-                    await _file.write(img_data)
-                playlist.metadata.images = [
-                    MediaItemImage(type=ImageType.THUMB, path=img_path, provider="file")
-                ]
-        except Exception as err:
-            self.logger.warning(
-                "Error while creating playlist image: %s",
-                str(err),
-                exc_info=err if self.logger.isEnabledFor(10) else None,
+        playlist_genres_filtered = {genre for genre, count in playlist_genres.items() if count > 5}
+        playlist.metadata.genres.update(playlist_genres_filtered)
+        # create collage images
+        cur_images = playlist.metadata.images or []
+        new_images = []
+        thumb_image = next((x for x in cur_images if x.type == ImageType.THUMB), None)
+        if not thumb_image or self._collage_images_dir in thumb_image.path:
+            thumb_image_path = (
+                thumb_image.path
+                if thumb_image
+                else os.path.join(self._collage_images_dir, f"{uuid4().hex}_thumb.jpg")
             )
+            if collage_thumb_image := await self.create_collage_image(
+                all_playlist_tracks_images, thumb_image_path
+            ):
+                new_images.append(collage_thumb_image)
+            elif thumb_image:
+                # just use old image
+                new_images.append(thumb_image)
+        fanart_image = next((x for x in cur_images if x.type == ImageType.FANART), None)
+        if not fanart_image or self._collage_images_dir in fanart_image.path:
+            fanart_image_path = (
+                fanart_image.path
+                if fanart_image
+                else os.path.join(self._collage_images_dir, f"{uuid4().hex}_fanart.jpg")
+            )
+            if collage_fanart_image := await self.create_collage_image(
+                all_playlist_tracks_images, fanart_image_path, fanart=True
+            ):
+                new_images.append(collage_fanart_image)
+            elif fanart_image:
+                # just use old image
+                new_images.append(fanart_image)
+        playlist.metadata.images = new_images
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())
 
@@ -402,9 +418,9 @@ class MetaDataController(CoreController):
             for img in media_item.metadata.images:
                 if img.type != img_type:
                     continue
-                if img.provider != "url" and not resolve:
+                if img.remotely_accessible and not resolve:
                     continue
-                if img.provider != "url" and resolve:
+                if img.remotely_accessible and resolve:
                     return self.get_image_url(img)
                 return img.path
 
@@ -431,7 +447,7 @@ class MetaDataController(CoreController):
         image_format: str = "png",
     ) -> str:
         """Get (proxied) URL for MediaItemImage."""
-        if image.provider != "url" or prefer_proxy or size:
+        if not image.remotely_accessible or prefer_proxy or size:
             # return imageproxy url for images that need to be resolved
             # the original path is double encoded
             encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
@@ -441,13 +457,13 @@ class MetaDataController(CoreController):
     async def get_thumbnail(
         self,
         path: str,
+        provider: str,
         size: int | None = None,
-        provider: str = "url",
         base64: bool = False,
         image_format: str = "png",
     ) -> bytes | str:
         """Get/create thumbnail image for path (image url or local path)."""
-        if provider != "url" and not self.mass.get_provider(provider):
+        if not self.mass.get_provider(provider):
             raise ProviderUnavailableError
         thumbnail = await get_image_thumb(
             self.mass, path, size=size, provider=provider, image_format=image_format
@@ -460,10 +476,13 @@ class MetaDataController(CoreController):
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
         """Handle request for image proxy."""
         path = request.query["path"]
-        provider = request.query.get("provider", "url")
+        provider = request.query.get("provider", "builtin")
+        if provider in ("url", "file"):
+            # temporary for backwards compatibility
+            provider = "builtin"
         size = int(request.query.get("size", "0"))
         image_format = request.query.get("fmt", "png")
-        if provider != "url" and not self.mass.get_provider(provider):
+        if not self.mass.get_provider(provider):
             return web.Response(status=404)
         if "%" in path:
             # assume (double) encoded url, decode it
@@ -473,10 +492,42 @@ class MetaDataController(CoreController):
                 path, size=size, provider=provider, image_format=image_format
             )
             # we set the cache header to 1 year (forever)
-            # the client can use the checksum value to refresh when content changes
+            # assuming that images do not/rarely change
             return web.Response(
                 body=image_data,
                 headers={"Cache-Control": "max-age=31536000"},
                 content_type=f"image/{image_format}",
             )
         return web.Response(status=404)
+
+    async def create_collage_image(
+        self,
+        images: Iterable[MediaItemImage],
+        img_path: str,
+        fanart: bool = False,
+    ) -> MediaItemImage | None:
+        """Create collage thumb/fanart image for (in-library) playlist."""
+        if len(images) < 8 and fanart or len(images) < 3:
+            # require at least some images otherwise this does not make a lot of sense
+            return None
+        try:
+            # create collage thumb from playlist tracks
+            # if playlist has no default image (e.g. a local playlist)
+            dimensions = (2500, 1750) if fanart else (1500, 1500)
+            img_data = await create_collage(self.mass, images, dimensions)
+            # always overwrite existing path
+            async with aiofiles.open(img_path, "wb") as _file:
+                await _file.write(img_data)
+            return MediaItemImage(
+                type=ImageType.FANART if fanart else ImageType.THUMB,
+                path=img_path,
+                provider="builtin",
+                remotely_accessible=False,
+            )
+        except Exception as err:
+            self.logger.warning(
+                "Error while creating playlist image: %s",
+                str(err),
+                exc_info=err if self.logger.isEnabledFor(10) else None,
+            )
+        return None

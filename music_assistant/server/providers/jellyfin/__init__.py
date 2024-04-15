@@ -34,21 +34,23 @@ from music_assistant.common.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
-from music_assistant.common.models.media_items import Album
-from music_assistant.common.models.media_items import Album as JellyfinAlbum
-from music_assistant.common.models.media_items import AlbumTrack
-from music_assistant.common.models.media_items import Artist
-from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import (
+    Album,
+    AlbumTrack,
+    Artist,
     AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemImage,
+    Playlist,
+    PlaylistTrack,
+    ProviderMapping,
+    SearchResults,
+    Track,
 )
-from music_assistant.common.models.media_items import Playlist
+from music_assistant.common.models.media_items import Album as JellyfinAlbum
+from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
-from music_assistant.common.models.media_items import PlaylistTrack, ProviderMapping, SearchResults
-from music_assistant.common.models.media_items import Track
 from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
 
@@ -213,10 +215,6 @@ class JellyfinProvider(MusicProvider):
     async def _run_async(self, call: Callable, *args, **kwargs):
         return await self.mass.create_task(call, *args, **kwargs)
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
-        """Return the full image URL including the auth token."""
-        return path
-
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
             media_type=media_type,
@@ -315,7 +313,12 @@ class JellyfinProvider(MusicProvider):
             album.year = current_jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_album):
             album.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         if ITEM_KEY_OVERVIEW in current_jellyfin_album:
             album.metadata.description = current_jellyfin_album[ITEM_KEY_OVERVIEW]
@@ -374,7 +377,12 @@ class JellyfinProvider(MusicProvider):
             artist.sort_name = current_artist[ITEM_KEY_SORT_NAME]
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_artist):
             artist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         return artist
 
@@ -422,7 +430,12 @@ class JellyfinProvider(MusicProvider):
 
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_track):
             track.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         if len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]) >= 1:
             track.artists.append(
@@ -497,7 +510,12 @@ class JellyfinProvider(MusicProvider):
             playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_playlist):
             playlist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=thumb, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=thumb,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         playlist.is_editable = False
         return playlist

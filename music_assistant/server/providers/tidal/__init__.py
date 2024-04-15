@@ -40,6 +40,7 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Playlist,
     PlaylistTrack,
     ProviderMapping,
@@ -368,14 +369,14 @@ class TidalProvider(MusicProvider):
                 for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
             ]
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         tidal_session = await self._get_tidal_session()
         return await library_items_add_remove(
             tidal_session,
             str(self._tidal_user_id),
-            prov_item_id,
-            media_type,
+            item.item_id,
+            item.media_type,
             add=True,
         )
 
@@ -569,6 +570,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -622,6 +625,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -689,6 +694,8 @@ class TidalProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
                     )
                 ]
         return track
@@ -715,7 +722,7 @@ class TidalProvider(MusicProvider):
         is_editable = bool(creator_id and str(creator_id) == self._tidal_user_id)
         playlist.is_editable = is_editable
         # metadata
-        playlist.metadata.checksum = str(playlist_obj.last_updated)
+        playlist.metadata.cache_checksum = str(playlist_obj.last_updated)
         playlist.metadata.popularity = playlist_obj.popularity
         if picture := (playlist_obj.square_picture or playlist_obj.picture):
             picture_id = picture.replace("-", "/")
@@ -724,6 +731,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 

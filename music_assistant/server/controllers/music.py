@@ -372,9 +372,9 @@ class MusicController(CoreController):
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
-        if provider_instance_id_or_domain == "url":
-            # handle special case of 'URL' MusicProvider which allows us to play regular url's
-            return await self.mass.get_provider("url").parse_item(item_id)
+        if provider_instance_id_or_domain == "builtin":
+            # handle special case of 'builtin' MusicProvider which allows us to play regular url's
+            return await self.mass.get_provider("builtin").parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
@@ -398,7 +398,7 @@ class MusicController(CoreController):
             and provider.is_streaming_provider
             and provider.library_edit_supported(item.media_type)
         ):
-            await provider.library_add(item.item_id, item.media_type)
+            await provider.library_add(item)
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
@@ -455,7 +455,7 @@ class MusicController(CoreController):
         # add to provider's library first
         provider = self.mass.get_provider(item.provider)
         if provider.library_edit_supported(item.media_type):
-            await provider.library_add(item.item_id, item.media_type)
+            await provider.library_add(item)
         return await ctrl.get(
             item_id=item.item_id,
             provider_instance_id_or_domain=item.provider,

@@ -203,7 +203,14 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := artist_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(type=img_type, path=img))
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
                 else:
                     break
         return metadata
@@ -242,7 +249,14 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := album_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(type=img_type, path=img))
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
                 else:
                     break
         return metadata
@@ -269,7 +283,14 @@ class AudioDbMetadataProvider(MetadataProvider):
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := track_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(type=img_type, path=img))
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
                 else:
                     break
         return metadata

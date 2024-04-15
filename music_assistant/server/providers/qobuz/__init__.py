@@ -29,6 +29,7 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ImageType,
     MediaItemImage,
+    MediaItemType,
     MediaType,
     Playlist,
     PlaylistTrack,
@@ -324,17 +325,17 @@ class QobuzProvider(MusicProvider):
         """Get similar artists for given artist."""
         # https://www.qobuz.com/api.json/0.2/artist/getSimilarArtists?artist_id=220020&offset=0&limit=3
 
-    async def library_add(self, prov_item_id, media_type: MediaType):
+    async def library_add(self, item: MediaItemType):
         """Add item to library."""
         result = None
-        if media_type == MediaType.ARTIST:
-            result = await self._get_data("favorite/create", artist_id=prov_item_id)
-        elif media_type == MediaType.ALBUM:
-            result = await self._get_data("favorite/create", album_ids=prov_item_id)
-        elif media_type == MediaType.TRACK:
-            result = await self._get_data("favorite/create", track_ids=prov_item_id)
-        elif media_type == MediaType.PLAYLIST:
-            result = await self._get_data("playlist/subscribe", playlist_id=prov_item_id)
+        if item.media_type == MediaType.ARTIST:
+            result = await self._get_data("favorite/create", artist_id=item.item_id)
+        elif item.media_type == MediaType.ALBUM:
+            result = await self._get_data("favorite/create", album_ids=item.item_id)
+        elif item.media_type == MediaType.TRACK:
+            result = await self._get_data("favorite/create", track_ids=item.item_id)
+        elif item.media_type == MediaType.PLAYLIST:
+            result = await self._get_data("playlist/subscribe", playlist_id=item.item_id)
         return result
 
     async def library_remove(self, prov_item_id, media_type: MediaType):
@@ -477,7 +478,14 @@ class QobuzProvider(MusicProvider):
             artist.mbid = VARIOUS_ARTISTS_ID_MBID
             artist.name = VARIOUS_ARTISTS_NAME
         if img := self.__get_image(artist_obj):
-            artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
+            artist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
         if artist_obj.get("biography"):
             artist.metadata.description = artist_obj["biography"].get("content")
         return artist
@@ -527,7 +535,14 @@ class QobuzProvider(MusicProvider):
         if "genre" in album_obj:
             album.metadata.genres = {album_obj["genre"]["name"]}
         if img := self.__get_image(album_obj):
-            album.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
+            album.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
         if (released_at := album_obj.get("released_at")) and released_at != 0:
@@ -625,7 +640,14 @@ class QobuzProvider(MusicProvider):
         if track_obj.get("parental_warning"):
             track.metadata.explicit = True
         if img := self.__get_image(track_obj):
-            track.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
+            track.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
 
         return track
 
@@ -650,8 +672,15 @@ class QobuzProvider(MusicProvider):
             or playlist_obj["is_collaborative"]
         )
         if img := self.__get_image(playlist_obj):
-            playlist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
-        playlist.metadata.checksum = str(playlist_obj["updated_at"])
+            playlist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
+        playlist.metadata.cache_checksum = str(playlist_obj["updated_at"])
         return playlist
 
     async def _auth_token(self):

@@ -37,6 +37,7 @@ from music_assistant.common.models.media_items import (
     ItemMapping,
     MediaItemImage,
     MediaItemMetadata,
+    MediaItemType,
     Playlist,
     PlaylistTrack,
     ProviderMapping,
@@ -356,24 +357,24 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             async for track in await artist.get_top(limit=50)
         ]
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add an item to the provider's library/favorites."""
         result = False
-        if media_type == MediaType.ARTIST:
+        if item.media_type == MediaType.ARTIST:
             result = await self.client.add_user_artist(
-                artist_id=int(prov_item_id),
+                artist_id=int(item.item_id),
             )
-        elif media_type == MediaType.ALBUM:
+        elif item.media_type == MediaType.ALBUM:
             result = await self.client.add_user_album(
-                album_id=int(prov_item_id),
+                album_id=int(item.item_id),
             )
-        elif media_type == MediaType.TRACK:
+        elif item.media_type == MediaType.TRACK:
             result = await self.client.add_user_track(
-                track_id=int(prov_item_id),
+                track_id=int(item.item_id),
             )
-        elif media_type == MediaType.PLAYLIST:
+        elif item.media_type == MediaType.PLAYLIST:
             result = await self.client.add_user_playlist(
-                playlist_id=int(prov_item_id),
+                playlist_id=int(item.item_id),
             )
         else:
             raise NotImplementedError
@@ -513,6 +514,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=track.album.cover_big,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
         return metadata
@@ -521,13 +524,27 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         """Parse the album metadata."""
         return MediaItemMetadata(
             explicit=album.explicit_lyrics,
-            images=[MediaItemImage(type=ImageType.THUMB, path=album.cover_big)],
+            images=[
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=album.cover_big,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ],
         )
 
     def parse_metadata_artist(self, artist: deezer.Artist) -> MediaItemMetadata:
         """Parse the artist metadata."""
         return MediaItemMetadata(
-            images=[MediaItemImage(type=ImageType.THUMB, path=artist.picture_big)],
+            images=[
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=artist.picture_big,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ],
         )
 
     ### PARSING FUNCTIONS ###
@@ -593,7 +610,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 )
             },
             metadata=MediaItemMetadata(
-                images=[MediaItemImage(type=ImageType.THUMB, path=playlist.picture_big)],
+                images=[
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=playlist.picture_big,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
+                ],
                 checksum=playlist.checksum,
             ),
             is_editable=creator.id == self.user.id,

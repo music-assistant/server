@@ -100,8 +100,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    ProviderFeature.PLAYLIST_CREATE,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
 )
@@ -148,14 +146,18 @@ class FileSystemProviderBase(MusicProvider):
     Supports having URI's from streaming providers within m3u playlist.
     """
 
+    write_access: bool = False
+
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
+        if self.write_access:
+            return (
+                *SUPPORTED_FEATURES,
+                ProviderFeature.PLAYLIST_CREATE,
+                ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            )
         return SUPPORTED_FEATURES
-
-    @abstractmethod
-    async def async_setup(self) -> None:
-        """Handle async initialization of the provider."""
 
     @abstractmethod
     async def listdir(
@@ -308,7 +310,7 @@ class FileSystemProviderBase(MusicProvider):
                     for x in db_item.provider_mappings
                     if x.provider_instance == self.instance_id
                 )
-                prev_checksums[file_name] = db_item.metadata.checksum
+                prev_checksums[file_name] = db_item.metadata.cache_checksum
                 await asyncio.sleep(0)  # yield to eventloop
 
         # process all deleted (or renamed) files first
@@ -350,7 +352,7 @@ class FileSystemProviderBase(MusicProvider):
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
-                    playlist.metadata.checksum = item.checksum
+                    playlist.metadata.cache_checksum = item.checksum
                     # playlist is always in-library
                     playlist.favorite = True
                     await self.mass.music.playlists.add_item_to_library(
@@ -455,10 +457,16 @@ class FileSystemProviderBase(MusicProvider):
                 )
             },
         )
-        playlist.is_editable = file_item.ext != "pls"  # can only edit m3u playlists
+        playlist.is_editable = ProviderFeature.PLAYLIST_TRACKS_EDIT in self.supported_features
+        # only playlists in the root are editable - all other are read only
+        if "/" in prov_playlist_id or "\\" in prov_playlist_id:
+            playlist.is_editable = False
+        # we do not (yet) have support to edit/create pls playlists, only m3u files can be edited
+        if file_item.ext == "pls":
+            playlist.is_editable = False
         playlist.owner = self.name
         checksum = f"{DB_SCHEMA_VERSION}.{file_item.checksum}"
-        playlist.metadata.checksum = checksum
+        playlist.metadata.cache_checksum = checksum
         return playlist
 
     async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
@@ -518,12 +526,6 @@ class FileSystemProviderBase(MusicProvider):
     ) -> PlaylistTrack | None:
         """Try to parse a track from a playlist line."""
         try:
-            if "://" in line:
-                # handle as generic uri
-                media_item = await self.mass.music.get_item_by_uri(line)
-                if isinstance(media_item, Track):
-                    return PlaylistTrack.from_dict({**media_item.to_dict(), "position": position})
-
             # if a relative path was given in an upper level from the playlist,
             # try to resolve it
             for parentpart in ("../", "..\\"):
@@ -553,8 +555,9 @@ class FileSystemProviderBase(MusicProvider):
             playlist_data += chunk
         encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
         playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
-        for uri in prov_track_ids:
-            playlist_data += f"\n{uri}"
+        for file_path in prov_track_ids:
+            track = await self.get_track(file_path)
+            playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
 
         # write playlist file (always in utf-8)
         await self.write_file_content(prov_playlist_id, playlist_data.encode("utf-8"))
@@ -567,7 +570,6 @@ class FileSystemProviderBase(MusicProvider):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
         _, ext = prov_playlist_id.rsplit(".", 1)
-
         # get playlist file contents
         playlist_data = b""
         async for chunk in self.read_file_content(prov_playlist_id):
@@ -582,12 +584,10 @@ class FileSystemProviderBase(MusicProvider):
         # remove items by index
         for i in sorted(positions_to_remove, reverse=True):
             del playlist_items[i]
-
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:
-            new_playlist_data.append(f"#EXTINF:{item.length or 0},{item.title}\n")
-            new_playlist_data.append(f"{item.path}\n")
+            playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
         await self.write_file_content(prov_playlist_id, new_playlist_data.encode("utf-8"))
 
     async def create_playlist(self, name: str) -> Playlist:
@@ -802,7 +802,12 @@ class FileSystemProviderBase(MusicProvider):
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
             track.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=file_item.path, provider=self.instance_id)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=file_item.path,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
             ]
 
         if track.album and not track.album.metadata.images:
@@ -829,12 +834,12 @@ class FileSystemProviderBase(MusicProvider):
             track.album.album_type = tags.album_type
             track.album.metadata.explicit = track.metadata.explicit
         # set checksum to invalidate any cached listings
-        track.metadata.checksum = file_item.checksum
+        track.metadata.cache_checksum = file_item.checksum
         if track.album:
             # use track checksum for album(artists) too
-            track.album.metadata.checksum = track.metadata.checksum
+            track.album.metadata.cache_checksum = track.metadata.cache_checksum
             for artist in track.album.artists:
-                artist.metadata.checksum = track.metadata.checksum
+                artist.metadata.cache_checksum = track.metadata.cache_checksum
 
         return track
 
@@ -942,7 +947,7 @@ class FileSystemProviderBase(MusicProvider):
             provider_mappings={
                 ProviderMapping(
                     item_id=album_path,
-                    provider_domain=self.instance_id,
+                    provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=album_path,
                 )
@@ -1008,6 +1013,7 @@ class FileSystemProviderBase(MusicProvider):
                             type=ImageType(item.name),
                             path=item.path,
                             provider=self.instance_id,
+                            remotely_accessible=False,
                         )
                     )
                 except ValueError:
@@ -1018,6 +1024,7 @@ class FileSystemProviderBase(MusicProvider):
                                     type=ImageType.THUMB,
                                     path=item.path,
                                     provider=self.instance_id,
+                                    remotely_accessible=False,
                                 )
                             )
                             break

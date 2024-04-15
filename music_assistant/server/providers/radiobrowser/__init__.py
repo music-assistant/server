@@ -175,7 +175,12 @@ class RadioBrowserProvider(MusicProvider):
                     name=country.name,
                 )
                 folder.metadata.images = [
-                    MediaItemImage(type=ImageType.THUMB, path=country.favicon)
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=country.favicon,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
                 ]
                 yield folder
             return
@@ -274,7 +279,14 @@ class RadioBrowserProvider(MusicProvider):
         radio.metadata.label = radio_obj.tags
         radio.metadata.popularity = radio_obj.votes
         radio.metadata.links = [MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)]
-        radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=radio_obj.favicon)]
+        radio.metadata.images = [
+            MediaItemImage(
+                type=ImageType.THUMB,
+                path=radio_obj.favicon,
+                provider=self.instance_id,
+                remotely_accessible=True,
+            )
+        ]
 
         return radio
 

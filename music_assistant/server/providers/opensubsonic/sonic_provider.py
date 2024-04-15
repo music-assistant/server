@@ -172,7 +172,12 @@ class OpenSonicProvider(MusicProvider):
             artist.metadata.description = sonic_channel.description
         if sonic_channel.original_image_url:
             artist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=sonic_channel.original_image_url)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=sonic_channel.original_image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         return artist
 
@@ -246,7 +251,10 @@ class OpenSonicProvider(MusicProvider):
         if sonic_artist.cover_id:
             artist.metadata.images = [
                 MediaItemImage(
-                    type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
+                    type=ImageType.THUMB,
+                    path=sonic_artist.cover_id,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
                 )
             ]
         else:
@@ -257,7 +265,12 @@ class OpenSonicProvider(MusicProvider):
                 artist.metadata.description = sonic_info.biography
             if sonic_info.small_url:
                 artist.metadata.images.append(
-                    MediaItemImage(type=ImageType.THUMB, path=sonic_info.small_url)
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=sonic_info.small_url,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
                 )
         return artist
 
@@ -280,7 +293,10 @@ class OpenSonicProvider(MusicProvider):
         if sonic_album.cover_id:
             album.metadata.images = [
                 MediaItemImage(
-                    type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
+                    type=ImageType.THUMB,
+                    path=sonic_album.cover_id,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
                 ),
             ]
         else:
@@ -313,7 +329,9 @@ class OpenSonicProvider(MusicProvider):
         if sonic_info:
             if sonic_info.small_url:
                 album.metadata.images.append(
-                    MediaItemImage(type=ImageType.THUMB, path=sonic_info.small_url)
+                    MediaItemImage(
+                        type=ImageType.THUMB, path=sonic_info.small_url, remotely_accessible=False
+                    )
                 )
             if sonic_info.notes:
                 album.metadata.description = sonic_info.notes
@@ -408,7 +426,10 @@ class OpenSonicProvider(MusicProvider):
         if sonic_playlist.cover_id:
             playlist.metadata.images = [
                 MediaItemImage(
-                    type=ImageType.THUMB, path=sonic_playlist.cover_id, provider=self.instance_id
+                    type=ImageType.THUMB,
+                    path=sonic_playlist.cover_id,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
                 )
             ]
         return playlist

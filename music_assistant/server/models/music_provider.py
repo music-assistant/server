@@ -52,8 +52,10 @@ class MusicProvider(Provider):
 
     @property
     def lookup_key(self) -> str:
-        """Return domain if streaming_provider or instance_id otherwise."""
-        return self.domain if self.is_streaming_provider else self.instance_id
+        """Return domain if (multi-instance) streaming_provider or instance_id otherwise."""
+        if self.is_streaming_provider or not self.manifest.multi_instance:
+            return self.domain
+        return self.instance_id
 
     async def search(
         self,
@@ -153,30 +155,30 @@ class MusicProvider(Provider):
             raise NotImplementedError
         yield  # type: ignore
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
         if (
-            media_type == MediaType.ARTIST
+            item.media_type == MediaType.ARTIST
             and ProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.ALBUM
+            item.media_type == MediaType.ALBUM
             and ProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.TRACK
+            item.media_type == MediaType.TRACK
             and ProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.PLAYLIST
+            item.media_type == MediaType.PLAYLIST
             and ProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.RADIO
+            item.media_type == MediaType.RADIO
             and ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         ):
             raise NotImplementedError
@@ -269,7 +271,7 @@ class MusicProvider(Provider):
         This either returns (a generator to get) raw bytes of the image or
         a string with an http(s) URL or local path that is accessible from the server.
         """
-        raise NotImplementedError
+        return path
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
@@ -404,9 +406,7 @@ class MusicProvider(Provider):
                         library_item = await controller.add_item_to_library(
                             prov_item, metadata_lookup=False, **extra_kwargs
                         )
-                    elif (
-                        library_item.metadata.checksum and prov_item.metadata.checksum
-                    ) and library_item.metadata.checksum != prov_item.metadata.checksum:
+                    elif library_item.metadata.cache_checksum != prov_item.metadata.cache_checksum:
                         # existing dbitem checksum changed
                         library_item = await controller.update_item_in_library(
                             library_item.item_id, prov_item

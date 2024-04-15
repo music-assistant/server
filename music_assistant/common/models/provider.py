@@ -68,6 +68,7 @@ class ProviderInstance(TypedDict):
     supported_features: list[ProviderFeature]
     available: bool
     icon: str | None
+    is_streaming_provider: bool | None = None  # music providers only
 
 
 @dataclass

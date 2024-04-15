@@ -259,14 +259,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return top tracks for an artist on given provider."""
         items = []
         assert provider_instance_id_or_domain != "library"
-        artist = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
-        cache_checksum = artist.metadata.checksum
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
-        # prefer cache items (if any)
+        # prefer cache items (if any) - for streaming providers
         cache_key = f"{prov.instance_id}.artist_toptracks.{item_id}"
-        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
+        if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
@@ -285,9 +283,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 paged_list = await self.mass.music.tracks.library_items(extra_query=query)
                 return paged_list.items
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
-        )
+        if prov.is_streaming_provider:
+            self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
         return items
 
     async def get_library_artist_tracks(
@@ -308,14 +305,12 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Return albums for an artist on given provider."""
         items = []
         assert provider_instance_id_or_domain != "library"
-        artist = await self.get_provider_item(item_id, provider_instance_id_or_domain)
-        cache_checksum = artist.metadata.checksum
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.instance_id}.artist_albums.{item_id}"
-        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
+        if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         if ProviderFeature.ARTIST_ALBUMS in prov.supported_features:
@@ -335,9 +330,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 paged_list = await self.mass.music.albums.library_items(extra_query=query)
                 return paged_list.items
         # store (serializable items) in cache
-        self.mass.create_task(
-            self.mass.cache.set(cache_key, [x.to_dict() for x in items], checksum=cache_checksum)
-        )
+        if prov.is_streaming_provider:
+            self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
         return items
 
     async def get_library_artist_albums(

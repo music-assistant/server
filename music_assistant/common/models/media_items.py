@@ -136,9 +136,8 @@ class MediaItemImage(DataClassDictMixin):
 
     type: ImageType
     path: str
-    # set to instance_id of provider if the path needs to be resolved
-    # if the path is just a plain (remotely accessible) URL, set it to 'url'
-    provider: str = "url"
+    provider: str
+    remotely_accessible: bool = False  # url that is accessible from anywhere
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -186,10 +185,10 @@ class MediaItemMetadata(DataClassDictMixin):
     performers: set[str] | None = None
     preview: str | None = None
     popularity: int | None = None
+    # cache_checksum: optional value to (in)validate cache / detect changes (used for playlists)
+    cache_checksum: str | None = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: int | None = None
-    # checksum: optional value to detect changes (e.g. playlists)
-    checksum: str | None = None
 
     def update(
         self,
@@ -210,7 +209,7 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set) and isinstance(new_val, list):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif new_val and fld.name in ("checksum", "popularity", "last_refresh"):
+            elif new_val and fld.name in ("popularity", "last_refresh", "cache_checksum"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)

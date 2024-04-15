@@ -1,0 +1,15 @@
+{
+  "type": "music",
+  "domain": "builtin",
+  "name": "Music Assistant",
+  "description": "Built-in/generic provider to handle media from files and (remote) urls.",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/builtin/",
+  "multi_instance": false,
+  "builtin": true,
+  "hidden": true,
+  "load_by_default": true
+}

@@ -440,7 +440,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
             with suppress(MediaNotFoundError):
                 if item := await provider.get_item(self.media_type, item_id):
-                    await self.mass.cache.set(cache_key, item.to_dict())
+                    if item.metadata.cache_checksum != "no_cache":
+                        await self.mass.cache.set(cache_key, item.to_dict())
                     return item
         # if we reach this point all possibilities failed and the item could not be found.
         # There is a possibility that the (streaming) provider changed the id of the item

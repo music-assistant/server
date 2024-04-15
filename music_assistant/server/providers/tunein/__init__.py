@@ -209,9 +209,23 @@ class TuneInProvider(MusicProvider):
             radio.metadata.description = details["text"]
         # images
         if img := details.get("image"):
-            radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
+            radio.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
         if img := details.get("logo"):
-            radio.metadata.images = [MediaItemImage(type=ImageType.LOGO, path=img)]
+            radio.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.LOGO,
+                    path=img,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
