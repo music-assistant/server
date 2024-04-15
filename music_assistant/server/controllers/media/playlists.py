@@ -264,7 +264,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         await playlist_prov.add_playlist_tracks(playlist_prov_map.item_id, list(ids_to_add))
         # invalidate cache so tracks get refreshed
-        cache_key = f"{playlist_prov.instance_id}.playlist.{playlist_prov_map.item_id}.tracks"
+        cache_key = f"{playlist_prov.lookup_key}.playlist.{playlist_prov_map.item_id}.tracks"
         await self.mass.cache.delete(cache_key)
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
@@ -293,7 +293,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             await provider.remove_playlist_tracks(prov_mapping.item_id, positions_to_remove)
         # invalidate cache so tracks get refreshed
-        cache_key = f"{provider.instance_id}.playlist.{prov_mapping.item_id}.tracks"
+        cache_key = f"{provider.lookup_key}.playlist.{prov_mapping.item_id}.tracks"
         await self.mass.cache.delete(cache_key)
 
     async def _add_library_item(self, item: Playlist) -> Playlist:
@@ -334,7 +334,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not provider:
             return
         # prefer cache items (if any)
-        cache_key = f"{provider.instance_id}.playlist.{item_id}.tracks"
+        cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks"
         if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
             for track_dict in cache:
                 yield PlaylistTrack.from_dict(track_dict)
@@ -346,6 +346,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
             assert item.position is not None, "Playlist items require position to be set"
             yield item
             all_items.append(item)
+            # if this is a complete track object, pre-cache it as
+            # that will save us an (expensive) lookup later
+            if item.image and item.artist_str and item.album and provider.domain != "builtin":
+                cache_key = f"provider_item.track.{provider.lookup_key}.{item_id}"
+                await self.mass.cache.set(cache_key, item.to_dict())
         # store (serializable items) in cache
         if cache_checksum != "no_cache":
             self.mass.create_task(

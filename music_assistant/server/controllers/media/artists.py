@@ -242,8 +242,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
                 continue
-            if await self._match(db_artist, provider):
-                cur_provider_domains.add(provider.domain)
+            for unpack_item_mapping in (False, True):
+                if await self._match(db_artist, provider, unpack_item_mapping):
+                    cur_provider_domains.add(provider.domain)
+                    break
             else:
                 self.logger.debug(
                     "Could not find match for Artist %s on provider %s",
@@ -263,7 +265,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any) - for streaming providers
-        cache_key = f"{prov.instance_id}.artist_toptracks.{item_id}"
+        cache_key = f"{prov.lookup_key}.artist_toptracks.{item_id}"
         if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -309,7 +311,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov is None:
             return []
         # prefer cache items (if any)
-        cache_key = f"{prov.instance_id}.artist_albums.{item_id}"
+        cache_key = f"{prov.lookup_key}.artist_albums.{item_id}"
         if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -418,7 +420,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         msg = "No Music Provider found that supports requesting similar tracks."
         raise UnsupportedFeaturedException(msg)
 
-    async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
+    async def _match(
+        self, db_artist: Artist, provider: MusicProvider, unpack_item_mapping: bool = False
+    ) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
         self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
         # try to get a match with some reference tracks of this artist
@@ -432,8 +436,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         for ref_track in ref_tracks:
             # make sure we have a full track
             if isinstance(ref_track.album, ItemMapping):
+                if not unpack_item_mapping:
+                    continue
                 try:
-                    ref_track = await self.mass.music.tracks.get_provider_item(  # noqa: PLW2901
+                    ref_track = await self.mass.music.tracks.get(  # noqa: PLW2901
                         ref_track.item_id, ref_track.provider
                     )
                 except MediaNotFoundError:

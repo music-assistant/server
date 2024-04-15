@@ -10,7 +10,11 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
 from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -236,7 +240,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             return []
 
         # prefer cache items (if any)
-        cache_key = f"{prov.instance_id}.search.{self.media_type.value}.{search_query}.{limit}"
+        cache_key = f"{prov.lookup_key}.search.{self.media_type.value}.{search_query}.{limit}"
         if cache := await self.mass.cache.get(cache_key):
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -430,9 +434,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         fallback: ItemMapping | ItemCls = None,
     ) -> ItemCls:
         """Return item details for the given provider item id."""
-        cache_key = (
-            f"provider_item.{self.media_type.value}.{provider_instance_id_or_domain}.{item_id}"
-        )
+        if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
+            raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
+        cache_key = f"provider_item.{self.media_type.value}.{provider.lookup_key}.{item_id}"
         if provider_instance_id_or_domain == "library":
             return await self.get_library_item(item_id)
         if not force_refresh and (cache := await self.mass.cache.get(cache_key)):

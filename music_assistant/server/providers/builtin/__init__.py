@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING, NotRequired, TypedDict
 
 import shortuuid
 
+from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -17,7 +18,11 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant.common.models.media_items import (
     AlbumTrack,
     Artist,
@@ -349,12 +354,18 @@ class BuiltinProvider(MusicProvider):
         # user created universal playlist
         conf_key = f"{CONF_KEY_PLAYLIST_ITEMS}/{prov_playlist_id}"
         playlist_items: list[str] = self.mass.config.get(conf_key, [])
-        for count, playlist_item_uri in enumerate(playlist_items, 1):
+        for count, uri in enumerate(playlist_items, 1):
             try:
-                base_item = await self.mass.music.get_item_by_uri(playlist_item_uri)
+                # get the provider item and not the full track from a regular 'get' call
+                # as we only need basic track info here
+                media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
+                media_controller = self.mass.music.get_controller(media_type)
+                base_item = await media_controller.get_provider_item(
+                    item_id, provider_instance_id_or_domain
+                )
                 yield PlaylistTrack.from_dict({**base_item.to_dict(), "position": count})
-            except (MediaNotFoundError, InvalidDataError) as err:
-                self.logger.warning("Skipping item in playlist: %s:%s", playlist_item_uri, str(err))
+            except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
+                self.logger.warning("Skipping item in playlist: %s:%s", uri, str(err))
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""

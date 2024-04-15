@@ -147,13 +147,15 @@ class MediaItemImage(DataClassDictMixin):
         """Check equality of two items."""
         return self.__hash__() == other.__hash__()
 
-    def __post_init__(self):
-        """Call after init."""
+    @classmethod
+    def __pre_deserialize__(cls, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Handle actions before deserialization."""
         # migrate from url provider --> builtin
         # TODO: remove this after 2.0 is launched
-        if self.provider == "url":
-            self.provider = "builtin"
-            self.remotely_accessible = True
+        if d["provider"] == "url":
+            d["provider"] = "builtin"
+            d["remotely_accessible"] = True
+        return d
 
 
 @dataclass(frozen=True, kw_only=True)
