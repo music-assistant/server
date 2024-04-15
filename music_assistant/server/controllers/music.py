@@ -349,13 +349,17 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/item_by_uri")
-    async def get_item_by_uri(self, uri: str) -> MediaItemType:
+    async def get_item_by_uri(
+        self, uri: str, lazy: bool = True, add_to_library: bool = False
+    ) -> MediaItemType:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
+            lazy=lazy,
+            add_to_library=add_to_library,
         )
 
     @api_command("music/item")
