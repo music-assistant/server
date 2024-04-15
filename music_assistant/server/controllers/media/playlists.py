@@ -162,21 +162,13 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self, name: str, provider_instance_or_domain: str | None = None
     ) -> Playlist:
         """Create new playlist."""
-        # if provider is omitted, just pick first provider
+        # if provider is omitted, just pick builtin provider
         if provider_instance_or_domain:
             provider = self.mass.get_provider(provider_instance_or_domain)
+            if provider is None:
+                raise ProviderUnavailableError
         else:
-            provider = next(
-                (
-                    x
-                    for x in self.mass.music.providers
-                    if ProviderFeature.PLAYLIST_CREATE in x.supported_features
-                ),
-                None,
-            )
-        if provider is None:
-            msg = "No provider available which allows playlists creation."
-            raise ProviderUnavailableError(msg)
+            provider = self.mass.get_provider("builtin")
 
         # create playlist on the provider
         playlist = await provider.create_playlist(name)

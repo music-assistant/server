@@ -282,12 +282,11 @@ class MetaDataController(CoreController):
 
     async def get_playlist_metadata(self, playlist: Playlist) -> None:
         """Get/update rich metadata for a playlist."""
-        # retrieve genres from tracks
-        # TODO: retrieve style/mood ?
         playlist.metadata.genres = set()
         all_playlist_tracks_images = set()
-
         playlist_genres: dict[str, int] = {}
+        # retrieve metedata for the playlist from the tracks (such as genres etc.)
+        # TODO: retrieve style/mood ?
         async for track in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
             if track.image:
                 all_playlist_tracks_images.add(track.image)
@@ -507,7 +506,7 @@ class MetaDataController(CoreController):
         fanart: bool = False,
     ) -> MediaItemImage | None:
         """Create collage thumb/fanart image for (in-library) playlist."""
-        if len(images) < 20 and fanart or len(images) < 6:
+        if len(images) < 8 and fanart or len(images) < 3:
             # require at least some images otherwise this does not make a lot of sense
             return None
         try:

@@ -947,7 +947,7 @@ class FileSystemProviderBase(MusicProvider):
             provider_mappings={
                 ProviderMapping(
                     item_id=album_path,
-                    provider_domain=self.instance_id,
+                    provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=album_path,
                 )
