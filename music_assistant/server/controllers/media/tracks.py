@@ -88,7 +88,7 @@ class TracksController(MediaControllerBase[Track]):
                     track.album = await self.mass.music.albums.get_library_item(
                         album_track_row["album_id"]
                     )
-            elif isinstance(track.album, ItemMapping) or track.album and not track.album.image:
+            elif isinstance(track.album, ItemMapping) or (track.album and not track.album.image):
                 track.album = await self.mass.music.albums.get(
                     track.album.item_id,
                     track.album.provider,

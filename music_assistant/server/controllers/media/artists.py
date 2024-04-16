@@ -242,10 +242,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             if not provider.is_streaming_provider:
                 # matching on unique providers is pointless as they push (all) their content to MA
                 continue
-            for unpack_item_mapping in (False, True):
-                if await self._match(db_artist, provider, unpack_item_mapping):
-                    cur_provider_domains.add(provider.domain)
-                    break
+            if await self._match(db_artist, provider):
+                cur_provider_domains.add(provider.domain)
             else:
                 self.logger.debug(
                     "Could not find match for Artist %s on provider %s",
@@ -420,9 +418,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         msg = "No Music Provider found that supports requesting similar tracks."
         raise UnsupportedFeaturedException(msg)
 
-    async def _match(
-        self, db_artist: Artist, provider: MusicProvider, unpack_item_mapping: bool = False
-    ) -> bool:
+    async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
         self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
         # try to get a match with some reference tracks of this artist
@@ -434,31 +430,22 @@ class ArtistsController(MediaControllerBase[Artist]):
                     provider_mapping.item_id, provider_mapping.provider_instance
                 )
         for ref_track in ref_tracks:
-            # make sure we have a full track
-            if isinstance(ref_track.album, ItemMapping):
-                if not unpack_item_mapping:
-                    continue
-                try:
-                    ref_track = await self.mass.music.tracks.get(  # noqa: PLW2901
-                        ref_track.item_id, ref_track.provider
-                    )
-                except MediaNotFoundError:
-                    continue
-            provider_ref_track = ref_track
             for search_str in (
-                f"{db_artist.name} - {provider_ref_track.name}",
-                f"{db_artist.name} {provider_ref_track.name}",
-                provider_ref_track.name,
+                f"{db_artist.name} - {ref_track.name}",
+                f"{db_artist.name} {ref_track.name}",
+                ref_track.name,
             ):
                 search_results = await self.mass.music.tracks.search(search_str, provider.domain)
                 for search_result_item in search_results:
-                    if search_result_item.sort_name != provider_ref_track.sort_name:
+                    if not compare_strings(search_result_item.name, ref_track.name, strict=True):
                         continue
                     # get matching artist from track
                     for search_item_artist in search_result_item.artists:
-                        if search_item_artist.sort_name != db_artist.sort_name:
+                        if not compare_strings(
+                            search_item_artist.name, db_artist.name, strict=True
+                        ):
                             continue
-                        # 100% album match
+                        # 100% track match
                         # get full artist details so we have all metadata
                         prov_artist = await self.get_provider_item(
                             search_item_artist.item_id,
@@ -486,13 +473,12 @@ class ArtistsController(MediaControllerBase[Artist]):
                 ref_album.name,
                 f"{db_artist.name} - {ref_album.name}",
                 f"{db_artist.name} {ref_album.name}",
-                f"{db_artist.sort_name} {ref_album.sort_name}",
             ):
                 search_result = await self.mass.music.albums.search(search_str, provider.domain)
                 for search_result_item in search_result:
                     if not search_result_item.artists:
                         continue
-                    if search_result_item.sort_name != ref_album.sort_name:
+                    if not compare_strings(search_result_item.name, ref_album.name):
                         continue
                     # artist must match 100%
                     if not compare_artist(
