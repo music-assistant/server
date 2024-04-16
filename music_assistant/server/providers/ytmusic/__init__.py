@@ -6,7 +6,6 @@ import asyncio
 import logging
 import re
 from collections.abc import AsyncGenerator
-from operator import itemgetter
 from time import time
 from typing import TYPE_CHECKING
 from urllib.parse import unquote
