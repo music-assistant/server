@@ -157,11 +157,14 @@ class BuiltinProvider(MusicProvider):
                     new_mapping.provider_domain = self.domain
                     new_mapping.available = True
                     await ctrl.add_provider_mapping(item.item_id, new_mapping)
-                    await self.library_add(item)
                     # lookup instance id of the url provider if we dont have it yet
                     url_instance_id = existing_mapping.provider_instance
                     # remove the old provider mapping for url provider
                     await ctrl.remove_provider_mappings(item.item_id, url_instance_id)
+                    # ensure its added to our local settings
+                    item.item_id = new_mapping.item_id
+                    item.provider = new_mapping.provider_instance
+                    await self.library_add(item)
                     self.logger.info("Migrated item %s", item.name)
                 except Exception as err:
                     self.logger.exception(err)
