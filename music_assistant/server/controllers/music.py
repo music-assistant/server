@@ -27,7 +27,12 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    MediaItemType,
+    ProviderMapping,
+    SearchResults,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
@@ -745,8 +750,31 @@ class MusicController(CoreController):
             db_path_backup = db_path + ".backup"
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
+            # handle db migration to 30: uri provider --> builtin provider
+            if prev_version < 30:
+                await self.mass.cache.clear("url")
+                for ctrl in (
+                    self.mass.music.radio,
+                    self.mass.music.tracks,
+                    self.mass.music.artists,
+                ):
+                    prov_items = await ctrl.get_library_items_by_prov_id("url")
+                    for item in prov_items:
+                        try:
+                            await ctrl.add_provider_mapping(
+                                item.item_id,
+                                ProviderMapping(
+                                    item_id=item.item_id,
+                                    provider_domain="builtin",
+                                    provider_instance="builtin",  # yeah, we're cheating here
+                                ),
+                            )
+                            await ctrl.remove_provider_mappings(item.item_id, "url")
+                        except Exception as err:
+                            self.logger.exception(err)
+
             # handle db migration from previous schema to this one
-            if prev_version in (27, 28):
+            if prev_version in (27, 28, 29):
                 self.logger.info(
                     "Performing database migration from %s to %s",
                     prev_version,
