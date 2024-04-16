@@ -872,16 +872,30 @@ class YoutubeMusicProvider(MusicProvider):
         return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
 
     async def _parse_thumbnails(self, thumbnails_obj: dict) -> list[MediaItemImage]:
-        """Parse and sort a list of thumbnails and return the highest quality."""
-        thumb = sorted(thumbnails_obj, key=itemgetter("width"), reverse=True)[0]
-        return [
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=thumb["url"],
-                provider=self.instance_id,
-                remotely_accessible=True,
+        """Parse and YTM thumbnails to MediaItemImage."""
+        result: list[MediaItemImage] = []
+        processed_images = set()
+        for img in thumbnails_obj:
+            url: str = img["url"]
+            url_base = url.split("=w")[0]
+            if url_base in processed_images:
+                continue
+            width: int = img["width"]
+            if "=w" not in url and width < 500:
+                continue
+            processed_images.add(url_base)
+            # if the size is in the url, we can actually request a higher thumb
+            if "=w" in url:
+                url = f"{url_base}=w600-h600-p"
+            result.append(
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             )
-        ]
+        return result
 
     @classmethod
     async def _parse_stream_format(cls, track_obj: dict) -> dict:
