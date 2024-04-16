@@ -131,11 +131,43 @@ async def get_config_entries(
 class BuiltinProvider(MusicProvider):
     """Built-in/generic provider to handle (manually added) media from files and (remote) urls."""
 
-    def __init__(
-        self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
-    ) -> None:
-        """Initialize MusicProvider."""
-        super().__init__(mass, manifest, config)
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        # TEMP: Migrate URL provider entries to builtin
+        # TODO: Remove this once 2.0 is released!
+        cache_key = f"{self.instance_id}.url_migration_done"
+        if await self.mass.cache.get(cache_key):
+            return
+        self.logger.info("Starting migration...")
+        url_instance_id: str | None = None
+        for ctrl in (
+            self.mass.music.radio,
+            self.mass.music.tracks,
+            self.mass.music.artists,
+        ):
+            prov_items = await ctrl.get_library_items_by_prov_id("url")
+            for item in prov_items:
+                try:
+                    existing_mapping = next(
+                        x for x in item.provider_mappings if x.provider_domain == "url"
+                    )
+                    # add new prov mapping for the builtin provider
+                    new_mapping = ProviderMapping.from_dict(existing_mapping.to_dict())
+                    new_mapping.provider_instance = self.instance_id
+                    new_mapping.provider_domain = self.domain
+                    new_mapping.available = True
+                    await ctrl.add_provider_mapping(item.item_id, new_mapping)
+                    await self.library_add(item)
+                    # lookup instance id of the url provider if we dont have it yet
+                    url_instance_id = existing_mapping.provider_instance
+                    # remove the old provider mapping for url provider
+                    await ctrl.remove_provider_mappings(item.item_id, url_instance_id)
+                    self.logger.info("Migrated item %s", item.name)
+                except Exception as err:
+                    self.logger.exception(err)
+        if url_instance_id:
+            await self.mass.cache.clear(url_instance_id)
+        await self.mass.cache.set(cache_key, True, expiration=365 * 86400)
 
     @property
     def is_streaming_provider(self) -> bool:

@@ -212,7 +212,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         # so the filesystem is not longer polluted/abused for this.
         # this code hunts these playlists, migrates them to the universal provider
         # and cleans up the files.
-        cache_key = f"{self.instance_id}.playlist_migrattion_done"
+        cache_key = f"{self.instance_id}.playlist_migration_done"
         if await self.mass.cache.get(cache_key):
             return
         self.logger.info("Starting playlist migration...")
