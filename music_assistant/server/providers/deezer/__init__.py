@@ -12,6 +12,7 @@ from typing import Any
 import deezer
 from aiohttp import ClientSession, ClientTimeout
 from Crypto.Cipher import Blowfish
+from deezer import exceptions as deezer_exceptions
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -289,14 +290,14 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             return self.parse_artist(
                 artist=await self.client.get_artist(artist_id=int(prov_artist_id))
             )
-        except deezer.exceptions.DeezerErrorResponse as error:
+        except deezer_exceptions.DeezerErrorResponse as error:
             self.logger.warning("Failed getting artist: %s", error)
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         try:
             return self.parse_album(album=await self.client.get_album(album_id=int(prov_album_id)))
-        except deezer.exceptions.DeezerErrorResponse as error:
+        except deezer_exceptions.DeezerErrorResponse as error:
             self.logger.warning("Failed getting album: %s", error)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
@@ -305,7 +306,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             return self.parse_playlist(
                 playlist=await self.client.get_playlist(playlist_id=int(prov_playlist_id)),
             )
-        except deezer.exceptions.DeezerErrorResponse as error:
+        except deezer_exceptions.DeezerErrorResponse as error:
             self.logger.warning("Failed getting playlist: %s", error)
 
     async def get_track(self, prov_track_id: str) -> Track:
@@ -315,7 +316,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 track=await self.client.get_track(track_id=int(prov_track_id)),
                 user_country=self.gw_client.user_country,
             )
-        except deezer.exceptions.DeezerErrorResponse as error:
+        except deezer_exceptions.DeezerErrorResponse as error:
             self.logger.warning("Failed getting track: %s", error)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
@@ -473,7 +474,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             headers["Range"] = f"bytes={skip_bytes}-"
 
         buffer = bytearray()
-        streamdetails.data["start_ts"] = datetime.datetime.utcnow().timestamp()
+        streamdetails.data["start_ts"] = datetime.datetime.now().timestamp()
         streamdetails.data["stream_id"] = uuid.uuid1()
         self.mass.create_task(self.gw_client.log_listen(next_track=streamdetails.item_id))
         async with self.mass.http_session.get(
@@ -618,7 +619,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                         remotely_accessible=True,
                     )
                 ],
-                checksum=playlist.checksum,
+                cache_checksum=playlist.checksum,
             ),
             is_editable=creator.id == self.user.id,
             owner=creator.name,
