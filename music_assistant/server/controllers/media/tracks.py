@@ -73,7 +73,7 @@ class TracksController(MediaControllerBase[Track]):
                             'sort_name', {DB_TABLE_ALBUMS}.sort_name,
                             'version', {DB_TABLE_ALBUMS}.version,
                             'images',  json_extract({DB_TABLE_ALBUMS}.metadata, '$.images'),
-                            'media_type', 'artist'
+                            'media_type', 'album'
                         ) as album,
                     {DB_TABLE_ALBUM_TRACKS}.disc_number,
                     {DB_TABLE_ALBUM_TRACKS}.track_number
@@ -514,7 +514,10 @@ class TracksController(MediaControllerBase[Track]):
                 )
             with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
                 db_album = await self.mass.music.albums.add_item_to_library(
-                    album, metadata_lookup=False, add_album_tracks=False
+                    album,
+                    metadata_lookup=False,
+                    overwrite_existing=overwrite,
+                    add_album_tracks=False,
                 )
         if not db_album:
             # this should not happen but streaming providers can be awful sometimes
@@ -549,9 +552,11 @@ class TracksController(MediaControllerBase[Track]):
                 },
             )
         for artist in artists:
-            await self._set_track_artist(db_id, artist=artist)
+            await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
 
-    async def _set_track_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
+    async def _set_track_artist(
+        self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
+    ) -> None:
         """Store Track Artist info."""
         db_artist: Album | ItemMapping = None
         if artist.provider == "library":
@@ -568,7 +573,7 @@ class TracksController(MediaControllerBase[Track]):
                 )
             with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
                 db_artist = await self.mass.music.artists.add_item_to_library(
-                    artist, metadata_lookup=False, add_album_tracks=False
+                    artist, metadata_lookup=False, overwrite_existing=overwrite
                 )
         if not db_artist:
             # this should not happen but streaming providers can be awful sometimes

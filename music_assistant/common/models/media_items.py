@@ -337,6 +337,8 @@ class ItemMapping(_MediaItemBase):
     @classmethod
     def from_item(cls, item: MediaItem) -> ItemMapping:
         """Create ItemMapping object from regular item."""
+        if isinstance(item, ItemMapping):
+            return item
         thumb_image = None
         if item.metadata and item.metadata.images:
             for img in item.metadata.images:
@@ -426,7 +428,6 @@ class AlbumTrack(Track):
         assert isinstance(track.album, Album)
         assert track.disc_number is not None
         assert track.track_number is not None
-        assert track.track_number > 0
         return cast(AlbumTrack, track)
 
 
@@ -444,7 +445,6 @@ class PlaylistTrack(Track):
     def from_track(cls: Self, track: Track) -> Self:
         """Cast Track to PlaylistTrack."""
         assert track.position is not None
-        assert track.position > 0
         return cast(AlbumTrack, track)
 
 

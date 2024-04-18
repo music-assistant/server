@@ -469,7 +469,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
 
     async def _set_album_artists(
-        self, db_id: int, artists: list[Artist | ItemMapping], overwrite: bool
+        self, db_id: int, artists: list[Artist | ItemMapping], overwrite: bool = False
     ) -> None:
         """Store Album Artists."""
         if overwrite:
@@ -481,9 +481,11 @@ class AlbumsController(MediaControllerBase[Album]):
                 },
             )
         for artist in artists:
-            await self._set_album_artist(db_id, artist=artist)
+            await self._set_album_artist(db_id, artist=artist, overwrite=overwrite)
 
-    async def _set_album_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
+    async def _set_album_artist(
+        self, db_id: int, artist: Artist | ItemMapping, overwrite: bool = False
+    ) -> None:
         """Store Album Artist info."""
         db_artist: Album | ItemMapping = None
         if artist.provider == "library":
@@ -500,7 +502,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 )
             with contextlib.suppress(MediaNotFoundError, AssertionError, InvalidDataError):
                 db_artist = await self.mass.music.artists.add_item_to_library(
-                    artist, metadata_lookup=False
+                    artist, metadata_lookup=False, overwrite_existing=overwrite
                 )
         if not db_artist:
             # this should not happen but streaming providers can be awful sometimes

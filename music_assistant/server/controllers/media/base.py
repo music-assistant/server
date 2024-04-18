@@ -8,7 +8,7 @@ from contextlib import suppress
 from time import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
-from music_assistant.common.helpers.json import json_dumps, json_loads, serialize_to_json
+from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
@@ -488,15 +488,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # ignore if the mapping is already present
         if provider_mapping in library_item.provider_mappings:
             return
-        # update item's db record
-        library_item.provider_mappings.add(provider_mapping)
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                "provider_mappings": serialize_to_json(library_item.provider_mappings),
-            },
-        )
         # update provider_mappings table
         await self._set_provider_mappings(
             item_id=item_id, provider_mappings=library_item.provider_mappings
@@ -530,13 +521,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             for x in library_item.provider_mappings
             if x.provider_instance != provider_instance_id and x.item_id != provider_item_id
         }
-        match = {"item_id": db_id}
         if library_item.provider_mappings:
-            await self.mass.music.database.update(
-                self.db_table,
-                match,
-                {"provider_mappings": serialize_to_json(library_item.provider_mappings)},
-            )
             self.logger.debug(
                 "removed provider_mapping %s/%s from item id %s",
                 provider_instance_id,
@@ -572,13 +557,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         library_item.provider_mappings = {
             x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
         }
-        match = {"item_id": db_id}
         if library_item.provider_mappings:
-            await self.mass.music.database.update(
-                self.db_table,
-                match,
-                {"provider_mappings": serialize_to_json(library_item.provider_mappings)},
-            )
             self.logger.debug(
                 "removed all provider mappings for provider %s from item id %s",
                 provider_instance_id,
@@ -692,6 +671,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             db_row_dict["favorite"] = bool(db_row_dict["favorite"])
         if "item_id" in db_row_dict:
             db_row_dict["item_id"] = str(db_row_dict["item_id"])
+        if "album" in db_row_dict and db_row_dict["album"]["item_id"] is None:
+            db_row_dict.pop("album")
         # copy album image to itemmapping single image
         if "album" in db_row_dict and (images := db_row_dict["album"].get("images")):
             db_row_dict["album"]["image"] = next((x for x in images if x["type"] == "thumb"), None)
