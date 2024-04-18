@@ -1039,18 +1039,22 @@ def get_ffmpeg_args(
     # determine if we need to do resampling
     if (
         input_format.sample_rate != output_format.sample_rate
-        or input_format.bit_depth != output_format.bit_depth
+        or input_format.bit_depth > output_format.bit_depth
     ):
         # prefer resampling with libsoxr due to its high quality
         if libsoxr_support:
-            resample_filter = "aresample=resampler=soxr:precision=28"
+            resample_filter = "aresample=resampler=soxr:precision=30"
         else:
             resample_filter = "aresample=resampler=swr"
-        if output_format.bit_depth < input_format.bit_depth:
-            # apply dithering when going down to 16 bits
-            resample_filter += ":osf=s16:dither_method=triangular_hp"
+
+        # sample rate conversion
         if input_format.sample_rate != output_format.sample_rate:
             resample_filter += f":osr={output_format.sample_rate}"
+
+        # bit depth conversion: apply dithering when going down to 16 bits
+        if output_format.bit_depth < input_format.bit_depth:
+            resample_filter += ":osf=s16:dither_method=triangular_hp"
+
         filter_params.append(resample_filter)
 
     if filter_params and "-filter_complex" not in extra_args:

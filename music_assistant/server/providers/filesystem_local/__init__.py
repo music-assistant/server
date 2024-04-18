@@ -83,7 +83,7 @@ async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
         absolute_path = get_absolute_path(base_path, entry.path)
         stat = entry.stat(follow_symlinks=False)
         return FileSystemItem(
-            name=entry.name,
+            filename=entry.name,
             path=get_relative_path(base_path, entry.path),
             absolute_path=absolute_path,
             is_file=entry.is_file(follow_symlinks=False),
@@ -162,7 +162,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         def _create_item():
             stat = os.stat(absolute_path, follow_symlinks=False)
             return FileSystemItem(
-                name=os.path.basename(file_path),
+                filename=os.path.basename(file_path),
                 path=get_relative_path(self.base_path, file_path),
                 absolute_path=absolute_path,
                 is_dir=os.path.isdir(absolute_path),
@@ -240,8 +240,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 self.logger.warning("NOT migrating playlist: %s", item.path)
                 continue
             # create playlist on the builtin provider
-            name = item.name.replace(".m3u", "")
-            new_playlist = await self.mass.music.playlists.create_playlist(name, "builtin")
+            new_playlist = await self.mass.music.playlists.create_playlist(item.name, "builtin")
             # append existing uri's to the new playlist
             await self.mass.music.playlists.add_playlist_tracks(new_playlist.item_id, all_uris)
             # remove existing item from the library

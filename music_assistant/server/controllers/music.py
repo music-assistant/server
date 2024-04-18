@@ -552,6 +552,7 @@ class MusicController(CoreController):
                     true_peak=result["true_peak"],
                     lra=result["lra"],
                     threshold=result["threshold"],
+                    target_offset=result["target_offset"],
                 )
         return None
 
