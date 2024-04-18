@@ -357,9 +357,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         """Get the library item for the given external id."""
         query = self.base_query + f" WHERE {self.db_table}.external_ids LIKE :external_id_str"
         if external_id_type:
-            external_id_str = f'%("{external_id_type}", "{external_id}")%'
+            external_id_str = f'%"{external_id_type}","{external_id}"%'
         else:
             external_id_str = f'%"{external_id}"%'
+        query += f" GROUP BY {self.sql_group_by}"
         for item in await self._get_library_items_by_query(
             query=query, query_params={"external_id_str": external_id_str}
         ):
@@ -383,36 +384,26 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         offset: int = 0,
     ) -> list[ItemCls]:
         """Fetch all records from library for given provider."""
-        if provider_instance_id_or_domain == "library":
-            if provider_item_ids is not None:
-                prov_ids_string = str(tuple(int(x) for x in provider_item_ids))
-                if prov_ids_string.endswith(",)"):
-                    prov_ids_string = prov_ids_string.replace(",)", ")")
-                extra_query = f"item_id in {prov_ids_string}"
-            else:
-                extra_query = None
-            paged_list = await self.library_items(
-                limit=limit, offset=offset, extra_query=extra_query
-            )
-            return paged_list.items
+        query_parts = []
+        prov_ids_str = str(tuple(provider_item_ids or ()))
+        if prov_ids_str.endswith(",)"):
+            prov_ids_str = prov_ids_str.replace(",)", ")")
 
-        # we use the separate provider_mappings table to perform quick lookups
-        # from provider id's to database id's because this is faster
-        # (and more compatible) than querying the provider_mappings json column
-        subquery = (
-            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} WHERE "
-            f" media_type = '{self.media_type.value}' AND "
-            f"(provider_instance = '{provider_instance_id_or_domain}' "
-            f"OR provider_domain = '{provider_instance_id_or_domain}')"
-        )
-        if provider_item_ids is not None:
-            prov_ids = str(tuple(provider_item_ids))
-            if prov_ids.endswith(",)"):
-                prov_ids = prov_ids.replace(",)", ")")
-            subquery += f" AND provider_item_id in {prov_ids}"
-        # final query is a where query from the subquery
-        # that queries the provider_mappings table
-        query = f"WHERE {self.db_table}.item_id in ({subquery})"
+        if provider_instance_id_or_domain == "library":
+            # request for specific library id's
+            if provider_item_ids:
+                query_parts.append(f"{self.db_table}.item_id in {prov_ids_str}")
+        else:
+            # provider filtered response
+            query_parts.append(
+                f"(provider_mappings.provider_instance = '{provider_instance_id_or_domain}' "
+                f"OR provider_mappings.provider_domain = '{provider_instance_id_or_domain}')"
+            )
+            if provider_item_ids:
+                query_parts.append(f"provider_mappings.provider_item_id in {prov_ids_str}")
+
+        # build final query
+        query = "WHERE " + " AND ".join(query_parts)
         paged_list = await self.library_items(limit=limit, offset=offset, extra_query=query)
         return paged_list.items
 
