@@ -693,6 +693,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if "item_id" in db_row_dict:
             db_row_dict["item_id"] = str(db_row_dict["item_id"])
         # copy album image to itemmapping single image
-        if "album" in db_row and (images := db_row.get("images")):
-            db_row["album"]["image"] = next((x for x in images if x["type"] == "thumb"), None)
+        if "album" in db_row_dict and (images := db_row_dict["album"].get("images")):
+            db_row_dict["album"]["image"] = next((x for x in images if x["type"] == "thumb"), None)
         return db_row_dict

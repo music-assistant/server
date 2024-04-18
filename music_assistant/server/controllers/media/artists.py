@@ -169,7 +169,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> PagedItems:
         """Get in-database (album) artists."""
         if album_artists_only:
-            artist_query = "artists.sort_name in (select albums.sort_artist from albums)"
+            artist_query = "artists.item_id in (select albumartists.artist_id from albumartists)"
             extra_query = f"{extra_query} AND {artist_query}" if extra_query else artist_query
         return await super().library_items(
             favorite=favorite,
