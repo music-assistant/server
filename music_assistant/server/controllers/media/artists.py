@@ -21,8 +21,10 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
     VARIOUS_ARTISTS_ID_MBID,
     VARIOUS_ARTISTS_NAME,
@@ -61,6 +63,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item: Artist | ItemMapping,
         metadata_lookup: bool = True,
+        overwrite_existing: bool = False,
     ) -> Artist:
         """Add artist to library and return the database item."""
         if isinstance(item, ItemMapping):
@@ -73,10 +76,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         else:
             # search by name
             async for db_item in self.iter_library_items(search=item.name):
@@ -85,9 +92,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                     # NOTE: if we matched an artist by name this could theoretically lead to
                     # collisions but the chance is so small it is not worth the additional
                     # overhead of grabbing the musicbrainz id upfront
-                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    library_item = await self.update_item_in_library(
+                        db_item.item_id, item, overwrite=overwrite_existing
+                    )
                     break
-                await asyncio.sleep(0)  # yield to eventloop
         if not library_item:
             # actually add (or update) the item in the library db
             # use the lock to prevent a race condition of the same item being added twice
@@ -112,7 +120,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid
@@ -126,17 +133,18 @@ class ArtistsController(MediaControllerBase[Artist]):
             {"item_id": db_id},
             {
                 "name": update.name if overwrite else cur_item.name,
-                "sort_name": update.sort_name if overwrite else cur_item.sort_name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
                 "metadata": serialize_to_json(metadata),
-                "provider_mappings": serialize_to_json(provider_mappings),
                 "timestamp_modified": int(utc_timestamp()),
             },
         )
-        # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings)
+        ## update/set provider_mappings table
+        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # get full created object
         library_item = await self.get_library_item(db_id)
@@ -161,7 +169,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> PagedItems:
         """Get in-database (album) artists."""
         if album_artists_only:
-            artist_query = "artists.sort_name in (select albums.sort_artist from albums)"
+            artist_query = "artists.item_id in (select albumartists.artist_id from albumartists)"
             extra_query = f"{extra_query} AND {artist_query}" if extra_query else artist_query
         return await super().library_items(
             favorite=favorite,
@@ -292,8 +300,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Track]:
         """Return all tracks for an artist in the library."""
-        # TODO: adjust to json query instead of text search?
-        query = f"WHERE tracks.artists LIKE '%\"{item_id}\"%'"
+        subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
+        query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
         paged_list = await self.mass.music.tracks.library_items(extra_query=query)
         return paged_list.items
 
@@ -339,8 +347,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
-        # TODO: adjust to json query instead of text search?
-        query = f"WHERE albums.artists LIKE '%\"{item_id}\"%'"
+        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
+        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
         paged_list = await self.mass.music.albums.library_items(extra_query=query)
         return paged_list.items
 
@@ -362,7 +370,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "favorite": item.favorite,
                 "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
-                "provider_mappings": serialize_to_json(item.provider_mappings),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
             },

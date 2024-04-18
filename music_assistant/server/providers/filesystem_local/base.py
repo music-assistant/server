@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -230,34 +231,32 @@ class FileSystemProviderBase(MusicProvider):
         # instead we make some (slow) freaking queries to the db ;-)
         params = {
             "name": f"%{search_query}%",
-            "provider_instance": f"%{self.instance_id}%",
+            "provider_instance": self.instance_id,
         }
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            query = (
-                "WHERE tracks.name LIKE :name AND tracks.provider_mappings LIKE :provider_instance"
-            )
+            query = "WHERE tracks.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
             result.tracks = (
                 await self.mass.music.tracks.library_items(
                     extra_query=query, extra_query_params=params
                 )
             ).items
         if media_types is None or MediaType.ALBUM in media_types:
-            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
+            query = "WHERE albums.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
             result.albums = (
                 await self.mass.music.albums.library_items(
                     extra_query=query, extra_query_params=params
                 )
             ).items
         if media_types is None or MediaType.ARTIST in media_types:
-            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
+            query = "WHERE artists.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
             result.artists = (
                 await self.mass.music.artists.library_items(
                     extra_query=query, extra_query_params=params
                 )
             ).items
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "WHERE name LIKE :name AND provider_mappings LIKE :provider_instance"
+            query = "WHERE playlists.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
             result.playlists = (
                 await self.mass.music.playlists.library_items(
                     extra_query=query, extra_query_params=params
@@ -369,7 +368,12 @@ class FileSystemProviderBase(MusicProvider):
                     )
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
-                self.logger.error("Error processing %s - %s", item.path, str(err))
+                self.logger.error(
+                    "Error processing %s - %s",
+                    item.path,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""

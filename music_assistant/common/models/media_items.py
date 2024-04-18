@@ -213,7 +213,9 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if isinstance(cur_val, list) and isinstance(new_val, list):
+            if allow_overwrite and new_val:
+                setattr(self, fld.name, new_val)
+            elif isinstance(cur_val, list) and isinstance(new_val, list):
                 new_val = merge_lists(cur_val, new_val)
                 setattr(self, fld.name, new_val)
             elif isinstance(cur_val, set) and isinstance(new_val, list):
@@ -330,11 +332,21 @@ class ItemMapping(_MediaItemBase):
     """Representation of a minimized item object."""
 
     available: bool = True
+    image: MediaItemImage | None = None
 
     @classmethod
     def from_item(cls, item: MediaItem) -> ItemMapping:
         """Create ItemMapping object from regular item."""
-        return cls.from_dict(item.to_dict())
+        if isinstance(item, ItemMapping):
+            return item
+        thumb_image = None
+        if item.metadata and item.metadata.images:
+            for img in item.metadata.images:
+                if img.type != ImageType.THUMB:
+                    continue
+                thumb_image = img
+                break
+        return cls.from_dict({**item.to_dict(), "image": thumb_image.to_dict()})
 
 
 @dataclass(kw_only=True)
@@ -364,6 +376,9 @@ class Track(MediaItem):
     version: str = ""
     artists: list[Artist | ItemMapping] = field(default_factory=list)
     album: Album | ItemMapping | None = None  # optional
+    disc_number: int | None = None  # required for album tracks
+    track_number: int | None = None  # required for album tracks
+    position: int | None = None  # required for playlist tracks
 
     def __hash__(self):
         """Return custom hash."""
@@ -394,18 +409,43 @@ class Track(MediaItem):
 
 @dataclass(kw_only=True)
 class AlbumTrack(Track):
-    """Model for a track on an album."""
+    """
+    Model for a track on an album.
 
-    album: Album | ItemMapping  # required
-    disc_number: int = 0
-    track_number: int = 0
+    Same as regular Track but with explicit and required definitions of
+    album, disc_number and track_number
+    """
+
+    album: Album
+    disc_number: int
+    track_number: int
+
+    @classmethod
+    def from_track(cls: Self, track: Track, album: Album | None = None) -> Self:
+        """Cast Track to AlbumTrack."""
+        if album:
+            track.album = album
+        assert isinstance(track.album, Album)
+        assert track.disc_number is not None
+        assert track.track_number is not None
+        return cast(AlbumTrack, track)
 
 
 @dataclass(kw_only=True)
 class PlaylistTrack(Track):
-    """Model for a track on a playlist."""
+    """
+    Model for a track on a playlist.
 
-    position: int  # required
+    Same as regular Track but with explicit and required definition of position.
+    """
+
+    position: int
+
+    @classmethod
+    def from_track(cls: Self, track: Track) -> Self:
+        """Cast Track to PlaylistTrack."""
+        assert track.position is not None
+        return cast(AlbumTrack, track)
 
 
 @dataclass(kw_only=True)

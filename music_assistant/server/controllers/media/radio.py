@@ -63,7 +63,9 @@ class RadioController(MediaControllerBase[Radio]):
         # return the aggregated result
         return all_versions.values()
 
-    async def add_item_to_library(self, item: Radio, metadata_lookup: bool = True) -> Radio:
+    async def add_item_to_library(
+        self, item: Radio, metadata_lookup: bool = True, overwrite_existing: bool = False
+    ) -> Radio:
         """Add radio to library and return the new database item."""
         if isinstance(item, ItemMapping):
             metadata_lookup = False
@@ -80,14 +82,18 @@ class RadioController(MediaControllerBase[Radio]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         else:
             # search by name
             async for db_item in self.iter_library_items(search=item.name):
-                if compare_strings(db_item.name, item.name):
+                if compare_strings(db_item.name, item.name, strict=True):
                     # existing item found: update it
                     library_item = await self.update_item_in_library(db_item.item_id, item)
                     break
@@ -110,7 +116,6 @@ class RadioController(MediaControllerBase[Radio]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
         cur_item.external_ids.update(update.external_ids)
         match = {"item_id": db_id}
         await self.mass.music.database.update(
@@ -118,10 +123,11 @@ class RadioController(MediaControllerBase[Radio]):
             match,
             {
                 # always prefer name from updated item here
-                "name": update.name or cur_item.name,
-                "sort_name": update.sort_name or cur_item.sort_name,
+                "name": update.name if overwrite else cur_item.name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
                 "metadata": serialize_to_json(metadata),
-                "provider_mappings": serialize_to_json(provider_mappings),
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
@@ -129,7 +135,7 @@ class RadioController(MediaControllerBase[Radio]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings)
+        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # get full created object
         library_item = await self.get_library_item(db_id)
@@ -152,7 +158,6 @@ class RadioController(MediaControllerBase[Radio]):
                 "sort_name": item.sort_name,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
-                "provider_mappings": serialize_to_json(item.provider_mappings),
                 "external_ids": serialize_to_json(item.external_ids),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
