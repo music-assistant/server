@@ -354,7 +354,7 @@ class UniversalGroupProvider(PlayerProvider):
             raise web.HTTPNotFound(reason=f"Unknown UGP player: {ugp_player_id}")
 
         if not (stream := self.streams.get(ugp_player_id, None)) or stream.done:
-            raise web.HTTPNotFound(f"There is no active UGP stream for {ugp_player_id}!")
+            raise web.HTTPNotFound(body=f"There is no active UGP stream for {ugp_player_id}!")
 
         resp = web.StreamResponse(
             status=200,

@@ -614,8 +614,11 @@ class FileSystemProviderBase(MusicProvider):
             item_id, self.instance_id
         )
         if library_item is None:
-            msg = f"Item not found: {item_id}"
-            raise MediaNotFoundError(msg)
+            # this could be a file that has just been added, try parsing it
+            file_item = await self.resolve(item_id)
+            if not (library_item := await self._parse_track(file_item)):
+                msg = f"Item not found: {item_id}"
+                raise MediaNotFoundError(msg)
 
         prov_mapping = next(x for x in library_item.provider_mappings if x.item_id == item_id)
         file_item = await self.resolve(item_id)

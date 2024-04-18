@@ -466,7 +466,6 @@ class SlimprotoProvider(PlayerProvider):
         queue = self.mass.player_queues.get(media.queue_id or player_id)
         slimplayer.extra_data["playlist repeat"] = REPEATMODE_MAP[queue.repeat_mode]
         slimplayer.extra_data["playlist shuffle"] = int(queue.shuffle_enabled)
-        # slimplayer.extra_data["can_seek"] = 1 if queue_item else 0
         await slimplayer.play_url(
             url=url,
             mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
@@ -480,6 +479,24 @@ class SlimprotoProvider(PlayerProvider):
             # to coordinate a start of multiple synced players
             autostart=auto_play,
         )
+        # if queue is set to single track repeat,
+        # immediately set this track as the next
+        # this prevents race conditions with super short audio clips (on single repeat)
+        # https://github.com/music-assistant/hass-music-assistant/issues/2059
+        if queue.repeat_mode == RepeatMode.ONE:
+            self.mass.call_later(
+                0.2,
+                slimplayer.play_url(
+                    url=url,
+                    mime_type=f"audio/{url.split('.')[-1].split('?')[0]}",
+                    metadata=metadata,
+                    enqueue=True,
+                    send_flush=False,
+                    transition=SlimTransition.CROSSFADE if crossfade else SlimTransition.NONE,
+                    transition_duration=transition_duration,
+                    autostart=True,
+                ),
+            )
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""

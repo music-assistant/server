@@ -295,15 +295,10 @@ class StreamsController(CoreController):
             input_format=pcm_format,
             output_format=output_format,
             filter_params=get_player_filter_params(self.mass, queue_player.player_id),
-            extra_input_args=[
-                # use readrate to limit buffering ahead too much
-                "-readrate",
-                "1.2",
-            ],
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionError):
                 break
         if queue.stream_finished is not None:
             queue.stream_finished = True
@@ -372,15 +367,10 @@ class StreamsController(CoreController):
             output_format=output_format,
             filter_params=get_player_filter_params(self.mass, queue_player.player_id),
             chunk_size=icy_meta_interval if enable_icy else None,
-            extra_input_args=[
-                # use readrate to limit buffering ahead too much
-                "-readrate",
-                "1.2",
-            ],
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionError):
                 # race condition
                 break
 
@@ -711,17 +701,32 @@ class StreamsController(CoreController):
         # collect all arguments for ffmpeg
         filter_params = []
         extra_input_args = []
+        # add loudnorm filter: volume normalization
+        # more info: https://k.ylo.ph/2016/04/04/loudnorm.html
         if streamdetails.target_loudness is not None:
-            # add loudnorm filters
-            filter_rule = f"loudnorm=I={streamdetails.target_loudness}:TP=-1.5:LRA=11"
             if streamdetails.loudness:
+                # we have a measurement so we can do linear mode
+                target_loudness = streamdetails.target_loudness
+                # we must ensure that target loudness does not exceed the measured value
+                # otherwise ffmpeg falls back to dynamic again
+                # https://github.com/slhck/ffmpeg-normalize/issues/251
+                target_loudness = min(
+                    streamdetails.target_loudness,
+                    streamdetails.loudness.integrated + streamdetails.loudness.lra - 1,
+                )
+                filter_rule = f"loudnorm=I={target_loudness}:TP=-2.0:LRA=7.0:linear=true"
                 filter_rule += f":measured_I={streamdetails.loudness.integrated}"
                 filter_rule += f":measured_LRA={streamdetails.loudness.lra}"
                 filter_rule += f":measured_tp={streamdetails.loudness.true_peak}"
                 filter_rule += f":measured_thresh={streamdetails.loudness.threshold}"
                 if streamdetails.loudness.target_offset is not None:
                     filter_rule += f":offset={streamdetails.loudness.target_offset}"
-                filter_rule += ":linear=true"
+            else:
+                # if we have no measurement, we use dynamic mode
+                # which also collects the measurement on the fly during playback
+                filter_rule = (
+                    f"loudnorm=I={streamdetails.target_loudness}:TP=-2.0:LRA=7.0:offset=0.0"
+                )
             filter_rule += ":print_format=json"
             filter_params.append(filter_rule)
         if streamdetails.fade_in:
@@ -751,13 +756,7 @@ class StreamsController(CoreController):
                 input_format=streamdetails.audio_format,
                 output_format=pcm_format,
                 filter_params=filter_params,
-                extra_input_args=[
-                    *extra_input_args,
-                    # we criple ffmpeg a bit on purpose with the filter_threads
-                    # option so it doesn't consume all cpu when calculating loudnorm
-                    "-filter_threads",
-                    "2",
-                ],
+                extra_input_args=extra_input_args,
                 collect_log_history=True,
                 logger=logger,
             ) as ffmpeg_proc:
