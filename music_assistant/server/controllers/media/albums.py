@@ -20,6 +20,7 @@ from music_assistant.common.models.media_items import (
     Album,
     AlbumTrack,
     AlbumType,
+    Artist,
     ItemMapping,
     MediaType,
     Track,
@@ -67,7 +68,7 @@ class AlbumsController(MediaControllerBase[Album]):
                             'url', {DB_TABLE_PROVIDER_MAPPINGS}.url,
                             'audio_format', json({DB_TABLE_PROVIDER_MAPPINGS}.audio_format),
                             'details', {DB_TABLE_PROVIDER_MAPPINGS}.details
-                        )) as {DB_TABLE_PROVIDER_MAPPINGS},
+                        )) filter ( where {DB_TABLE_PROVIDER_MAPPINGS}.item_id is not null) as {DB_TABLE_PROVIDER_MAPPINGS},
                     json_group_array(
                         json_object(
                             'item_id', {DB_TABLE_ARTISTS}.item_id,
@@ -75,7 +76,7 @@ class AlbumsController(MediaControllerBase[Album]):
                             'name', {DB_TABLE_ARTISTS}.name,
                             'sort_name', {DB_TABLE_ARTISTS}.sort_name,
                             'media_type', 'artist'
-                        )) as {DB_TABLE_ARTISTS}
+                        )) filter ( where {DB_TABLE_ARTISTS}.name is not null) as {DB_TABLE_ARTISTS}
                 FROM {self.db_table}
                 LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
                 LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
@@ -204,13 +205,10 @@ class AlbumsController(MediaControllerBase[Album]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(update.metadata, overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update)
-        album_artists = await self._get_artist_mappings(cur_item, update, overwrite)
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
         else:
             album_type = cur_item.album_type
-        sort_artist = album_artists[0].sort_name
         cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
@@ -220,13 +218,10 @@ class AlbumsController(MediaControllerBase[Album]):
                 "sort_name": update.sort_name
                 if overwrite
                 else cur_item.sort_name or update.sort_name,
-                "sort_artist": sort_artist,
                 "version": update.version if overwrite else cur_item.version,
                 "year": update.year if overwrite else cur_item.year or update.year,
                 "album_type": album_type.value,
-                "artists": serialize_to_json(album_artists),
                 "metadata": serialize_to_json(metadata),
-                "provider_mappings": serialize_to_json(provider_mappings),
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
@@ -234,7 +229,10 @@ class AlbumsController(MediaControllerBase[Album]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings)
+        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
+        # set album artist(s)
+        await self._set_album_artists(db_id, update.artists, overwrite=overwrite)
+
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # get full created object
         library_item = await self.get_library_item(db_id)
@@ -296,8 +294,6 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _add_library_item(self, item: Album) -> Album:
         """Add a new record to the database."""
-        album_artists = await self._get_artist_mappings(item)
-        sort_artist = album_artists[0].sort_name if album_artists else ""
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -308,9 +304,6 @@ class AlbumsController(MediaControllerBase[Album]):
                 "album_type": item.album_type,
                 "year": item.year,
                 "metadata": serialize_to_json(item.metadata),
-                "provider_mappings": serialize_to_json(item.provider_mappings),
-                "artists": serialize_to_json(album_artists),
-                "sort_artist": sort_artist,
                 "external_ids": serialize_to_json(item.external_ids),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
@@ -319,6 +312,8 @@ class AlbumsController(MediaControllerBase[Album]):
         db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
+        # set album artist(s)
+        await self._set_album_artists(db_id, item.artists)
         self.logger.debug("added %s to database", item.name)
         # return the full item we just added
         return await self.get_library_item(db_id)
@@ -472,3 +467,55 @@ class AlbumsController(MediaControllerBase[Album]):
                     db_album.name,
                     provider.name,
                 )
+
+    async def _set_album_artists(
+        self, db_id: int, artists: list[Artist | ItemMapping], overwrite: bool
+    ) -> None:
+        """Store Album Artists."""
+        if overwrite:
+            # on overwrite, clear the album_artists table first
+            await self.mass.music.database.delete(
+                DB_TABLE_ALBUM_ARTISTS,
+                {
+                    "album_id": db_id,
+                },
+            )
+        for artist in artists:
+            await self._set_album_artist(db_id, artist=artist)
+
+    async def _set_album_artist(self, db_id: int, artist: Artist | ItemMapping) -> None:
+        """Store Album Artist info."""
+        db_artist: Album | ItemMapping = None
+        if artist.provider == "library":
+            db_artist = artist
+        elif existing := await self.mass.music.artists.get_library_item_by_prov_id(
+            artist.item_id, artist.provider
+        ):
+            db_artist = existing
+        else:
+            # not an existing artist, we need to fetch before we can add it to the library
+            if isinstance(artist, ItemMapping):
+                artist = await self.mass.music.artists.get_provider_item(
+                    artist.item_id, artist.provider, fallback=artist
+                )
+            with contextlib.suppress(MediaNotFoundError, AssertionError, InvalidDataError):
+                db_artist = await self.mass.music.artists.add_item_to_library(
+                    artist, metadata_lookup=False
+                )
+        if not db_artist:
+            # this should not happen but streaming providers can be awful sometimes
+            self.logger.warning(
+                "Unable to resolve Artist %s for album %s, "
+                "album will be added to the library without this artist!",
+                artist.uri,
+                db_id,
+            )
+            return
+        # write (or update) record in album_artists table
+        await self.mass.music.database.insert_or_replace(
+            DB_TABLE_ALBUM_ARTISTS,
+            {
+                "album_id": db_id,
+                "artist_id": int(db_artist.item_id),
+            },
+        )

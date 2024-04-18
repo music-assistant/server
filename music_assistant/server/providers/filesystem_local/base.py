@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import logging
 import os
 from abc import abstractmethod
 from dataclasses import dataclass
@@ -367,7 +368,12 @@ class FileSystemProviderBase(MusicProvider):
                     )
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
-                self.logger.error("Error processing %s - %s", item.path, str(err))
+                self.logger.error(
+                    "Error processing %s - %s",
+                    item.path,
+                    str(err),
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""

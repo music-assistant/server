@@ -116,7 +116,6 @@ class RadioController(MediaControllerBase[Radio]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update)
         cur_item.external_ids.update(update.external_ids)
         match = {"item_id": db_id}
         await self.mass.music.database.update(
@@ -129,7 +128,6 @@ class RadioController(MediaControllerBase[Radio]):
                 if overwrite
                 else cur_item.sort_name or update.sort_name,
                 "metadata": serialize_to_json(metadata),
-                "provider_mappings": serialize_to_json(provider_mappings),
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
@@ -137,7 +135,7 @@ class RadioController(MediaControllerBase[Radio]):
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, provider_mappings)
+        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # get full created object
         library_item = await self.get_library_item(db_id)
@@ -160,7 +158,6 @@ class RadioController(MediaControllerBase[Radio]):
                 "sort_name": item.sort_name,
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
-                "provider_mappings": serialize_to_json(item.provider_mappings),
                 "external_ids": serialize_to_json(item.external_ids),
                 "timestamp_added": int(utc_timestamp()),
                 "timestamp_modified": int(utc_timestamp()),
