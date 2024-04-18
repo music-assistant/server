@@ -503,7 +503,7 @@ class AirplayProvider(PlayerProvider):
                 if not mass_player.available:
                     return
                 # the player has become unavailable
-                self.logger.info("Player offline: %s", display_name)
+                self.logger.debug("Player offline: %s", display_name)
                 mass_player.available = False
                 self.mass.players.update(player_id)
             return
@@ -522,6 +522,7 @@ class AirplayProvider(PlayerProvider):
                         address=str(cur_address),
                     )
                 if not mass_player.available:
+                    self.logger.debug("Player back online: %s", display_name)
                     mass_player.available = True
             # always update the latest discovery info
             airplay_player.discovery_info = info
