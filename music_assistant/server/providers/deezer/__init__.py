@@ -1,6 +1,5 @@
 """Deezer music provider support for MusicAssistant."""
 
-import datetime
 import hashlib
 import uuid
 from asyncio import TaskGroup
@@ -14,6 +13,7 @@ from aiohttp import ClientSession, ClientTimeout
 from Crypto.Cipher import Blowfish
 from deezer import exceptions as deezer_exceptions
 
+from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueType,
@@ -474,7 +474,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             headers["Range"] = f"bytes={skip_bytes}-"
 
         buffer = bytearray()
-        streamdetails.data["start_ts"] = datetime.datetime.now().timestamp()
+        streamdetails.data["start_ts"] = utc_timestamp()
         streamdetails.data["stream_id"] = uuid.uuid1()
         self.mass.create_task(self.gw_client.log_listen(next_track=streamdetails.item_id))
         async with self.mass.http_session.get(

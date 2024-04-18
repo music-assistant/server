@@ -10,6 +10,7 @@ from http.cookies import BaseCookie, Morsel
 from aiohttp import ClientSession
 from yarl import URL
 
+from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.models.streamdetails import StreamDetails
 
 USER_AGENT_HEADER = (
@@ -167,7 +168,7 @@ class GWClient:
 
         if last_track:
             seconds_streamed = min(
-                datetime.datetime.now().timestamp() - last_track.data["start_ts"],
+                utc_timestamp() - last_track.data["start_ts"],
                 last_track.seconds_streamed,
             )
 
