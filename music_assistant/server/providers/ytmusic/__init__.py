@@ -888,7 +888,8 @@ class YoutubeMusicProvider(MusicProvider):
                 url = f"{url_base}=w600-h600-p"
             result.append(
                 MediaItemImage(
-                    type=ImageType.THUMB,
+                    # if maxresdefault its a crap YTM wide thumb
+                    type=ImageType.LANDSCAPE if "maxresdefault" in url else ImageType.THUMB,
                     path=url,
                     provider=self.instance_id,
                     remotely_accessible=True,
