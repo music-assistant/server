@@ -10,6 +10,7 @@ from http.cookies import BaseCookie, Morsel
 from aiohttp import ClientSession
 from yarl import URL
 
+from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.models.streamdetails import StreamDetails
 
 USER_AGENT_HEADER = (
@@ -57,11 +58,11 @@ class GWClient:
     async def _update_user_data(self) -> None:
         user_data = await self._gw_api_call("deezer.getUserData", False)
         if not user_data["results"]["USER"]["USER_ID"]:
-            await self._get_cookie()
+            await self._set_cookie()
             user_data = await self._gw_api_call("deezer.getUserData", False)
 
         if not user_data["results"]["OFFER_ID"]:
-            msg = "Free subscriptions cannot be used in MA."
+            msg = "Free subscriptions cannot be used in MA. Make sure you set a valid ARL."
             raise DeezerGWError(msg)
 
         self._gw_csrf_token = user_data["results"]["checkForm"]
@@ -167,7 +168,7 @@ class GWClient:
 
         if last_track:
             seconds_streamed = min(
-                datetime.datetime.utcnow().timestamp() - last_track.data["start_ts"],
+                utc_timestamp() - last_track.data["start_ts"],
                 last_track.seconds_streamed,
             )
 
@@ -179,7 +180,7 @@ class GWClient:
                 },
                 "type": 1,
                 "stat": {
-                    "seek": 1 if last_track.seconds_skipped else 0,
+                    "seek": 1 if seconds_streamed < last_track.duration else 0,
                     "pause": 0,
                     "sync": 0,
                     "next": bool(next_track),
