@@ -346,7 +346,9 @@ class ItemMapping(_MediaItemBase):
                     continue
                 thumb_image = img
                 break
-        return cls.from_dict({**item.to_dict(), "image": thumb_image.to_dict()})
+        return cls.from_dict(
+            {**item.to_dict(), "image": thumb_image.to_dict() if thumb_image else None}
+        )
 
 
 @dataclass(kw_only=True)
