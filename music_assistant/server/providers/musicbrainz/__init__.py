@@ -131,11 +131,11 @@ class MusicBrainzReleaseGroup(DataClassDictMixin):
     """Model for a (basic) ReleaseGroup object from MusicBrainz."""
 
     id: str
-    primary_type_id: str
     title: str
-    primary_type: str
 
     # optional fields
+    primary_type: str | None = None
+    primary_type_id: str | None = None
     secondary_types: list[str] | None = None
     secondary_type_ids: list[str] | None = None
     artist_credit: list[MusicBrainzArtistCredit] | None = None

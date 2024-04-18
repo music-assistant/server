@@ -29,7 +29,7 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 TAG_SPLITTER = ";"
 
 
-def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
+def split_items(org_str: str, allow_unsafe_splitters: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if org_str is None:
         return ()
@@ -38,8 +38,10 @@ def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
     org_str = org_str.strip()
     if TAG_SPLITTER in org_str:
         return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
-    if split_slash and "/" in org_str:
+    if allow_unsafe_splitters and "/" in org_str:
         return tuple(x.strip() for x in org_str.split("/"))
+    if allow_unsafe_splitters and ", " in org_str:
+        return tuple(x.strip() for x in org_str.split(", "))
     return (org_str.strip(),)
 
 
