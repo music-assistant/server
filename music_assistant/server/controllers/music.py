@@ -11,6 +11,7 @@ from itertools import zip_longest
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
+from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
@@ -32,6 +33,7 @@ from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
     DB_SCHEMA_VERSION,
+    DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
@@ -40,6 +42,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
@@ -746,8 +749,8 @@ class MusicController(CoreController):
             db_path_backup = db_path + ".backup"
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
-            # handle db migration from previous schema to this one
-            if prev_version in (27, 28):
+            # handle db migration from previous schema(s) to this one
+            if prev_version in (27, 28, 29):
                 self.logger.info(
                     "Performing database migration from %s to %s",
                     prev_version,
@@ -755,9 +758,78 @@ class MusicController(CoreController):
                 )
                 self.logger.warning("DATABASE MIGRATION IN PROGRESS - THIS CAN TAKE A WHILE")
 
-                # migrate loudness measurements table
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACK_LOUDNESS}")
-                await self.__create_database_tables()
+                # recreate loudness measurements table
+                if prev_version in (27, 28):
+                    await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACK_LOUDNESS}")
+                    await self.__create_database_tables()
+
+                # # migrate track artists
+                async for db_track in self.database.iter_items(DB_TABLE_TRACKS):
+                    for track_artist in json_loads(db_track["artists"]):
+                        await self.database.insert_or_replace(
+                            DB_TABLE_TRACK_ARTISTS,
+                            {
+                                "track_id": db_track["item_id"],
+                                "artist_id": int(track_artist["item_id"]),
+                            },
+                        )
+                await self.database.execute(f"ALTER TABLE {DB_TABLE_TRACKS} DROP COLUMN artists;")
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_TRACKS} DROP COLUMN sort_artist;"
+                )
+
+                # # migrate album artists
+                async for db_album in self.database.iter_items(DB_TABLE_ALBUMS):
+                    for album_artist in json_loads(db_album["artists"]):
+                        await self.database.insert_or_replace(
+                            DB_TABLE_ALBUM_ARTISTS,
+                            {
+                                "album_id": db_album["item_id"],
+                                "artist_id": int(album_artist["item_id"]),
+                            },
+                        )
+                await self.database.execute(f"ALTER TABLE {DB_TABLE_ALBUMS} DROP COLUMN artists;")
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_ALBUMS} DROP COLUMN sort_artist;"
+                )
+
+                # migrate provider_mappings
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [available] BOOLEAN DEFAULT 1;"
+                )
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [url] TEXT;"
+                )
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [audio_format] json;"
+                )
+                await self.database.execute(
+                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [details] json;"
+                )
+
+                for media_type_str in ("track", "album", "artist", "playlist", "radio"):
+                    table = f"{media_type_str}s"
+                    async for db_item in self.database.iter_items(table):
+                        for db_prov_map in json_loads(db_item["provider_mappings"]):
+                            await self.database.insert_or_replace(
+                                DB_TABLE_PROVIDER_MAPPINGS,
+                                {
+                                    "media_type": media_type_str,
+                                    "item_id": int(db_item["item_id"]),
+                                    "provider_domain": db_prov_map["provider_domain"],
+                                    "provider_instance": db_prov_map["provider_instance"],
+                                    "provider_item_id": db_prov_map["item_id"],
+                                    "available": db_prov_map["available"],
+                                    "url": db_prov_map["url"],
+                                    "audio_format": json_dumps(db_prov_map["audio_format"])
+                                    if db_prov_map["audio_format"]
+                                    else None,
+                                    "details": db_prov_map["details"],
+                                },
+                            )
+                    await self.database.execute(
+                        f"ALTER TABLE {table} DROP COLUMN provider_mappings;"
+                    )
 
                 # db migration succeeded
                 self.logger.info(
@@ -777,7 +849,6 @@ class MusicController(CoreController):
                     DB_TABLE_TRACKS,
                     DB_TABLE_ALBUMS,
                     DB_TABLE_ARTISTS,
-                    DB_TABLE_TRACKS,
                     DB_TABLE_PLAYLISTS,
                     DB_TABLE_RADIOS,
                     DB_TABLE_PROVIDER_MAPPINGS,
@@ -831,12 +902,10 @@ class MusicController(CoreController):
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
-                    sort_artist TEXT,
                     album_type TEXT NOT NULL,
                     year INTEGER,
                     version TEXT,
                     favorite BOOLEAN DEFAULT 0,
-                    artists json NOT NULL,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
                     external_ids json NOT NULL,
@@ -862,11 +931,9 @@ class MusicController(CoreController):
                     item_id INTEGER PRIMARY KEY AUTOINCREMENT,
                     name TEXT NOT NULL,
                     sort_name TEXT NOT NULL,
-                    sort_artist TEXT,
                     version TEXT,
                     duration INTEGER,
                     favorite BOOLEAN DEFAULT 0,
-                    artists json NOT NULL,
                     metadata json NOT NULL,
                     provider_mappings json NOT NULL,
                     external_ids json NOT NULL,
@@ -876,11 +943,32 @@ class MusicController(CoreController):
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
-                    track_id INTEGER NOT NULL,
-                    album_id INTEGER NOT NULL,
-                    disc_number INTEGER NOT NULL,
-                    track_number INTEGER NOT NULL,
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [track_id] INTEGER NOT NULL,
+                    [album_id] INTEGER NOT NULL,
+                    [disc_number] INTEGER NOT NULL,
+                    [track_number] INTEGER NOT NULL,
                     UNIQUE(track_id, album_id)
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [track_id] INTEGER NOT NULL,
+                    [artist_id] INTEGER NOT NULL,
+                    FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
+                    FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+                    UNIQUE(track_id, artist_id)
+                );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}(
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [album_id] INTEGER NOT NULL,
+                    [artist_id] INTEGER NOT NULL,
+                    FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
+                    FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+                    UNIQUE(album_id, artist_id)
                 );"""
         )
         await self.database.execute(
@@ -913,11 +1001,16 @@ class MusicController(CoreController):
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}(
-                    media_type TEXT NOT NULL,
-                    item_id INTEGER NOT NULL,
-                    provider_domain TEXT NOT NULL,
-                    provider_instance TEXT NOT NULL,
-                    provider_item_id TEXT NOT NULL,
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [media_type] TEXT NOT NULL,
+                    [item_id] INTEGER NOT NULL,
+                    [provider_domain] TEXT NOT NULL,
+                    [provider_instance] TEXT NOT NULL,
+                    [provider_item_id] TEXT NOT NULL,
+                    [available] BOOLEAN DEFAULT 1,
+                    [url] text,
+                    [audio_format] json,
+                    [details] json,
                     UNIQUE(media_type, provider_instance, provider_item_id)
                 );"""
         )

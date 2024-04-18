@@ -16,7 +16,14 @@ from music_assistant.common.models.errors import (
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.media_items import Album, ItemMapping, Track
-from music_assistant.constants import DB_TABLE_ALBUM_TRACKS, DB_TABLE_TRACKS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
+    DB_TABLE_TRACKS,
+)
 from music_assistant.server.helpers.compare import (
     compare_artists,
     compare_track,
@@ -36,13 +43,50 @@ class TracksController(MediaControllerBase[Track]):
     def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
-        self.base_query = (
-            "SELECT tracks.*, albums.item_id as album_id, "
-            "albums.name AS album_name, albums.version as album_version, "
-            "albums.metadata as album_metadata FROM tracks "
-            "LEFT JOIN albumtracks on albumtracks.track_id = tracks.item_id  "
-            "LEFT JOIN albums on albums.item_id = albumtracks.album_id"
-        )
+        self.base_query = f"""
+                SELECT
+                    {self.db_table}.*,
+                    {DB_TABLE_ARTISTS}.sort_name AS sort_artist,
+                    {DB_TABLE_ARTISTS}.sort_name AS sort_album,
+                    json_group_array(
+                        json_object(
+                            'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
+                            'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
+                            'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
+                            'available', {DB_TABLE_PROVIDER_MAPPINGS}.available,
+                            'url', {DB_TABLE_PROVIDER_MAPPINGS}.url,
+                            'audio_format', json({DB_TABLE_PROVIDER_MAPPINGS}.audio_format),
+                            'details', {DB_TABLE_PROVIDER_MAPPINGS}.details
+                        )) as {DB_TABLE_PROVIDER_MAPPINGS},
+                    json_group_array(
+                        json_object(
+                            'item_id', {DB_TABLE_ARTISTS}.item_id,
+                            'provider', 'library',
+                            'name', {DB_TABLE_ARTISTS}.name,
+                            'sort_name', {DB_TABLE_ARTISTS}.sort_name,
+                            'media_type', 'artist'
+                        )) as {DB_TABLE_ARTISTS},
+                    json_object(
+                            'item_id', {DB_TABLE_ALBUMS}.item_id,
+                            'provider', 'library',
+                            'name', {DB_TABLE_ALBUMS}.name,
+                            'sort_name', {DB_TABLE_ALBUMS}.sort_name,
+                            'version', {DB_TABLE_ALBUMS}.version,
+                            'images',  json_extract({DB_TABLE_ALBUMS}.metadata, '$.images'),
+                            'media_type', 'artist'
+                        ) as album,
+                    {DB_TABLE_ALBUM_TRACKS}.disc_number,
+                    {DB_TABLE_ALBUM_TRACKS}.track_number
+                FROM {self.db_table}
+                LEFT JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = {self.db_table}.item_id
+                LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
+                LEFT JOIN {DB_TABLE_ALBUM_TRACKS} on {DB_TABLE_ALBUM_TRACKS}.track_id = {self.db_table}.item_id
+                LEFT JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
+                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS}
+                    ON {self.db_table}.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id
+                    AND {DB_TABLE_PROVIDER_MAPPINGS}.media_type == '{self.media_type.value}'
+        """  # noqa: E501
+        self.sql_group_by = f"{self.db_table}.item_id, {DB_TABLE_ALBUMS}.item_id"
         self._db_add_lock = asyncio.Lock()
         # register api handlers
         self.mass.register_api_command("music/tracks/library_items", self.library_items)

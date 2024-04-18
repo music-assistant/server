@@ -24,7 +24,14 @@ from music_assistant.common.models.media_items import (
     MediaType,
     Track,
 )
-from music_assistant.constants import DB_TABLE_ALBUM_TRACKS, DB_TABLE_ALBUMS, DB_TABLE_TRACKS
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACKS,
+)
 from music_assistant.server.controllers.media.base import MediaControllerBase
 from music_assistant.server.helpers.compare import (
     compare_album,
@@ -47,6 +54,35 @@ class AlbumsController(MediaControllerBase[Album]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
+        self.base_query = f"""
+                SELECT
+                    {self.db_table}.*,
+                    {DB_TABLE_ARTISTS}.sort_name AS sort_artist,
+                    json_group_array(
+                        json_object(
+                            'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
+                            'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
+                            'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
+                            'available', {DB_TABLE_PROVIDER_MAPPINGS}.available,
+                            'url', {DB_TABLE_PROVIDER_MAPPINGS}.url,
+                            'audio_format', json({DB_TABLE_PROVIDER_MAPPINGS}.audio_format),
+                            'details', {DB_TABLE_PROVIDER_MAPPINGS}.details
+                        )) as {DB_TABLE_PROVIDER_MAPPINGS},
+                    json_group_array(
+                        json_object(
+                            'item_id', {DB_TABLE_ARTISTS}.item_id,
+                            'provider', 'library',
+                            'name', {DB_TABLE_ARTISTS}.name,
+                            'sort_name', {DB_TABLE_ARTISTS}.sort_name,
+                            'media_type', 'artist'
+                        )) as {DB_TABLE_ARTISTS}
+                FROM {self.db_table}
+                LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
+                LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
+                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS}
+                    ON {self.db_table}.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id
+                    AND {DB_TABLE_PROVIDER_MAPPINGS}.media_type == '{self.media_type.value}'
+        """  # noqa: E501
         # register api handlers
         self.mass.register_api_command("music/albums/library_items", self.library_items)
         self.mass.register_api_command(
@@ -366,20 +402,15 @@ class AlbumsController(MediaControllerBase[Album]):
         """Return in-database album tracks for the given database album."""
         db_id = int(item_id)  # ensure integer
         db_album = await self.get_library_item(db_id)
-        result: list[AlbumTrack] = []
-        query = (
-            f"SELECT * FROM {DB_TABLE_TRACKS} INNER JOIN albumtracks "
-            "ON albumtracks.track_id = tracks.item_id WHERE albumtracks.album_id = :album_id"
+        subquery = f"SELECT track_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE album_id = {item_id}"
+        query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
+        return sorted(
+            [
+                AlbumTrack.from_track(track, db_album)
+                async for track in self.mass.music.tracks.iter_library_items(extra_query=query)
+            ],
+            key=lambda x: (x.disc_number, x.track_number),
         )
-        track_rows = await self.mass.music.database.get_rows_from_query(query, {"album_id": db_id})
-        for album_track_row in track_rows:
-            album_track = AlbumTrack.from_dict(
-                self._parse_db_row({**album_track_row, "album": db_album.to_dict()})
-            )
-            if db_album.metadata.images:
-                album_track.metadata.images = db_album.metadata.images
-            result.append(album_track)
-        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
 
     async def _match(self, db_album: Album) -> None:
         """Try to find match on all (streaming) providers for the provided (database) album.
