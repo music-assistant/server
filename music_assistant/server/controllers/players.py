@@ -248,6 +248,7 @@ class PlayerController(CoreController):
         # calculate active group and active source
         player.active_group = self._get_active_player_group(player)
         player.active_source = self._get_active_source(player)
+        player.volume_level = player.volume_level or 0  # guard for None volume
         # calculate group volume
         player.group_volume = self._get_group_volume_level(player)
         if player.type in (PlayerType.GROUP, PlayerType.SYNC_GROUP):
@@ -932,7 +933,7 @@ class PlayerController(CoreController):
         group_volume = 0
         active_players = 0
         for child_player in self.iter_group_members(player, True):
-            group_volume += child_player.volume_level
+            group_volume += child_player.volume_level or 0
             active_players += 1
         if active_players:
             group_volume = group_volume / active_players

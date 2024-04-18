@@ -501,13 +501,16 @@ class StreamsController(CoreController):
         )
         if start_queue_item.media_type != MediaType.TRACK:
             use_crossfade = False
-        pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
+        pcm_sample_size = int(
+            pcm_format.sample_rate * (pcm_format.bit_depth / 8) * pcm_format.channels
+        )
         self.logger.info(
             "Start Queue Flow stream for Queue %s - crossfade: %s",
             queue.display_name,
             use_crossfade,
         )
         total_bytes_sent = 0
+        started = time.time()
 
         while True:
             # get (next) queue item to stream
@@ -551,13 +554,13 @@ class StreamsController(CoreController):
             ):
                 # buffer size needs to be big enough to include the crossfade part
                 # allow it to be a bit smaller when playback just starts
-                if not use_crossfade or (total_bytes_sent + bytes_written == 0):
+                if not use_crossfade:
                     req_buffer_size = pcm_sample_size * 2
-                elif (total_bytes_sent + bytes_written) < (crossfade_size * 2):
-                    req_buffer_size = pcm_sample_size * 5
-                else:
+                elif (time.time() - started) > 120:
                     # additional 5 seconds to strip silence from last part
                     req_buffer_size = crossfade_size + pcm_sample_size * 5
+                else:
+                    req_buffer_size = crossfade_size
 
                 # ALWAYS APPEND CHUNK TO BUFFER
                 buffer += chunk
@@ -601,7 +604,6 @@ class StreamsController(CoreController):
                 #### OTHER: enough data in buffer, feed to output
                 while len(buffer) > req_buffer_size:
                     yield buffer[:pcm_sample_size]
-                    await asyncio.sleep(0)  # yield to eventloop
                     bytes_written += pcm_sample_size
                     buffer = buffer[pcm_sample_size:]
 
