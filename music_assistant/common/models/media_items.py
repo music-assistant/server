@@ -213,7 +213,9 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if isinstance(cur_val, list) and isinstance(new_val, list):
+            if allow_overwrite and new_val:
+                setattr(self, fld.name, new_val)
+            elif isinstance(cur_val, list) and isinstance(new_val, list):
                 new_val = merge_lists(cur_val, new_val)
                 setattr(self, fld.name, new_val)
             elif isinstance(cur_val, set) and isinstance(new_val, list):

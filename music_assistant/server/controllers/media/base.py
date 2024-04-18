@@ -52,7 +52,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
-    async def add_item_to_library(self, item: ItemCls, metadata_lookup: bool = True) -> ItemCls:
+    async def add_item_to_library(
+        self, item: ItemCls, metadata_lookup: bool = True, overwrite_existing: bool = False
+    ) -> ItemCls:
         """Add item to library and return the database item."""
         raise NotImplementedError
 
@@ -161,9 +163,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         add_to_library: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
-        if provider_instance_id_or_domain == "database":
-            # backwards compatibility - to remove when 2.0 stable is released
-            provider_instance_id_or_domain = "library"
         # always prefer the full library item if we have it
         library_item = await self.get_library_item_by_prov_id(
             item_id,
@@ -208,8 +207,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # in 99% of the cases we just return lazy because we want the details as fast as possible
         # only if we really need to wait for the result (e.g. to prevent race conditions),
         # we can set lazy to false and we await the job to complete.
+        overwrite_existing = force_refresh and library_item is not None
         task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(self.add_item_to_library, item=details, task_id=task_id)
+        add_task = self.mass.create_task(
+            self.add_item_to_library,
+            item=details,
+            metadata_lookup=True,
+            overwrite_existing=overwrite_existing,
+            task_id=task_id,
+        )
         if not lazy:
             await add_task
             return add_task.result()
@@ -677,13 +683,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         org_item: ItemCls,
         update_item: ItemCls | ItemMapping | None = None,
-        overwrite: bool = False,
     ) -> set[ProviderMapping]:
         """Get/merge provider mappings for an item."""
         if not update_item or isinstance(update_item, ItemMapping):
             return org_item.provider_mappings
-        if overwrite and update_item.provider_mappings:
-            return update_item.provider_mappings
         return {*update_item.provider_mappings, *org_item.provider_mappings}
 
     async def _get_artist_mappings(

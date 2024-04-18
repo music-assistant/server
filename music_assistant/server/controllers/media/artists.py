@@ -61,6 +61,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         self,
         item: Artist | ItemMapping,
         metadata_lookup: bool = True,
+        overwrite_existing: bool = False,
     ) -> Artist:
         """Add artist to library and return the database item."""
         if isinstance(item, ItemMapping):
@@ -73,10 +74,14 @@ class ArtistsController(MediaControllerBase[Artist]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         else:
             # search by name
             async for db_item in self.iter_library_items(search=item.name):
@@ -85,9 +90,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                     # NOTE: if we matched an artist by name this could theoretically lead to
                     # collisions but the chance is so small it is not worth the additional
                     # overhead of grabbing the musicbrainz id upfront
-                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    library_item = await self.update_item_in_library(
+                        db_item.item_id, item, overwrite=overwrite_existing
+                    )
                     break
-                await asyncio.sleep(0)  # yield to eventloop
         if not library_item:
             # actually add (or update) the item in the library db
             # use the lock to prevent a race condition of the same item being added twice
@@ -112,7 +118,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, update)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid
@@ -126,7 +132,9 @@ class ArtistsController(MediaControllerBase[Artist]):
             {"item_id": db_id},
             {
                 "name": update.name if overwrite else cur_item.name,
-                "sort_name": update.sort_name if overwrite else cur_item.sort_name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),

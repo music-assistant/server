@@ -127,7 +127,9 @@ class TracksController(MediaControllerBase[Track]):
         track.artists = track_artists
         return track
 
-    async def add_item_to_library(self, item: Track, metadata_lookup: bool = True) -> Track:
+    async def add_item_to_library(
+        self, item: Track, metadata_lookup: bool = True, overwrite_existing: bool = False
+    ) -> Track:
         """Add track to library and return the new database item."""
         if not isinstance(item, Track):
             msg = "Not a valid Track object (ItemMapping can not be added to db)"
@@ -157,18 +159,23 @@ class TracksController(MediaControllerBase[Track]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         else:
             # search by name
             async for db_item in self.iter_library_items(search=item.name):
                 if compare_track(db_item, item):
                     # existing item found: update it
-                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    library_item = await self.update_item_in_library(
+                        db_item.item_id, item, overwrite=overwrite_existing
+                    )
                     break
-                await asyncio.sleep(0)  # yield to eventloop
         if not library_item:
             # actually add a new item in the library db
             # use the lock to prevent a race condition of the same item being added twice
@@ -193,17 +200,19 @@ class TracksController(MediaControllerBase[Track]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, update)
         track_artists = await self._get_artist_mappings(cur_item, update, overwrite=overwrite)
         cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
             {
-                "name": update.name or cur_item.name,
-                "sort_name": update.sort_name or cur_item.sort_name,
-                "version": update.version or cur_item.version,
-                "duration": getattr(update, "duration", None) or cur_item.duration,
+                "name": update.name if overwrite else cur_item.name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
+                "version": update.version if overwrite else cur_item.version or update.version,
+                "duration": update.duration if overwrite else cur_item.duration or update.duration,
                 "artists": serialize_to_json(track_artists),
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
@@ -425,7 +434,15 @@ class TracksController(MediaControllerBase[Track]):
     async def _set_track_album(
         self, db_id: int, album: Album, disc_number: int, track_number: int
     ) -> None:
-        """Store AlbumTrack info."""
+        """
+        Store Track Album info.
+
+        A track can exist on multiple albums so we have a mapping table between
+        albums and tracks which stores the relation between the two and it also
+        stores the track and disc number of the track within an album.
+        For digital releases, the discnumber will be just 0 or 1.
+        Track number should start counting at 1.
+        """
         db_album = None
         if album.provider == "library":
             db_album = album

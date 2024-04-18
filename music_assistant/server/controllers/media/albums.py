@@ -102,6 +102,7 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item: Album,
         metadata_lookup: bool = True,
+        overwrite_existing: bool = False,
         add_album_tracks: bool = False,
     ) -> Album:
         """Add album to library and return the database item."""
@@ -118,16 +119,22 @@ class AlbumsController(MediaControllerBase[Album]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         else:
             # search by name
             async for db_item in self.iter_library_items(search=item.name):
                 if compare_album(db_item, item):
                     # existing item found: update it
-                    library_item = await self.update_item_in_library(db_item.item_id, item)
+                    library_item = await self.update_item_in_library(
+                        db_item.item_id, item, overwrite=overwrite_existing
+                    )
                     break
         if not library_item:
             # actually add a new item in the library db
@@ -139,6 +146,7 @@ class AlbumsController(MediaControllerBase[Album]):
             await self._match(library_item)
             library_item = await self.get_library_item(library_item.item_id)
         # also add album tracks
+        # TODO: make this configurable
         if add_album_tracks and item.provider != "library":
             async with asyncio.TaskGroup() as tg:
                 for track in await self._get_provider_album_tracks(item.item_id, item.provider):
@@ -159,8 +167,8 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
+        metadata = cur_item.metadata.update(update.metadata, overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, update)
         album_artists = await self._get_artist_mappings(cur_item, update, overwrite)
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
@@ -173,7 +181,9 @@ class AlbumsController(MediaControllerBase[Album]):
             {"item_id": db_id},
             {
                 "name": update.name if overwrite else cur_item.name,
-                "sort_name": update.sort_name if overwrite else cur_item.sort_name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
                 "sort_artist": sort_artist,
                 "version": update.version if overwrite else cur_item.version,
                 "year": update.year if overwrite else cur_item.year or update.year,

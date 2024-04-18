@@ -53,7 +53,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
 
-    async def add_item_to_library(self, item: Playlist, metadata_lookup: bool = True) -> Playlist:
+    async def add_item_to_library(
+        self, item: Playlist, metadata_lookup: bool = True, overwrite_existing: bool = False
+    ) -> Playlist:
         """Add playlist to library and return the new database item."""
         if isinstance(item, ItemMapping):
             metadata_lookup = False
@@ -68,10 +70,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
-            library_item = await self.update_item_in_library(cur_item.item_id, item)
+            library_item = await self.update_item_in_library(
+                cur_item.item_id, item, overwrite=overwrite_existing
+            )
         if not library_item:
             # actually add a new item in the library db
             # use the lock to prevent a race condition of the same item being added twice
@@ -98,16 +104,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
         metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
-        provider_mappings = self._get_provider_mappings(cur_item, update, overwrite)
+        provider_mappings = self._get_provider_mappings(cur_item, update)
         cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
             {
                 # always prefer name/owner from updated item here
-                "name": update.name or cur_item.name,
-                "sort_name": update.sort_name or cur_item.sort_name,
-                "owner": update.owner or cur_item.sort_name,
+                "name": update.name if overwrite else cur_item.name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
+                "owner": update.owner or cur_item.owner,
                 "is_editable": update.is_editable,
                 "metadata": serialize_to_json(metadata),
                 "provider_mappings": serialize_to_json(provider_mappings),
