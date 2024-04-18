@@ -109,7 +109,7 @@ SUPPORTED_FEATURES = (
 class FileSystemItem:
     """Representation of an item (file or directory) on the filesystem.
 
-    - name: Name (not path) of the file (or directory).
+    - filename: Name (not path) of the file (or directory).
     - path: Relative path to the item on this filesystem provider.
     - absolute_path: Absolute (provider dependent) path to this item.
     - is_file: Boolean if item is file (not directory or symlink).
@@ -119,7 +119,7 @@ class FileSystemItem:
     - local_path: Optional local accessible path to this (file)item, supported by ffmpeg.
     """
 
-    name: str
+    filename: str
     path: str
     absolute_path: str
     is_file: bool
@@ -132,9 +132,14 @@ class FileSystemItem:
     def ext(self) -> str | None:
         """Return file extension."""
         try:
-            return self.name.rsplit(".", 1)[1]
+            return self.filename.rsplit(".", 1)[1]
         except IndexError:
             return None
+
+    @property
+    def name(self) -> str:
+        """Return file name (without extension)."""
+        return self.filename.rsplit(".", 1)[0]
 
 
 class FileSystemProviderBase(MusicProvider):
@@ -274,11 +279,11 @@ class FileSystemProviderBase(MusicProvider):
                     item_id=item.path,
                     provider=self.instance_id,
                     path=f"{self.instance_id}://{item.path}",
-                    name=item.name,
+                    name=item.filename,
                 )
                 continue
 
-            if "." not in item.name or not item.ext:
+            if "." not in item.filename or not item.ext:
                 # skip system files and files without extension
                 continue
 
@@ -287,7 +292,7 @@ class FileSystemProviderBase(MusicProvider):
                     media_type=MediaType.TRACK,
                     item_id=item.path,
                     provider=self.instance_id,
-                    name=item.name,
+                    name=item.filename,
                 )
                 continue
             if item.ext in PLAYLIST_EXTENSIONS:
@@ -295,7 +300,7 @@ class FileSystemProviderBase(MusicProvider):
                     media_type=MediaType.PLAYLIST,
                     item_id=item.path,
                     provider=self.instance_id,
-                    name=item.name,
+                    name=item.filename,
                 )
             await asyncio.sleep(0)  # yield to eventloop
 
@@ -316,7 +321,7 @@ class FileSystemProviderBase(MusicProvider):
         # process all deleted (or renamed) files first
         cur_filenames = set()
         async for item in self.listdir("", recursive=True):
-            if "." not in item.name or not item.ext:
+            if "." not in item.filename or not item.ext:
                 # skip system files and files without extension
                 continue
 
@@ -332,7 +337,7 @@ class FileSystemProviderBase(MusicProvider):
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         async for item in self.listdir("", recursive=True):
-            if "." not in item.name or not item.ext:
+            if "." not in item.filename or not item.ext:
                 # skip system files and files without extension
                 continue
 
@@ -347,16 +352,20 @@ class FileSystemProviderBase(MusicProvider):
                 self.logger.debug("Processing: %s", item.path)
                 if item.ext in TRACK_EXTENSIONS:
                     # add/update track to db
+                    # note that filesystem items are always overwriting existing info
+                    # when they are detected as changed
                     track = await self._parse_track(item)
-                    await self.mass.music.tracks.add_item_to_library(track, metadata_lookup=False)
+                    await self.mass.music.tracks.add_item_to_library(
+                        track, metadata_lookup=False, overwrite_existing=True
+                    )
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
                     playlist.metadata.cache_checksum = item.checksum
-                    # playlist is always in-library
+                    # playlist is always favorite
                     playlist.favorite = True
                     await self.mass.music.playlists.add_item_to_library(
-                        playlist, metadata_lookup=False
+                        playlist, metadata_lookup=False, overwrite_existing=True
                     )
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
@@ -448,7 +457,7 @@ class FileSystemProviderBase(MusicProvider):
         playlist = Playlist(
             item_id=file_item.path,
             provider=self.instance_id,
-            name=file_item.name.replace(f".{file_item.ext}", ""),
+            name=file_item.name,
             provider_mappings={
                 ProviderMapping(
                     item_id=file_item.path,
@@ -1007,7 +1016,8 @@ class FileSystemProviderBase(MusicProvider):
             for ext in IMAGE_EXTENSIONS:
                 if item.ext != ext:
                     continue
-                try:
+                # try match on filename = one of our imagetypes
+                if item.name in ImageType:
                     images.append(
                         MediaItemImage(
                             type=ImageType(item.name),
@@ -1016,16 +1026,17 @@ class FileSystemProviderBase(MusicProvider):
                             remotely_accessible=False,
                         )
                     )
-                except ValueError:
-                    for filename in ("folder", "cover", "albumart", "artist"):
-                        if item.name.lower().startswith(filename):
-                            images.append(
-                                MediaItemImage(
-                                    type=ImageType.THUMB,
-                                    path=item.path,
-                                    provider=self.instance_id,
-                                    remotely_accessible=False,
-                                )
+                    continue
+                # try alternative names for thumbs
+                for filename in ("folder", "cover", "albumart", "artist"):
+                    if item.name.lower().startswith(filename):
+                        images.append(
+                            MediaItemImage(
+                                type=ImageType.THUMB,
+                                path=item.path,
+                                provider=self.instance_id,
+                                remotely_accessible=False,
                             )
-                            break
+                        )
+                        break
         return images
