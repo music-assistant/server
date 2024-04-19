@@ -9,14 +9,15 @@ from music_assistant.common.models.errors import (
     ResourceTemporarilyUnavailable,
     RetriesExhausted,
 )
+from music_assistant.constants import MASS_LOGGER_NAME
 
-LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.throttle_retry")
 
 
 class AsyncThrottleWithRetryContextManager:
     """Context manager using asyncio_throttle that catches and re-raises RetriesExhausted."""
 
-    def __init__(self, rate_limit, period, retry_attempts=3, initial_backoff=30):
+    def __init__(self, rate_limit, period, retry_attempts=5, initial_backoff=5):
         """Initialize the AsyncThrottledContextManager."""
         self.rate_limit = rate_limit
         self.period = period
@@ -32,7 +33,7 @@ class AsyncThrottleWithRetryContextManager:
     async def __aexit__(self, exc_type, exc, tb):
         """Release the throttle. If a RetriesExhausted occurs, re-raise it."""
         self.throttler.flush()
-        if isinstance(exc_type, RetriesExhausted):
+        if isinstance(exc, RetriesExhausted):
             raise exc
 
     async def wrapped_function_with_retry(self, func, *args, **kwargs):
