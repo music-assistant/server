@@ -11,6 +11,28 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
 
 
+def query_params(query: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """Extend query parameters support."""
+    count = 0
+    result_query = query
+    result_params = {}
+    for key, value in params.items():
+        # add support for a list within the query params
+        # recreates the params as (:_param_0, :_param_1) etc
+        if isinstance(value, list | tuple):
+            subparams = []
+            for subval in value:
+                subparam_name = f"_param_{count}"
+                result_params[subparam_name] = subval
+                subparams.append(subparam_name)
+                count += 1
+            params_str = ",".join(f":{x}" for x in subparams)
+            result_query = result_query.replace(f" :{key}", f" ({params_str})")
+        else:
+            result_params[key] = params[key]
+    return (result_query, result_params)
+
+
 class DatabaseConnection:
     """Class that holds the (connection to the) database with some convenience helper functions."""
 
@@ -55,7 +77,8 @@ class DatabaseConnection:
     ) -> list[Mapping]:
         """Get all rows for given custom query."""
         query = f"{query} LIMIT {limit} OFFSET {offset}"
-        return await self._db.execute_fetchall(query, params)
+        _query, _params = query_params(query, params)
+        return await self._db.execute_fetchall(_query, _params)
 
     async def get_count_from_query(
         self,
@@ -64,7 +87,8 @@ class DatabaseConnection:
     ) -> int:
         """Get row count for given custom query."""
         query = f"SELECT count() FROM ({query})"
-        async with self._db.execute(query, params) as cursor:
+        _query, _params = query_params(query, params)
+        async with self._db.execute(_query, _params) as cursor:
             if result := await cursor.fetchone():
                 return result[0]
         return 0

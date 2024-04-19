@@ -386,15 +386,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> list[ItemCls]:
         """Fetch all records from library for given provider."""
         query_parts = []
-        query_params = {"prov_id": provider_instance_id_or_domain}
-        prov_ids_str = str(tuple(provider_item_ids or ()))
-        if prov_ids_str.endswith(",)"):
-            prov_ids_str = prov_ids_str.replace(",)", ")")
+        query_params = {
+            "prov_id": provider_instance_id_or_domain,
+        }
 
         if provider_instance_id_or_domain == "library":
             # request for specific library id's
             if provider_item_ids:
-                query_parts.append(f"{self.db_table}.item_id in {prov_ids_str}")
+                query_parts.append(f"{self.db_table}.item_id in :item_ids")
+                query_params["item_ids"] = provider_item_ids
         else:
             # provider filtered response
             query_parts.append(
@@ -402,7 +402,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 "OR provider_mappings.provider_domain = :prov_id)"
             )
             if provider_item_ids:
-                query_parts.append(f"provider_mappings.provider_item_id in {prov_ids_str}")
+                query_parts.append("provider_mappings.provider_item_id in :item_ids")
+                query_params["item_ids"] = provider_item_ids
 
         # build final query
         query = "WHERE " + " AND ".join(query_parts)
