@@ -272,7 +272,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         # prefer cache items (if any) - for streaming providers
         cache_key = f"{prov.lookup_key}.artist_toptracks.{item_id}"
-        if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
+        if (
+            prov.is_streaming_provider
+            and (cache := await self.mass.cache.get(cache_key)) is not None
+        ):
             return [Track.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         if ProviderFeature.ARTIST_TOPTRACKS in prov.supported_features:
@@ -283,10 +286,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                # TODO: adjust to json query instead of text search?
-                query = f"WHERE tracks.artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += (
-                    f" AND tracks.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
+                query = (
+                    f"WHERE trackartists.artist_id = {db_artist.item_id} AND "
+                    f'(provider_mappings.provider_domain = "{provider_instance_id_or_domain}" OR '
+                    f'provider_mappings.provider_instance = "{provider_instance_id_or_domain}")'
                 )
                 paged_list = await self.mass.music.tracks.library_items(extra_query=query)
                 return paged_list.items
@@ -318,7 +321,10 @@ class ArtistsController(MediaControllerBase[Artist]):
             return []
         # prefer cache items (if any)
         cache_key = f"{prov.lookup_key}.artist_albums.{item_id}"
-        if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
+        if (
+            prov.is_streaming_provider
+            and (cache := await self.mass.cache.get(cache_key)) is not None
+        ):
             return [Album.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         if ProviderFeature.ARTIST_ALBUMS in prov.supported_features:
@@ -330,10 +336,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                # TODO: adjust to json query instead of text search?
-                query = f"WHERE albums.artists LIKE '%\"{db_artist.item_id}\"%'"
-                query += (
-                    f" AND albums.provider_mappings LIKE '%\"{provider_instance_id_or_domain}\"%'"
+                query = (
+                    f"WHERE albumartists.artist_id = {db_artist.item_id} AND "
+                    f'(provider_mappings.provider_domain = "{provider_instance_id_or_domain}" OR '
+                    f'provider_mappings.provider_instance = "{provider_instance_id_or_domain}")'
                 )
                 paged_list = await self.mass.music.albums.library_items(extra_query=query)
                 return paged_list.items

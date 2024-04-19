@@ -907,7 +907,6 @@ class MusicController(CoreController):
                     version TEXT,
                     favorite BOOLEAN DEFAULT 0,
                     metadata json NOT NULL,
-                    provider_mappings json NOT NULL,
                     external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
@@ -920,7 +919,6 @@ class MusicController(CoreController):
                     sort_name TEXT NOT NULL,
                     favorite BOOLEAN DEFAULT 0,
                     metadata json NOT NULL,
-                    provider_mappings json NOT NULL,
                     external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
@@ -935,7 +933,6 @@ class MusicController(CoreController):
                     duration INTEGER,
                     favorite BOOLEAN DEFAULT 0,
                     metadata json NOT NULL,
-                    provider_mappings json NOT NULL,
                     external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
@@ -980,7 +977,6 @@ class MusicController(CoreController):
                     is_editable BOOLEAN NOT NULL,
                     favorite BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_mappings json,
                     external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL
@@ -993,7 +989,6 @@ class MusicController(CoreController):
                     sort_name TEXT NOT NULL,
                     favorite BOOLEAN DEFAULT 0,
                     metadata json,
-                    provider_mappings json,
                     external_ids json NOT NULL,
                     timestamp_added INTEGER NOT NULL,
                     timestamp_modified INTEGER NOT NULL

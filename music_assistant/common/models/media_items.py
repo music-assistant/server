@@ -418,19 +418,34 @@ class AlbumTrack(Track):
     album, disc_number and track_number
     """
 
-    album: Album
+    album: Album | ItemMapping
     disc_number: int
     track_number: int
 
     @classmethod
-    def from_track(cls: Self, track: Track, album: Album | None = None) -> Self:
+    def from_track(
+        cls: Self,
+        track: Track,
+        album: Album | None = None,
+        disc_number: int | None = None,
+        track_number: int | None = None,
+    ) -> Self:
         """Cast Track to AlbumTrack."""
-        if album:
-            track.album = album
-        assert isinstance(track.album, Album)
-        assert track.disc_number is not None
-        assert track.track_number is not None
-        return cast(AlbumTrack, track)
+        if album is None:
+            album = track.album
+        if disc_number is None:
+            disc_number = track.disc_number
+        if track_number is None:
+            track_number = track.track_number
+        # let mushmumaro instantiate a new object - this will ensure that valididation takes place
+        return AlbumTrack.from_dict(
+            {
+                **track.to_dict(),
+                "album": album.to_dict(),
+                "disc_number": disc_number,
+                "track_number": track_number,
+            }
+        )
 
 
 @dataclass(kw_only=True)
@@ -444,10 +459,17 @@ class PlaylistTrack(Track):
     position: int
 
     @classmethod
-    def from_track(cls: Self, track: Track) -> Self:
+    def from_track(cls: Self, track: Track, position: int | None = None) -> Self:
         """Cast Track to PlaylistTrack."""
-        assert track.position is not None
-        return cast(AlbumTrack, track)
+        if position is None:
+            position = track.position
+        # let mushmumaro instantiate a new object - this will ensure that valididation takes place
+        return PlaylistTrack.from_dict(
+            {
+                **track.to_dict(),
+                "position": position,
+            }
+        )
 
 
 @dataclass(kw_only=True)

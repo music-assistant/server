@@ -493,7 +493,7 @@ class FileSystemProviderBase(MusicProvider):
             raise MediaNotFoundError(msg)
         album_tracks = await self.mass.music.albums.tracks(db_album.item_id, db_album.provider)
         return [
-            track
+            AlbumTrack.from_track(track, db_album)
             for track in album_tracks
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
@@ -521,10 +521,10 @@ class FileSystemProviderBase(MusicProvider):
                 playlist_lines = parse_pls(playlist_data)
 
             for line_no, playlist_line in enumerate(playlist_lines, 0):
-                if media_item := await self._parse_playlist_line(
-                    playlist_line.path, os.path.dirname(prov_playlist_id), line_no
+                if track := await self._parse_playlist_line(
+                    playlist_line.path, os.path.dirname(prov_playlist_id)
                 ):
-                    yield media_item
+                    yield PlaylistTrack.from_track(track, line_no)
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning(
@@ -534,9 +534,7 @@ class FileSystemProviderBase(MusicProvider):
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
 
-    async def _parse_playlist_line(
-        self, line: str, playlist_path: str, position: int
-    ) -> PlaylistTrack | None:
+    async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
         """Try to parse a track from a playlist line."""
         try:
             # if a relative path was given in an upper level from the playlist,
@@ -552,7 +550,7 @@ class FileSystemProviderBase(MusicProvider):
             for filename in (line, os.path.join(playlist_path, line)):
                 with contextlib.suppress(FileNotFoundError):
                     item = await self.resolve(filename)
-                    return await self._parse_track(item, playlist_position=position)
+                    return await self._parse_track(item)
 
         except MusicAssistantError as err:
             self.logger.warning("Could not parse uri/file %s to track: %s", line, str(err))
@@ -664,9 +662,7 @@ class FileSystemProviderBase(MusicProvider):
         file_item = await self.resolve(path)
         return file_item.local_path or self.read_file_content(file_item.absolute_path)
 
-    async def _parse_track(
-        self, file_item: FileSystemItem, playlist_position: int | None = None
-    ) -> Track | AlbumTrack | PlaylistTrack:
+    async def _parse_track(self, file_item: FileSystemItem) -> Track:
         """Get full track details by id."""
         # ruff: noqa: PLR0915, PLR0912
 
@@ -674,12 +670,13 @@ class FileSystemProviderBase(MusicProvider):
         input_file = file_item.local_path or self.read_file_content(file_item.absolute_path)
         tags = await parse_tags(input_file, file_item.file_size)
         name, version = parse_title_and_version(tags.title, tags.version)
-        base_details = {
-            "item_id": file_item.path,
-            "provider": self.instance_id,
-            "name": name,
-            "version": version,
-            "provider_mappings": {
+        track = Track(
+            item_id=file_item.path,
+            provider=self.instance_id,
+            name=name,
+            sort_name=tags.title_sort,
+            version=version,
+            provider_mappings={
                 ProviderMapping(
                     item_id=file_item.path,
                     provider_domain=self.domain,
@@ -693,22 +690,9 @@ class FileSystemProviderBase(MusicProvider):
                     ),
                 )
             },
-        }
-        if playlist_position is not None:
-            track = PlaylistTrack(
-                **base_details,
-                position=playlist_position,
-            )
-        elif tags.album and tags.disc and tags.track:
-            track = AlbumTrack(  # pylint: disable=missing-kwoa
-                **base_details,
-                disc_number=tags.disc,
-                track_number=tags.track,
-            )
-        else:
-            track = Track(
-                **base_details,
-            )
+            disc_number=tags.disc,
+            track_number=tags.track,
+        )
 
         if isrc_tags := tags.isrc:
             for isrsc in isrc_tags:

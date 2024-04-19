@@ -259,7 +259,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # prefer cache items (if any)
         cache_key = f"{prov.lookup_key}.search.{self.media_type.value}.{search_query}.{limit}"
-        if cache := await self.mass.cache.get(cache_key):
+        cache_key = cache_key.lower().replace("", "")
+        if (cache := await self.mass.cache.get(cache_key)) is not None:
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         searchresult = await prov.search(

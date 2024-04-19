@@ -330,7 +330,10 @@ class AlbumsController(MediaControllerBase[Album]):
         full_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
         # prefer cache items (if any) for streaming providers only
         cache_key = f"{prov.lookup_key}.albumtracks.{item_id}"
-        if prov.is_streaming_provider and (cache := await self.mass.cache.get(cache_key)):
+        if (
+            prov.is_streaming_provider
+            and (cache := await self.mass.cache.get(cache_key)) is not None
+        ):
             return [AlbumTrack.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         items = []

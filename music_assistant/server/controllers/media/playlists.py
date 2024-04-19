@@ -347,7 +347,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return
         # prefer cache items (if any)
         cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks"
-        if cache := await self.mass.cache.get(cache_key, checksum=cache_checksum):
+        if (cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)) is not None:
             for track_dict in cache:
                 yield PlaylistTrack.from_dict(track_dict)
             return
