@@ -68,10 +68,12 @@ async def get_image_thumb(
         img = Image.open(BytesIO(img_data))
         if size:
             img.thumbnail((size, size), Image.LANCZOS)  # pylint: disable=no-member
+
         mode = "RGBA" if image_format == "PNG" else "RGB"
         img.convert(mode).save(data, image_format, optimize=True)
         return data.getvalue()
 
+    image_format = image_format.upper()
     return await asyncio.to_thread(_create_image)
 
 

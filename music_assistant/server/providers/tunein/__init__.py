@@ -220,7 +220,7 @@ class TuneInProvider(MusicProvider):
         if img := details.get("logo"):
             radio.metadata.images = [
                 MediaItemImage(
-                    type=ImageType.LOGO,
+                    type=ImageType.THUMB,
                     path=img,
                     provider=self.instance_id,
                     remotely_accessible=True,
