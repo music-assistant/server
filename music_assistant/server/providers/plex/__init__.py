@@ -497,7 +497,9 @@ class PlexProvider(MusicProvider):
                     remotely_accessible=False,
                 )
             ]
-        playlist.is_editable = True
+        playlist.is_editable = not plex_playlist.smart
+        playlist.metadata.cache_checksum = str(plex_playlist.updatedAt.timestamp())
+
         return playlist
 
     async def _parse_track(
