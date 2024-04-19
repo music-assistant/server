@@ -270,9 +270,8 @@ class QobuzProvider(MusicProvider):
         ):
             if not (track_obj and track_obj["id"]):
                 continue
-            track_obj["position"] = count
             track = await self._parse_track(track_obj)
-            yield track
+            yield PlaylistTrack.from_track(track, position=count)
             count += 1
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
@@ -555,23 +554,11 @@ class QobuzProvider(MusicProvider):
             album.metadata.explicit = True
         return album
 
-    async def _parse_track(self, track_obj: dict) -> Track | AlbumTrack | PlaylistTrack:
+    async def _parse_track(self, track_obj: dict) -> Track:
         """Parse qobuz track object to generic layout."""
         # pylint: disable=too-many-branches
         name, version = parse_title_and_version(track_obj["title"], track_obj.get("version"))
-        if "position" in track_obj:
-            track_class = PlaylistTrack
-            extra_init_kwargs = {"position": track_obj["position"]}
-        elif "media_number" in track_obj and "track_number" in track_obj:
-            track_class = AlbumTrack
-            extra_init_kwargs = {
-                "disc_number": track_obj["media_number"],
-                "track_number": track_obj["track_number"],
-            }
-        else:
-            track_class = Track
-            extra_init_kwargs = {}
-        track = track_class(
+        track = Track(
             item_id=str(track_obj["id"]),
             provider=self.domain,
             name=name,
@@ -591,7 +578,8 @@ class QobuzProvider(MusicProvider):
                     url=f'https://open.qobuz.com/track/{track_obj["id"]}',
                 )
             },
-            **extra_init_kwargs,
+            disc_number=track_obj.get("media_number"),
+            track_number=track_obj.get("track_number"),
         )
         if isrc := track_obj.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))
