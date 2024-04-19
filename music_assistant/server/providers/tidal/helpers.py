@@ -27,34 +27,13 @@ from tidalapi.exceptions import (
 )
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 
 DEFAULT_LIMIT = 50
 LOGGER = logging.getLogger(__name__)
-
-
-def retry_with_exponential_backoff(retries=3, initial_backoff=30):
-    """Handle backoff and retry decorator."""
-
-    def decorator(func):
-        async def wrapper(*args, **kwargs):
-            backoff_time = initial_backoff
-            for attempt in range(retries):
-                try:
-                    return await func(*args, **kwargs)
-                except TooManyRequests as e:
-                    LOGGER.warning(f"Attempt {attempt + 1}/{retries} failed: {e}")
-                    if attempt < retries - 1:
-                        LOGGER.warning(f"Retrying in {backoff_time} seconds...")
-                        await asyncio.sleep(backoff_time)
-                        backoff_time *= 2
-            else:  # noqa: PLW0120
-                LOGGER.error(f"Retries exhausted, failed after {retries} attempts")
-                raise TooManyRequests
-
-        return wrapper
-
-    return decorator
 
 
 async def get_library_artists(
@@ -110,7 +89,6 @@ async def library_items_add_remove(
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     """Async wrapper around the tidalapi Artist function."""
 
@@ -120,13 +98,12 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
         except ObjectNotFound as err:
             msg = f"Artist {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[TidalAlbum]:
     """Async wrapper around 3 tidalapi album functions."""
 
@@ -136,8 +113,8 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
         except ObjectNotFound as err:
             msg = f"Artist {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
         else:
             all_albums = []
             albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
@@ -179,7 +156,6 @@ async def get_library_albums(
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
     """Async wrapper around the tidalapi Album function."""
 
@@ -189,13 +165,12 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
         except ObjectNotFound as err:
             msg = f"Album {prov_album_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     """Async wrapper around the tidalapi Track function."""
 
@@ -205,13 +180,12 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
         except ObjectNotFound as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_track_url(session: TidalSession, prov_track_id: str) -> str:
     """Async wrapper around the tidalapi Track.get_url function."""
 
@@ -222,13 +196,12 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> str:
         except ObjectNotFound as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Album.tracks function."""
 
@@ -241,8 +214,8 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
         except ObjectNotFound as err:
             msg = f"Album {prov_album_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
@@ -275,7 +248,6 @@ async def get_library_playlists(
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPlaylist:
     """Async wrapper around the tidal Playlist function."""
 
@@ -285,13 +257,12 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
         except ObjectNotFound as err:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_playlist_tracks(
     session: TidalSession,
     prov_playlist_id: str,
@@ -309,8 +280,8 @@ async def get_playlist_tracks(
         except ObjectNotFound as err:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
@@ -341,7 +312,6 @@ async def create_playlist(
     return await asyncio.to_thread(inner)
 
 
-@retry_with_exponential_backoff(retries=3, initial_backoff=30)
 async def get_similar_tracks(
     session: TidalSession, prov_track_id: str, limit: int = 25
 ) -> list[TidalTrack]:
@@ -356,8 +326,8 @@ async def get_similar_tracks(
         except (MetadataNotAvailable, ObjectNotFound) as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
-        except TooManyRequests:
-            raise TooManyRequests
+        except TooManyRequests as err:
+            raise ResourceTemporarilyUnavailable(err)
 
     return await asyncio.to_thread(inner)
 
