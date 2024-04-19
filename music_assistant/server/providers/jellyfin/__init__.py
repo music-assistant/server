@@ -775,8 +775,11 @@ class JellyfinProvider(MusicProvider):
         params = {
             "Recursive": "true",
             ITEM_KEY_PARENT_ID: parent_id,
-            "IncludeItemTypes": item_type,
         }
+        if item_type in ITEM_TYPE_ARTIST:
+            params["IncludeItemTypes"] = ["MusicArtists", "MusicArtist"]
+        else:
+            params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
             params["Fields"] = ITEM_KEY_MEDIA_SOURCES
 
