@@ -49,7 +49,7 @@ class TracksController(MediaControllerBase[Track]):
                     {DB_TABLE_ARTISTS}.sort_name AS sort_artist,
                     {DB_TABLE_ARTISTS}.sort_name AS sort_album,
                     json_group_array(
-                        json_object(
+                        DISTINCT json_object(
                             'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
                             'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
                             'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
@@ -59,7 +59,7 @@ class TracksController(MediaControllerBase[Track]):
                             'details', {DB_TABLE_PROVIDER_MAPPINGS}.details
                         )) filter ( where {DB_TABLE_PROVIDER_MAPPINGS}.item_id is not null) as {DB_TABLE_PROVIDER_MAPPINGS},
                     json_group_array(
-                        json_object(
+                        DISTINCT json_object(
                             'item_id', {DB_TABLE_ARTISTS}.item_id,
                             'provider', 'library',
                             'name', {DB_TABLE_ARTISTS}.name,

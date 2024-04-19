@@ -47,7 +47,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             SELECT
                 {self.db_table}.*,
                 json_group_array(
-                    json_object(
+                    DISTINCT json_object(
                         'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
                         'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
                         'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
