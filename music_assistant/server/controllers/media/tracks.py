@@ -143,13 +143,7 @@ class TracksController(MediaControllerBase[Track]):
         except MusicAssistantError as err:
             # edge case where playlist track has invalid albumdetails
             self.logger.warning("Unable to fetch album details %s - %s", track.album.uri, str(err))
-        # prefer album image if album explicitly given or track has no image on its own
-        if (
-            (album_uri or not track.metadata.images)
-            and isinstance(track.album, Album)
-            and track.album.image
-        ):
-            track.metadata.images = [track.album.image]
+
         # append artist details to full track item (resolve ItemMappings)
         track_artists = []
         for artist in track.artists:
@@ -187,18 +181,14 @@ class TracksController(MediaControllerBase[Track]):
         # grab additional metadata
         if metadata_lookup:
             await self.mass.metadata.get_track_metadata(item)
-        # copy track image from album (only if albumtype = single)
+        # copy track image from album (only if albumtype = single !)
         if (
             not item.image
             and isinstance(item.album, Album)
             and item.album.image
             and item.album.album_type == AlbumType.SINGLE
         ):
-            item.metadata.images = item.album.metadata.images
-        elif item.image and isinstance(item.album, Album) and item.image == item.album.image:
-            item.metadata.images = []
-        if item.image and isinstance(item.album, Album) and not item.album.image:
-            item.album.metadata.images = item.metadata.images
+            item.metadata.images = [item.album.image]
         # check for existing item first
         library_item = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):

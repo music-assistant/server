@@ -183,6 +183,7 @@ class MediaItemMetadata(DataClassDictMixin):
     description: str | None = None
     review: str | None = None
     explicit: bool | None = None
+    # NOTE: images is a list of available images, sorted by preference
     images: list[MediaItemImage] | None = None
     genres: set[str] | None = None
     mood: str | None = None
@@ -203,7 +204,7 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: MediaItemMetadata,
-        allow_overwrite: bool = True,
+        allow_overwrite: bool = False,
     ) -> MediaItemMetadata:
         """Update metadata (in-place) with new values."""
         if not new_values:
