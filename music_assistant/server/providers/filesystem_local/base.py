@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING
 import cchardet
 import xmltodict
 
-from music_assistant.common.helpers.util import create_sort_name, parse_title_and_version
+from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigEntryType,
@@ -878,7 +878,7 @@ class FileSystemProviderBase(MusicProvider):
             item_id=artist_path,
             provider=self.instance_id,
             name=name,
-            sort_name=sort_name or create_sort_name(name),
+            sort_name=sort_name,
             provider_mappings={
                 ProviderMapping(
                     item_id=artist_path,
@@ -941,7 +941,7 @@ class FileSystemProviderBase(MusicProvider):
             item_id=album_path,
             provider=self.instance_id,
             name=name,
-            sort_name=sort_name or create_sort_name(name),
+            sort_name=sort_name,
             artists=artists,
             provider_mappings={
                 ProviderMapping(

@@ -386,6 +386,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> list[ItemCls]:
         """Fetch all records from library for given provider."""
         query_parts = []
+        query_params = {"prov_id": provider_instance_id_or_domain}
         prov_ids_str = str(tuple(provider_item_ids or ()))
         if prov_ids_str.endswith(",)"):
             prov_ids_str = prov_ids_str.replace(",)", ")")
@@ -397,15 +398,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         else:
             # provider filtered response
             query_parts.append(
-                f"(provider_mappings.provider_instance = '{provider_instance_id_or_domain}' "
-                f"OR provider_mappings.provider_domain = '{provider_instance_id_or_domain}')"
+                "(provider_mappings.provider_instance = :prov_id "
+                "OR provider_mappings.provider_domain = :prov_id)"
             )
             if provider_item_ids:
                 query_parts.append(f"provider_mappings.provider_item_id in {prov_ids_str}")
 
         # build final query
         query = "WHERE " + " AND ".join(query_parts)
-        paged_list = await self.library_items(limit=limit, offset=offset, extra_query=query)
+        paged_list = await self.library_items(
+            limit=limit, offset=offset, extra_query=query, extra_query_params=query_params
+        )
         return paged_list.items
 
     async def iter_library_items_by_prov_id(

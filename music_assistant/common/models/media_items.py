@@ -274,6 +274,10 @@ class _MediaItemBase(DataClassDictMixin):
 
     def __post_init__(self):
         """Call after init."""
+        if not self.name:
+            # we've got some reports where the name was empty, causing weird issues.
+            # e.g. here: https://github.com/music-assistant/hass-music-assistant/issues/1515
+            self.name = "[Unknown]"
         if not self.uri:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
@@ -325,6 +329,7 @@ class MediaItem(_MediaItemBase):
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
+    position: int | None = None  # required for playlist tracks, optional for all other
     # timestamps to determine when the item was added/modified to the db
     timestamp_added: int = 0
     timestamp_modified: int = 0
@@ -423,7 +428,6 @@ class Track(MediaItem):
     album: Album | ItemMapping | None = None  # optional
     disc_number: int | None = None  # required for album tracks
     track_number: int | None = None  # required for album tracks
-    position: int | None = None  # required for playlist tracks
 
     def __hash__(self):
         """Return custom hash."""
