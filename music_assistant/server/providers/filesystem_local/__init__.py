@@ -232,6 +232,9 @@ class LocalFileSystemProvider(FileSystemProviderBase):
             all_uris: list[str] = []
             skipped_lines = 0
             for playlist_line in playlist_data.split("\n"):
+                playlist_line = playlist_line.strip()  # noqa: PLW2901
+                if not playlist_line:
+                    continue
                 if "://" not in playlist_line:
                     skipped_lines += 1
                     self.logger.debug("Ignoring line in migration playlist: %s", playlist_line)
