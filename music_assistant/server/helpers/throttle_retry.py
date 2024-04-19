@@ -30,7 +30,7 @@ class AsyncThrottleWithRetryContextManager:
         return self
 
     async def __aexit__(self, exc_type, exc, tb):
-        """Release the throttle. If a RetriesExhausted occurrs, re-raise it."""
+        """Release the throttle. If a RetriesExhausted occurs, re-raise it."""
         self.throttler.flush()
         if isinstance(exc_type, RetriesExhausted):
             raise exc
@@ -42,9 +42,7 @@ class AsyncThrottleWithRetryContextManager:
             try:
                 return await func(*args, **kwargs)
             except ResourceTemporarilyUnavailable as e:
-                LOGGER.warning(
-                    f"Attempt {attempt + 1}/{self.retry_attempts} failed: {e}"
-                )
+                LOGGER.warning(f"Attempt {attempt + 1}/{self.retry_attempts} failed: {e}")
                 if attempt < self.retry_attempts - 1:
                     LOGGER.warning(f"Retrying in {backoff_time} seconds...")
                     await asyncio.sleep(backoff_time)
