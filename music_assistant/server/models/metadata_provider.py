@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import ProviderFeature
@@ -47,7 +46,7 @@ class MetadataProvider(Provider):
         if ProviderFeature.TRACK_METADATA in self.supported_features:
             raise NotImplementedError
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
 

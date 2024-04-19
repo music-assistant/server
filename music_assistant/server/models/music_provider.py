@@ -264,7 +264,7 @@ class MusicProvider(Provider):
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
         """Handle callback when an item completed streaming."""
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
 

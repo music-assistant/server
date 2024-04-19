@@ -300,7 +300,7 @@ class PlexProvider(MusicProvider):
         """
         return False
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes:
         """Return the full image URL including the auth token."""
         return self._plex_server.url(path, True)
 

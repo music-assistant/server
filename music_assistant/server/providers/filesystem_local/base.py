@@ -649,7 +649,7 @@ class FileSystemProviderBase(MusicProvider):
         async for chunk in self.read_file_content(streamdetails.item_id, seek_bytes):
             yield chunk
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
 
@@ -657,7 +657,9 @@ class FileSystemProviderBase(MusicProvider):
         a string with an http(s) URL or local path that is accessible from the server.
         """
         file_item = await self.resolve(path)
-        return file_item.local_path or self.read_file_content(file_item.absolute_path)
+        if file_item.local_path:
+            return file_item.local_path
+        return file_item.absolute_path
 
     async def _parse_track(self, file_item: FileSystemItem) -> Track:
         """Get full track details by id."""
