@@ -37,7 +37,6 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
-    CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
@@ -393,11 +392,8 @@ async def get_stream_details(
         streamdetails.loudness = await mass.music.get_track_loudness(
             streamdetails.item_id, streamdetails.provider
         )
-    if streamdetails.target_loudness is not None:
-        streamdetails.target_loudness = streamdetails.target_loudness
-    elif (
-        player_settings := await mass.config.get_player_config(streamdetails.queue_id)
-    ) and player_settings.get_value(CONF_VOLUME_NORMALIZATION):
+    player_settings = await mass.config.get_player_config(streamdetails.queue_id)
+    if player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET):
         streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
     else:
         streamdetails.target_loudness = None

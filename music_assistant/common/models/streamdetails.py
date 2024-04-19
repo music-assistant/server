@@ -69,7 +69,6 @@ class StreamDetails(DataClassDictMixin):
         d.pop("seconds_streamed", None)
         d.pop("seek_position", None)
         d.pop("fade_in", None)
-        d.pop("target_loudness", None)
         return d
 
     @property
