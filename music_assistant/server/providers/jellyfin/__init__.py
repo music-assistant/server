@@ -34,23 +34,21 @@ from music_assistant.common.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
 )
+from music_assistant.common.models.media_items import Album
+from music_assistant.common.models.media_items import Album as JellyfinAlbum
+from music_assistant.common.models.media_items import AlbumTrack
+from music_assistant.common.models.media_items import Artist
+from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import (
-    Album,
-    AlbumTrack,
-    Artist,
     AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemImage,
-    Playlist,
-    PlaylistTrack,
-    ProviderMapping,
-    SearchResults,
-    Track,
 )
-from music_assistant.common.models.media_items import Album as JellyfinAlbum
-from music_assistant.common.models.media_items import Artist as JellyfinArtist
+from music_assistant.common.models.media_items import Playlist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
+from music_assistant.common.models.media_items import PlaylistTrack, ProviderMapping, SearchResults
+from music_assistant.common.models.media_items import Track
 from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
 
@@ -183,13 +181,15 @@ class JellyfinProvider(MusicProvider):
                     jellyfin_server_url, jellyfin_server_user, jellyfin_server_password
                 )
                 credentials = client.auth.credentials.get_credentials()
+                if not credentials["Servers"]:
+                    raise IndexError("No servers found")
                 server = credentials["Servers"][0]
                 server["username"] = jellyfin_server_user
                 _jellyfin_server = client
                 # json.dumps(server)
-            except MusicAssistantError as err:
-                msg = "Authentication failed: %s", str(err)
-                raise LoginFailed(msg)
+            except Exception as err:
+                msg = f"Authentication failed: {err}"
+                raise LoginFailed(msg) from err
             return _jellyfin_server
 
         self._jellyfin_server = await self._run_async(connect)
