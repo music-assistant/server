@@ -11,8 +11,10 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
 
 
-def query_params(query: str, params: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
     """Extend query parameters support."""
+    if params is None:
+        return (query, params)
     count = 0
     result_query = query
     result_params = {}
