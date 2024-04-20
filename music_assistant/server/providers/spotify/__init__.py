@@ -303,7 +303,7 @@ class SpotifyProvider(MusicProvider):
     async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
         """Get all album tracks for given album id."""
         return [
-            await self._parse_track(item)
+            AlbumTrack.from_track(await self._parse_track(item))
             for item in await self._get_all_items(f"albums/{prov_album_id}/tracks")
             if item["id"]
         ]
@@ -322,9 +322,8 @@ class SpotifyProvider(MusicProvider):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
             # use count as position
-            item["track"]["position"] = count
             track = await self._parse_track(item["track"])
-            yield track
+            yield PlaylistTrack.from_track(track, position=count)
             count += 1
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
@@ -525,23 +524,10 @@ class SpotifyProvider(MusicProvider):
         self,
         track_obj: dict[str, Any],
         artist=None,
-    ) -> Track | AlbumTrack | PlaylistTrack:
+    ) -> Track:
         """Parse spotify track object to generic layout."""
         name, version = parse_title_and_version(track_obj["name"])
-        if "position" in track_obj:
-            track_class = PlaylistTrack
-            extra_init_kwargs = {"position": track_obj["position"]}
-        elif "disc_number" in track_obj and "track_number" in track_obj:
-            track_class = AlbumTrack
-            extra_init_kwargs = {
-                "disc_number": track_obj["disc_number"],
-                "track_number": track_obj["track_number"],
-            }
-        else:
-            track_class = Track
-            extra_init_kwargs = {}
-
-        track = track_class(
+        track = Track(
             item_id=track_obj["id"],
             provider=self.domain,
             name=name,
@@ -560,7 +546,8 @@ class SpotifyProvider(MusicProvider):
                     available=not track_obj["is_local"] and track_obj["is_playable"],
                 )
             },
-            **extra_init_kwargs,
+            disc_number=track_obj.get("disc_number"),
+            track_number=track_obj.get("track_number"),
         )
         if isrc := track_obj.get("external_ids", {}).get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))

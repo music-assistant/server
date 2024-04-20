@@ -6,7 +6,6 @@ from typing import TYPE_CHECKING
 
 from asyncio_throttle import Throttler
 
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
@@ -102,12 +101,12 @@ class TuneInProvider(MusicProvider):
         ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
+                if "unavailable" in item.get("key", ""):
+                    continue
+                if not item.get("is_available", True):
+                    continue
                 if item_type == "audio":
                     if "preset_id" not in item:
-                        continue
-                    if "- Not Supported" in item.get("name", ""):
-                        continue
-                    if "- Not Supported" in item.get("text", ""):
                         continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
@@ -195,16 +194,13 @@ class TuneInProvider(MusicProvider):
                         bit_rate=bit_rate,
                     ),
                     details=url,
+                    available=details.get("is_available", True),
                 )
             },
         )
         # preset number is used for sorting (not present at stream time)
-        preset_number = details.get("preset_number")
-        if preset_number and folder:
-            radio.sort_name = f'{folder}-{details["preset_number"]}'
-        elif preset_number:
-            radio.sort_name = details["preset_number"]
-        radio.sort_name += create_sort_name(name)
+        preset_number = details.get("preset_number", 0)
+        radio.position = preset_number
         if "text" in details:
             radio.metadata.description = details["text"]
         # images

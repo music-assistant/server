@@ -216,19 +216,19 @@ class ArtistsController(MediaControllerBase[Artist]):
         db_id = int(item_id)  # ensure integer
         # recursively also remove artist albums
         for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id FROM {DB_TABLE_ALBUMS} WHERE artists LIKE '%\"{db_id}\"%'",
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {db_id}",
             limit=5000,
         ):
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
+                await self.mass.music.albums.remove_item_from_library(db_row["album_id"])
 
         # recursively also remove artist tracks
         for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT item_id FROM {DB_TABLE_TRACKS} WHERE artists LIKE '%\"{db_id}\"%'",
+            f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {db_id}",
             limit=5000,
         ):
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.tracks.remove_item_from_library(db_row["item_id"])
+                await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
 
         # delete the artist itself from db
         await super().remove_item_from_library(db_id)
@@ -287,11 +287,17 @@ class ArtistsController(MediaControllerBase[Artist]):
                 provider_instance_id_or_domain,
             ):
                 query = (
-                    f"WHERE trackartists.artist_id = {db_artist.item_id} AND "
-                    f'(provider_mappings.provider_domain = "{provider_instance_id_or_domain}" OR '
-                    f'provider_mappings.provider_instance = "{provider_instance_id_or_domain}")'
+                    "WHERE trackartists.artist_id = :artist_id AND "
+                    "(provider_mappings.provider_domain = :prov_id OR "
+                    "provider_mappings.provider_instance = :prov_id)"
                 )
-                paged_list = await self.mass.music.tracks.library_items(extra_query=query)
+                query_params = {
+                    "artist_id": db_artist.item_id,
+                    "prov_id": provider_instance_id_or_domain,
+                }
+                paged_list = await self.mass.music.tracks.library_items(
+                    extra_query=query, extra_query_params=query_params
+                )
                 return paged_list.items
         # store (serializable items) in cache
         if prov.is_streaming_provider:

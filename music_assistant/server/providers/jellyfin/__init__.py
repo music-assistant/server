@@ -28,12 +28,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-    MusicAssistantError,
-)
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     AlbumTrack,
@@ -183,13 +178,15 @@ class JellyfinProvider(MusicProvider):
                     jellyfin_server_url, jellyfin_server_user, jellyfin_server_password
                 )
                 credentials = client.auth.credentials.get_credentials()
+                if not credentials["Servers"]:
+                    raise IndexError("No servers found")
                 server = credentials["Servers"][0]
                 server["username"] = jellyfin_server_user
                 _jellyfin_server = client
                 # json.dumps(server)
-            except MusicAssistantError as err:
-                msg = "Authentication failed: %s", str(err)
-                raise LoginFailed(msg)
+            except Exception as err:
+                msg = f"Authentication failed: {err}"
+                raise LoginFailed(msg) from err
             return _jellyfin_server
 
         self._jellyfin_server = await self._run_async(connect)
@@ -338,7 +335,10 @@ class JellyfinProvider(MusicProvider):
                     current_jellyfin_album[ITEM_KEY_ALBUM_ARTIST],
                 )
             )
-        elif len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]) >= 1:
+        elif (
+            ITEM_KEY_ARTIST_ITEMS in current_jellyfin_album
+            and len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]) >= 1
+        ):
             num_artists = len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS])
             for i in range(num_artists):
                 album.artists.append(

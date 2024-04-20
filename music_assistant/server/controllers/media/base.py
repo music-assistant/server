@@ -47,7 +47,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             SELECT
                 {self.db_table}.*,
                 json_group_array(
-                    json_object(
+                    DISTINCT json_object(
                         'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
                         'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
                         'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
@@ -386,26 +386,30 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> list[ItemCls]:
         """Fetch all records from library for given provider."""
         query_parts = []
-        prov_ids_str = str(tuple(provider_item_ids or ()))
-        if prov_ids_str.endswith(",)"):
-            prov_ids_str = prov_ids_str.replace(",)", ")")
+        query_params = {
+            "prov_id": provider_instance_id_or_domain,
+        }
 
         if provider_instance_id_or_domain == "library":
             # request for specific library id's
             if provider_item_ids:
-                query_parts.append(f"{self.db_table}.item_id in {prov_ids_str}")
+                query_parts.append(f"{self.db_table}.item_id in :item_ids")
+                query_params["item_ids"] = provider_item_ids
         else:
             # provider filtered response
             query_parts.append(
-                f"(provider_mappings.provider_instance = '{provider_instance_id_or_domain}' "
-                f"OR provider_mappings.provider_domain = '{provider_instance_id_or_domain}')"
+                "(provider_mappings.provider_instance = :prov_id "
+                "OR provider_mappings.provider_domain = :prov_id)"
             )
             if provider_item_ids:
-                query_parts.append(f"provider_mappings.provider_item_id in {prov_ids_str}")
+                query_parts.append("provider_mappings.provider_item_id in :item_ids")
+                query_params["item_ids"] = provider_item_ids
 
         # build final query
         query = "WHERE " + " AND ".join(query_parts)
-        paged_list = await self.library_items(limit=limit, offset=offset, extra_query=query)
+        paged_list = await self.library_items(
+            limit=limit, offset=offset, extra_query=query, extra_query_params=query_params
+        )
         return paged_list.items
 
     async def iter_library_items_by_prov_id(
@@ -554,7 +558,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             },
         )
 
-        # update the item in db (provider_mappings column only)
+        # update the item's provider mappings (and check if we still have any)
         library_item.provider_mappings = {
             x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
         }
