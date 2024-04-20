@@ -558,7 +558,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             },
         )
 
-        # update the item in db (provider_mappings column only)
+        # update the item's provider mappings (and check if we still have any)
         library_item.provider_mappings = {
             x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
         }

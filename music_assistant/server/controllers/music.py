@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 from collections.abc import AsyncGenerator
@@ -704,7 +705,12 @@ class MusicController(CoreController):
                 except Exception as err:
                     # we dont want the whole removal process to stall on one item
                     # so in case of an unexpected error, we log and move on.
-                    self.logger.warning("Error while removing %s: %s", item.uri, str(err))
+                    self.logger.warning(
+                        "Error while removing %s: %s",
+                        item.uri,
+                        str(err),
+                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                    )
                     errors += 1
 
         if errors == 0:
