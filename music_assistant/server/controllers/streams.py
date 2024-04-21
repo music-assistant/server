@@ -37,6 +37,7 @@ from music_assistant.constants import (
     CONF_CROSSFADE_DURATION,
     CONF_OUTPUT_CHANNELS,
     CONF_PUBLISH_IP,
+    CONF_SAMPLE_RATES,
     SILENCE_FILE,
 )
 from music_assistant.server.helpers.audio import LOGGER as AUDIO_LOGGER
@@ -254,9 +255,9 @@ class StreamsController(CoreController):
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
-            queue_player=queue_player,
+            player=queue_player,
             default_sample_rate=queue_item.streamdetails.audio_format.sample_rate,
-            default_bit_depth=24,  # always prefer 24 bits to prevent dithering
+            default_bit_depth=queue_item.streamdetails.audio_format.bit_depth,
         )
         # prepare request, add some DLNA/UPNP compatible headers
         headers = {
@@ -320,7 +321,7 @@ class StreamsController(CoreController):
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
-            queue_player=queue_player,
+            player=queue_player,
             default_sample_rate=FLOW_DEFAULT_SAMPLE_RATE,
             default_bit_depth=24,  # always prefer 24 bits to prevent dithering
         )
@@ -352,18 +353,13 @@ class StreamsController(CoreController):
         # all checks passed, start streaming!
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
 
-        # collect player specific ffmpeg args to re-encode the source PCM stream
-        pcm_format = AudioFormat(
-            content_type=ContentType.from_bit_depth(output_format.bit_depth),
-            sample_rate=output_format.sample_rate,
-            bit_depth=output_format.bit_depth,
-            channels=2,
-        )
+        # select the highest possible PCM settings for this player
+        flow_pcm_format = await self._select_flow_format(queue_player)
         async for chunk in get_ffmpeg_stream(
             audio_input=self.get_flow_stream(
-                queue=queue, start_queue_item=start_queue_item, pcm_format=pcm_format
+                queue=queue, start_queue_item=start_queue_item, pcm_format=flow_pcm_format
             ),
-            input_format=pcm_format,
+            input_format=flow_pcm_format,
             output_format=output_format,
             filter_params=get_player_filter_params(self.mass, queue_player.player_id),
             chunk_size=icy_meta_interval if enable_icy else None,
@@ -762,10 +758,10 @@ class StreamsController(CoreController):
                 collect_log_history=True,
                 logger=logger,
             ) as ffmpeg_proc:
-                async for chunk in ffmpeg_proc.iter_any(pcm_format.pcm_sample_size):
+                async for chunk in ffmpeg_proc.iter_chunked(pcm_format.pcm_sample_size):
                     bytes_sent += len(chunk)
                     yield chunk
-                    del chunk
+                    # del chunk
                 finished = True
         finally:
             if finished and not ffmpeg_proc.closed:
@@ -829,12 +825,18 @@ class StreamsController(CoreController):
     async def _get_output_format(
         self,
         output_format_str: str,
-        queue_player: Player,
+        player: Player,
         default_sample_rate: int,
         default_bit_depth: int,
     ) -> AudioFormat:
         """Parse (player specific) output format details for given format string."""
-        content_type = ContentType.try_parse(output_format_str)
+        content_type: ContentType = ContentType.try_parse(output_format_str)
+        supported_rates_conf = await self.mass.config.get_player_config_value(
+            player.player_id, CONF_SAMPLE_RATES
+        )
+        supported_sample_rates: tuple[int] = tuple(x[0] for x in supported_rates_conf)
+        supported_bit_depths: tuple[int] = tuple(x[1] for x in supported_rates_conf)
+        player_max_bit_depth = max(supported_bit_depths)
         if content_type.is_pcm() or content_type == ContentType.WAV:
             # parse pcm details from format string
             output_sample_rate, output_bit_depth, output_channels = parse_pcm_info(
@@ -844,11 +846,13 @@ class StreamsController(CoreController):
                 # resolve generic pcm type
                 content_type = ContentType.from_bit_depth(output_bit_depth)
         else:
-            output_sample_rate = min(default_sample_rate, queue_player.max_sample_rate)
-            player_max_bit_depth = 24 if queue_player.supports_24bit else 16
+            if default_sample_rate in supported_sample_rates:
+                output_sample_rate = default_sample_rate
+            else:
+                output_sample_rate = min(supported_sample_rates)
             output_bit_depth = min(default_bit_depth, player_max_bit_depth)
             output_channels_str = self.mass.config.get_raw_player_config_value(
-                queue_player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
+                player.player_id, CONF_OUTPUT_CHANNELS, "stereo"
             )
             output_channels = 1 if output_channels_str != "stereo" else 2
         return AudioFormat(
@@ -857,4 +861,27 @@ class StreamsController(CoreController):
             bit_depth=output_bit_depth,
             channels=output_channels,
             output_format_str=output_format_str,
+        )
+
+    async def _select_flow_format(
+        self,
+        player: Player,
+    ) -> AudioFormat:
+        """Parse (player specific) flow stream PCM format."""
+        supported_rates_conf = await self.mass.config.get_player_config_value(
+            player.player_id, CONF_SAMPLE_RATES
+        )
+        supported_sample_rates: tuple[int] = tuple(x[0] for x in supported_rates_conf)
+        supported_bit_depths: tuple[int] = tuple(x[1] for x in supported_rates_conf)
+        player_max_bit_depth = max(supported_bit_depths)
+        for sample_rate in (192000, 96000, 48000, 44100):
+            if sample_rate in supported_sample_rates:
+                output_sample_rate = sample_rate
+                break
+        output_bit_depth = min(24, player_max_bit_depth)
+        return AudioFormat(
+            content_type=ContentType.from_bit_depth(output_bit_depth),
+            sample_rate=output_sample_rate,
+            bit_depth=output_bit_depth,
+            channels=2,
         )

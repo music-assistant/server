@@ -21,6 +21,7 @@ from sonos_websocket.exception import SonosWebsocketError
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_SAMPLE_RATES,
     ConfigEntry,
     ConfigValueType,
 )
@@ -61,7 +62,7 @@ SUBSCRIPTION_TIMEOUT = 1200
 ZGS_SUBSCRIPTION_TIMEOUT = 2
 
 
-HIRES_MODELS = (
+S2_MODELS = (
     "Sonos Roam",
     "Sonos Arc",
     "Sonos Beam",
@@ -74,6 +75,29 @@ HIRES_MODELS = (
     "SYMFONISK Table Lamp",
     "Sonos Era 100",
     "Sonos Era 300",
+)
+
+CONF_ENTRY_SAMPLE_RATES_SONOS_S2 = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
+        "default_value": [
+            (44100, 16),
+            (44100, 24),
+            (48000, 16),
+            (48000, 24),
+        ],
+        "hidden": True,
+    }
+)
+CONF_ENTRY_SAMPLE_RATES_SONOS_S1 = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
+        "default_value": [
+            (44100, 16),
+            (48000, 16),
+        ],
+        "hidden": True,
+    }
 )
 
 
@@ -183,6 +207,7 @@ class SonosPlayerProvider(PlayerProvider):
         if not (sonos_player := self.sonosplayers.get(player_id)):
             # most probably a syncgroup
             return (*base_entries, CONF_ENTRY_CROSSFADE)
+        is_s2 = sonos_player.soco.speaker_info["model_name"] in S2_MODELS
         return (
             *base_entries,
             CONF_ENTRY_CROSSFADE,
@@ -215,6 +240,7 @@ class SonosPlayerProvider(PlayerProvider):
                 description="Enable loudness compensation on the Sonos player",
                 category="advanced",
             ),
+            CONF_ENTRY_SAMPLE_RATES_SONOS_S2 if is_s2 else CONF_ENTRY_SAMPLE_RATES_SONOS_S1,
         )
 
     def on_player_config_changed(
@@ -504,7 +530,6 @@ class SonosPlayerProvider(PlayerProvider):
         if soco.uid not in self.boot_counts:
             self.boot_counts[soco.uid] = soco.boot_seqnum
         self.logger.debug("Adding new player: %s", speaker_info)
-        support_hires = speaker_info["model_name"] in HIRES_MODELS
         if not (mass_player := self.mass.players.get(soco.uid)):
             mass_player = Player(
                 player_id=soco.uid,
@@ -519,8 +544,6 @@ class SonosPlayerProvider(PlayerProvider):
                     address=soco.ip_address,
                     manufacturer="SONOS",
                 ),
-                max_sample_rate=48000 if support_hires else 44100,
-                supports_24bit=support_hires,
             )
         self.sonosplayers[player_id] = sonos_player = SonosPlayer(
             self,

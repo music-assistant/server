@@ -65,15 +65,14 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
     label="Action when a track is missing the Albumartist ID3 tag",
-    default_value="skip",
-    description="Music Assistant prefers information stored in ID3 tags and only uses"
-    " online sources for additional metadata. This means that the ID3 tags need to be "
-    "accurate, preferably tagged with MusicBrainz Picard.",
+    default_value="folder_name",
+    help_link="https://music-assistant.io/music-providers/filesystem/#tagging-files",
     required=False,
     options=(
         ConfigValueOption("Skip track and log warning", "skip"),
         ConfigValueOption("Use Track artist(s)", "track_artist"),
         ConfigValueOption("Use Various Artists", "various_artists"),
+        ConfigValueOption("Use Folder name", "folder_name"),
     ),
 )
 
@@ -762,6 +761,15 @@ class FileSystemProviderBase(MusicProvider):
                         await self._parse_artist(name=track_artist_str)
                         for track_artist_str in tags.artists
                     ]
+                elif fallback_action == "folder" and album_dir:
+                    possible_artist_folder = os.path.dirname(album_dir)
+                    self.logger.warning(
+                        "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
+                        file_item.path,
+                        possible_artist_folder,
+                    )
+                    album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
+                    album_artists = [await self._parse_artist(name=album_artist_str)]
                 # fallback to just log error and add track without album
                 else:
                     # default action is to skip the track

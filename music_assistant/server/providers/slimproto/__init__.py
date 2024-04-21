@@ -636,17 +636,10 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                     PlayerFeature.ENQUEUE_NEXT,
                 ),
-                max_sample_rate=int(slimplayer.max_sample_rate),
-                supports_24bit=int(slimplayer.max_sample_rate) > 44100,
                 can_sync_with=tuple(
                     x.player_id for x in self.slimproto.players if x.player_id != player_id
                 ),
             )
-            if slimplayer.device_type == "squeezeesp32":
-                # squeezeesp32 with default settings - override with sane defaults
-                if slimplayer.max_sample_rate == 192000:
-                    player.max_sample_rate = 44100
-                player.supports_24bit = False
             self.mass.players.register_or_update(player)
 
         # update player state on player events

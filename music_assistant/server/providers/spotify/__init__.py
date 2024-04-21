@@ -48,6 +48,7 @@ from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.app_vars import app_var
 
 # pylint: enable=no-name-in-module
+from music_assistant.server.helpers.audio import get_chunksize
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -432,8 +433,9 @@ class SpotifyProvider(MusicProvider):
             args += ["--start-position", str(int(seek_position))]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
+        chunk_size = get_chunksize(streamdetails.audio_format)
         async with AsyncProcess(args, stdout=True, name="librespot") as librespot_proc:
-            async for chunk in librespot_proc.iter_any():
+            async for chunk in librespot_proc.iter_any(chunk_size):
                 yield chunk
 
     async def _parse_artist(self, artist_obj):

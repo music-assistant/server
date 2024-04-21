@@ -90,12 +90,6 @@ class Player(DataClassDictMixin):
     # also referred to as "sync master"
     synced_to: str | None = None
 
-    # max_sample_rate: maximum supported sample rate the player supports
-    max_sample_rate: int = 48000
-
-    # supports_24bit: bool if player supports 24bits (hi res) audio
-    supports_24bit: bool = True
-
     # enabled_by_default: if the player is enabled by default
     # can be used by a player provider to exclude some sort of players
     enabled_by_default: bool = True

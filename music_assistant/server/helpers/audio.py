@@ -796,7 +796,11 @@ async def get_ffmpeg_stream(
         logger=logger,
     ) as ffmpeg_proc:
         # read final chunks from stdout
-        iterator = ffmpeg_proc.iter_chunked(chunk_size) if chunk_size else ffmpeg_proc.iter_any()
+        iterator = (
+            ffmpeg_proc.iter_chunked(chunk_size)
+            if chunk_size
+            else ffmpeg_proc.iter_any(get_chunksize(output_format))
+        )
         async for chunk in iterator:
             yield chunk
 
@@ -873,7 +877,7 @@ async def get_silence(
         "-",
     ]
     async with AsyncProcess(args, stdout=True) as ffmpeg_proc:
-        async for chunk in ffmpeg_proc.iter_any():
+        async for chunk in ffmpeg_proc.iter_chunked():
             yield chunk
 
 

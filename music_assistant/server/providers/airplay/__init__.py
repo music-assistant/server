@@ -853,8 +853,6 @@ class AirplayProvider(PlayerProvider):
                 PlayerFeature.SYNC,
                 PlayerFeature.VOLUME_SET,
             ),
-            max_sample_rate=44100,
-            supports_24bit=False,
             can_sync_with=tuple(x for x in self._players if x != player_id),
             volume_level=volume,
         )

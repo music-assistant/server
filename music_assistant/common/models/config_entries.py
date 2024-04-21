@@ -28,6 +28,7 @@ from music_assistant.constants import (
     CONF_ICON,
     CONF_LOG_LEVEL,
     CONF_OUTPUT_CHANNELS,
+    CONF_SAMPLE_RATES,
     CONF_SYNC_ADJUST,
     CONF_TTS_PRE_ANNOUNCE,
     CONF_VOLUME_NORMALIZATION,
@@ -42,13 +43,24 @@ LOGGER = logging.getLogger(__name__)
 ENCRYPT_CALLBACK: callable[[str], str] | None = None
 DECRYPT_CALLBACK: callable[[str], str] | None = None
 
-ConfigValueType = str | int | float | bool | list[str] | list[int] | None
+ConfigValueType = (
+    str
+    | int
+    | float
+    | bool
+    | tuple[int, int]
+    | list[str]
+    | list[int]
+    | list[tuple[int, int]]
+    | None
+)
 
 ConfigEntryTypeMap = {
     ConfigEntryType.BOOLEAN: bool,
     ConfigEntryType.STRING: str,
     ConfigEntryType.SECURE_STRING: str,
     ConfigEntryType.INTEGER: int,
+    ConfigEntryType.INTEGER_TUPLE: tuple[int, int],
     ConfigEntryType.FLOAT: float,
     ConfigEntryType.LABEL: str,
     ConfigEntryType.DIVIDER: str,
@@ -527,4 +539,34 @@ CONF_ENTRY_PLAYER_ICON = ConfigEntry(
 
 CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
     {**CONF_ENTRY_PLAYER_ICON.to_dict(), "default_value": "mdi-speaker-multiple"}
+)
+
+CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
+    key=CONF_SAMPLE_RATES,
+    type=ConfigEntryType.INTEGER_TUPLE,
+    options=[
+        ConfigValueOption("44.1kHz / 16 bits", (44100, 16)),
+        ConfigValueOption("44.1kHz / 24 bits", (44100, 24)),
+        ConfigValueOption("48kHz / 16 bits", (48000, 16)),
+        ConfigValueOption("48kHz / 16 bits", (48000, 24)),
+        ConfigValueOption("88.2kHz / 16 bits", (88200, 16)),
+        ConfigValueOption("88.2kHz / 24 bits", (88200, 24)),
+        ConfigValueOption("96kHz / 16 bits", (96000, 16)),
+        ConfigValueOption("96kHz / 24 bits", (96000, 24)),
+        ConfigValueOption("176.4kHz / 16 bits", (176400, 16)),
+        ConfigValueOption("176.4kHz / 24 bits", (176400, 24)),
+        ConfigValueOption("192kHz / 16 bits", (192000, 16)),
+        ConfigValueOption("192kHz / 24 bits", (192000, 24)),
+        ConfigValueOption("352.8kHz / 16 bits", (352800, 16)),
+        ConfigValueOption("352.8kHz / 24 bits", (352800, 24)),
+        ConfigValueOption("384kHz / 16 bits", (384000, 16)),
+        ConfigValueOption("384kHz / 24 bits", (384000, 24)),
+    ],
+    default_value=[(44100, 16), (48000, 16)],
+    required=True,
+    multi_value=True,
+    label="Sample rates supported by this player",
+    category="advanced",
+    description="The sample rates (and bit depths) supported by this player.\n"
+    "Content with unsupported sample rates will be automatically resampled.",
 )
