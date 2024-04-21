@@ -52,6 +52,11 @@ def get_arguments():
         help="Provide logging level. Example --log-level debug, "
         "default=info, possible=(critical, error, warning, info, debug, verbose)",
     )
+    parser.add_argument(
+        "--safe-mode",
+        action=argparse.BooleanOptionalAction,
+        help="Start in safe mode (core controllers only, no providers)",
+    )
     return parser.parse_args()
 
 
@@ -183,10 +188,13 @@ def main() -> None:
     # prefer value in hass_options
     log_level = hass_options.get("log_level", args.log_level).upper()
     dev_mode = os.environ.get("PYTHONDEVMODE", "0") == "1"
+    safe_mode = bool(
+        args.safe_mode or hass_options.get("safe_mode") or os.environ.get("MASS_SAFE_MODE")
+    )
 
     # setup logger
     logger = setup_logger(data_dir, log_level)
-    mass = MusicAssistant(data_dir)
+    mass = MusicAssistant(data_dir, safe_mode)
 
     # enable alpine subprocess workaround
     _enable_posix_spawn()

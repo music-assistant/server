@@ -92,9 +92,10 @@ class MusicAssistant:
     streams: StreamsController
     _aiobrowser: AsyncServiceBrowser
 
-    def __init__(self, storage_path: str) -> None:
+    def __init__(self, storage_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
+        self.safe_mode = safe_mode
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
@@ -128,10 +129,11 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         LOGGER.info(
-            "Starting Music Assistant Server (%s) version %s - HA add-on: %s",
+            "Starting Music Assistant Server (%s) version %s - HA add-on: %s - Safe mode: %s",
             self.server_id,
             self.version,
             self.running_as_hass_addon,
+            self.safe_mode,
         )
         # setup other core controllers
         self.cache = CacheController(self)
@@ -160,7 +162,8 @@ class MusicAssistant:
         # setup discovery
         self.create_task(self._setup_discovery())
         # load providers
-        await self._load_providers()
+        if not self.safe_mode:
+            await self._load_providers()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
