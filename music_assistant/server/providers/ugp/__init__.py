@@ -18,6 +18,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
+    CONF_ENTRY_SAMPLE_RATES,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -52,6 +53,19 @@ if TYPE_CHECKING:
 
 UGP_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
+)
+
+CONF_ENTRY_SAMPLE_RATES_UGP = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
+        "default_value": [
+            (44100, 16),
+            (44100, 24),
+            (48000, 16),
+            (48000, 24),
+        ],
+        "hidden": True,
+    }
 )
 
 
@@ -137,6 +151,7 @@ class UniversalGroupProvider(PlayerProvider):
             ),
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
+            CONF_ENTRY_SAMPLE_RATES_UGP,
         )
 
     async def cmd_stop(self, player_id: str) -> None:

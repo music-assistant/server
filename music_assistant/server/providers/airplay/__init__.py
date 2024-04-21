@@ -26,6 +26,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CHANNELS,
+    CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
     ConfigValueType,
@@ -108,6 +109,17 @@ FALLBACK_VOLUME = 20
 
 AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
+)
+
+# airplay has fixed sample rate/bit depth so make this config entry static and hidden
+CONF_ENTRY_SAMPLE_RATES_AIRPLAY = ConfigEntry.from_dict(
+    {
+        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
+        "default_value": [
+            (44100, 16),
+        ],
+        "hidden": True,
+    }
 )
 
 
@@ -548,8 +560,13 @@ class AirplayProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if player_id not in self._players:
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+            return (
+                *base_entries,
+                CONF_ENTRY_CROSSFADE,
+                CONF_ENTRY_CROSSFADE_DURATION,
+                CONF_ENTRY_SAMPLE_RATES_AIRPLAY,
+            )
+        return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_AIRPLAY)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
