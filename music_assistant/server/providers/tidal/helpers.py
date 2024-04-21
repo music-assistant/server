@@ -24,11 +24,13 @@ from tidalapi.exceptions import (
     MetadataNotAvailable,
     ObjectNotFound,
     TooManyRequests,
-    URLNotAvailable,
 )
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 
 DEFAULT_LIMIT = 50
 LOGGER = logging.getLogger(__name__)
@@ -93,9 +95,12 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     def inner() -> TidalArtist:
         try:
             return TidalArtist(session, prov_artist_id)
-        except (ObjectNotFound, TooManyRequests) as err:
+        except ObjectNotFound as err:
             msg = f"Artist {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
@@ -106,9 +111,12 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
     def inner() -> list[TidalAlbum]:
         try:
             artist_obj = TidalArtist(session, prov_artist_id)
-        except (ObjectNotFound, TooManyRequests) as err:
+        except ObjectNotFound as err:
             msg = f"Artist {prov_artist_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
         else:
             all_albums = []
             albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
@@ -156,9 +164,12 @@ async def get_album(session: TidalSession, prov_album_id: str) -> TidalAlbum:
     def inner() -> TidalAlbum:
         try:
             return TidalAlbum(session, prov_album_id)
-        except (ObjectNotFound, TooManyRequests) as err:
+        except ObjectNotFound as err:
             msg = f"Album {prov_album_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
@@ -169,9 +180,12 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
     def inner() -> TidalTrack:
         try:
             return TidalTrack(session, prov_track_id)
-        except (ObjectNotFound, TooManyRequests) as err:
+        except ObjectNotFound as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
@@ -183,9 +197,12 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> str:
         try:
             track_url: str = TidalTrack(session, prov_track_id).get_url()
             return track_url
-        except (ObjectNotFound, TooManyRequests, URLNotAvailable) as err:
+        except ObjectNotFound as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
@@ -199,9 +216,12 @@ async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[Ti
                 limit=DEFAULT_LIMIT
             )
             return tracks
-        except (ObjectNotFound, TooManyRequests) as err:
+        except ObjectNotFound as err:
             msg = f"Album {prov_album_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
@@ -240,9 +260,12 @@ async def get_playlist(session: TidalSession, prov_playlist_id: str) -> TidalPla
     def inner() -> TidalPlaylist:
         try:
             return TidalPlaylist(session, prov_playlist_id)
-        except (ObjectNotFound, TooManyRequests) as err:
+        except ObjectNotFound as err:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
@@ -261,9 +284,12 @@ async def get_playlist_tracks(
                 limit=limit, offset=offset
             )
             return tracks
-        except (ObjectNotFound, TooManyRequests) as err:
+        except ObjectNotFound as err:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
@@ -305,9 +331,12 @@ async def get_similar_tracks(
                 limit=limit
             )
             return tracks
-        except (MetadataNotAvailable, ObjectNotFound, TooManyRequests) as err:
+        except (MetadataNotAvailable, ObjectNotFound) as err:
             msg = f"Track {prov_track_id} not found"
             raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
 
     return await asyncio.to_thread(inner)
 
