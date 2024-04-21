@@ -647,19 +647,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     },
                 )
         for provider_mapping in provider_mappings:
+            _dict = {
+                "media_type": self.media_type.value,
+                "item_id": db_id,
+                "provider_domain": provider_mapping.provider_domain,
+                "provider_instance": provider_mapping.provider_instance,
+                "provider_item_id": provider_mapping.item_id,
+                "available": provider_mapping.available,
+                "url": provider_mapping.url,
+                "audio_format": json_dumps(provider_mapping.audio_format),
+                "details": provider_mapping.details,
+            }
             await self.mass.music.database.insert_or_replace(
                 DB_TABLE_PROVIDER_MAPPINGS,
-                {
-                    "media_type": self.media_type.value,
-                    "item_id": db_id,
-                    "provider_domain": provider_mapping.provider_domain,
-                    "provider_instance": provider_mapping.provider_instance,
-                    "provider_item_id": provider_mapping.item_id,
-                    "available": provider_mapping.available,
-                    "url": provider_mapping.url,
-                    "audio_format": json_dumps(provider_mapping.audio_format),
-                    "details": provider_mapping.details,
-                },
+                _dict,
             )
 
     @staticmethod
@@ -671,6 +672,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         for key in JSON_KEYS:
             if key in db_row_dict and db_row_dict[key] not in (None, ""):
                 db_row_dict[key] = json_loads(db_row_dict[key])
+                if key == "provider_mappings":
+                    for prov_mapping_dict in db_row_dict[key]:
+                        prov_mapping_dict["available"] = bool(prov_mapping_dict["available"])
 
         if "favorite" in db_row_dict:
             db_row_dict["favorite"] = bool(db_row_dict["favorite"])

@@ -327,7 +327,6 @@ class AlbumsController(MediaControllerBase[Album]):
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
-
         full_album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
         # prefer cache items (if any) for streaming providers only
         cache_key = f"{prov.lookup_key}.albumtracks.{item_id}"
@@ -337,14 +336,13 @@ class AlbumsController(MediaControllerBase[Album]):
         ):
             return [AlbumTrack.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        items = []
-        for track in await prov.get_album_tracks(item_id):
-            assert isinstance(track, AlbumTrack)
-            # make sure that the (full) album is stored on the tracks
-            track.album = full_album
-            if not isinstance(full_album, ItemMapping) and full_album.metadata.images:
-                track.metadata.images = full_album.metadata.images
-            items.append(track)
+        items: list[AlbumTrack] = sorted(
+            [
+                AlbumTrack.from_track(track, full_album)
+                for track in await prov.get_album_tracks(item_id)
+            ],
+            key=lambda x: (x.disc_number, x.track_number),
+        )
         # store (serializable items) in cache
         if prov.is_streaming_provider:
             self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))

@@ -124,11 +124,13 @@ class ProviderMapping(DataClassDictMixin):
         """Call after init."""
         # having items for unavailable providers can have all sorts
         # of unpredictable results so ensure we have accurate availability status
-        if available_providers := get_global_cache_value("unique_providers"):
-            if TYPE_CHECKING:
-                available_providers = cast(set[str], available_providers)
-            if not available_providers.intersection({self.provider_domain, self.provider_instance}):
-                self.available = False
+        if not (available_providers := get_global_cache_value("unique_providers")):
+            self.available = False
+            return
+        if TYPE_CHECKING:
+            available_providers = cast(set[str], available_providers)
+        if not available_providers.intersection({self.provider_domain, self.provider_instance}):
+            self.available = False
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -474,7 +476,7 @@ class AlbumTrack(Track):
 
     @classmethod
     def from_track(
-        cls: Self,
+        cls: type,
         track: Track,
         album: Album | None = None,
         disc_number: int | None = None,
@@ -512,7 +514,7 @@ class PlaylistTrack(Track):
     position: int
 
     @classmethod
-    def from_track(cls: Self, track: Track, position: int | None = None) -> Self:
+    def from_track(cls: type, track: Track, position: int | None = None) -> Self:
         """Cast Track to PlaylistTrack."""
         if position is None:
             position = track.position
