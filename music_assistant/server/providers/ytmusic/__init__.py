@@ -303,10 +303,12 @@ class YoutubeMusicProvider(MusicProvider):
             return []
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
-            track_obj["disc_number"] = 0
-            track_obj["track_number"] = track_obj.get("trackNumber", idx)
             try:
-                track = await self._parse_track(track_obj=track_obj)
+                track = AlbumTrack.from_track(
+                    await self._parse_track(track_obj=track_obj),
+                    disc_number=0,
+                    track_number=track_obj.get("trackNumber", idx),
+                )
             except InvalidDataError:
                 continue
             tracks.append(track)
@@ -369,12 +371,11 @@ class YoutubeMusicProvider(MusicProvider):
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id
                 try:
-                    track_obj["position"] = index + 1
                     if track := await self._parse_track(track_obj):
-                        yield track
+                        yield PlaylistTrack.from_track(track, index + 1)
                 except InvalidDataError:
                     if track := await self.get_track(track_obj["videoId"]):
-                        yield PlaylistTrack.from_dict({**track.to_dict(), "position": index + 1})
+                        yield PlaylistTrack.from_track(track, index + 1)
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -726,25 +727,13 @@ class YoutubeMusicProvider(MusicProvider):
         playlist.metadata.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
-    async def _parse_track(self, track_obj: dict) -> Track | AlbumTrack | PlaylistTrack:
+    async def _parse_track(self, track_obj: dict) -> Track:
         """Parse a YT Track response to a Track model object."""
         if not track_obj.get("videoId"):
             msg = "Track is missing videoId"
             raise InvalidDataError(msg)
 
-        if "position" in track_obj:
-            track_class = PlaylistTrack
-            extra_init_kwargs = {"position": track_obj["position"]}
-        elif "disc_number" in track_obj and "track_number" in track_obj:
-            track_class = AlbumTrack
-            extra_init_kwargs = {
-                "disc_number": track_obj["disc_number"],
-                "track_number": track_obj["track_number"],
-            }
-        else:
-            track_class = Track
-            extra_init_kwargs = {}
-        track = track_class(
+        track = Track(
             item_id=track_obj["videoId"],
             provider=self.domain,
             name=track_obj["title"],
@@ -759,7 +748,6 @@ class YoutubeMusicProvider(MusicProvider):
                     ),
                 )
             },
-            **extra_init_kwargs,
         )
 
         if track_obj.get("artists"):

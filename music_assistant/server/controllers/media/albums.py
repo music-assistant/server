@@ -24,6 +24,7 @@ from music_assistant.common.models.media_items import (
     ItemMapping,
     MediaType,
     Track,
+    UniqueList,
 )
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
@@ -60,7 +61,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     {self.db_table}.*,
                     {DB_TABLE_ARTISTS}.sort_name AS sort_artist,
                     json_group_array(
-                        json_object(
+                        DISTINCT json_object(
                             'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
                             'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
                             'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
@@ -70,7 +71,7 @@ class AlbumsController(MediaControllerBase[Album]):
                             'details', {DB_TABLE_PROVIDER_MAPPINGS}.details
                         )) filter ( where {DB_TABLE_PROVIDER_MAPPINGS}.item_id is not null) as {DB_TABLE_PROVIDER_MAPPINGS},
                     json_group_array(
-                        json_object(
+                        DISTINCT json_object(
                             'item_id', {DB_TABLE_ARTISTS}.item_id,
                             'provider', 'library',
                             'name', {DB_TABLE_ARTISTS}.name,
@@ -115,7 +116,7 @@ class AlbumsController(MediaControllerBase[Album]):
             add_to_library=add_to_library,
         )
         # append artist details to full track item (resolve ItemMappings)
-        album_artists = []
+        album_artists = UniqueList()
         for artist in album.artists:
             if not isinstance(artist, ItemMapping):
                 album_artists.append(artist)
