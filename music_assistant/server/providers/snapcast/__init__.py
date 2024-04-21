@@ -21,9 +21,9 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_SAMPLE_RATES,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -57,15 +57,7 @@ CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
-CONF_ENTRY_SAMPLE_RATES_SNAPCAST = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_value": [
-            (44100, 16),
-        ],
-        "hidden": True,
-    }
-)
+CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
 
 SNAP_STREAM_STATUS_MAP = {
     "idle": PlayerState.IDLE,

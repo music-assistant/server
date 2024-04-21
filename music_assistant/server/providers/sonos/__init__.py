@@ -21,9 +21,9 @@ from sonos_websocket.exception import SonosWebsocketError
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
-    CONF_ENTRY_SAMPLE_RATES,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -77,28 +77,8 @@ S2_MODELS = (
     "Sonos Era 300",
 )
 
-CONF_ENTRY_SAMPLE_RATES_SONOS_S2 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_value": [
-            (44100, 16),
-            (44100, 24),
-            (48000, 16),
-            (48000, 24),
-        ],
-        "hidden": True,
-    }
-)
-CONF_ENTRY_SAMPLE_RATES_SONOS_S1 = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_value": [
-            (44100, 16),
-            (48000, 16),
-        ],
-        "hidden": True,
-    }
-)
+CONF_ENTRY_SAMPLE_RATES_SONOS_S2 = create_sample_rates_config_entry(48000, 24, 48000, 24, True)
+CONF_ENTRY_SAMPLE_RATES_SONOS_S1 = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
 
 
 async def setup(

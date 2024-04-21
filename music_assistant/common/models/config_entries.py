@@ -570,3 +570,24 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     description="The sample rates (and bit depths) supported by this player.\n"
     "Content with unsupported sample rates will be automatically resampled.",
 )
+
+
+def create_sample_rates_config_entry(
+    max_sample_rate: int,
+    max_bit_depth: int,
+    safe_max_sample_rate: int = 48000,
+    safe_max_bit_depth: int = 16,
+    hidden: bool = False,
+) -> ConfigEntry:
+    """Create sample rates config entry based on player specific helpers."""
+    conf_entry = ConfigEntry.from_dict(CONF_ENTRY_SAMPLE_RATES.to_dict())
+    conf_entry.options = []
+    conf_entry.default_value = []
+    conf_entry.hidden = hidden
+    for option in CONF_ENTRY_SAMPLE_RATES.options:
+        sample_rate, bit_depth = option.value
+        if sample_rate <= max_sample_rate and bit_depth <= max_bit_depth:
+            conf_entry.options.append(option)
+        if sample_rate <= safe_max_sample_rate and bit_depth <= safe_max_bit_depth:
+            conf_entry.default_value.append(option.value)
+    return conf_entry

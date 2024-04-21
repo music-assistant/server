@@ -26,10 +26,10 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_TREBLE,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CHANNELS,
-    CONF_ENTRY_SAMPLE_RATES,
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -112,15 +112,7 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 )
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
-CONF_ENTRY_SAMPLE_RATES_AIRPLAY = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_value": [
-            (44100, 16),
-        ],
-        "hidden": True,
-    }
-)
+CONF_ENTRY_SAMPLE_RATES_AIRPLAY = create_sample_rates_config_entry(44100, 16, 44100, 16, True)
 
 
 async def setup(

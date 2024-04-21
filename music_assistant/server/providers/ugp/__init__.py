@@ -18,10 +18,10 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
-    CONF_ENTRY_SAMPLE_RATES,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -55,18 +55,7 @@ UGP_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(24), sample_rate=48000, bit_depth=24
 )
 
-CONF_ENTRY_SAMPLE_RATES_UGP = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_value": [
-            (44100, 16),
-            (44100, 24),
-            (48000, 16),
-            (48000, 24),
-        ],
-        "hidden": True,
-    }
-)
+CONF_ENTRY_SAMPLE_RATES_UGP = create_sample_rates_config_entry(48000, 24, 48000, 24, True)
 
 
 async def setup(

@@ -29,6 +29,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ENFORCE_MP3,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -77,6 +78,7 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENFORCE_MP3,
+    create_sample_rates_config_entry(192000, 24, 96000, 24),
 )
 
 

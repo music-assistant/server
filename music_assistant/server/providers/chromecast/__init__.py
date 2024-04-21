@@ -20,9 +20,9 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
-    CONF_ENTRY_SAMPLE_RATES,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError
@@ -49,33 +49,12 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_DURATION,
 )
 
-CONF_ENTRY_SAMPLE_RATES_CAST = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_value": [
-            # Originally/officially cast supports 96k sample rate
-            # but it seems a (recent?) update broke this.
-            # For now only set safe default values and let the user try out
-            # higher values
-            (44100, 16),
-            (44100, 24),
-            (48000, 16),
-            (48000, 24),
-        ],
-    }
-)
-CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = ConfigEntry.from_dict(
-    {
-        **CONF_ENTRY_SAMPLE_RATES.to_dict(),
-        "default_values": [
-            # originally/officially cast supports 96k sample rate (even for groups)
-            # but it seems a (recent?) update broke this
-            # for now use 48k/16 as max sample rate to play safe
-            (44100, 16),
-            (48000, 16),
-        ],
-    }
-)
+# originally/officially cast supports 96k sample rate (even for groups)
+# but it seems a (recent?) update broke this ?!
+# For now only set safe default values and let the user try out higher values
+CONF_ENTRY_SAMPLE_RATES_CAST = create_sample_rates_config_entry(96000, 24, 48000, 24)
+CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(96000, 24, 44100, 16)
+
 
 MASS_APP_ID = "C35B0678"
 
