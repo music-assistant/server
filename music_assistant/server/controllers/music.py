@@ -28,7 +28,6 @@ from music_assistant.common.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
-    SetupFailedError,
 )
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
@@ -768,7 +767,7 @@ class MusicController(CoreController):
                 )
                 # restore backup file
                 await asyncio.to_thread(shutil.copyfile, db_path_backup, db_path)
-                raise SetupFailedError("Database migration failed") from err
+                raise RuntimeError("Database migration failed") from err
 
         # store current schema version
         await self.database.insert_or_replace(
