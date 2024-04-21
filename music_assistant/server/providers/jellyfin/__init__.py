@@ -28,27 +28,24 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    LoginFailed,
-    MediaNotFoundError,
-    MusicAssistantError,
-)
-from music_assistant.common.models.media_items import Album
-from music_assistant.common.models.media_items import Album as JellyfinAlbum
-from music_assistant.common.models.media_items import AlbumTrack
-from music_assistant.common.models.media_items import Artist
-from music_assistant.common.models.media_items import Artist as JellyfinArtist
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
+    Album,
+    AlbumTrack,
+    Artist,
     AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemImage,
+    Playlist,
+    PlaylistTrack,
+    ProviderMapping,
+    SearchResults,
+    Track,
 )
-from music_assistant.common.models.media_items import Playlist
+from music_assistant.common.models.media_items import Album as JellyfinAlbum
+from music_assistant.common.models.media_items import Artist as JellyfinArtist
 from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
-from music_assistant.common.models.media_items import PlaylistTrack, ProviderMapping, SearchResults
-from music_assistant.common.models.media_items import Track
 from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
 
@@ -338,7 +335,7 @@ class JellyfinProvider(MusicProvider):
                     current_jellyfin_album[ITEM_KEY_ALBUM_ARTIST],
                 )
             )
-        elif len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]) >= 1:
+        elif len(current_jellyfin_album.get(ITEM_KEY_ARTIST_ITEMS, [])) >= 1:
             num_artists = len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS])
             for i in range(num_artists):
                 album.artists.append(
