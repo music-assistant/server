@@ -318,12 +318,16 @@ class StreamsController(CoreController):
         start_queue_item = self.mass.player_queues.get_item(queue_id, start_queue_item_id)
         if not start_queue_item:
             raise web.HTTPNotFound(reason=f"Unknown Queue item: {start_queue_item_id}")
+
+        # select the highest possible PCM settings for this player
+        flow_pcm_format = await self._select_flow_format(queue_player)
+
         # work out output format/details
         output_format = await self._get_output_format(
             output_format_str=request.match_info["fmt"],
             player=queue_player,
-            default_sample_rate=FLOW_DEFAULT_SAMPLE_RATE,
-            default_bit_depth=24,  # always prefer 24 bits to prevent dithering
+            default_sample_rate=flow_pcm_format.sample_rate,
+            default_bit_depth=flow_pcm_format.bit_depth,
         )
         # play it safe: only allow icy metadata for mp3 and aac
         enable_icy = request.headers.get(
@@ -353,8 +357,6 @@ class StreamsController(CoreController):
         # all checks passed, start streaming!
         self.logger.debug("Start serving Queue flow audio stream for %s", queue.display_name)
 
-        # select the highest possible PCM settings for this player
-        flow_pcm_format = await self._select_flow_format(queue_player)
         async for chunk in get_ffmpeg_stream(
             audio_input=self.get_flow_stream(
                 queue=queue, start_queue_item=start_queue_item, pcm_format=flow_pcm_format
