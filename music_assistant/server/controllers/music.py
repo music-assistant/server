@@ -28,6 +28,7 @@ from music_assistant.common.models.errors import (
     MediaNotFoundError,
     MusicAssistantError,
     ProviderUnavailableError,
+    SetupFailedError,
 )
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
@@ -756,112 +757,18 @@ class MusicController(CoreController):
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
             # handle db migration from previous schema(s) to this one
-            if prev_version in (27, 28, 29):
-                self.logger.info(
-                    "Performing database migration from %s to %s",
-                    prev_version,
-                    DB_SCHEMA_VERSION,
+            try:
+                await self.__migrate_database(prev_version)
+            except Exception as err:
+                self.logger.fatal(
+                    "Database migration failed - setup can not continue. "
+                    "Try restarting the server. If this issue persists, create an issue report "
+                    " on Github and/or re-install the server (or restore a backup).",
+                    exc_info=err,
                 )
-                self.logger.warning("DATABASE MIGRATION IN PROGRESS - THIS CAN TAKE A WHILE")
-
-                # recreate loudness measurements table
-                if prev_version in (27, 28):
-                    await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACK_LOUDNESS}")
-                    await self.__create_database_tables()
-
-                # # migrate track artists
-                async for db_track in self.database.iter_items(DB_TABLE_TRACKS):
-                    for track_artist in json_loads(db_track["artists"]):
-                        await self.database.insert_or_replace(
-                            DB_TABLE_TRACK_ARTISTS,
-                            {
-                                "track_id": db_track["item_id"],
-                                "artist_id": int(track_artist["item_id"]),
-                            },
-                        )
-                await self.database.execute(f"ALTER TABLE {DB_TABLE_TRACKS} DROP COLUMN artists;")
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_TRACKS} DROP COLUMN sort_artist;"
-                )
-
-                # # migrate album artists
-                async for db_album in self.database.iter_items(DB_TABLE_ALBUMS):
-                    for album_artist in json_loads(db_album["artists"]):
-                        await self.database.insert_or_replace(
-                            DB_TABLE_ALBUM_ARTISTS,
-                            {
-                                "album_id": db_album["item_id"],
-                                "artist_id": int(album_artist["item_id"]),
-                            },
-                        )
-                await self.database.execute(f"ALTER TABLE {DB_TABLE_ALBUMS} DROP COLUMN artists;")
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_ALBUMS} DROP COLUMN sort_artist;"
-                )
-
-                # migrate provider_mappings
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [available] BOOLEAN DEFAULT 1;"
-                )
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [url] TEXT;"
-                )
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [audio_format] json;"
-                )
-                await self.database.execute(
-                    f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [details] json;"
-                )
-
-                for media_type_str in ("track", "album", "artist", "playlist", "radio"):
-                    table = f"{media_type_str}s"
-                    async for db_item in self.database.iter_items(table):
-                        for db_prov_map in json_loads(db_item["provider_mappings"]):
-                            await self.database.insert_or_replace(
-                                DB_TABLE_PROVIDER_MAPPINGS,
-                                {
-                                    "media_type": media_type_str,
-                                    "item_id": int(db_item["item_id"]),
-                                    "provider_domain": db_prov_map["provider_domain"],
-                                    "provider_instance": db_prov_map["provider_instance"],
-                                    "provider_item_id": db_prov_map["item_id"],
-                                    "available": db_prov_map["available"],
-                                    "url": db_prov_map["url"],
-                                    "audio_format": json_dumps(db_prov_map["audio_format"])
-                                    if db_prov_map["audio_format"]
-                                    else None,
-                                    "details": db_prov_map["details"],
-                                },
-                            )
-                    await self.database.execute(
-                        f"ALTER TABLE {table} DROP COLUMN provider_mappings;"
-                    )
-
-                # db migration succeeded
-                self.logger.info(
-                    "Database migration to version %s completed",
-                    DB_SCHEMA_VERSION,
-                )
-            # handle all other schema versions
-            else:
-                # we keep it simple and just recreate the tables
-                # if the schema is too old (or too new)
-                # we do migrations only for up to 1 schema version behind
-                self.logger.warning(
-                    "Database schema too old - Resetting library/database - "
-                    "a full rescan will be performed!"
-                )
-                for table in (
-                    DB_TABLE_TRACKS,
-                    DB_TABLE_ALBUMS,
-                    DB_TABLE_ARTISTS,
-                    DB_TABLE_PLAYLISTS,
-                    DB_TABLE_RADIOS,
-                    DB_TABLE_PROVIDER_MAPPINGS,
-                ):
-                    await self.database.execute(f"DROP TABLE IF EXISTS {table}")
-                # recreate missing tables
-                await self.__create_database_tables()
+                # restore backup file
+                await asyncio.to_thread(shutil.copyfile, db_path_backup, db_path)
+                raise SetupFailedError("Database migration failed") from err
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -874,6 +781,106 @@ class MusicController(CoreController):
         self.logger.debug("Compacting database...")
         await self.database.vacuum()
         self.logger.debug("Compacting database done")
+
+    async def __migrate_database(self, prev_version: int) -> None:
+        """Perform a database migration."""
+        if prev_version in (27, 28, 29):
+            self.logger.info(
+                "Performing database migration from %s to %s",
+                prev_version,
+                DB_SCHEMA_VERSION,
+            )
+            self.logger.warning("DATABASE MIGRATION IN PROGRESS - THIS CAN TAKE A WHILE")
+
+            # recreate loudness measurements table
+            if prev_version in (27, 28):
+                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACK_LOUDNESS}")
+                await self.__create_database_tables()
+
+            # # migrate track artists
+            async for db_track in self.database.iter_items(DB_TABLE_TRACKS):
+                for track_artist in json_loads(db_track["artists"]):
+                    await self.database.insert_or_replace(
+                        DB_TABLE_TRACK_ARTISTS,
+                        {
+                            "track_id": db_track["item_id"],
+                            "artist_id": int(track_artist["item_id"]),
+                        },
+                    )
+            await self.database.execute(f"ALTER TABLE {DB_TABLE_TRACKS} DROP COLUMN artists;")
+            await self.database.execute(f"ALTER TABLE {DB_TABLE_TRACKS} DROP COLUMN sort_artist;")
+
+            # # migrate album artists
+            async for db_album in self.database.iter_items(DB_TABLE_ALBUMS):
+                for album_artist in json_loads(db_album["artists"]):
+                    await self.database.insert_or_replace(
+                        DB_TABLE_ALBUM_ARTISTS,
+                        {
+                            "album_id": db_album["item_id"],
+                            "artist_id": int(album_artist["item_id"]),
+                        },
+                    )
+            await self.database.execute(f"ALTER TABLE {DB_TABLE_ALBUMS} DROP COLUMN artists;")
+            await self.database.execute(f"ALTER TABLE {DB_TABLE_ALBUMS} DROP COLUMN sort_artist;")
+
+            # migrate provider_mappings
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [available] BOOLEAN DEFAULT 1;"
+            )
+            await self.database.execute(f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [url] TEXT;")
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [audio_format] json;"
+            )
+            await self.database.execute(
+                f"ALTER TABLE {DB_TABLE_PROVIDER_MAPPINGS} ADD [details] json;"
+            )
+
+            for media_type_str in ("track", "album", "artist", "playlist", "radio"):
+                table = f"{media_type_str}s"
+                async for db_item in self.database.iter_items(table):
+                    for db_prov_map in json_loads(db_item["provider_mappings"]):
+                        await self.database.insert_or_replace(
+                            DB_TABLE_PROVIDER_MAPPINGS,
+                            {
+                                "media_type": media_type_str,
+                                "item_id": int(db_item["item_id"]),
+                                "provider_domain": db_prov_map["provider_domain"],
+                                "provider_instance": db_prov_map["provider_instance"],
+                                "provider_item_id": db_prov_map["item_id"],
+                                "available": db_prov_map["available"],
+                                "url": db_prov_map["url"],
+                                "audio_format": json_dumps(db_prov_map["audio_format"])
+                                if db_prov_map["audio_format"]
+                                else None,
+                                "details": db_prov_map["details"],
+                            },
+                        )
+                await self.database.execute(f"ALTER TABLE {table} DROP COLUMN provider_mappings;")
+            self.logger.info(
+                "Database migration to version %s completed",
+                DB_SCHEMA_VERSION,
+            )
+            return
+
+        # handle all other schema versions
+        # we keep it simple and just recreate the tables
+        # if the schema is too old (or too new)
+        # we do migrations only for up to 1 schema version behind
+        self.logger.warning(
+            "Database schema too old - Resetting library/database - "
+            "a full rescan will be performed, this can take a while!"
+        )
+        for table in (
+            DB_TABLE_TRACKS,
+            DB_TABLE_ALBUMS,
+            DB_TABLE_ARTISTS,
+            DB_TABLE_PLAYLISTS,
+            DB_TABLE_RADIOS,
+            DB_TABLE_PROVIDER_MAPPINGS,
+        ):
+            await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+        # recreate missing tables
+        await self.__create_database_tables()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
