@@ -318,7 +318,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_SYNC_ADJUST,
                 CONF_ENTRY_DISPLAY,
                 CONF_ENTRY_VISUALIZATION,
-                create_sample_rates_config_entry(slimclient.max_sample_rate, 24, 48000, 24),
+                create_sample_rates_config_entry(int(slimclient.max_sample_rate), 24, 48000, 24),
             )
         )
 
