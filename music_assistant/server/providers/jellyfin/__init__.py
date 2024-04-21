@@ -335,10 +335,7 @@ class JellyfinProvider(MusicProvider):
                     current_jellyfin_album[ITEM_KEY_ALBUM_ARTIST],
                 )
             )
-        elif (
-            ITEM_KEY_ARTIST_ITEMS in current_jellyfin_album
-            and len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]) >= 1
-        ):
+        elif len(current_jellyfin_album.get(ITEM_KEY_ARTIST_ITEMS, [])) >= 1:
             num_artists = len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS])
             for i in range(num_artists):
                 album.artists.append(
