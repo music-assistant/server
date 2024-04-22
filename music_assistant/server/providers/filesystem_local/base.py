@@ -27,7 +27,6 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     BrowseFolder,
@@ -478,7 +477,7 @@ class FileSystemProviderBase(MusicProvider):
         playlist.metadata.cache_checksum = checksum
         return playlist
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_library_item_by_prov_id(
@@ -487,9 +486,9 @@ class FileSystemProviderBase(MusicProvider):
         if db_album is None:
             msg = f"Album not found: {prov_album_id}"
             raise MediaNotFoundError(msg)
-        album_tracks = await self.mass.music.albums.tracks(db_album.item_id, db_album.provider)
+        album_tracks = await self.mass.music.albums.get_db_album_tracks(db_album.item_id)
         return [
-            AlbumTrack.from_track(track, db_album)
+            track
             for track in album_tracks
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
