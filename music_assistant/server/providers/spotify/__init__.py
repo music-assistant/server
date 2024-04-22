@@ -35,7 +35,6 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     MediaType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -308,7 +307,7 @@ class SpotifyProvider(MusicProvider):
             if item["id"]
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
         uri = (
@@ -323,7 +322,7 @@ class SpotifyProvider(MusicProvider):
                 continue
             # use count as position
             track = self._parse_track(item["track"])
-            yield PlaylistTrack.from_track(track, position=count)
+            track.position = count
             count += 1
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
