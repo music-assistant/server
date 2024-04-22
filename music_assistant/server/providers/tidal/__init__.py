@@ -461,7 +461,7 @@ class TidalProvider(MusicProvider):
             )
             track = self._parse_track(track_obj)
             # get some extra details for the full track info
-            with suppress(tidal_exceptions.MetadataNotAvailable):
+            with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
                 lyrics: TidalLyrics = await asyncio.to_thread(track.lyrics)
                 track.metadata.lyrics = lyrics.text
             return track
