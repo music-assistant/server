@@ -323,6 +323,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
+                # TODO: doesn't Deezer have disc and track number in the api ?
                 position=count,
             )
             for count, deezer_track in enumerate(await album.get_tracks(), 1)
@@ -331,14 +332,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(int(prov_playlist_id))
-        return [
-            self.parse_track(
-                track=deezer_track,
-                user_country=self.gw_client.user_country,
-                position=count,
+        for count, deezer_track in enumerate(await playlist.get_tracks(), 1):
+            yield self.parse_track(
+                track=deezer_track, user_country=self.gw_client.user_country, position=count
             )
-            for count, deezer_track in enumerate(await playlist.get_tracks(), 1)
-        ]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
