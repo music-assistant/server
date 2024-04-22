@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import mimetypes
 import socket
@@ -31,22 +32,16 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     ItemMapping,
     MediaItem,
     MediaItemImage,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
 )
-from music_assistant.common.models.media_items import Album as JellyfinAlbum
-from music_assistant.common.models.media_items import Artist as JellyfinArtist
-from music_assistant.common.models.media_items import Playlist as JellyfinPlaylist
-from music_assistant.common.models.media_items import Track as JellyfinTrack
 from music_assistant.common.models.streamdetails import StreamDetails
 
 if TYPE_CHECKING:
@@ -231,7 +226,7 @@ class JellyfinProvider(MusicProvider):
             return await self._parse_playlist(jellyfin_media)
         return None
 
-    async def _search_track(self, search_query, limit) -> list[JellyfinTrack]:
+    async def _search_track(self, search_query, limit) -> list[dict[str, Any]]:
         resultset = await self._run_async(
             API.search_media_items,
             self._jellyfin_server.jellyfin,
@@ -241,7 +236,7 @@ class JellyfinProvider(MusicProvider):
         )
         return resultset["Items"]
 
-    async def _search_album(self, search_query, limit) -> list[JellyfinAlbum]:
+    async def _search_album(self, search_query, limit) -> list[dict[str, Any]]:
         if "-" in search_query:
             searchterms = search_query.split(" - ")
             albumname = searchterms[1]
@@ -256,7 +251,7 @@ class JellyfinProvider(MusicProvider):
         )
         return resultset["Items"]
 
-    async def _search_artist(self, search_query, limit) -> list[JellyfinArtist]:
+    async def _search_artist(self, search_query, limit) -> list[dict[str, Any]]:
         resultset = await self._run_async(
             API.search_media_items,
             self._jellyfin_server.jellyfin,
@@ -266,7 +261,7 @@ class JellyfinProvider(MusicProvider):
         )
         return resultset["Items"]
 
-    async def _search_playlist(self, search_query, limit) -> list[JellyfinPlaylist]:
+    async def _search_playlist(self, search_query, limit) -> list[dict[str, Any]]:
         resultset = await self._run_async(
             API.search_media_items,
             self._jellyfin_server.jellyfin,
@@ -383,32 +378,19 @@ class JellyfinProvider(MusicProvider):
             ]
         return artist
 
-    async def _parse_track(
-        self, jellyfin_track: dict[str, Any], extra_init_kwargs: dict[str, Any] | None = None
-    ) -> Track | AlbumTrack | PlaylistTrack:
+    async def _parse_track(self, jellyfin_track: dict[str, Any]) -> Track:
         """Parse a Jellyfin Track response to a Track model object."""
-        if extra_init_kwargs and "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        elif (
-            extra_init_kwargs
-            and "disc_number" in extra_init_kwargs
-            and "track_number" in extra_init_kwargs
-        ):
-            track_class = AlbumTrack
-        else:
-            track_class = Track
-        current_jellyfin_track = API.get_item(
-            self._jellyfin_server.jellyfin, jellyfin_track[ITEM_KEY_ID]
+        current_jellyfin_track = await asyncio.to_thread(
+            API.get_item, self._jellyfin_server.jellyfin, jellyfin_track[ITEM_KEY_ID]
         )
         available = False
         content = None
         available = current_jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
         content = current_jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0][ITEM_KEY_MEDIA_CODEC]
-        track = track_class(
+        track = Track(
             item_id=jellyfin_track[ITEM_KEY_ID],
             provider=self.instance_id,
             name=jellyfin_track[ITEM_KEY_NAME],
-            **extra_init_kwargs or {},
             provider_mappings={
                 ProviderMapping(
                     item_id=jellyfin_track[ITEM_KEY_ID],
@@ -424,6 +406,13 @@ class JellyfinProvider(MusicProvider):
                 )
             },
         )
+
+        track.disc_number = current_jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM, 1)
+        if "IndexNumber" in current_jellyfin_track:
+            if current_jellyfin_track["IndexNumber"] >= 1:
+                track_idx = current_jellyfin_track["IndexNumber"]
+                track.track_number = track_idx
+                track.position = track_idx
 
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_track):
             track.metadata.images = [
@@ -488,7 +477,7 @@ class JellyfinProvider(MusicProvider):
             track.mbid = current_jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
         return track
 
-    async def _parse_playlist(self, jellyfin_playlist: JellyfinPlaylist) -> Playlist:
+    async def _parse_playlist(self, jellyfin_playlist: dict[str, Any]) -> Playlist:
         """Parse a Jellyfin Playlist response to a Playlist object."""
         playlistid = jellyfin_playlist[ITEM_KEY_ID]
         playlist = Playlist(
@@ -641,25 +630,10 @@ class JellyfinProvider(MusicProvider):
         jellyfin_album_tracks = await self._get_children(
             self._jellyfin_server, prov_album_id, ITEM_TYPE_AUDIO
         )
-        tracks = []
-        for jellyfin_album_track in jellyfin_album_tracks:
-            discnum = jellyfin_album_track.get(ITEM_KEY_PARENT_INDEX_NUM, 1)
-            if "IndexNumber" in jellyfin_album_track:
-                if jellyfin_album_track["IndexNumber"] >= 1:
-                    tracknum = jellyfin_album_track["IndexNumber"]
-                else:
-                    tracknum = jellyfin_album_track["IndexNumber"]
-            else:
-                tracknum = 99
-            track = await self._parse_track(
-                jellyfin_album_track,
-                {
-                    "disc_number": discnum,
-                    "track_number": tracknum,
-                },
-            )
-            tracks.append(track)
-        return tracks
+        return [
+            await self._parse_track(jellyfin_album_track)
+            for jellyfin_album_track in jellyfin_album_tracks
+        ]
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
@@ -704,8 +678,10 @@ class JellyfinProvider(MusicProvider):
 
         if not playlist_items:
             yield None
-        for index, jellyfin_track in enumerate(playlist_items):
-            if track := await self._parse_track(jellyfin_track, {"position": index + 1}):
+        for index, jellyfin_track in enumerate(playlist_items, 1):
+            if track := await self._parse_track(jellyfin_track):
+                if not track.position:
+                    track.position = index
                 yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
