@@ -397,7 +397,7 @@ class BuiltinProvider(MusicProvider):
             return
         # user created universal playlist
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
-        for count, uri in enumerate(playlist_items, 1):
+        for count, uri in enumerate(playlist_items):
             try:
                 # get the provider item and not the full track from a regular 'get' call
                 # as we only need basic track info here
