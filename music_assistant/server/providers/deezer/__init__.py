@@ -6,7 +6,6 @@ from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 from dataclasses import dataclass
 from math import ceil
-from typing import Any
 
 import deezer
 from aiohttp import ClientSession, ClientTimeout
@@ -32,7 +31,6 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     ItemMapping,
@@ -40,7 +38,6 @@ from music_assistant.common.models.media_items import (
     MediaItemMetadata,
     MediaItemType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -319,31 +316,29 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         except deezer_exceptions.DeezerErrorResponse as error:
             self.logger.warning("Failed getting track: %s", error)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get all tracks in an album."""
         album = await self.client.get_album(album_id=int(prov_album_id))
         return [
             self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
-                extra_init_kwargs={"disc_number": 0, "track_number": count + 1},
+                position=count,
             )
-            for count, deezer_track in enumerate(await album.get_tracks())
+            for count, deezer_track in enumerate(await album.get_tracks(), 1)
         ]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all tracks in a playlist."""
         playlist = await self.client.get_playlist(int(prov_playlist_id))
-        count = 1
-        async for deezer_track in await playlist.get_tracks():
-            yield self.parse_track(
+        return [
+            self.parse_track(
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
-                extra_init_kwargs={"position": count},
+                position=count,
             )
-            count += 1
+            for count, deezer_track in enumerate(await playlist.get_tracks(), 1)
+        ]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -631,12 +626,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             return playlist.creator
         return playlist.user
 
-    def parse_track(
-        self,
-        track: deezer.Track,
-        user_country: str,
-        extra_init_kwargs: dict[str, Any] | None = None,
-    ) -> Track | PlaylistTrack | AlbumTrack:
+    def parse_track(self, track: deezer.Track, user_country: str, position: int = 0) -> Track:
         """Parse the deezer-python track to a Music Assistant track."""
         if hasattr(track, "artist"):
             artist = ItemMapping(
@@ -656,16 +646,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             )
         else:
             album = None
-        if extra_init_kwargs is None:
-            extra_init_kwargs = {}
-            track_class = Track
-        elif "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
-            track_class = AlbumTrack
-        else:
-            track_class = Track
-        item = track_class(
+
+        item = Track(
             item_id=str(track.id),
             provider=self.domain,
             name=track.title,
@@ -683,7 +665,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 )
             },
             metadata=self.parse_metadata_track(track=track),
-            **extra_init_kwargs,
+            track_number=position,
+            position=position,
         )
         if isrc := getattr(track, "isrc", None):
             item.external_ids.add((ExternalID.ISRC, isrc))
