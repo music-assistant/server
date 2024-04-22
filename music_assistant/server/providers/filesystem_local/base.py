@@ -759,7 +759,7 @@ class FileSystemProviderBase(MusicProvider):
                         await self._parse_artist(name=track_artist_str)
                         for track_artist_str in tags.artists
                     ]
-                elif fallback_action == "folder" and album_dir:
+                elif fallback_action == "folder_name" and album_dir:
                     possible_artist_folder = os.path.dirname(album_dir)
                     self.logger.warning(
                         "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
