@@ -233,7 +233,7 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
@@ -325,7 +325,7 @@ class TracksController(MediaControllerBase[Track]):
         # use search to get all items on the provider
         search_query = f"{full_track.artist_str} - {full_track.name}"
         # TODO: we could use musicbrainz info here to get a list of all releases known
-        result: list[Track] = []
+        result: list[Track] = [*db_items]
         unique_ids: set[str] = set()
         for prov_item in (await self.mass.music.search(search_query, [MediaType.TRACK])).tracks:
             if not loose_compare_strings(full_track.name, prov_item.name):

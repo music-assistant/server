@@ -427,7 +427,6 @@ class FileSystemProviderBase(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        # all data is originated from the actual files (tracks) so grab the data from there
         for track in await self.get_album_tracks(prov_album_id):
             for prov_mapping in track.provider_mappings:
                 if prov_mapping.provider_instance == self.instance_id:

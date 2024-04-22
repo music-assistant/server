@@ -690,5 +690,15 @@ class MusicAssistant:
                     *{x.instance_id for x in self.providers},
                 },
                 "unique_providers": {x.lookup_key for x in self.providers},
+                "streaming_providers": {
+                    x.lookup_key
+                    for x in self.providers
+                    if x.type == ProviderType.MUSIC and x.is_streaming_provider
+                },
+                "non_streaming_providers": {
+                    x.lookup_key
+                    for x in self.providers
+                    if not (x.type == ProviderType.MUSIC and x.is_streaming_provider)
+                },
             }
         )

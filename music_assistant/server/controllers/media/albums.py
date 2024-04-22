@@ -8,6 +8,7 @@ from random import choice, random
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import (
@@ -134,6 +135,35 @@ class AlbumsController(MediaControllerBase[Album]):
                 # edge case where playlist track has invalid artistdetails
                 self.logger.warning("Unable to fetch artist details %s - %s", artist.uri, str(err))
         album.artists = album_artists
+        if not force_refresh:
+            return album
+        # if force refresh, we need to ensure that we also refresh all album tracks
+        # in case of a filebased (non streaming) provider to ensure we catch changes the user
+        # made on track level and then pressed the refresh button on album level.
+        file_provs = get_global_cache_value("non_streaming_providers", [])
+        for album_provider_mapping in album.provider_mappings:
+            if album_provider_mapping.provider_instance not in file_provs:
+                continue
+            for prov_album_track in await self._get_provider_album_tracks(
+                album_provider_mapping.item_id, album_provider_mapping.provider_instance
+            ):
+                if prov_album_track.provider != "library":
+                    continue
+                for track_prov_map in prov_album_track.provider_mappings:
+                    if track_prov_map.provider_instance != album_provider_mapping.provider_instance:
+                        continue
+                    prov_track = await self.mass.music.tracks.get_provider_item(
+                        track_prov_map.item_id, track_prov_map.provider_instance, force_refresh=True
+                    )
+                    if (
+                        prov_track.metadata.cache_checksum
+                        == prov_album_track.metadata.cache_checksum
+                    ):
+                        continue
+                    await self.mass.music.tracks.update_item_in_library(
+                        prov_album_track.item_id, prov_track, True
+                    )
+                    break
         return album
 
     async def add_item_to_library(
@@ -205,7 +235,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = cur_item.metadata.update(update.metadata, overwrite)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         if getattr(update, "album_type", AlbumType.UNKNOWN) != AlbumType.UNKNOWN:
             album_type = update.album_type
         else:
@@ -310,7 +340,7 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> list[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
-        search_query = f"{album.artists[0].name} - {album.name}"
+        search_query = f"{album.artists[0].name} - {album.name}" if album.artists else album.name
         result: list[Album] = []
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)

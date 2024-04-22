@@ -233,7 +233,6 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: MediaItemMetadata,
-        allow_overwrite: bool = False,
     ) -> MediaItemMetadata:
         """Update metadata (in-place) with new values."""
         if not new_values:
@@ -243,19 +242,17 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if allow_overwrite and new_val:
-                setattr(self, fld.name, new_val)
-            elif isinstance(cur_val, list) and isinstance(new_val, list):
+            if isinstance(cur_val, list) and isinstance(new_val, list):
                 new_val = merge_lists(cur_val, new_val)
                 setattr(self, fld.name, new_val)
-            elif isinstance(cur_val, set) and isinstance(new_val, list):
+            elif isinstance(cur_val, set) and isinstance(new_val, set | list | tuple):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
             elif new_val and fld.name in ("popularity", "last_refresh", "cache_checksum"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
-            elif cur_val is None or (allow_overwrite and new_val):
+            elif cur_val is None:
                 setattr(self, fld.name, new_val)
         return self
 
