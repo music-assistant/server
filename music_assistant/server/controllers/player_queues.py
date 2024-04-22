@@ -1234,19 +1234,11 @@ class PlayerQueuesController(CoreController):
             CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
-        if album_items_conf == "library_tracks":
-            # make sure we have an in-library album
-            album = await self.mass.music.albums.get(
-                album.item_id, album.provider, lazy=False, details=album
-            )
-            return await self.mass.music.albums.tracks(album.item_id, album.provider)
-        if album_items_conf == "all_tracks":
-            for provider in album.provider_mappings:
-                if album_tracks := await self.mass.music.albums.tracks(
-                    provider.item_id, provider.provider_instance
-                ):
-                    return album_tracks
-        return []
+        return await self.mass.music.albums.tracks(
+            item_id=album.item_id,
+            provider_instance_id_or_domain=album.provider,
+            in_library_only=album_items_conf == "library_tracks",
+        )
 
     def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
