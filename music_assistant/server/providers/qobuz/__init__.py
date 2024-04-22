@@ -22,7 +22,6 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     AlbumType,
     Artist,
     AudioFormat,
@@ -32,7 +31,6 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     MediaType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -166,7 +164,7 @@ class QobuzProvider(MusicProvider):
         if searchresult := await self._get_data("catalog/search", **params):
             if "artists" in searchresult:
                 result.artists += [
-                    await self._parse_artist(item)
+                    self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
@@ -184,7 +182,7 @@ class QobuzProvider(MusicProvider):
                 ]
             if "playlists" in searchresult:
                 result.playlists += [
-                    await self._parse_playlist(item)
+                    self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
                     if (item and item["id"])
                 ]
@@ -195,7 +193,7 @@ class QobuzProvider(MusicProvider):
         endpoint = "favorite/getUserFavorites"
         for item in await self._get_all_items(endpoint, key="artists", type="artists"):
             if item and item["id"]:
-                yield await self._parse_artist(item)
+                yield self._parse_artist(item)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Qobuz."""
@@ -216,13 +214,13 @@ class QobuzProvider(MusicProvider):
         endpoint = "playlist/getUserPlaylists"
         for item in await self._get_all_items(endpoint, key="playlists"):
             if item and item["id"]:
-                yield await self._parse_playlist(item)
+                yield self._parse_playlist(item)
 
     async def get_artist(self, prov_artist_id) -> Artist:
         """Get full artist details by id."""
         params = {"artist_id": prov_artist_id}
         if (artist_obj := await self._get_data("artist/get", **params)) and artist_obj["id"]:
-            return await self._parse_artist(artist_obj)
+            return self._parse_artist(artist_obj)
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
@@ -246,11 +244,11 @@ class QobuzProvider(MusicProvider):
         """Get full playlist details by id."""
         params = {"playlist_id": prov_playlist_id}
         if (playlist_obj := await self._get_data("playlist/get", **params)) and playlist_obj["id"]:
-            return await self._parse_playlist(playlist_obj)
+            return self._parse_playlist(playlist_obj)
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_album_tracks(self, prov_album_id) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id) -> list[Track]:
         """Get all album tracks for given album id."""
         params = {"album_id": prov_album_id}
         return [
@@ -259,7 +257,7 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         count = 1
         for track_obj in await self._get_all_items(
@@ -271,7 +269,8 @@ class QobuzProvider(MusicProvider):
             if not (track_obj and track_obj["id"]):
                 continue
             track = await self._parse_track(track_obj)
-            yield PlaylistTrack.from_track(track, position=count)
+            track.position = count
+            yield track
             count += 1
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
@@ -458,7 +457,7 @@ class QobuzProvider(MusicProvider):
             duration=try_parse_int(seconds_streamed),
         )
 
-    async def _parse_artist(self, artist_obj: dict):
+    def _parse_artist(self, artist_obj: dict):
         """Parse qobuz artist object to generic layout."""
         artist = Artist(
             item_id=str(artist_obj["id"]),
@@ -516,7 +515,7 @@ class QobuzProvider(MusicProvider):
             },
         )
         album.external_ids.add((ExternalID.BARCODE, album_obj["upc"]))
-        album.artists.append(await self._parse_artist(artist_obj or album_obj["artist"]))
+        album.artists.append(self._parse_artist(artist_obj or album_obj["artist"]))
         if (
             album_obj.get("product_type", "") == "single"
             or album_obj.get("release_type", "") == "single"
@@ -584,7 +583,7 @@ class QobuzProvider(MusicProvider):
         if isrc := track_obj.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))
         if track_obj.get("performer") and "Various " not in track_obj["performer"]:
-            artist = await self._parse_artist(track_obj["performer"])
+            artist = self._parse_artist(track_obj["performer"])
             if artist:
                 track.artists.append(artist)
         # try to grab artist from album
@@ -593,7 +592,7 @@ class QobuzProvider(MusicProvider):
             and track_obj["album"].get("artist")
             and "Various " not in track_obj["album"]["artist"]
         ):
-            artist = await self._parse_artist(track_obj["album"]["artist"])
+            artist = self._parse_artist(track_obj["album"]["artist"])
             if artist:
                 track.artists.append(artist)
         if not track.artists:
@@ -639,7 +638,7 @@ class QobuzProvider(MusicProvider):
 
         return track
 
-    async def _parse_playlist(self, playlist_obj):
+    def _parse_playlist(self, playlist_obj):
         """Parse qobuz playlist object to generic layout."""
         playlist = Playlist(
             item_id=str(playlist_obj["id"]),
