@@ -27,7 +27,6 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     BrowseFolder,
@@ -38,7 +37,6 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     MediaType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -65,15 +63,14 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
     label="Action when a track is missing the Albumartist ID3 tag",
-    default_value="skip",
-    description="Music Assistant prefers information stored in ID3 tags and only uses"
-    " online sources for additional metadata. This means that the ID3 tags need to be "
-    "accurate, preferably tagged with MusicBrainz Picard.",
+    default_value="folder_name",
+    help_link="https://music-assistant.io/music-providers/filesystem/#tagging-files",
     required=False,
     options=(
         ConfigValueOption("Skip track and log warning", "skip"),
         ConfigValueOption("Use Track artist(s)", "track_artist"),
         ConfigValueOption("Use Various Artists", "various_artists"),
+        ConfigValueOption("Use Folder name", "folder_name"),
     ),
 )
 
@@ -429,7 +426,6 @@ class FileSystemProviderBase(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        # all data is originated from the actual files (tracks) so grab the data from there
         for track in await self.get_album_tracks(prov_album_id):
             for prov_mapping in track.provider_mappings:
                 if prov_mapping.provider_instance == self.instance_id:
@@ -479,7 +475,7 @@ class FileSystemProviderBase(MusicProvider):
         playlist.metadata.cache_checksum = checksum
         return playlist
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         # filesystem items are always stored in db so we can query the database
         db_album = await self.mass.music.albums.get_library_item_by_prov_id(
@@ -488,16 +484,14 @@ class FileSystemProviderBase(MusicProvider):
         if db_album is None:
             msg = f"Album not found: {prov_album_id}"
             raise MediaNotFoundError(msg)
-        album_tracks = await self.mass.music.albums.tracks(db_album.item_id, db_album.provider)
+        album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
         return [
-            AlbumTrack.from_track(track, db_album)
+            track
             for track in album_tracks
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get playlist tracks for given playlist id."""
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
@@ -521,7 +515,8 @@ class FileSystemProviderBase(MusicProvider):
                 if track := await self._parse_playlist_line(
                     playlist_line.path, os.path.dirname(prov_playlist_id)
                 ):
-                    yield PlaylistTrack.from_track(track, line_no)
+                    track.position = line_no
+                    yield track
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning(
@@ -762,6 +757,15 @@ class FileSystemProviderBase(MusicProvider):
                         await self._parse_artist(name=track_artist_str)
                         for track_artist_str in tags.artists
                     ]
+                elif fallback_action == "folder_name" and album_dir:
+                    possible_artist_folder = os.path.dirname(album_dir)
+                    self.logger.warning(
+                        "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
+                        file_item.path,
+                        possible_artist_folder,
+                    )
+                    album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
+                    album_artists = [await self._parse_artist(name=album_artist_str)]
                 # fallback to just log error and add track without album
                 else:
                     # default action is to skip the track

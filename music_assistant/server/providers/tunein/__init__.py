@@ -203,17 +203,8 @@ class TuneInProvider(MusicProvider):
         radio.position = preset_number
         if "text" in details:
             radio.metadata.description = details["text"]
-        # images
-        if img := details.get("image"):
-            radio.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=img,
-                    provider=self.instance_id,
-                    remotely_accessible=True,
-                )
-            ]
-        if img := details.get("logo"):
+        # image
+        if img := details.get("image") or details.get("logo"):
             radio.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,

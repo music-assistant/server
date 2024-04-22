@@ -235,7 +235,7 @@ class MetaDataController(CoreController):
             if ProviderFeature.ARTIST_METADATA not in provider.supported_features:
                 continue
             if metadata := await provider.get_artist_metadata(artist):
-                artist.metadata.update(metadata, allow_overwrite=False)
+                artist.metadata.update(metadata)
                 self.logger.debug(
                     "Fetched metadata for Artist %s on provider %s",
                     artist.name,
@@ -254,7 +254,7 @@ class MetaDataController(CoreController):
             if ProviderFeature.ALBUM_METADATA not in provider.supported_features:
                 continue
             if metadata := await provider.get_album_metadata(album):
-                album.metadata.update(metadata, allow_overwrite=False)
+                album.metadata.update(metadata)
                 self.logger.debug(
                     "Fetched metadata for Album %s on provider %s",
                     album.name,
@@ -272,7 +272,7 @@ class MetaDataController(CoreController):
             if ProviderFeature.TRACK_METADATA not in provider.supported_features:
                 continue
             if metadata := await provider.get_track_metadata(track):
-                track.metadata.update(metadata, allow_overwrite=False)
+                track.metadata.update(metadata)
                 self.logger.debug(
                     "Fetched metadata for Track %s on provider %s",
                     track.name,

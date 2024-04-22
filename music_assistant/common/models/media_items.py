@@ -124,11 +124,13 @@ class ProviderMapping(DataClassDictMixin):
         """Call after init."""
         # having items for unavailable providers can have all sorts
         # of unpredictable results so ensure we have accurate availability status
-        if available_providers := get_global_cache_value("unique_providers"):
-            if TYPE_CHECKING:
-                available_providers = cast(set[str], available_providers)
-            if not available_providers.intersection({self.provider_domain, self.provider_instance}):
-                self.available = False
+        if not (available_providers := get_global_cache_value("unique_providers")):
+            self.available = False
+            return
+        if TYPE_CHECKING:
+            available_providers = cast(set[str], available_providers)
+        if not available_providers.intersection({self.provider_domain, self.provider_instance}):
+            self.available = False
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -231,7 +233,6 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: MediaItemMetadata,
-        allow_overwrite: bool = False,
     ) -> MediaItemMetadata:
         """Update metadata (in-place) with new values."""
         if not new_values:
@@ -241,19 +242,17 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if allow_overwrite and new_val:
-                setattr(self, fld.name, new_val)
-            elif isinstance(cur_val, list) and isinstance(new_val, list):
+            if isinstance(cur_val, list) and isinstance(new_val, list):
                 new_val = merge_lists(cur_val, new_val)
                 setattr(self, fld.name, new_val)
-            elif isinstance(cur_val, set) and isinstance(new_val, list):
+            elif isinstance(cur_val, set) and isinstance(new_val, set | list | tuple):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
             elif new_val and fld.name in ("popularity", "last_refresh", "cache_checksum"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
-            elif cur_val is None or (allow_overwrite and new_val):
+            elif cur_val is None:
                 setattr(self, fld.name, new_val)
         return self
 
@@ -474,7 +473,7 @@ class AlbumTrack(Track):
 
     @classmethod
     def from_track(
-        cls: Self,
+        cls: type,
         track: Track,
         album: Album | None = None,
         disc_number: int | None = None,
@@ -510,19 +509,6 @@ class PlaylistTrack(Track):
     __eq__ = _MediaItemBase.__eq__
 
     position: int
-
-    @classmethod
-    def from_track(cls: Self, track: Track, position: int | None = None) -> Self:
-        """Cast Track to PlaylistTrack."""
-        if position is None:
-            position = track.position
-        # let mushmumaro instantiate a new object - this will ensure that valididation takes place
-        return PlaylistTrack.from_dict(
-            {
-                **track.to_dict(),
-                "position": position,
-            }
-        )
 
 
 @dataclass(kw_only=True)

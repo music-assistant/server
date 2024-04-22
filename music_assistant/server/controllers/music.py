@@ -12,6 +12,7 @@ from itertools import zip_longest
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -347,6 +348,8 @@ class MusicController(CoreController):
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[MediaItemType] = []
         for db_row in db_rows:
+            if db_row["provider"] not in get_global_cache_value("unique_providers", []):
+                continue
             with suppress(MediaNotFoundError, ProviderUnavailableError):
                 media_type = MediaType(db_row["media_type"])
                 item = await self.get_item(media_type, db_row["item_id"], db_row["provider"])
@@ -1018,7 +1021,7 @@ class MusicController(CoreController):
                     [url] text,
                     [audio_format] json,
                     [details] json,
-                    UNIQUE(media_type, provider_instance, provider_item_id)
+                    UNIQUE(media_type, item_id, provider_instance, provider_item_id)
                 );"""
         )
 

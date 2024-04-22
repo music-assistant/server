@@ -47,7 +47,7 @@ class TracksController(MediaControllerBase[Track]):
                 SELECT
                     {self.db_table}.*,
                     {DB_TABLE_ARTISTS}.sort_name AS sort_artist,
-                    {DB_TABLE_ARTISTS}.sort_name AS sort_album,
+                    {DB_TABLE_ALBUMS}.sort_name AS sort_album,
                     json_group_array(
                         DISTINCT json_object(
                             'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
@@ -233,7 +233,7 @@ class TracksController(MediaControllerBase[Track]):
         """Update Track record in the database, merging data."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
@@ -300,7 +300,7 @@ class TracksController(MediaControllerBase[Track]):
                 if loose_compare_strings(track.name, prov_item.name)
                 and compare_artists(prov_item.artists, track.artists, any_match=True)
                 # make sure that the 'base' version is NOT included
-                and prov_item.item_id != item_id
+                and not track.provider_mappings.intersection(prov_item.provider_mappings)
             ]
         return result
 
@@ -308,26 +308,45 @@ class TracksController(MediaControllerBase[Track]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
     ) -> list[Album]:
         """Return all albums the track appears on."""
-        if provider_instance_id_or_domain == "library":
-            return [
-                await self.mass.music.albums.get_library_item(album_track_row["album_id"])
-                async for album_track_row in self.mass.music.database.iter_items(
-                    DB_TABLE_ALBUM_TRACKS, {"track_id": int(item_id)}
-                )
-            ]
+        full_track = await self.get(item_id, provider_instance_id_or_domain)
+        db_items = (
+            await self.get_library_track_albums(full_track.item_id)
+            if full_track.provider == "library"
+            else []
+        )
+        if full_track.provider == "library" and in_library_only:
+            # return in-library items only
+            return db_items
+        # return all (unique) items from all providers
+        result: list[Album] = [*db_items]
         # use search to get all items on the provider
+        search_query = f"{full_track.artist_str} - {full_track.name}"
         # TODO: we could use musicbrainz info here to get a list of all releases known
-        track = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
-        search_query = f"{track.artists[0].name} - {track.name}"
-        return [
-            prov_item.album
-            for prov_item in await self.search(search_query, provider_instance_id_or_domain)
-            if loose_compare_strings(track.name, prov_item.name)
-            and prov_item.album
-            and compare_artists(prov_item.artists, track.artists, any_match=True)
-        ]
+        result: list[Track] = [*db_items]
+        unique_ids: set[str] = set()
+        for prov_item in (await self.mass.music.search(search_query, [MediaType.TRACK])).tracks:
+            if not loose_compare_strings(full_track.name, prov_item.name):
+                continue
+            if not prov_item.album:
+                continue
+            if not compare_artists(full_track.artists, prov_item.artists, any_match=True):
+                continue
+            unique_id = f"{prov_item.album.name}.{prov_item.album.version}"
+            if unique_id in unique_ids:
+                continue
+            unique_ids.add(unique_id)
+            # prefer db item
+            if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
+                prov_item.album.item_id, prov_item.album.provider
+            ):
+                if db_item not in db_items:
+                    result.append(db_item)
+            elif not in_library_only:
+                result.append(prov_item.album)
+        return result
 
     async def remove_item_from_library(self, item_id: str | int) -> None:
         """Delete record from the database."""
@@ -349,6 +368,16 @@ class TracksController(MediaControllerBase[Track]):
             f"{self.mass.webserver.base_url}/preview?"
             f"provider={provider_instance_id_or_domain}&item_id={enc_track_id}"
         )
+
+    async def get_library_track_albums(
+        self,
+        item_id: str | int,
+    ) -> list[Album]:
+        """Return all in-library albums for a track."""
+        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE track_id = {item_id}"
+        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
+        paged_list = await self.mass.music.albums.library_items(extra_query=query)
+        return paged_list.items
 
     async def _match(self, db_track: Track) -> None:
         """Try to find matching track on all providers for the provided (database) track_id.

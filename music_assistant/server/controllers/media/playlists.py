@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 from collections.abc import AsyncGenerator
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
@@ -19,6 +19,7 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import ItemMapping, Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
+from music_assistant.server.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
 
@@ -103,7 +104,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = cur_item.metadata.update(getattr(update, "metadata", None), overwrite)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
         await self.mass.music.database.update(
             self.db_table,
@@ -342,7 +343,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
     ) -> AsyncGenerator[PlaylistTrack, None]:
         """Return album tracks for the given provider album id."""
         assert provider_instance_id_or_domain != "library"
-        provider = self.mass.get_provider(provider_instance_id_or_domain)
+        provider: MusicProvider = self.mass.get_provider(provider_instance_id_or_domain)
         if not provider:
             return
         # prefer cache items (if any)
@@ -356,7 +357,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         async for item in provider.get_playlist_tracks(item_id):
             # double check if position set
             assert item.position is not None, "Playlist items require position to be set"
-            yield item
+            yield cast(PlaylistTrack, item) if TYPE_CHECKING else item
             all_items.append(item)
             # if this is a complete track object, pre-cache it as
             # that will save us an (expensive) lookup later

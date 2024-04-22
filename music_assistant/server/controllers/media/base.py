@@ -118,12 +118,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             query_parts.append(extra_query)
         if search:
             params["search"] = f"%{search}%"
-            if self.media_type in (MediaType.ALBUM, MediaType.TRACK):
+            if self.media_type == MediaType.ALBUM:
                 query_parts.append(
-                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search)"
+                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
+                    "OR sort_artist LIKE :search)"
+                )
+            elif self.media_type == MediaType.TRACK:
+                query_parts.append(
+                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
+                    "OR sort_artist LIKE :search OR sort_album LIKE :search)"
                 )
             else:
-                query_parts.append(f"{self.db_table}.name LIKE :search")
+                query_parts.append(
+                    f"{self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search"
+                )
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             params["favorite"] = favorite
@@ -494,9 +502,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider_mapping in library_item.provider_mappings:
             return
         # update provider_mappings table
-        await self._set_provider_mappings(
-            item_id=item_id, provider_mappings=library_item.provider_mappings
-        )
+        await self._set_provider_mappings(item_id=item_id, provider_mappings=[provider_mapping])
 
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
@@ -671,6 +677,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         for key in JSON_KEYS:
             if key in db_row_dict and db_row_dict[key] not in (None, ""):
                 db_row_dict[key] = json_loads(db_row_dict[key])
+                if key == "provider_mappings":
+                    for prov_mapping_dict in db_row_dict[key]:
+                        prov_mapping_dict["available"] = bool(prov_mapping_dict["available"])
 
         if "favorite" in db_row_dict:
             db_row_dict["favorite"] = bool(db_row_dict["favorite"])

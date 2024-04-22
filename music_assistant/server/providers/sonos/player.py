@@ -83,21 +83,6 @@ SOURCE_MAPPING = {
     MUSIC_SRC_SPOTIFY_CONNECT: SOURCE_SPOTIFY_CONNECT,
 }
 
-HIRES_MODELS = (
-    "Sonos Roam",
-    "Sonos Arc",
-    "Sonos Beam",
-    "Sonos Five",
-    "Sonos Move",
-    "Sonos One SL",
-    "Sonos Port",
-    "Sonos Amp",
-    "SYMFONISK Bookshelf",
-    "SYMFONISK Table Lamp",
-    "Sonos Era 100",
-    "Sonos Era 300",
-)
-
 
 class SonosSubscriptionsFailed(PlayerCommandFailed):
     """Subscription creation failed."""

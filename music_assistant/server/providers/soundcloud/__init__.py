@@ -20,7 +20,6 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     MediaType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -254,7 +253,7 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
@@ -384,13 +383,10 @@ class SoundcloudMusicProvider(MusicProvider):
             playlist.metadata.style = playlist_obj["tag_list"]
         return playlist
 
-    async def _parse_track(
-        self, track_obj: dict, playlist_position: int | None = None
-    ) -> Track | PlaylistTrack:
+    async def _parse_track(self, track_obj: dict, playlist_position: int = 0) -> Track:
         """Parse a Soundcloud Track response to a Track model object."""
         name, version = parse_title_and_version(track_obj["title"])
-        track_class = PlaylistTrack if playlist_position is not None else Track
-        track = track_class(  # pylint: disable=missing-kwoa
+        track = Track(
             item_id=track_obj["id"],
             provider=self.domain,
             name=name,
@@ -407,7 +403,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     url=track_obj["permalink_url"],
                 )
             },
-            **{"position": playlist_position} if playlist_position else {},
+            position=playlist_position,
         )
         user_id = track_obj["user"]["id"]
         user = await self._soundcloud.get_user_details(user_id)

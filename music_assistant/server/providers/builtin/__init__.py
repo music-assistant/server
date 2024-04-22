@@ -27,14 +27,12 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
 )
 from music_assistant.common.models.media_items import (
-    AlbumTrack,
     Artist,
     AudioFormat,
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     Radio,
     Track,
@@ -325,7 +323,7 @@ class BuiltinProvider(MusicProvider):
             return await self.parse_item(prov_item_id)
         raise NotImplementedError
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         for item in stored_items:
@@ -390,9 +388,7 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         # handle built-in playlists
         """Get all playlist tracks for given playlist id."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
@@ -407,10 +403,11 @@ class BuiltinProvider(MusicProvider):
                 # as we only need basic track info here
                 media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
                 media_controller = self.mass.music.get_controller(media_type)
-                base_item = await media_controller.get_provider_item(
+                track = await media_controller.get_provider_item(
                     item_id, provider_instance_id_or_domain
                 )
-                yield PlaylistTrack.from_dict({**base_item.to_dict(), "position": count})
+                track.position = count
+                yield track
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning("Skipping item in playlist: %s:%s", uri, str(err))
 
@@ -542,25 +539,28 @@ class BuiltinProvider(MusicProvider):
 
     async def _get_builtin_playlist_tracks(
         self, builtin_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given builtin playlist id."""
         count = 0
         if builtin_playlist_id == ALL_LIBRARY_TRACKS:
             async for item in self.mass.music.tracks.iter_library_items(order_by="RANDOM()"):
                 count += 1
-                yield PlaylistTrack.from_dict({**item.to_dict(), "position": count})
+                item.position = count
+                yield item
             return
         if builtin_playlist_id == ALL_FAVORITE_TRACKS:
             async for item in self.mass.music.tracks.iter_library_items(
                 favorite=True, order_by="RANDOM()"
             ):
                 count += 1
-                yield PlaylistTrack.from_dict({**item.to_dict(), "position": count})
+                item.position = count
+                yield item
             return
         if builtin_playlist_id == RANDOM_TRACKS:
             async for item in self.mass.music.tracks.iter_library_items(order_by="RANDOM()"):
                 count += 1
-                yield PlaylistTrack.from_dict({**item.to_dict(), "position": count})
+                item.position = count
+                yield item
                 if count == 100:
                     return
             return
@@ -572,7 +572,8 @@ class BuiltinProvider(MusicProvider):
                 # already handles unwrapping an album by user preference
                 for album_track in await self.mass.player_queues.get_album_tracks(random_album):
                     count += 1
-                    yield PlaylistTrack.from_dict({**album_track.to_dict(), "position": count})
+                    album_track.position = count
+                    yield album_track
                 return
         if builtin_playlist_id == RANDOM_ARTIST:
             async for random_artist in self.mass.music.artists.iter_library_items(
@@ -582,12 +583,14 @@ class BuiltinProvider(MusicProvider):
                 # already handles unwrapping an artist by user preference
                 for artist_track in await self.mass.player_queues.get_artist_tracks(random_artist):
                     count += 1
-                    yield PlaylistTrack.from_dict({**artist_track.to_dict(), "position": count})
+                    artist_track.position = count
+                    yield artist_track
                 return
         if builtin_playlist_id == RECENTLY_PLAYED:
             for track in await self.mass.music.recently_played(250, [MediaType.TRACK]):
                 count += 1
-                yield PlaylistTrack.from_dict({**track.to_dict(), "position": count})
+                track.position = count
+                yield track
             return
 
     async def _read_playlist_file_items(self, playlist_id: str) -> list[str]:

@@ -30,20 +30,15 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import (
-    LoginFailed,
-    MediaNotFoundError,
-)
+from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     ContentType,
     ItemMapping,
     MediaItemImage,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -51,9 +46,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import (
-    AsyncThrottleWithRetryContextManager,
-)
+from music_assistant.server.helpers.throttle_retry import AsyncThrottleWithRetryContextManager
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -313,27 +306,14 @@ class TidalProvider(MusicProvider):
         ):
             yield self._parse_playlist(playlist)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            album_obj = await manager.wrapped_function_with_retry(
-                get_album, tidal_session, prov_album_id
-            )
-
         async with self._throttle_retry as manager:
             tracks_obj = await manager.wrapped_function_with_retry(
                 get_album_tracks, tidal_session, prov_album_id
             )
-            return [
-                AlbumTrack.from_track(
-                    track=self._parse_track(track_obj=track_obj),
-                    album=self._parse_album(album_obj=album_obj),
-                    disc_number=track_obj.volume_num,
-                    track_number=track_obj.track_num,
-                )
-                for track_obj in tracks_obj
-            ]
+            return [self._parse_track(track_obj=track_obj) for track_obj in tracks_obj]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
@@ -353,20 +333,17 @@ class TidalProvider(MusicProvider):
             )
             return [self._parse_track(track) for track in artist_toptracks_obj]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         tidal_session = await self._get_tidal_session()
         total_playlist_tracks = 0
-        track: TidalTrack  # satisfy the type checker
+        track_obj: TidalTrack  # satisfy the type checker
         async for track_obj in self._iter_items(
             get_playlist_tracks, tidal_session, prov_playlist_id, limit=DEFAULT_LIMIT
         ):
             total_playlist_tracks += 1
-            track = PlaylistTrack.from_track(
-                self._parse_track(track_obj=track_obj), total_playlist_tracks
-            )
+            track = self._parse_track(track_obj=track_obj)
+            track.position = total_playlist_tracks
             yield track
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -647,20 +624,11 @@ class TidalProvider(MusicProvider):
     def _parse_track(
         self,
         track_obj: TidalTrack,
-        extra_init_kwargs: dict[str, Any] | None = None,
-    ) -> Track | AlbumTrack | PlaylistTrack:
+    ) -> Track:
         """Parse tidal track object to generic layout."""
         version = track_obj.version or ""
         track_id = str(track_obj.id)
-        if extra_init_kwargs is None:
-            extra_init_kwargs = {}
-        if "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
-            track_class = AlbumTrack
-        else:
-            track_class = Track
-        track = track_class(
+        track = Track(
             item_id=str(track_id),
             provider=self.instance_id,
             name=track_obj.name,
@@ -679,7 +647,8 @@ class TidalProvider(MusicProvider):
                     available=track_obj.available,
                 )
             },
-            **extra_init_kwargs,
+            disc_number=track_obj.volume_num,
+            track_number=track_obj.track_num,
         )
         if track_obj.isrc:
             track.external_ids.add((ExternalID.ISRC, track_obj.isrc))

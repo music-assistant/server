@@ -30,7 +30,7 @@ from music_assistant.common.models.errors import (
     PlayerUnavailableError,
     QueueEmpty,
 )
-from music_assistant.common.models.media_items import MediaItemType, media_from_dict
+from music_assistant.common.models.media_items import AlbumTrack, MediaItemType, media_from_dict
 from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -1162,20 +1162,21 @@ class PlayerQueuesController(CoreController):
             CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
             ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
         )
-        if artist_items_conf == "library_tracks":
-            # make sure we have an in-library artist
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, lazy=False, details=artist
+        if artist_items_conf in ("library_tracks", "all_tracks"):
+            all_items = await self.mass.music.artists.tracks(
+                artist.item_id,
+                artist.provider,
+                in_library_only=artist_items_conf == "library_tracks",
             )
-            return await self.mass.music.artists.get_library_artist_tracks(artist.item_id)
-        if artist_items_conf == "library_album_tracks":
-            # make sure we have an in-library artist
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, lazy=False, details=artist
-            )
+            random.shuffle(all_items)
+            return all_items
+
+        if artist_items_conf in ("library_album_tracks", "all_album_tracks"):
             all_items: list[Track] = []
-            for library_album in await self.mass.music.artists.get_library_artist_albums(
-                artist.item_id
+            for library_album in await self.mass.music.artists.albums(
+                artist.item_id,
+                artist.provider,
+                in_library_only=artist_items_conf == "library_album_tracks",
             ):
                 for album_track in self.mass.music.albums.tracks(
                     library_album.item_id, library_album.provider
@@ -1184,69 +1185,21 @@ class PlayerQueuesController(CoreController):
                         all_items.append(album_track)
             random.shuffle(all_items)
             return all_items
-        if artist_items_conf == "all_tracks":
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, details=artist
-            )
-            all_items: list[Track] = []
-            unique_tracks = set()
-            for provider in artist.provider_mappings:
-                for artist_track in await self.mass.music.artists.tracks(
-                    provider.item_id, provider.provider_instance
-                ):
-                    if artist_track in all_items:
-                        continue
-                    unique_key = f"{artist_track.name.lower()}.{artist_track.version.lower()}"
-                    if unique_key in unique_tracks:
-                        continue
-                    all_items.append(artist_track)
-                    unique_tracks.add(unique_key)
-            random.shuffle(all_items)
-            return all_items
-        if artist_items_conf == "all_album_tracks":
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, details=artist
-            )
-            all_items: list[Track] = []
-            unique_tracks = set()
-            for provider in artist.provider_mappings:
-                for album in await self.mass.music.artists.albums(
-                    provider.item_id, provider.provider_instance
-                ):
-                    for album_track in await self.mass.music.albums.tracks(
-                        album.item_id, album.provider
-                    ):
-                        if album_track in all_items:
-                            continue
-                        unique_key = f"{album_track.name.lower()}.{album_track.version.lower()}.{album_track.duration}"  # noqa: E501
-                        if unique_key in unique_tracks:
-                            continue
-                        all_items.append(album_track)
-                        unique_tracks.add(unique_key)
-            random.shuffle(all_items)
-            return all_items
+
         return []
 
-    async def get_album_tracks(self, album: Album) -> list[Track]:
+    async def get_album_tracks(self, album: Album) -> list[AlbumTrack]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
             CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
-        if album_items_conf == "library_tracks":
-            # make sure we have an in-library album
-            album = await self.mass.music.albums.get(
-                album.item_id, album.provider, lazy=False, details=album
-            )
-            return await self.mass.music.albums.tracks(album.item_id, album.provider)
-        if album_items_conf == "all_tracks":
-            for provider in album.provider_mappings:
-                if album_tracks := await self.mass.music.albums.tracks(
-                    provider.item_id, provider.provider_instance
-                ):
-                    return album_tracks
-        return []
+        return await self.mass.music.albums.tracks(
+            item_id=album.item_id,
+            provider_instance_id_or_domain=album.provider,
+            in_library_only=album_items_conf == "library_tracks",
+        )
 
     def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
