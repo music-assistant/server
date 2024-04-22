@@ -323,6 +323,7 @@ class SpotifyProvider(MusicProvider):
             # use count as position
             track = self._parse_track(item["track"])
             track.position = count
+            yield track
             count += 1
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:

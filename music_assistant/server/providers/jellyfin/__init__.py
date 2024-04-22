@@ -675,10 +675,7 @@ class JellyfinProvider(MusicProvider):
         playlist_items = await self._get_children(
             self._jellyfin_server, jellyfin_playlist[ITEM_KEY_ID], ITEM_TYPE_AUDIO
         )
-
-        if not playlist_items:
-            yield None
-        for index, jellyfin_track in enumerate(playlist_items, 1):
+        for index, jellyfin_track in enumerate(playlist_items or [], 1):
             if track := await self._parse_track(jellyfin_track):
                 if not track.position:
                     track.position = index
