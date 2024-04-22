@@ -510,19 +510,6 @@ class PlaylistTrack(Track):
 
     position: int
 
-    @classmethod
-    def from_track(cls: type, track: Track, position: int | None = None) -> Self:
-        """Cast Track to PlaylistTrack."""
-        if position is None:
-            position = track.position
-        # let mushmumaro instantiate a new object - this will ensure that valididation takes place
-        return PlaylistTrack.from_dict(
-            {
-                **track.to_dict(),
-                "position": position,
-            }
-        )
-
 
 @dataclass(kw_only=True)
 class Playlist(MediaItem):

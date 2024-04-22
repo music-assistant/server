@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 from random import choice, random
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.global_cache import get_global_cache_value
@@ -361,7 +361,7 @@ class AlbumsController(MediaControllerBase[Album]):
     async def get_library_album_tracks(
         self,
         item_id: str | int,
-    ) -> list[Track]:
+    ) -> list[AlbumTrack]:
         """Return in-database album tracks for the given database album."""
         subquery = (
             f"SELECT DISTINCT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
@@ -369,6 +369,8 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
         result = await self.mass.music.tracks.library_items(extra_query=query)
+        if TYPE_CHECKING:
+            return cast(list[AlbumTrack], result.items)
         return result.items
 
     async def _add_library_item(self, item: Album) -> Album:
@@ -399,7 +401,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
     async def _get_provider_album_tracks(
         self, item_id: str, provider_instance_id_or_domain: str
-    ) -> list[Track | AlbumTrack]:
+    ) -> list[Track]:
         """Return album tracks for the given provider album id."""
         prov: MusicProvider = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
