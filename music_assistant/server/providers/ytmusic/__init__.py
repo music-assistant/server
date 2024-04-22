@@ -303,6 +303,7 @@ class YoutubeMusicProvider(MusicProvider):
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
             try:
                 track = await self._parse_track(track_obj=track_obj)
+                track.disc_number = 0
                 track.track_number = track_obj.get("trackNumber", idx)
             except InvalidDataError:
                 continue
