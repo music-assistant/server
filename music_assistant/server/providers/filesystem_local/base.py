@@ -486,7 +486,7 @@ class FileSystemProviderBase(MusicProvider):
         if db_album is None:
             msg = f"Album not found: {prov_album_id}"
             raise MediaNotFoundError(msg)
-        album_tracks = await self.mass.music.albums.get_db_album_tracks(db_album.item_id)
+        album_tracks = await self.mass.music.albums.get_library_album_tracks(db_album.item_id)
         return [
             track
             for track in album_tracks

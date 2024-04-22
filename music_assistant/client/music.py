@@ -89,6 +89,7 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
     ) -> list[Album]:
         """Get all (known) albums this track is featured on."""
         return [
@@ -97,6 +98,7 @@ class Music:
                 "music/tracks/track_albums",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
+                in_library_only=in_library_only,
             )
         ]
 
@@ -221,6 +223,7 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
     ) -> list[Track]:
         """Get (top)tracks for given artist."""
         return [
@@ -229,6 +232,7 @@ class Music:
                 "music/artists/artist_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
+                in_library_only=in_library_only,
             )
         ]
 
@@ -236,6 +240,7 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
     ) -> list[Album]:
         """Get (top)albums for given artist."""
         return [
@@ -244,6 +249,7 @@ class Music:
                 "music/artists/artist_albums",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
+                in_library_only=in_library_only,
             )
         ]
 

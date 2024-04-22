@@ -249,7 +249,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Delete record from the database."""
         db_id = int(item_id)  # ensure integer
         # recursively also remove album tracks
-        for db_track in await self.get_db_album_tracks(db_id):
+        for db_track in await self.get_library_album_tracks(db_id):
             with contextlib.suppress(MediaNotFoundError):
                 await self.mass.music.tracks.remove_item_from_library(db_track.item_id)
         # delete entry(s) from albumtracks table
@@ -265,11 +265,16 @@ class AlbumsController(MediaControllerBase[Album]):
     ) -> list[AlbumTrack]:
         """Return album tracks for the given provider album id."""
         full_album = await self.get(item_id, provider_instance_id_or_domain)
+        db_items = (
+            await self.get_library_album_tracks(full_album.item_id)
+            if full_album.provider == "library"
+            else []
+        )
         if full_album.provider == "library" and in_library_only:
-            # return in-library tracks only
-            return await self.get_db_album_tracks(item_id)
-        # return all (unique) tracks from all providers
-        result: list[AlbumTrack] = []
+            # return in-library items only
+            return db_items
+        # return all (unique) items from all providers
+        result: list[AlbumTrack] = [*db_items]
         unique_ids: set[str] = set()
         for provider_mapping in full_album.provider_mappings:
             provider_tracks = await self._get_provider_album_tracks(
@@ -284,8 +289,17 @@ class AlbumsController(MediaControllerBase[Album]):
                 if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
                     provider_track.item_id, provider_track.provider
                 ):
-                    result.append(AlbumTrack.from_track(db_item, full_album))
-                else:
+                    if db_item in db_items:
+                        continue
+                    result.append(
+                        AlbumTrack.from_track(
+                            db_item,
+                            full_album,
+                            disc_number=provider_track.disc_number,
+                            track_number=provider_track.track_number,
+                        )
+                    )
+                elif not in_library_only and provider_track not in result:
                     result.append(AlbumTrack.from_track(provider_track, full_album))
         return result
 
@@ -314,14 +328,14 @@ class AlbumsController(MediaControllerBase[Album]):
             ]
         return result
 
-    async def get_db_album_tracks(
+    async def get_library_album_tracks(
         self,
         item_id: str | int,
     ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
         subquery = (
             f"SELECT DISTINCT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
-            f"WHERE {DB_TABLE_ALBUMS}.item_id = {item_id}"
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {item_id} AND albums.item_id = {item_id}"
         )
         query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
         result = await self.mass.music.tracks.library_items(extra_query=query)
