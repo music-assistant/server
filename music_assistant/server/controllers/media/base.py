@@ -494,9 +494,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider_mapping in library_item.provider_mappings:
             return
         # update provider_mappings table
-        await self._set_provider_mappings(
-            item_id=item_id, provider_mappings=library_item.provider_mappings
-        )
+        await self._set_provider_mappings(item_id=item_id, provider_mappings=[provider_mapping])
 
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
@@ -647,20 +645,19 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     },
                 )
         for provider_mapping in provider_mappings:
-            _dict = {
-                "media_type": self.media_type.value,
-                "item_id": db_id,
-                "provider_domain": provider_mapping.provider_domain,
-                "provider_instance": provider_mapping.provider_instance,
-                "provider_item_id": provider_mapping.item_id,
-                "available": provider_mapping.available,
-                "url": provider_mapping.url,
-                "audio_format": json_dumps(provider_mapping.audio_format),
-                "details": provider_mapping.details,
-            }
             await self.mass.music.database.insert_or_replace(
                 DB_TABLE_PROVIDER_MAPPINGS,
-                _dict,
+                {
+                    "media_type": self.media_type.value,
+                    "item_id": db_id,
+                    "provider_domain": provider_mapping.provider_domain,
+                    "provider_instance": provider_mapping.provider_instance,
+                    "provider_item_id": provider_mapping.item_id,
+                    "available": provider_mapping.available,
+                    "url": provider_mapping.url,
+                    "audio_format": json_dumps(provider_mapping.audio_format),
+                    "details": provider_mapping.details,
+                },
             )
 
     @staticmethod
