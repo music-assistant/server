@@ -47,7 +47,7 @@ class TracksController(MediaControllerBase[Track]):
                 SELECT
                     {self.db_table}.*,
                     {DB_TABLE_ARTISTS}.sort_name AS sort_artist,
-                    {DB_TABLE_ARTISTS}.sort_name AS sort_album,
+                    {DB_TABLE_ALBUMS}.sort_name AS sort_album,
                     json_group_array(
                         DISTINCT json_object(
                             'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,

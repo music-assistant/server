@@ -118,12 +118,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             query_parts.append(extra_query)
         if search:
             params["search"] = f"%{search}%"
-            if self.media_type in (MediaType.ALBUM, MediaType.TRACK):
+            if self.media_type == MediaType.ALBUM:
                 query_parts.append(
-                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search)"
+                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
+                    "OR sort_artist LIKE :search)"
+                )
+            elif self.media_type == MediaType.TRACK:
+                query_parts.append(
+                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
+                    "OR sort_artist LIKE :search OR sort_album LIKE :search)"
                 )
             else:
-                query_parts.append(f"{self.db_table}.name LIKE :search")
+                query_parts.append(
+                    f"{self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search"
+                )
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             params["favorite"] = favorite
