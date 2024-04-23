@@ -473,6 +473,8 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         if db_album.provider != "library":
             return  # Matching only supported for database items
+        if not db_album.artists:
+            return  # guard
         artist_name = db_album.artists[0].name
 
         async def find_prov_match(provider: MusicProvider):

@@ -215,7 +215,6 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         cache_key = f"{self.instance_id}.playlist_migration_done"
         if await self.mass.cache.get(cache_key):
             return
-        self.logger.info("Starting playlist migration...")
         async for item in self.listdir("", False):
             if not item.is_file:
                 continue
