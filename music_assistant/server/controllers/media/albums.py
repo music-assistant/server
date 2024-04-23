@@ -331,7 +331,9 @@ class AlbumsController(MediaControllerBase[Album]):
                     )
                 elif not in_library_only and provider_track not in result:
                     result.append(AlbumTrack.from_track(provider_track, full_album))
-        return result
+        # NOTE: we need to return the results sorted on disc/track here
+        # to ensure the correct order at playback
+        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
 
     async def versions(
         self,
