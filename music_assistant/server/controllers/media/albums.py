@@ -302,7 +302,7 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         if full_album.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
+            return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
         # return all (unique) items from all providers
         result: list[AlbumTrack] = [*db_items]
         unique_ids: set[str] = set()
