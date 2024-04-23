@@ -186,6 +186,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         add_to_library: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
+        metadata_lookup = force_refresh or add_to_library
         # always prefer the full library item if we have it
         library_item = await self.get_library_item_by_prov_id(
             item_id,
@@ -193,8 +194,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         if library_item and (time() - (library_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
-            force_refresh = True
-            add_to_library = True
+            metadata_lookup = True
         if library_item and force_refresh:
             # get (first) provider item id belonging to this library item
             add_to_library = True
@@ -222,7 +222,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # we couldn't get a match from any of the providers, raise error
             msg = f"Item not found: {provider_instance_id_or_domain}/{item_id}"
             raise MediaNotFoundError(msg)
-        if not add_to_library:
+        if not (add_to_library or metadata_lookup):
             # return the provider item as-is
             return details
         # create task to add the item to the library,
@@ -235,7 +235,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         add_task = self.mass.create_task(
             self.add_item_to_library,
             item=details,
-            metadata_lookup=True,
+            metadata_lookup=metadata_lookup,
             overwrite_existing=overwrite_existing,
             task_id=task_id,
         )

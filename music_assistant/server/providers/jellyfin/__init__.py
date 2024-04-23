@@ -643,7 +643,7 @@ class JellyfinProvider(MusicProvider):
         if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             # This artist does not exist in jellyfin, so we can just load it from DB.
 
-            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+            if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
                 prov_artist_id, self.instance_id
             ):
                 return db_artist
