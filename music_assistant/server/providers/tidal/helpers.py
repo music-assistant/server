@@ -20,17 +20,10 @@ from tidalapi import Playlist as TidalPlaylist
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi import UserPlaylist as TidalUserPlaylist
-from tidalapi.exceptions import (
-    MetadataNotAvailable,
-    ObjectNotFound,
-    TooManyRequests,
-)
+from tidalapi.exceptions import MetadataNotAvailable, ObjectNotFound, TooManyRequests
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.errors import (
-    MediaNotFoundError,
-    ResourceTemporarilyUnavailable,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 
 DEFAULT_LIMIT = 50
 LOGGER = logging.getLogger(__name__)
@@ -120,8 +113,8 @@ async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[
         else:
             all_albums = []
             albums = artist_obj.get_albums(limit=DEFAULT_LIMIT)
-            eps_singles = artist_obj.get_albums_ep_singles(limit=DEFAULT_LIMIT)
-            compilations = artist_obj.get_albums_other(limit=DEFAULT_LIMIT)
+            eps_singles = artist_obj.get_ep_singles(limit=DEFAULT_LIMIT)
+            compilations = artist_obj.get_other(limit=DEFAULT_LIMIT)
             all_albums.extend(albums)
             all_albums.extend(eps_singles)
             all_albums.extend(compilations)
