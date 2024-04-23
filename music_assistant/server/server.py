@@ -92,9 +92,10 @@ class MusicAssistant:
     streams: StreamsController
     _aiobrowser: AsyncServiceBrowser
 
-    def __init__(self, storage_path: str) -> None:
+    def __init__(self, storage_path: str, safe_mode: bool = False) -> None:
         """Initialize the MusicAssistant Server."""
         self.storage_path = storage_path
+        self.safe_mode = safe_mode
         # we dynamically register command handlers which can be consumed by the apis
         self.command_handlers: dict[str, APICommandHandler] = {}
         self._subscribers: set[EventSubscriptionType] = set()
@@ -128,10 +129,11 @@ class MusicAssistant:
         self.config = ConfigController(self)
         await self.config.setup()
         LOGGER.info(
-            "Starting Music Assistant Server (%s) version %s - HA add-on: %s",
+            "Starting Music Assistant Server (%s) version %s - HA add-on: %s - Safe mode: %s",
             self.server_id,
             self.version,
             self.running_as_hass_addon,
+            self.safe_mode,
         )
         # setup other core controllers
         self.cache = CacheController(self)
@@ -146,20 +148,22 @@ class MusicAssistant:
             controller: CoreController = getattr(self, controller_name)
             self._provider_manifests[controller.domain] = controller.manifest
         await self.cache.setup(await self.config.get_core_config("cache"))
-        await self.webserver.setup(await self.config.get_core_config("webserver"))
         await self.music.setup(await self.config.get_core_config("music"))
         await self.metadata.setup(await self.config.get_core_config("metadata"))
         await self.players.setup(await self.config.get_core_config("players"))
         await self.player_queues.setup(await self.config.get_core_config("player_queues"))
-        await self.streams.setup(await self.config.get_core_config("streams"))
-        # register all api commands (methods with decorator)
+        # load streams and webserver last so the api/frontend is
+        # not yet available while we're starting (or performing migrations)
         self._register_api_commands()
+        await self.streams.setup(await self.config.get_core_config("streams"))
+        await self.webserver.setup(await self.config.get_core_config("webserver"))
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup discovery
         self.create_task(self._setup_discovery())
         # load providers
-        await self._load_providers()
+        if not self.safe_mode:
+            await self._load_providers()
 
     async def stop(self) -> None:
         """Stop running the music assistant server."""
@@ -686,5 +690,15 @@ class MusicAssistant:
                     *{x.instance_id for x in self.providers},
                 },
                 "unique_providers": {x.lookup_key for x in self.providers},
+                "streaming_providers": {
+                    x.lookup_key
+                    for x in self.providers
+                    if x.type == ProviderType.MUSIC and x.is_streaming_provider
+                },
+                "non_streaming_providers": {
+                    x.lookup_key
+                    for x in self.providers
+                    if not (x.type == ProviderType.MUSIC and x.is_streaming_provider)
+                },
             }
         )

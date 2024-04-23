@@ -47,7 +47,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             SELECT
                 {self.db_table}.*,
                 json_group_array(
-                    json_object(
+                    DISTINCT json_object(
                         'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
                         'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
                         'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
@@ -118,12 +118,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             query_parts.append(extra_query)
         if search:
             params["search"] = f"%{search}%"
-            if self.media_type in (MediaType.ALBUM, MediaType.TRACK):
+            if self.media_type == MediaType.ALBUM:
                 query_parts.append(
-                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search)"
+                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
+                    "OR sort_artist LIKE :search)"
+                )
+            elif self.media_type == MediaType.TRACK:
+                query_parts.append(
+                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
+                    "OR sort_artist LIKE :search OR sort_album LIKE :search)"
                 )
             else:
-                query_parts.append(f"{self.db_table}.name LIKE :search")
+                query_parts.append(
+                    f"{self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search"
+                )
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             params["favorite"] = favorite
@@ -259,7 +267,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # prefer cache items (if any)
         cache_key = f"{prov.lookup_key}.search.{self.media_type.value}.{search_query}.{limit}"
-        if cache := await self.mass.cache.get(cache_key):
+        cache_key = cache_key.lower().replace("", "")
+        if (cache := await self.mass.cache.get(cache_key)) is not None:
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
         searchresult = await prov.search(
@@ -385,26 +394,30 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> list[ItemCls]:
         """Fetch all records from library for given provider."""
         query_parts = []
-        prov_ids_str = str(tuple(provider_item_ids or ()))
-        if prov_ids_str.endswith(",)"):
-            prov_ids_str = prov_ids_str.replace(",)", ")")
+        query_params = {
+            "prov_id": provider_instance_id_or_domain,
+        }
 
         if provider_instance_id_or_domain == "library":
             # request for specific library id's
             if provider_item_ids:
-                query_parts.append(f"{self.db_table}.item_id in {prov_ids_str}")
+                query_parts.append(f"{self.db_table}.item_id in :item_ids")
+                query_params["item_ids"] = provider_item_ids
         else:
             # provider filtered response
             query_parts.append(
-                f"(provider_mappings.provider_instance = '{provider_instance_id_or_domain}' "
-                f"OR provider_mappings.provider_domain = '{provider_instance_id_or_domain}')"
+                "(provider_mappings.provider_instance = :prov_id "
+                "OR provider_mappings.provider_domain = :prov_id)"
             )
             if provider_item_ids:
-                query_parts.append(f"provider_mappings.provider_item_id in {prov_ids_str}")
+                query_parts.append("provider_mappings.provider_item_id in :item_ids")
+                query_params["item_ids"] = provider_item_ids
 
         # build final query
         query = "WHERE " + " AND ".join(query_parts)
-        paged_list = await self.library_items(limit=limit, offset=offset, extra_query=query)
+        paged_list = await self.library_items(
+            limit=limit, offset=offset, extra_query=query, extra_query_params=query_params
+        )
         return paged_list.items
 
     async def iter_library_items_by_prov_id(
@@ -489,9 +502,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider_mapping in library_item.provider_mappings:
             return
         # update provider_mappings table
-        await self._set_provider_mappings(
-            item_id=item_id, provider_mappings=library_item.provider_mappings
-        )
+        await self._set_provider_mappings(item_id=item_id, provider_mappings=[provider_mapping])
 
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
@@ -553,7 +564,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             },
         )
 
-        # update the item in db (provider_mappings column only)
+        # update the item's provider mappings (and check if we still have any)
         library_item.provider_mappings = {
             x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id
         }
@@ -666,6 +677,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         for key in JSON_KEYS:
             if key in db_row_dict and db_row_dict[key] not in (None, ""):
                 db_row_dict[key] = json_loads(db_row_dict[key])
+                if key == "provider_mappings":
+                    for prov_mapping_dict in db_row_dict[key]:
+                        prov_mapping_dict["available"] = bool(prov_mapping_dict["available"])
 
         if "favorite" in db_row_dict:
             db_row_dict["favorite"] = bool(db_row_dict["favorite"])

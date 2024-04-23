@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from libopensonic.connection import Connection as SonicConnection
 from libopensonic.errors import (
@@ -25,14 +25,12 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     AlbumType,
     Artist,
     AudioFormat,
     ItemMapping,
     MediaItemImage,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -338,25 +336,17 @@ class OpenSonicProvider(MusicProvider):
 
         return album
 
-    def _parse_track(
-        self, sonic_song: SonicSong, extra_init_kwargs: dict[str, Any] | None = None
-    ) -> AlbumTrack | PlaylistTrack:
-        if extra_init_kwargs and "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        else:
-            track_class = AlbumTrack
-
+    def _parse_track(self, sonic_song: SonicSong) -> Track:
         mapping = None
         if sonic_song.album_id is not None and sonic_song.album is not None:
             mapping = self._get_item_mapping(MediaType.ALBUM, sonic_song.album_id, sonic_song.album)
 
-        track = track_class(
+        track = Track(
             item_id=sonic_song.id,
             provider=self.instance_id,
             name=sonic_song.title,
             album=mapping,
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
-            **extra_init_kwargs or {},
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_song.id,
@@ -368,10 +358,8 @@ class OpenSonicProvider(MusicProvider):
                     ),
                 )
             },
+            track_number=getattr(sonic_song, "track", 0),
         )
-
-        if not extra_init_kwargs:
-            track.track_number = int(sonic_song.track) if sonic_song.track is not None else 1
 
         # We need to find an artist for this track but various implementations seem to disagree
         # about where the artist with the valid ID needs to be found. We will add any artist with
@@ -510,7 +498,7 @@ class OpenSonicProvider(MusicProvider):
         for entry in results:
             yield self._parse_playlist(entry)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """
         Provide a generator for library tracks.
 
@@ -572,7 +560,7 @@ class OpenSonicProvider(MusicProvider):
 
         return self._parse_album(sonic_album, sonic_info)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Return a list of tracks on the specified Album."""
         try:
             sonic_album: SonicAlbum = await self._run_async(self._conn.getAlbum, prov_album_id)
@@ -664,7 +652,9 @@ class OpenSonicProvider(MusicProvider):
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from e
         for index, sonic_song in enumerate(sonic_playlist.songs):
-            yield self._parse_track(sonic_song, {"position": index + 1})
+            track = self._parse_track(sonic_song)
+            track.position = index
+            yield track
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""

@@ -10,7 +10,6 @@ from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.enums import ExternalID
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     ItemMapping,
     MediaItem,
@@ -91,8 +90,8 @@ def compare_album(
 
 
 def compare_track(
-    base_item: Track | AlbumTrack,
-    compare_item: Track | AlbumTrack,
+    base_item: Track,
+    compare_item: Track,
     strict: bool = True,
     track_albums: list[Album | ItemMapping] | None = None,
 ) -> bool:
@@ -131,8 +130,8 @@ def compare_track(
         return abs(base_item.duration - compare_item.duration) <= 3
     # exact albumtrack match = 100% match
     if (
-        isinstance(base_item, AlbumTrack)
-        and isinstance(compare_item, AlbumTrack)
+        base_item.album
+        and compare_item.album
         and compare_album(base_item.album, compare_item.album)
         and base_item.track_number == compare_item.track_number
     ):

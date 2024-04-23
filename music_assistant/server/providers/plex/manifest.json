@@ -7,7 +7,7 @@
     "@micha91"
   ],
   "requirements": [
-    "plexapi==4.15.11"
+    "plexapi==4.15.12"
   ],
   "documentation": "https://music-assistant.io/music-providers/plex/",
   "multi_instance": true

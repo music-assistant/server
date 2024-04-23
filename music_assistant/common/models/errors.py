@@ -104,3 +104,15 @@ class InvalidProviderID(MusicAssistantError):
     """Error thrown when a provider media item identifier does not match a known format."""
 
     error_code = 15
+
+
+class RetriesExhausted(MusicAssistantError):
+    """Error thrown when a retries to a given provider URI have been exhausted."""
+
+    error_code = 16
+
+
+class ResourceTemporarilyUnavailable(MusicAssistantError):
+    """Error thrown when a resource is temporarily unavailable."""
+
+    error_code = 17

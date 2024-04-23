@@ -7,7 +7,7 @@ import random
 import time
 from collections.abc import AsyncGenerator
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.config_entries import (
@@ -30,7 +30,7 @@ from music_assistant.common.models.errors import (
     PlayerUnavailableError,
     QueueEmpty,
 )
-from music_assistant.common.models.media_items import MediaItemType, media_from_dict
+from music_assistant.common.models.media_items import AlbumTrack, MediaItemType, media_from_dict
 from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -59,6 +59,18 @@ CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_action_radio"
 CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_action_playlist"
 
 
+class CompareState(TypedDict):
+    """Simple object where we store the (previous) state of a queue.
+
+    Used for compare actions.
+    """
+
+    queue_id: str
+    state: PlayerState
+    current_index: int | None
+    elapsed_time: int
+
+
 class PlayerQueuesController(CoreController):
     """Controller holding all logic to enqueue music for players."""
 
@@ -69,7 +81,7 @@ class PlayerQueuesController(CoreController):
         super().__init__(*args, **kwargs)
         self._queues: dict[str, PlayerQueue] = {}
         self._queue_items: dict[str, list[QueueItem]] = {}
-        self._prev_states: dict[str, dict] = {}
+        self._prev_states: dict[str, CompareState] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -789,11 +801,22 @@ class PlayerQueuesController(CoreController):
             queue.elapsed_time += queue.current_item.streamdetails.seek_position
 
         # basic throttle: do not send state changed events if queue did not actually change
-        prev_state = self._prev_states.get(queue_id, {})
-        new_state = queue.to_dict()
-        new_state.pop("elapsed_time_last_updated", None)
+        prev_state = self._prev_states.get(
+            queue_id,
+            CompareState(
+                queue_id=queue_id,
+                state=PlayerState.IDLE,
+                current_index=None,
+                elapsed_time=0,
+            ),
+        )
+        new_state = CompareState(
+            queue_id=queue_id,
+            state=queue.state,
+            current_index=queue.current_index,
+            elapsed_time=queue.elapsed_time,
+        )
         changed_keys = get_changed_keys(prev_state, new_state)
-
         # return early if nothing changed
         if len(changed_keys) == 0:
             return
@@ -810,15 +833,14 @@ class PlayerQueuesController(CoreController):
             self._prev_states[queue_id] = new_state
             return
         # handle player was playing and is now stopped
-        # if player finished playing a track for 85%, mark current item as finished
+        # if player finished playing a track for 90%, mark current item as finished
         if (
-            prev_state.get("state") == "playing"
+            prev_state["state"] == "playing"
             and queue.state == PlayerState.IDLE
             and (
                 queue.current_item
                 and queue.current_item.duration
-                and prev_state.get("elapsed_time", queue.elapsed_time)
-                > (queue.current_item.duration * 0.85)
+                and prev_state["elapsed_time"] > (queue.current_item.duration * 0.90)
             )
         ):
             queue.current_index += 1
@@ -826,11 +848,15 @@ class PlayerQueuesController(CoreController):
             queue.next_item = None
         # signal update and store state
         self.signal_update(queue_id)
+
         self._prev_states[queue_id] = new_state
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
-            fill_index = len(self._queue_items[queue_id]) - 5
-            if queue.radio_source and queue.current_index and (queue.current_index >= fill_index):
+            if (
+                queue.radio_source
+                and queue.current_index
+                and (queue.items - queue.current_index) < 5
+            ):
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
@@ -1022,26 +1048,33 @@ class PlayerQueuesController(CoreController):
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
         """Fill a Queue with (additional) Radio tracks."""
+        # we need to debounce, if we're called twice within a short timeframe
+        debounce_key = f"fill_radio_{queue_id}"
+        if getattr(self, debounce_key, None):
+            return
+        setattr(self, debounce_key, True)
         tracks = await self._get_radio_tracks(queue_id)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
         self.load(
             queue_id,
             queue_items,
-            insert_at_index=len(self._queue_items[queue_id]) - 1,
+            insert_at_index=len(self._queue_items[queue_id]) + 1,
         )
+        await asyncio.sleep(5)
+        setattr(self, debounce_key, None)
 
     def _check_enqueue_next(
         self,
         player: Player,
         queue: PlayerQueue,
-        prev_state: dict[str, Any],
-        new_state: dict[str, Any],
+        prev_state: CompareState,
+        new_state: CompareState,
     ) -> None:
         """Check if we need to enqueue the next item to the player itself."""
         if not queue.active:
             return
-        if prev_state.get("state") != PlayerState.PLAYING:
+        if prev_state["state"] != PlayerState.PLAYING:
             return
         if (player := self.mass.players.get(queue.queue_id)) and player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
@@ -1088,9 +1121,10 @@ class PlayerQueuesController(CoreController):
         if PlayerFeature.ENQUEUE_NEXT in player.supported_features:
             # we enqueue the next track after a new track
             # has started playing and (repeat) before the current track ends
-            new_track_started = new_state.get("state") == PlayerState.PLAYING and prev_state.get(
-                "current_index"
-            ) != new_state.get("current_index")
+            new_track_started = (
+                new_state["state"] == PlayerState.PLAYING
+                and prev_state["current_index"] != new_state["current_index"]
+            )
             if (
                 new_track_started
                 or seconds_remaining == 15
@@ -1128,20 +1162,21 @@ class PlayerQueuesController(CoreController):
             CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
             ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
         )
-        if artist_items_conf == "library_tracks":
-            # make sure we have an in-library artist
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, lazy=False, details=artist
+        if artist_items_conf in ("library_tracks", "all_tracks"):
+            all_items = await self.mass.music.artists.tracks(
+                artist.item_id,
+                artist.provider,
+                in_library_only=artist_items_conf == "library_tracks",
             )
-            return await self.mass.music.artists.get_library_artist_tracks(artist.item_id)
-        if artist_items_conf == "library_album_tracks":
-            # make sure we have an in-library artist
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, lazy=False, details=artist
-            )
+            random.shuffle(all_items)
+            return all_items
+
+        if artist_items_conf in ("library_album_tracks", "all_album_tracks"):
             all_items: list[Track] = []
-            for library_album in await self.mass.music.artists.get_library_artist_albums(
-                artist.item_id
+            for library_album in await self.mass.music.artists.albums(
+                artist.item_id,
+                artist.provider,
+                in_library_only=artist_items_conf == "library_album_tracks",
             ):
                 for album_track in self.mass.music.albums.tracks(
                     library_album.item_id, library_album.provider
@@ -1150,69 +1185,21 @@ class PlayerQueuesController(CoreController):
                         all_items.append(album_track)
             random.shuffle(all_items)
             return all_items
-        if artist_items_conf == "all_tracks":
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, details=artist
-            )
-            all_items: list[Track] = []
-            unique_tracks = set()
-            for provider in artist.provider_mappings:
-                for artist_track in await self.mass.music.artists.tracks(
-                    provider.item_id, provider.provider_instance
-                ):
-                    if artist_track in all_items:
-                        continue
-                    unique_key = f"{artist_track.name.lower()}.{artist_track.version.lower()}"
-                    if unique_key in unique_tracks:
-                        continue
-                    all_items.append(artist_track)
-                    unique_tracks.add(unique_key)
-            random.shuffle(all_items)
-            return all_items
-        if artist_items_conf == "all_album_tracks":
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, details=artist
-            )
-            all_items: list[Track] = []
-            unique_tracks = set()
-            for provider in artist.provider_mappings:
-                for album in await self.mass.music.artists.albums(
-                    provider.item_id, provider.provider_instance
-                ):
-                    for album_track in await self.mass.music.albums.tracks(
-                        album.item_id, album.provider
-                    ):
-                        if album_track in all_items:
-                            continue
-                        unique_key = f"{album_track.name.lower()}.{album_track.version.lower()}.{album_track.duration}"  # noqa: E501
-                        if unique_key in unique_tracks:
-                            continue
-                        all_items.append(album_track)
-                        unique_tracks.add(unique_key)
-            random.shuffle(all_items)
-            return all_items
+
         return []
 
-    async def get_album_tracks(self, album: Album) -> list[Track]:
+    async def get_album_tracks(self, album: Album) -> list[AlbumTrack]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
             CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
-        if album_items_conf == "library_tracks":
-            # make sure we have an in-library album
-            album = await self.mass.music.albums.get(
-                album.item_id, album.provider, lazy=False, details=album
-            )
-            return await self.mass.music.albums.tracks(album.item_id, album.provider)
-        if album_items_conf == "all_tracks":
-            for provider in album.provider_mappings:
-                if album_tracks := await self.mass.music.albums.tracks(
-                    provider.item_id, provider.provider_instance
-                ):
-                    return album_tracks
-        return []
+        return await self.mass.music.albums.tracks(
+            item_id=album.item_id,
+            provider_instance_id_or_domain=album.provider,
+            in_library_only=album_items_conf == "library_tracks",
+        )
 
     def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""

@@ -9,12 +9,10 @@ from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     BrowseFolder,
     MediaItemType,
     Playlist,
-    PlaylistTrack,
     Radio,
     SearchResults,
     Track,
@@ -85,7 +83,7 @@ class MusicProvider(Provider):
             raise NotImplementedError
         yield  # type: ignore
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
             raise NotImplementedError
@@ -142,14 +140,14 @@ class MusicProvider(Provider):
     async def get_album_tracks(
         self,
         prov_album_id: str,  # type: ignore[return]
-    ) -> list[AlbumTrack]:
+    ) -> list[Track]:
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
 
     async def get_playlist_tracks(  # type: ignore[return]
         self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
@@ -264,7 +262,7 @@ class MusicProvider(Provider):
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
         """Handle callback when an item completed streaming."""
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
 

@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Self, cast
+from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
 
 from mashumaro import DataClassDictMixin
 
@@ -21,6 +22,32 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import InvalidDataError
 
 MetadataTypes = int | bool | str | list[str]
+
+_T = TypeVar("_T")
+
+
+class UniqueList(list[_T]):
+    """Custom list that ensures the inserted items are unique."""
+
+    def __init__(self, iterable: Iterable[_T] | None = None) -> None:
+        """Initialize."""
+        if not iterable:
+            super().__init__()
+            return
+        seen = set()
+        seen_add = seen.add
+        super().__init__(x for x in iterable if not (x in seen or seen_add(x)))
+
+    def append(self, item: _T) -> None:
+        """Append item."""
+        if item in self:
+            return
+        super().append(item)
+
+    def extend(self, other: Iterable[_T]) -> None:
+        """Extend list."""
+        other = [x for x in other if x not in self]
+        super().extend(other)
 
 
 @dataclass(kw_only=True)
@@ -97,11 +124,13 @@ class ProviderMapping(DataClassDictMixin):
         """Call after init."""
         # having items for unavailable providers can have all sorts
         # of unpredictable results so ensure we have accurate availability status
-        if available_providers := get_global_cache_value("unique_providers"):
-            if TYPE_CHECKING:
-                available_providers = cast(set[str], available_providers)
-            if not available_providers.intersection({self.provider_domain, self.provider_instance}):
-                self.available = False
+        if not (available_providers := get_global_cache_value("unique_providers")):
+            self.available = False
+            return
+        if TYPE_CHECKING:
+            available_providers = cast(set[str], available_providers)
+        if not available_providers.intersection({self.provider_domain, self.provider_instance}):
+            self.available = False
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -183,7 +212,8 @@ class MediaItemMetadata(DataClassDictMixin):
     description: str | None = None
     review: str | None = None
     explicit: bool | None = None
-    images: list[MediaItemImage] | None = None
+    # NOTE: images is a list of available images, sorted by preference
+    images: UniqueList[MediaItemImage] | None = None
     genres: set[str] | None = None
     mood: str | None = None
     style: str | None = None
@@ -191,7 +221,7 @@ class MediaItemMetadata(DataClassDictMixin):
     lyrics: str | None = None  # tracks only
     label: str | None = None
     links: set[MediaItemLink] | None = None
-    chapters: list[MediaItemChapter] | None = None
+    chapters: UniqueList[MediaItemChapter] | None = None
     performers: set[str] | None = None
     preview: str | None = None
     popularity: int | None = None
@@ -203,7 +233,6 @@ class MediaItemMetadata(DataClassDictMixin):
     def update(
         self,
         new_values: MediaItemMetadata,
-        allow_overwrite: bool = True,
     ) -> MediaItemMetadata:
         """Update metadata (in-place) with new values."""
         if not new_values:
@@ -213,19 +242,17 @@ class MediaItemMetadata(DataClassDictMixin):
             if new_val is None:
                 continue
             cur_val = getattr(self, fld.name)
-            if allow_overwrite and new_val:
-                setattr(self, fld.name, new_val)
-            elif isinstance(cur_val, list) and isinstance(new_val, list):
+            if isinstance(cur_val, list) and isinstance(new_val, list):
                 new_val = merge_lists(cur_val, new_val)
                 setattr(self, fld.name, new_val)
-            elif isinstance(cur_val, set) and isinstance(new_val, list):
+            elif isinstance(cur_val, set) and isinstance(new_val, set | list | tuple):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
             elif new_val and fld.name in ("popularity", "last_refresh", "cache_checksum"):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
-            elif cur_val is None or (allow_overwrite and new_val):
+            elif cur_val is None:
                 setattr(self, fld.name, new_val)
         return self
 
@@ -246,6 +273,10 @@ class _MediaItemBase(DataClassDictMixin):
 
     def __post_init__(self):
         """Call after init."""
+        if not self.name:
+            # we've got some reports where the name was empty, causing weird issues.
+            # e.g. here: https://github.com/music-assistant/hass-music-assistant/issues/1515
+            self.name = "[Unknown]"
         if not self.uri:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if not self.sort_name:
@@ -290,10 +321,14 @@ class _MediaItemBase(DataClassDictMixin):
 class MediaItem(_MediaItemBase):
     """Base representation of a media item."""
 
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
+
     provider_mappings: set[ProviderMapping]
     # optional fields below
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
+    position: int | None = None  # required for playlist tracks, optional for all other
     # timestamps to determine when the item was added/modified to the db
     timestamp_added: int = 0
     timestamp_modified: int = 0
@@ -331,6 +366,9 @@ class MediaItem(_MediaItemBase):
 class ItemMapping(_MediaItemBase):
     """Representation of a minimized item object."""
 
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
+
     available: bool = True
     image: MediaItemImage | None = None
 
@@ -355,6 +393,9 @@ class ItemMapping(_MediaItemBase):
 class Artist(MediaItem):
     """Model for an artist."""
 
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
+
     media_type: MediaType = MediaType.ARTIST
 
 
@@ -362,10 +403,13 @@ class Artist(MediaItem):
 class Album(MediaItem):
     """Model for an album."""
 
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
+
     media_type: MediaType = MediaType.ALBUM
     version: str = ""
     year: int | None = None
-    artists: list[Artist | ItemMapping] = field(default_factory=list)
+    artists: UniqueList[Artist | ItemMapping] = field(default_factory=UniqueList)
     album_type: AlbumType = AlbumType.UNKNOWN
 
 
@@ -373,14 +417,16 @@ class Album(MediaItem):
 class Track(MediaItem):
     """Model for a track."""
 
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
+
     media_type: MediaType = MediaType.TRACK
     duration: int = 0
     version: str = ""
-    artists: list[Artist | ItemMapping] = field(default_factory=list)
+    artists: UniqueList[Artist | ItemMapping] = field(default_factory=UniqueList)
     album: Album | ItemMapping | None = None  # optional
     disc_number: int | None = None  # required for album tracks
     track_number: int | None = None  # required for album tracks
-    position: int | None = None  # required for playlist tracks
 
     def __hash__(self):
         """Return custom hash."""
@@ -418,19 +464,37 @@ class AlbumTrack(Track):
     album, disc_number and track_number
     """
 
-    album: Album
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
+
+    album: Album | ItemMapping
     disc_number: int
     track_number: int
 
     @classmethod
-    def from_track(cls: Self, track: Track, album: Album | None = None) -> Self:
+    def from_track(
+        cls: type,
+        track: Track,
+        album: Album | None = None,
+        disc_number: int | None = None,
+        track_number: int | None = None,
+    ) -> Self:
         """Cast Track to AlbumTrack."""
-        if album:
-            track.album = album
-        assert isinstance(track.album, Album)
-        assert track.disc_number is not None
-        assert track.track_number is not None
-        return cast(AlbumTrack, track)
+        if album is None:
+            album = track.album
+        if disc_number is None:
+            disc_number = track.disc_number
+        if track_number is None:
+            track_number = track.track_number
+        # let mushmumaro instantiate a new object - this will ensure that valididation takes place
+        return AlbumTrack.from_dict(
+            {
+                **track.to_dict(),
+                "album": album.to_dict(),
+                "disc_number": disc_number,
+                "track_number": track_number,
+            }
+        )
 
 
 @dataclass(kw_only=True)
@@ -441,18 +505,18 @@ class PlaylistTrack(Track):
     Same as regular Track but with explicit and required definition of position.
     """
 
-    position: int
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
 
-    @classmethod
-    def from_track(cls: Self, track: Track) -> Self:
-        """Cast Track to PlaylistTrack."""
-        assert track.position is not None
-        return cast(AlbumTrack, track)
+    position: int
 
 
 @dataclass(kw_only=True)
 class Playlist(MediaItem):
     """Model for a playlist."""
+
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
 
     media_type: MediaType = MediaType.PLAYLIST
     owner: str = ""
@@ -463,6 +527,9 @@ class Playlist(MediaItem):
 class Radio(MediaItem):
     """Model for a radio station."""
 
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
+
     media_type: MediaType = MediaType.RADIO
     duration: int = 172800
 
@@ -470,6 +537,9 @@ class Radio(MediaItem):
 @dataclass(kw_only=True)
 class BrowseFolder(MediaItem):
     """Representation of a Folder used in Browse (which contains media items)."""
+
+    __hash__ = _MediaItemBase.__hash__
+    __eq__ = _MediaItemBase.__eq__
 
     media_type: MediaType = MediaType.FOLDER
     # path: the path (in uri style) to/for this browse folder

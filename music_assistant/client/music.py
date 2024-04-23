@@ -8,6 +8,7 @@ from typing import TYPE_CHECKING
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.media_items import (
     Album,
+    AlbumTrack,
     Artist,
     MediaItemType,
     PagedItems,
@@ -88,6 +89,7 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
     ) -> list[Album]:
         """Get all (known) albums this track is featured on."""
         return [
@@ -96,6 +98,7 @@ class Music:
                 "music/tracks/track_albums",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
+                in_library_only=in_library_only,
             )
         ]
 
@@ -149,14 +152,16 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> list[Track]:
+        in_library_only: bool = False,
+    ) -> list[AlbumTrack]:
         """Get tracks for given album."""
         return [
-            Track.from_dict(item)
+            AlbumTrack.from_dict(item)
             for item in await self.client.send_command(
                 "music/albums/album_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
+                in_library_only=in_library_only,
             )
         ]
 
@@ -218,6 +223,7 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
     ) -> list[Track]:
         """Get (top)tracks for given artist."""
         return [
@@ -226,6 +232,7 @@ class Music:
                 "music/artists/artist_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
+                in_library_only=in_library_only,
             )
         ]
 
@@ -233,6 +240,7 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
+        in_library_only: bool = False,
     ) -> list[Album]:
         """Get (top)albums for given artist."""
         return [
@@ -241,6 +249,7 @@ class Music:
                 "music/artists/artist_albums",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
+                in_library_only=in_library_only,
             )
         ]
 
