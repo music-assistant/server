@@ -12,7 +12,6 @@
   "documentation": "https://music-assistant.io/player-support/google-cast/",
   "multi_instance": false,
   "builtin": false,
-  "load_by_default": true,
   "icon": "cast",
   "mdns_discovery": [
     "_googlecast._tcp.local."

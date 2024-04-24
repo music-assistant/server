@@ -468,15 +468,15 @@ class ConfigController:
             default_conf_raw,
         )
 
-    async def create_default_provider_config(self, provider_domain: str) -> None:
+    async def create_builtin_provider_config(self, provider_domain: str) -> None:
         """
-        Create default ProviderConfig.
+        Create builtin ProviderConfig.
 
-        This is meant as helper to create default configs for default enabled providers.
+        This is meant as helper to create default configs for builtin providers.
         Called by the server initialization code which load all providers at startup.
         """
-        for _conf in await self.get_provider_configs(provider_domain=provider_domain):
-            # return if there is already a config
+        for _ in await self.get_provider_configs(provider_domain=provider_domain):
+            # return if there is already any config
             return
         for prov in self.mass.get_provider_manifests():
             if prov.domain == provider_domain:
