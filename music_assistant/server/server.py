@@ -530,11 +530,11 @@ class MusicAssistant:
 
     async def _load_providers(self) -> None:
         """Load providers from config."""
-        # create default config for any 'load_by_default' providers (e.g. URL provider)
+        # create default config for any 'builtin' providers (e.g. URL provider)
         for prov_manifest in self._provider_manifests.values():
-            if not prov_manifest.load_by_default:
+            if not prov_manifest.builtin:
                 continue
-            await self.config.create_default_provider_config(prov_manifest.domain)
+            await self.config.create_builtin_provider_config(prov_manifest.domain)
 
         async def load_provider(prov_conf: ProviderConfig) -> None:
             """Try to load a provider and catch errors."""

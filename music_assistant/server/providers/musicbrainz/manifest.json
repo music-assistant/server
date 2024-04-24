@@ -3,11 +3,12 @@
   "domain": "musicbrainz",
   "name": "MusicBrainz Metadata provider",
   "description": "MusicBrainz is an open music encyclopedia that collects music metadata and makes it available to the public.",
-  "codeowners": ["@music-assistant"],
+  "codeowners": [
+    "@music-assistant"
+  ],
   "requirements": [],
   "documentation": "",
   "multi_instance": false,
   "builtin": true,
-  "load_by_default": true,
   "icon": "mdi-folder-information"
 }
