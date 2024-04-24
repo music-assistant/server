@@ -105,9 +105,7 @@ async def setup(
     return prov
 
 
-async def tidal_code_login(
-    auth_helper: AuthenticationHelper, quality: str
-) -> TidalSession:
+async def tidal_code_login(auth_helper: AuthenticationHelper, quality: str) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
 
     def inner() -> TidalSession:
@@ -136,9 +134,7 @@ async def get_config_entries(
     """
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
-        async with AuthenticationHelper(
-            mass, cast(str, values["session_id"])
-        ) as auth_helper:
+        async with AuthenticationHelper(mass, cast(str, values["session_id"])) as auth_helper:
             quality: str | int | float | list[str] | list[int] | None = (
                 values.get(CONF_QUALITY) if values else None
             )
@@ -165,12 +161,8 @@ async def get_config_entries(
             required=True,
             description="The Tidal Quality you wish to use",
             options=(
-                ConfigValueOption(
-                    title=TidalQuality.low_96k, value=TidalQuality.low_96k
-                ),
-                ConfigValueOption(
-                    title=TidalQuality.low_320k, value=TidalQuality.low_320k
-                ),
+                ConfigValueOption(title=TidalQuality.low_96k, value=TidalQuality.low_96k),
+                ConfigValueOption(title=TidalQuality.low_320k, value=TidalQuality.low_320k),
                 ConfigValueOption(
                     title=TidalQuality.high_lossless,
                     value=TidalQuality.high_lossless,
@@ -344,9 +336,7 @@ class TidalProvider(MusicProvider):
             )
             return [self._parse_track(track) for track in artist_toptracks_obj]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         tidal_session = await self._get_tidal_session()
         total_playlist_tracks = 0
@@ -359,9 +349,7 @@ class TidalProvider(MusicProvider):
             track.position = total_playlist_tracks
             yield track
 
-    async def get_similar_tracks(
-        self, prov_track_id: str, limit: int = 25
-    ) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
         async with self._throttle_retry as manager:
@@ -392,9 +380,7 @@ class TidalProvider(MusicProvider):
             add=False,
         )
 
-    async def add_playlist_tracks(
-        self, prov_playlist_id: str, prov_track_ids: list[str]
-    ) -> None:
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         tidal_session = await self._get_tidal_session()
         return await add_remove_playlist_tracks(
@@ -492,9 +478,7 @@ class TidalProvider(MusicProvider):
             )
             return self._parse_playlist(playlist_obj)
 
-    def get_item_mapping(
-        self, media_type: MediaType, key: str, name: str
-    ) -> ItemMapping:
+    def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
         return ItemMapping(
             media_type=media_type,
@@ -517,9 +501,7 @@ class TidalProvider(MusicProvider):
             quality=self.config.get_value(CONF_QUALITY),
             access_token=str(self.config.get_value(CONF_AUTH_TOKEN)),
             refresh_token=str(self.config.get_value(CONF_REFRESH_TOKEN)),
-            expiry_time=datetime.fromisoformat(
-                str(self.config.get_value(CONF_EXPIRY_TIME))
-            ),
+            expiry_time=datetime.fromisoformat(str(self.config.get_value(CONF_EXPIRY_TIME))),
         )
         await self.mass.config.set_provider_config_value(
             self.config.instance_id,
@@ -551,9 +533,7 @@ class TidalProvider(MusicProvider):
         def inner() -> TidalSession:
             config = TidalConfig(quality=quality, item_limit=10000, alac=False)
             session = TidalSession(config=config)
-            session.load_oauth_session(
-                token_type, access_token, refresh_token, expiry_time
-            )
+            session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
             return session
 
         return await asyncio.to_thread(inner)
@@ -628,9 +608,7 @@ class TidalProvider(MusicProvider):
         album.year = int(album_obj.year)
         # metadata
         if album_obj.universal_product_number:
-            album.external_ids.add(
-                (ExternalID.BARCODE, album_obj.universal_product_number)
-            )
+            album.external_ids.add((ExternalID.BARCODE, album_obj.universal_product_number))
         album.metadata.copyright = album_obj.copyright
         album.metadata.explicit = album_obj.explicit
         album.metadata.popularity = album_obj.popularity
@@ -756,9 +734,7 @@ class TidalProvider(MusicProvider):
                 if asyncio.iscoroutinefunction(func):
                     chunk = await func(*args, **kwargs, offset=offset)
                 else:
-                    chunk = await asyncio.to_thread(
-                        func, *args, **kwargs, offset=offset
-                    )
+                    chunk = await asyncio.to_thread(func, *args, **kwargs, offset=offset)
                 offset += len(chunk)
                 for item in chunk:
                     yield item
