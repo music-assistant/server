@@ -821,7 +821,9 @@ class PlayerQueuesController(CoreController):
         if len(changed_keys) == 0:
             return
         # handle enqueuing of next item to play
-        if not queue.flow_mode or queue.stream_finished:
+        if (not queue.flow_mode or queue.stream_finished) and (
+            not queue.current_item or queue.current_item.media_type != MediaType.RADIO
+        ):
             self._check_enqueue_next(player, queue, prev_state, new_state)
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
