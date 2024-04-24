@@ -38,6 +38,7 @@ from music_assistant.common.models.media_items import (
     ContentType,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Playlist,
     ProviderMapping,
     SearchResults,
@@ -46,7 +47,9 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import AsyncThrottleWithRetryContextManager
+from music_assistant.server.helpers.throttle_retry import (
+    AsyncThrottleWithRetryContextManager,
+)
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -355,14 +358,14 @@ class TidalProvider(MusicProvider):
             )
             return [self._parse_track(track) for track in similar_tracks_obj]
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         tidal_session = await self._get_tidal_session()
         return await library_items_add_remove(
             tidal_session,
             str(self._tidal_user_id),
-            prov_item_id,
-            media_type,
+            item.item_id,
+            item.media_type,
             add=True,
         )
 
@@ -561,7 +564,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=self.domain,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -615,7 +619,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=self.domain,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -675,7 +680,8 @@ class TidalProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
-                        provider=self.domain,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
                     )
                 ]
         return track
@@ -711,7 +717,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=self.domain,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
