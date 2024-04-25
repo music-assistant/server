@@ -752,7 +752,7 @@ class JellyfinProvider(MusicProvider):
         return API.audio_url(client.jellyfin, media_item)  # type: ignore[no-any-return]
 
     async def _get_children(
-        self, client: JellyfinClient, parent_id: str, item_type: setattr
+        self, client: JellyfinClient, parent_id: str, item_type: str
     ) -> list[dict[str, Any]]:
         """Return all children for the parent_id whose item type is item_type."""
         params = {
