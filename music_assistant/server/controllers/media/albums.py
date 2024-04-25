@@ -32,7 +32,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
 )
 from music_assistant.server.controllers.media.base import MediaControllerBase
@@ -58,33 +57,39 @@ class AlbumsController(MediaControllerBase[Album]):
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
         self.base_query = f"""
-                SELECT
-                    {self.db_table}.*,
-                    {DB_TABLE_ARTISTS}.sort_name AS sort_artist,
-                    json_group_array(
-                        DISTINCT json_object(
-                            'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
-                            'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
-                            'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
-                            'available', {DB_TABLE_PROVIDER_MAPPINGS}.available,
-                            'url', {DB_TABLE_PROVIDER_MAPPINGS}.url,
-                            'audio_format', json({DB_TABLE_PROVIDER_MAPPINGS}.audio_format),
-                            'details', {DB_TABLE_PROVIDER_MAPPINGS}.details
-                        )) filter ( where {DB_TABLE_PROVIDER_MAPPINGS}.item_id is not null) as {DB_TABLE_PROVIDER_MAPPINGS},
-                    json_group_array(
-                        DISTINCT json_object(
-                            'item_id', {DB_TABLE_ARTISTS}.item_id,
-                            'provider', 'library',
-                            'name', {DB_TABLE_ARTISTS}.name,
-                            'sort_name', {DB_TABLE_ARTISTS}.sort_name,
-                            'media_type', 'artist'
-                        )) filter ( where {DB_TABLE_ARTISTS}.name is not null) as {DB_TABLE_ARTISTS}
-                FROM {self.db_table}
-                LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
-                LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
-                LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS}
-                    ON {self.db_table}.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id
-                    AND {DB_TABLE_PROVIDER_MAPPINGS}.media_type == '{self.media_type.value}'
+WITH select_items AS (
+    SELECT {self.db_table}.*
+    FROM {self.db_table}
+    INNER JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
+    INNER JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
+    INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
+)
+SELECT
+    select_items.*,
+    json_group_array(
+        DISTINCT
+        json_object(
+            'item_id', {self.prov_map_table}.provider_item_id,
+            'provider_domain', {self.prov_map_table}.provider_domain,
+            'provider_instance', {self.prov_map_table}.provider_instance,
+            'available', {self.prov_map_table}.available,
+            'url', {self.prov_map_table}.url,
+            'audio_format', json({self.prov_map_table}.audio_format),
+            'details', {self.prov_map_table}.details)
+        ) filter ( where {self.prov_map_table}.{self.media_type.value}_id is not null) as provider_mappings,
+    json_group_array(
+        DISTINCT
+        json_object(
+            'item_id', {DB_TABLE_ARTISTS}.item_id,
+            'provider', 'library',
+            'name', {DB_TABLE_ARTISTS}.name,
+            'sort_name', {DB_TABLE_ARTISTS}.sort_name,
+            'media_type', 'artist')
+        ) filter ( where {DB_TABLE_ARTISTS}.item_id is not null)  as artists
+FROM select_items
+INNER JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = select_items.item_id
+INNER JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
+INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.album_id = select_items.item_id
         """  # noqa: E501
         # register api handlers
         self.mass.register_api_command("music/albums/library_items", self.library_items)

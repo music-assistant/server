@@ -20,7 +20,7 @@ from music_assistant.common.models.media_items import (
     Track,
     media_from_dict,
 )
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
+from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_ARTISTS, MASS_LOGGER_NAME
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Iterable, Mapping
@@ -30,7 +30,7 @@ if TYPE_CHECKING:
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
-JSON_KEYS = ("artists", "album", "albums", "metadata", "provider_mappings", "external_ids")
+JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids")
 
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
@@ -43,25 +43,30 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
+        self.prov_map_table = f"{self.media_type.value}_provider_mappings"
         self.base_query = f"""
-            SELECT
-                {self.db_table}.*,
-                json_group_array(
-                    DISTINCT json_object(
-                        'item_id', {DB_TABLE_PROVIDER_MAPPINGS}.provider_item_id,
-                        'provider_domain', {DB_TABLE_PROVIDER_MAPPINGS}.provider_domain,
-                        'provider_instance', {DB_TABLE_PROVIDER_MAPPINGS}.provider_instance,
-                        'available', {DB_TABLE_PROVIDER_MAPPINGS}.available,
-                        'url', {DB_TABLE_PROVIDER_MAPPINGS}.url,
-                        'audio_format', json({DB_TABLE_PROVIDER_MAPPINGS}.audio_format),
-                        'details', {DB_TABLE_PROVIDER_MAPPINGS}.details
-                    )) filter ( where {DB_TABLE_PROVIDER_MAPPINGS}.item_id is not null) as {DB_TABLE_PROVIDER_MAPPINGS}
-            FROM {self.db_table}
-            LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS}
-                ON {self.db_table}.item_id = {DB_TABLE_PROVIDER_MAPPINGS}.item_id
-                AND {DB_TABLE_PROVIDER_MAPPINGS}.media_type == '{self.media_type.value}'
+WITH select_items AS (
+    SELECT {self.db_table}.*
+    FROM {self.db_table}
+    INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
+)
+SELECT
+    select_items.*,
+    json_group_array(
+        DISTINCT
+        json_object(
+            'item_id', {self.prov_map_table}.provider_item_id,
+            'provider_domain', {self.prov_map_table}.provider_domain,
+            'provider_instance', {self.prov_map_table}.provider_instance,
+            'available', {self.prov_map_table}.available,
+            'url', {self.prov_map_table}.url,
+            'audio_format', json({self.prov_map_table}.audio_format),
+            'details', {self.prov_map_table}.details)
+        ) filter ( where {self.prov_map_table}.{self.media_type.value}_id is not null) as provider_mappings
+    FROM select_items
+    INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = select_items.item_id
         """  # noqa: E501
-        self.sql_group_by = f"{self.db_table}.item_id"
+        self.sql_group_by = "select_items.item_id"
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
 
     @abstractmethod
@@ -89,8 +94,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         # update provider_mappings table
         await self.mass.music.database.delete(
-            DB_TABLE_PROVIDER_MAPPINGS,
-            {"media_type": self.media_type.value, "item_id": db_id},
+            self.prov_map_table,
+            {"item_id": db_id},
         )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
@@ -120,20 +125,21 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             params["search"] = f"%{search}%"
             if self.media_type == MediaType.ALBUM:
                 query_parts.append(
-                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
-                    "OR sort_artist LIKE :search)"
+                    "(select_items.name LIKE :search OR select_items.sort_name LIKE :search "
+                    f"OR {DB_TABLE_ARTISTS}.sort_name LIKE :search)"
                 )
             elif self.media_type == MediaType.TRACK:
                 query_parts.append(
-                    f"({self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search "
-                    "OR sort_artist LIKE :search OR sort_album LIKE :search)"
+                    "(select_items.name LIKE :search OR select_items.sort_name LIKE :search "
+                    f"OR {DB_TABLE_ARTISTS}.sort_name LIKE :search "
+                    f"OR {DB_TABLE_ALBUMS}.sort_name LIKE :search)"
                 )
             else:
                 query_parts.append(
-                    f"{self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search"
+                    "select_items.name LIKE :search OR select_items.sort_name LIKE :search"
                 )
         if favorite is not None:
-            query_parts.append(f"{self.db_table}.favorite = :favorite")
+            query_parts.append("select_items.favorite = :favorite")
             params["favorite"] = favorite
         if query_parts:
             # concetenate all where queries
@@ -316,7 +322,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
-        extra_query = f"WHERE {self.db_table}.item_id is {item_id}"
+        extra_query = f"WHERE select_items.item_id is {item_id}"
         async for db_item in self.iter_library_items(extra_query=extra_query):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
@@ -364,7 +370,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self, external_id: str, external_id_type: ExternalID | None = None
     ) -> ItemCls | None:
         """Get the library item for the given external id."""
-        query = self.base_query + f" WHERE {self.db_table}.external_ids LIKE :external_id_str"
+        query = self.base_query + " WHERE select_items.external_ids LIKE :external_id_str"
         if external_id_type:
             external_id_str = f'%"{external_id_type}","{external_id}"%'
         else:
@@ -401,16 +407,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider_instance_id_or_domain == "library":
             # request for specific library id's
             if provider_item_ids:
-                query_parts.append(f"{self.db_table}.item_id in :item_ids")
+                query_parts.append("select_items.item_id in :item_ids")
                 query_params["item_ids"] = provider_item_ids
         else:
             # provider filtered response
-            query_parts.append(
-                "(provider_mappings.provider_instance = :prov_id "
-                "OR provider_mappings.provider_domain = :prov_id)"
-            )
+            query_parts.append("(provider_instance = :prov_id OR provider_domain = :prov_id)")
             if provider_item_ids:
-                query_parts.append("provider_mappings.provider_item_id in :item_ids")
+                query_parts.append("provider_item_id in :item_ids")
                 query_params["item_ids"] = provider_item_ids
 
         # build final query
@@ -517,9 +520,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # update provider_mappings table
         await self.mass.music.database.delete(
-            DB_TABLE_PROVIDER_MAPPINGS,
+            self.prov_map_table,
             {
-                "media_type": self.media_type.value,
                 "item_id": db_id,
                 "provider_instance": provider_instance_id,
                 "provider_item_id": provider_item_id,
@@ -556,9 +558,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # update provider_mappings table
         await self.mass.music.database.delete(
-            DB_TABLE_PROVIDER_MAPPINGS,
+            self.prov_map_table,
             {
-                "media_type": self.media_type.value,
                 "item_id": db_id,
                 "provider_instance": provider_instance_id,
             },
@@ -645,19 +646,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # this is done for filesystem provider changing the path (and thus item_id)
             for provider_mapping in provider_mappings:
                 await self.mass.music.database.delete(
-                    DB_TABLE_PROVIDER_MAPPINGS,
+                    self.prov_map_table,
                     {
-                        "media_type": self.media_type.value,
-                        "item_id": db_id,
+                        f"{self.media_type.value}_id": db_id,
                         "provider_instance": provider_mapping.provider_instance,
                     },
                 )
         for provider_mapping in provider_mappings:
             await self.mass.music.database.insert_or_replace(
-                DB_TABLE_PROVIDER_MAPPINGS,
+                self.prov_map_table,
                 {
-                    "media_type": self.media_type.value,
-                    "item_id": db_id,
+                    f"{self.media_type.value}_id": db_id,
                     "provider_domain": provider_mapping.provider_domain,
                     "provider_instance": provider_mapping.provider_instance,
                     "provider_item_id": provider_mapping.item_id,

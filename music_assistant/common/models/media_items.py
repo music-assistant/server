@@ -273,13 +273,13 @@ class _MediaItemBase(DataClassDictMixin):
 
     def __post_init__(self):
         """Call after init."""
-        if not self.name:
+        if self.name is None:
             # we've got some reports where the name was empty, causing weird issues.
             # e.g. here: https://github.com/music-assistant/hass-music-assistant/issues/1515
             self.name = "[Unknown]"
-        if not self.uri:
+        if self.uri is None:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
-        if not self.sort_name:
+        if self.sort_name is None:
             self.sort_name = create_sort_name(self.name)
 
     @property

@@ -22,10 +22,8 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
-    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
-    DB_TABLE_TRACKS,
     VARIOUS_ARTISTS_ID_MBID,
     VARIOUS_ARTISTS_NAME,
 )
@@ -334,8 +332,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             ):
                 query = (
                     "WHERE trackartists.artist_id = :artist_id AND "
-                    "(provider_mappings.provider_domain = :prov_id OR "
-                    "provider_mappings.provider_instance = :prov_id)"
+                    f"({self.prov_map_table}.provider_domain = :prov_id OR "
+                    f"{self.prov_map_table}.provider_instance = :prov_id)"
                 )
                 query_params = {
                     "artist_id": db_artist.item_id,
@@ -356,7 +354,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Track]:
         """Return all tracks for an artist in the library/db."""
         subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
-        query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
+        query = f"WHERE select_items.item_id in ({subquery})"
         paged_list = await self.mass.music.tracks.library_items(extra_query=query)
         return paged_list.items
 
@@ -390,8 +388,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             ):
                 query = (
                     f"WHERE albumartists.artist_id = {db_artist.item_id} AND "
-                    f'(provider_mappings.provider_domain = "{provider_instance_id_or_domain}" OR '
-                    f'provider_mappings.provider_instance = "{provider_instance_id_or_domain}")'
+                    f'(provider_domain = "{provider_instance_id_or_domain}" OR '
+                    f'provider_instance = "{provider_instance_id_or_domain}")'
                 )
                 paged_list = await self.mass.music.albums.library_items(extra_query=query)
                 return paged_list.items
@@ -406,7 +404,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
-        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
+        query = f"WHERE select_items.item_id in ({subquery})"
         paged_list = await self.mass.music.albums.library_items(extra_query=query)
         return paged_list.items
 
