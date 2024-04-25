@@ -83,6 +83,7 @@ from .const import (
     ITEM_KEY_SORT_NAME,
     ITEM_TYPE_ALBUM,
     ITEM_TYPE_ARTIST,
+    ITEM_TYPE_ARTIST_2,
     ITEM_TYPE_AUDIO,
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
@@ -207,7 +208,7 @@ class JellyfinProvider(MusicProvider):
     async def _run_async(self, call: Callable, *args, **kwargs):
         return await self.mass.create_task(call, *args, **kwargs)
 
-    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+    def _get_item_mapping(self, media_type: MediaType, key: str, name="") -> ItemMapping:
         return ItemMapping(
             media_type=media_type,
             item_id=key,
@@ -468,6 +469,15 @@ class JellyfinProvider(MusicProvider):
                 MediaType.ALBUM,
                 current_jellyfin_track[ITEM_KEY_PARENT_ID],
                 current_jellyfin_track[ITEM_KEY_ALBUM],
+            )
+        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+            parent_album = API.get_item(
+                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
+            )
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM,
+                parent_album[ITEM_KEY_ID],
+                parent_album[ITEM_KEY_NAME],
             )
         if ITEM_KEY_PARENT_INDEX_NUM in current_jellyfin_track:
             track.disc_number = current_jellyfin_track[ITEM_KEY_PARENT_INDEX_NUM]
@@ -742,7 +752,7 @@ class JellyfinProvider(MusicProvider):
         return API.audio_url(client.jellyfin, media_item)  # type: ignore[no-any-return]
 
     async def _get_children(
-        self, client: JellyfinClient, parent_id: str, item_type: str
+        self, client: JellyfinClient, parent_id: str, item_type: setattr
     ) -> list[dict[str, Any]]:
         """Return all children for the parent_id whose item type is item_type."""
         params = {
@@ -750,7 +760,7 @@ class JellyfinProvider(MusicProvider):
             ITEM_KEY_PARENT_ID: parent_id,
         }
         if item_type in ITEM_TYPE_ARTIST:
-            params["IncludeItemTypes"] = ["MusicArtists", "MusicArtist"]
+            params["IncludeItemTypes"] = [ITEM_TYPE_ARTIST_2, ITEM_TYPE_ARTIST]
         else:
             params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
