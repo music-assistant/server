@@ -302,7 +302,7 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         if full_album.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
+            return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
         # return all (unique) items from all providers
         result: list[AlbumTrack] = [*db_items]
         unique_ids: set[str] = set()
@@ -331,7 +331,9 @@ class AlbumsController(MediaControllerBase[Album]):
                     )
                 elif not in_library_only and provider_track not in result:
                     result.append(AlbumTrack.from_track(provider_track, full_album))
-        return result
+        # NOTE: we need to return the results sorted on disc/track here
+        # to ensure the correct order at playback
+        return sorted(result, key=lambda x: (x.disc_number, x.track_number))
 
     async def versions(
         self,
@@ -471,6 +473,8 @@ class AlbumsController(MediaControllerBase[Album]):
         """
         if db_album.provider != "library":
             return  # Matching only supported for database items
+        if not db_album.artists:
+            return  # guard
         artist_name = db_album.artists[0].name
 
         async def find_prov_match(provider: MusicProvider):

@@ -10,7 +10,6 @@
   "documentation": "https://music-assistant.io/player-support/airplay/",
   "multi_instance": false,
   "builtin": false,
-  "load_by_default": true,
   "icon": "cast-variant",
   "mdns_discovery": [
     "_raop._tcp.local."

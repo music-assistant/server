@@ -13,6 +13,5 @@
   ],
   "documentation": "https://music-assistant.io/player-support/sonos/",
   "multi_instance": false,
-  "builtin": false,
-  "load_by_default": true
+  "builtin": false
 }

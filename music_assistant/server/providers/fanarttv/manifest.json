@@ -3,11 +3,12 @@
   "domain": "fanarttv",
   "name": "fanart.tv Metadata provider",
   "description": "fanart.tv is a community database of artwork for movies, tv series and music.",
-  "codeowners": ["@music-assistant"],
+  "codeowners": [
+    "@music-assistant"
+  ],
   "requirements": [],
   "documentation": "",
   "multi_instance": false,
   "builtin": true,
-  "load_by_default": true,
   "icon": "folder-information"
 }

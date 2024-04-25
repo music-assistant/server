@@ -460,7 +460,10 @@ class JellyfinProvider(MusicProvider):
             )
         else:
             track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
-        if ITEM_KEY_PARENT_ID in current_jellyfin_track:
+        if (
+            ITEM_KEY_PARENT_ID in current_jellyfin_track
+            and ITEM_KEY_ALBUM in current_jellyfin_track
+        ):
             track.album = self._get_item_mapping(
                 MediaType.ALBUM,
                 current_jellyfin_track[ITEM_KEY_PARENT_ID],
@@ -640,7 +643,7 @@ class JellyfinProvider(MusicProvider):
         if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             # This artist does not exist in jellyfin, so we can just load it from DB.
 
-            if db_artist := await self.mass.music.artists.get_db_item_by_prov_id(
+            if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
                 prov_artist_id, self.instance_id
             ):
                 return db_artist
