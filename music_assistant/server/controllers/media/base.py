@@ -184,7 +184,7 @@ SELECT
         if library_item and (time() - (library_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
             metadata_lookup = True
-        if library_item and force_refresh:
+        if library_item and (force_refresh or metadata_lookup):
             # get (first) provider item id belonging to this library item
             add_to_library = True
             provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)

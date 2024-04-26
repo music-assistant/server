@@ -412,8 +412,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         if item.mbid == VARIOUS_ARTISTS_ID_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {

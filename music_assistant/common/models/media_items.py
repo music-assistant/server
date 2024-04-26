@@ -329,9 +329,6 @@ class MediaItem(_MediaItemBase):
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
     position: int | None = None  # required for playlist tracks, optional for all other
-    # timestamps to determine when the item was added/modified to the db
-    timestamp_added: int = 0
-    timestamp_modified: int = 0
 
     @property
     def available(self):

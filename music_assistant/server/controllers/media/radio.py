@@ -149,8 +149,6 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def _add_library_item(self, item: Radio) -> Radio:
         """Add a new item record to the database."""
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
