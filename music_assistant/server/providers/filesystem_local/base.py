@@ -255,32 +255,26 @@ class FileSystemProviderBase(MusicProvider):
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
             query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
-            result.tracks = (
-                await self.mass.music.tracks.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            result.tracks = await self.mass.music.tracks._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
+
         if media_types is None or MediaType.ALBUM in media_types:
             query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
-            result.albums = (
-                await self.mass.music.albums.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            result.albums = await self.mass.music.albums._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
+
         if media_types is None or MediaType.ARTIST in media_types:
             query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
-            result.artists = (
-                await self.mass.music.artists.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            result.artists = await self.mass.music.artists._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
         if media_types is None or MediaType.PLAYLIST in media_types:
             query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
-            result.playlists = (
-                await self.mass.music.playlists.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            result.playlists = await self.mass.music.playlists._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
         return result
 
     async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:

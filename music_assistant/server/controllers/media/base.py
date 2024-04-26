@@ -48,7 +48,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 WITH select_items AS (
     SELECT {self.db_table}.*
     FROM {self.db_table}
-    INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
+    LEFT JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
 )
 SELECT
     select_items.*,
@@ -64,8 +64,8 @@ SELECT
             'details', {self.prov_map_table}.details)
         ) filter ( where {self.prov_map_table}.{self.media_type.value}_id is not null) as provider_mappings
     FROM select_items
-    INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = select_items.item_id
-        """  # noqa: E501
+    LEFT JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = select_items.item_id
+        """.replace("\n", " ").strip()  # noqa: E501
         self.sql_group_by = "select_items.item_id"
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
 
@@ -95,7 +95,7 @@ SELECT
         # update provider_mappings table
         await self.mass.music.database.delete(
             self.prov_map_table,
-            {"item_id": db_id},
+            {f"{self.media_type.value}_id": db_id},
         )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
@@ -113,46 +113,29 @@ SELECT
         extra_query_params: dict[str, Any] | None = None,
     ) -> PagedItems:
         """Get in-database items."""
-        sql_query = self.base_query
-        params = extra_query_params or {}
-        query_parts: list[str] = []
-        if extra_query:
-            # prevent duplicate where statement
-            if extra_query.lower().startswith("where "):
-                extra_query = extra_query[5:]
-            query_parts.append(extra_query)
-        if search:
-            params["search"] = f"%{search}%"
-            if self.media_type == MediaType.ALBUM:
-                query_parts.append(
-                    "(select_items.name LIKE :search OR select_items.sort_name LIKE :search "
-                    f"OR {DB_TABLE_ARTISTS}.sort_name LIKE :search)"
-                )
-            elif self.media_type == MediaType.TRACK:
-                query_parts.append(
-                    "(select_items.name LIKE :search OR select_items.sort_name LIKE :search "
-                    f"OR {DB_TABLE_ARTISTS}.sort_name LIKE :search "
-                    f"OR {DB_TABLE_ALBUMS}.sort_name LIKE :search)"
-                )
-            else:
-                query_parts.append(
-                    "select_items.name LIKE :search OR select_items.sort_name LIKE :search"
-                )
-        if favorite is not None:
-            query_parts.append("select_items.favorite = :favorite")
-            params["favorite"] = favorite
-        if query_parts:
-            # concetenate all where queries
-            sql_query += " WHERE " + " AND ".join(query_parts)
-        sql_query += f" GROUP BY {self.sql_group_by} ORDER BY {order_by}"
         items = await self._get_library_items_by_query(
-            sql_query, params, limit=limit, offset=offset
+            favorite=favorite,
+            search=search,
+            limit=limit,
+            offset=offset,
+            order_by=order_by,
+            extra_query=extra_query,
+            extra_query_params=extra_query_params,
         )
         count = len(items)
         if 0 < count < limit:
             total = offset + count
         else:
-            total = await self.mass.music.database.get_count_from_query(sql_query, params)
+            total = await self._get_library_items_by_query(
+                favorite=favorite,
+                search=search,
+                limit=limit,
+                offset=offset,
+                order_by=order_by,
+                extra_query=extra_query,
+                extra_query_params=extra_query_params,
+                count_only=True,
+            )
         return PagedItems(items=items, count=count, limit=limit, offset=offset, total=total)
 
     async def iter_library_items(
@@ -167,7 +150,7 @@ SELECT
         limit: int = 500
         offset: int = 0
         while True:
-            next_items = await self.library_items(
+            next_items = await self._get_library_items_by_query(
                 favorite=favorite,
                 search=search,
                 limit=limit,
@@ -176,9 +159,9 @@ SELECT
                 extra_query=extra_query,
                 extra_query_params=extra_query_params,
             )
-            for item in next_items.items:
+            for item in next_items:
                 yield item
-            if next_items.count < limit:
+            if len(next_items) < limit:
                 break
             offset += limit
 
@@ -322,7 +305,7 @@ SELECT
     async def get_library_item(self, item_id: int | str) -> ItemCls:
         """Get single library item by id."""
         db_id = int(item_id)  # ensure integer
-        extra_query = f"WHERE select_items.item_id is {item_id}"
+        extra_query = f"WHERE select_items.item_id = {item_id}"
         async for db_item in self.iter_library_items(extra_query=extra_query):
             return db_item
         msg = f"{self.media_type.value} not found in library: {db_id}"
@@ -370,14 +353,13 @@ SELECT
         self, external_id: str, external_id_type: ExternalID | None = None
     ) -> ItemCls | None:
         """Get the library item for the given external id."""
-        query = self.base_query + " WHERE select_items.external_ids LIKE :external_id_str"
+        query = "WHERE select_items.external_ids LIKE :external_id_str"
         if external_id_type:
             external_id_str = f'%"{external_id_type}","{external_id}"%'
         else:
             external_id_str = f'%"{external_id}"%'
-        query += f" GROUP BY {self.sql_group_by}"
         for item in await self._get_library_items_by_query(
-            query=query, query_params={"external_id_str": external_id_str}
+            extra_query=query, extra_query_params={"external_id_str": external_id_str}
         ):
             return item
         return None
@@ -418,10 +400,9 @@ SELECT
 
         # build final query
         query = "WHERE " + " AND ".join(query_parts)
-        paged_list = await self.library_items(
+        return await self._get_library_items_by_query(
             limit=limit, offset=offset, extra_query=query, extra_query_params=query_params
         )
-        return paged_list.items
 
     async def iter_library_items_by_prov_id(
         self,
@@ -522,7 +503,7 @@ SELECT
         await self.mass.music.database.delete(
             self.prov_map_table,
             {
-                "item_id": db_id,
+                f"{self.media_type.value}_id": db_id,
                 "provider_instance": provider_instance_id,
                 "provider_item_id": provider_item_id,
             },
@@ -560,7 +541,7 @@ SELECT
         await self.mass.music.database.delete(
             self.prov_map_table,
             {
-                "item_id": db_id,
+                f"{self.media_type.value}_id": db_id,
                 "provider_instance": provider_instance_id,
             },
         )
@@ -618,18 +599,64 @@ SELECT
 
     async def _get_library_items_by_query(
         self,
-        query: str,
-        query_params: dict | None = None,
+        favorite: bool | None = None,
+        search: str | None = None,
         limit: int = 500,
         offset: int = 0,
-    ) -> list[ItemCls]:
+        order_by: str | None = None,
+        extra_query: str | None = None,
+        extra_query_params: dict[str, Any] | None = None,
+        count_only: bool = False,
+    ) -> list[ItemCls] | int:
         """Fetch MediaItem records from database given a custom (WHERE) clause."""
-        if query_params is None:
-            query_params = {}
+        sql_query = self.base_query
+        query_params = extra_query_params or {}
+        query_parts: list[str] = []
+        # handle extra/custom query
+        if extra_query:
+            # prevent duplicate where statement
+            if extra_query.lower().startswith("where "):
+                extra_query = extra_query[5:]
+            query_parts.append(extra_query)
+        # handle basic search on name
+        if search:
+            query_params["search"] = f"%{search}%"
+            if self.media_type == MediaType.ALBUM:
+                query_parts.append(
+                    "(select_items.name LIKE :search OR select_items.sort_name LIKE :search "
+                    f"OR {DB_TABLE_ARTISTS}.name LIKE :search "
+                    f"OR {DB_TABLE_ARTISTS}.sort_name LIKE :search)"
+                )
+            elif self.media_type == MediaType.TRACK:
+                query_parts.append(
+                    "(select_items.name LIKE :search OR select_items.sort_name LIKE :search "
+                    f"OR {DB_TABLE_ARTISTS}.name LIKE :search "
+                    f"OR {DB_TABLE_ARTISTS}.sort_name LIKE :search "
+                    f"OR {DB_TABLE_ALBUMS}.name LIKE :search "
+                    f"OR {DB_TABLE_ALBUMS}.sort_name LIKE :search)"
+                )
+            else:
+                query_parts.append(
+                    "select_items.name LIKE :search OR select_items.sort_name LIKE :search"
+                )
+        # handle favorite filter
+        if favorite is not None:
+            query_parts.append("select_items.favorite = :favorite")
+            query_params["favorite"] = favorite
+        # concetenate all where queries
+        if query_parts:
+            sql_query += " WHERE " + " AND ".join(query_parts)
+        # build final query including group and order by
+        sql_query += f" GROUP BY {self.sql_group_by}"
+        if count_only:
+            return await self.mass.music.database.get_count_from_query(sql_query, query_params)
+        if order_by:
+            sql_query += f" ORDER BY {order_by}"
+        # return dbresult parsed to media item model
         return [
             self.item_cls.from_dict(self._parse_db_row(db_row))
             for db_row in await self.mass.music.database.get_rows_from_query(
-                query, query_params, limit=limit, offset=offset
+                sql_query, query_params, limit=limit, offset=offset
             )
         ]
 

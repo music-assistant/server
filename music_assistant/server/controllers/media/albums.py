@@ -32,7 +32,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_TRACKS,
 )
 from music_assistant.server.controllers.media.base import MediaControllerBase
 from music_assistant.server.helpers.compare import (
@@ -60,9 +59,9 @@ class AlbumsController(MediaControllerBase[Album]):
 WITH select_items AS (
     SELECT {self.db_table}.*
     FROM {self.db_table}
-    INNER JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
-    INNER JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
-    INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
+    LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
+    LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
+    LEFT JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
 )
 SELECT
     select_items.*,
@@ -87,9 +86,9 @@ SELECT
             'media_type', 'artist')
         ) filter ( where {DB_TABLE_ARTISTS}.item_id is not null)  as artists
 FROM select_items
-INNER JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = select_items.item_id
-INNER JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
-INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.album_id = select_items.item_id
+LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = select_items.item_id
+LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
+LEFT JOIN {self.prov_map_table} ON {self.prov_map_table}.album_id = select_items.item_id
         """  # noqa: E501
         # register api handlers
         self.mass.register_api_command("music/albums/library_items", self.library_items)
@@ -374,11 +373,11 @@ INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.album_id = select_item
             f"SELECT DISTINCT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
             f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {item_id} AND albums.item_id = {item_id}"
         )
-        query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
-        result = await self.mass.music.tracks.library_items(extra_query=query)
+        query = f"WHERE select_items.item_id in ({subquery})"
+        result = await self.mass.music.tracks._get_library_items_by_query(extra_query=query)
         if TYPE_CHECKING:
-            return cast(list[AlbumTrack], result.items)
-        return result.items
+            return cast(list[AlbumTrack], result)
+        return result
 
     async def _add_library_item(self, item: Album) -> Album:
         """Add a new record to the database."""

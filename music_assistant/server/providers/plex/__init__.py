@@ -320,11 +320,10 @@ class PlexProvider(MusicProvider):
     async def _get_or_create_artist_by_name(self, artist_name) -> Artist:
         query = "WHERE select_items.name = :name AND provider_instance = :provider_instance"
         query_params = {"name": artist_name, "provider_instance": self.instance_id}
-        paged_list = await self.mass.music.artists.library_items(
+        if library_items := await self.mass.music.artists._get_library_items_by_query(
             extra_query=query, extra_query_params=query_params
-        )
-        if paged_list and paged_list.items:
-            return ItemMapping.from_item(paged_list.items[0])
+        ):
+            return ItemMapping.from_item(library_items[0])
 
         artist_id = FAKE_ARTIST_PREFIX + artist_name
         return Artist(

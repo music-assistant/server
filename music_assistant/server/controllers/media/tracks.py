@@ -46,11 +46,11 @@ class TracksController(MediaControllerBase[Track]):
 WITH select_items AS (
     SELECT {self.db_table}.*
     FROM {self.db_table}
-    INNER JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = {self.db_table}.item_id
-    INNER JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
-    INNER JOIN {DB_TABLE_ALBUM_TRACKS} on {DB_TABLE_ALBUM_TRACKS}.track_id = tracks.item_id
-    INNER JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
-    INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
+    LEFT JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = {self.db_table}.item_id
+    LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
+    LEFT JOIN {DB_TABLE_ALBUM_TRACKS} on {DB_TABLE_ALBUM_TRACKS}.track_id = tracks.item_id
+    LEFT JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
+    LEFT JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = {self.db_table}.item_id
 )
 SELECT
     select_items.*,
@@ -84,11 +84,11 @@ SELECT
           'media_type', 'album') as album,
     {DB_TABLE_ALBUM_TRACKS}.disc_number, {DB_TABLE_ALBUM_TRACKS}.track_number
 FROM select_items
-INNER JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = select_items.item_id
-INNER JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
-INNER JOIN {DB_TABLE_ALBUM_TRACKS} on {DB_TABLE_ALBUM_TRACKS}.track_id = select_items.item_id
-INNER JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
-INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = select_items.item_id
+LEFT JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = select_items.item_id
+LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
+LEFT JOIN {DB_TABLE_ALBUM_TRACKS} on {DB_TABLE_ALBUM_TRACKS}.track_id = select_items.item_id
+LEFT JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
+LEFT JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value}_id = select_items.item_id
         """  # noqa: E501
         self.sql_group_by = f"select_items.item_id, {DB_TABLE_ALBUMS}.item_id"
         self._db_add_lock = asyncio.Lock()
@@ -380,8 +380,7 @@ INNER JOIN {self.prov_map_table} ON {self.prov_map_table}.{self.media_type.value
         """Return all in-library albums for a track."""
         subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE track_id = {item_id}"
         query = f"WHERE select_items.item_id in ({subquery})"
-        paged_list = await self.mass.music.albums.library_items(extra_query=query)
-        return paged_list.items
+        return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
 
     async def _match(self, db_track: Track) -> None:
         """Try to find matching track on all providers for the provided (database) track_id.
