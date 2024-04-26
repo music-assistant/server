@@ -17,3 +17,4 @@ venv/
 .history
 .idea
 .coverage
+music_assistant/server/providers/apple_music/bin/*
