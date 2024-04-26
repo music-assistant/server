@@ -147,7 +147,7 @@ class ContentType(StrEnum):
         return cls.UNKNOWN
 
     @classmethod
-    def try_parse(cls: ContentType, string: str) -> ContentType:
+    def try_parse(cls: Self, string: str) -> Self:
         """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
         if "audio/" in tempstr:
@@ -387,6 +387,7 @@ class ConfigEntryType(StrEnum):
     INTEGER = "integer"
     FLOAT = "float"
     LABEL = "label"
+    INTEGER_TUPLE = "integer_tuple"
     DIVIDER = "divider"
     ACTION = "action"
     ICON = "icon"

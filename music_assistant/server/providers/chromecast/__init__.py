@@ -22,6 +22,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError
@@ -47,6 +48,13 @@ PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
 )
+
+# originally/officially cast supports 96k sample rate (even for groups)
+# but it seems a (recent?) update broke this ?!
+# For now only set safe default values and let the user try out higher values
+CONF_ENTRY_SAMPLE_RATES_CAST = create_sample_rates_config_entry(96000, 24, 48000, 24)
+CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(96000, 24, 44100, 16)
+
 
 MASS_APP_ID = "C35B0678"
 
@@ -163,8 +171,11 @@ class ChromecastProvider(PlayerProvider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        cast_player = self.castplayers.get(player_id)
         base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+        if cast_player and cast_player.cast_info.is_audio_group:
+            return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_CAST_GROUP)
+        return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_CAST)
 
     def on_player_config_changed(
         self,
@@ -377,11 +388,6 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.ENQUEUE_NEXT,
                         PlayerFeature.PAUSE,
                     ),
-                    # originally/officially cast supports 96k sample rate
-                    # but it seems a (recent?) update broke this
-                    # for now use 48k as max sample rate to play safe
-                    max_sample_rate=48000,
-                    supports_24bit=True,
                     enabled_by_default=enabled_by_default,
                 ),
             )

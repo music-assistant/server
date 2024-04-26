@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from asyncio import TaskGroup
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 import plexapi.exceptions
 import requests
@@ -33,7 +33,6 @@ from music_assistant.common.models.enums import (
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     ItemMapping,
@@ -41,7 +40,6 @@ from music_assistant.common.models.media_items import (
     MediaItemChapter,
     MediaItemImage,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -502,31 +500,18 @@ class PlexProvider(MusicProvider):
 
         return playlist
 
-    async def _parse_track(
-        self, plex_track: PlexTrack, extra_init_kwargs: dict[str, Any] | None = None
-    ) -> Track | AlbumTrack | PlaylistTrack:
+    async def _parse_track(self, plex_track: PlexTrack) -> Track:
         """Parse a Plex Track response to a Track model object."""
-        if extra_init_kwargs and "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        elif (
-            extra_init_kwargs
-            and "disc_number" in extra_init_kwargs
-            and "track_number" in extra_init_kwargs
-        ):
-            track_class = AlbumTrack
-        else:
-            track_class = Track
         if plex_track.media:
             available = True
             content = plex_track.media[0].container
         else:
             available = False
             content = None
-        track = track_class(
+        track = Track(
             item_id=plex_track.key,
             provider=self.instance_id,
             name=plex_track.title,
-            **extra_init_kwargs or {},
             provider_mappings={
                 ProviderMapping(
                     item_id=plex_track.key,
@@ -686,18 +671,16 @@ class PlexProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
         for idx, plex_track in enumerate(await self._run_async(plex_album.tracks), 1):
             track = await self._parse_track(
                 plex_track,
-                {
-                    "disc_number": plex_track.parentIndex,
-                    "track_number": plex_track.trackNumber or idx,
-                },
             )
+            track.disc_number = plex_track.parentIndex
+            track.track_number = plex_track.trackNumber or idx
             tracks.append(track)
         return tracks
 
@@ -740,7 +723,8 @@ class PlexProvider(MusicProvider):
         playlist_items = await self._run_async(plex_playlist.items)
 
         for index, plex_track in enumerate(playlist_items or []):
-            if track := await self._parse_track(plex_track, {"position": index + 1}):
+            if track := await self._parse_track(plex_track):
+                track.position = index
                 yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:

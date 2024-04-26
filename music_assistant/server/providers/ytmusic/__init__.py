@@ -23,7 +23,6 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     AlbumType,
     Artist,
     AudioFormat,
@@ -34,7 +33,6 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     MediaType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -295,7 +293,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         await self._check_oauth_token()
         album_obj = await get_album(prov_album_id=prov_album_id, language=self.language)
@@ -304,11 +302,9 @@ class YoutubeMusicProvider(MusicProvider):
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
             try:
-                track = AlbumTrack.from_track(
-                    await self._parse_track(track_obj=track_obj),
-                    disc_number=0,
-                    track_number=track_obj.get("trackNumber", idx),
-                )
+                track = await self._parse_track(track_obj=track_obj)
+                track.disc_number = 0
+                track.track_number = track_obj.get("trackNumber", idx)
             except InvalidDataError:
                 continue
             tracks.append(track)
@@ -350,7 +346,7 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         await self._check_oauth_token()
         # Grab the playlist id from the full url in case of personal playlists
@@ -372,10 +368,12 @@ class YoutubeMusicProvider(MusicProvider):
                 # In that case, call the API for track details based on track id
                 try:
                     if track := await self._parse_track(track_obj):
-                        yield PlaylistTrack.from_track(track, index + 1)
+                        track.position = index + 1
+                        yield track
                 except InvalidDataError:
                     if track := await self.get_track(track_obj["videoId"]):
-                        yield PlaylistTrack.from_track(track, index + 1)
+                        track.position = index + 1
+                        yield track
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""

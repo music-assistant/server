@@ -34,6 +34,7 @@ from music_assistant.common.models.config_entries import (
     ConfigValueOption,
     ConfigValueType,
     PlayerConfig,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -272,9 +273,14 @@ class SlimprotoProvider(PlayerProvider):
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
-        if not self.slimproto.get_player(player_id):
+        if not (slimclient := self.slimproto.get_player(player_id)):
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
+            return (
+                *base_entries,
+                CONF_ENTRY_CROSSFADE,
+                CONF_ENTRY_CROSSFADE_DURATION,
+                create_sample_rates_config_entry(96000, 24, 48000, 24),
+            )
 
         # create preset entries (for players that support it)
         preset_entries = ()
@@ -312,6 +318,7 @@ class SlimprotoProvider(PlayerProvider):
                 CONF_ENTRY_SYNC_ADJUST,
                 CONF_ENTRY_DISPLAY,
                 CONF_ENTRY_VISUALIZATION,
+                create_sample_rates_config_entry(int(slimclient.max_sample_rate), 24, 48000, 24),
             )
         )
 
@@ -636,17 +643,10 @@ class SlimprotoProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                     PlayerFeature.ENQUEUE_NEXT,
                 ),
-                max_sample_rate=int(slimplayer.max_sample_rate),
-                supports_24bit=int(slimplayer.max_sample_rate) > 44100,
                 can_sync_with=tuple(
                     x.player_id for x in self.slimproto.players if x.player_id != player_id
                 ),
             )
-            if slimplayer.device_type == "squeezeesp32":
-                # squeezeesp32 with default settings - override with sane defaults
-                if slimplayer.max_sample_rate == 192000:
-                    player.max_sample_rate = 44100
-                player.supports_24bit = False
             self.mass.players.register_or_update(player)
 
         # update player state on player events

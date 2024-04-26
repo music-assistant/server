@@ -30,20 +30,16 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import (
-    LoginFailed,
-    MediaNotFoundError,
-)
+from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     ContentType,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -313,27 +309,14 @@ class TidalProvider(MusicProvider):
         ):
             yield self._parse_playlist(playlist)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            album_obj = await manager.wrapped_function_with_retry(
-                get_album, tidal_session, prov_album_id
-            )
-
         async with self._throttle_retry as manager:
             tracks_obj = await manager.wrapped_function_with_retry(
                 get_album_tracks, tidal_session, prov_album_id
             )
-            return [
-                AlbumTrack.from_track(
-                    track=self._parse_track(track_obj=track_obj),
-                    album=self._parse_album(album_obj=album_obj),
-                    disc_number=track_obj.volume_num,
-                    track_number=track_obj.track_num,
-                )
-                for track_obj in tracks_obj
-            ]
+            return [self._parse_track(track_obj=track_obj) for track_obj in tracks_obj]
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
@@ -353,20 +336,17 @@ class TidalProvider(MusicProvider):
             )
             return [self._parse_track(track) for track in artist_toptracks_obj]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         tidal_session = await self._get_tidal_session()
         total_playlist_tracks = 0
-        track: TidalTrack  # satisfy the type checker
+        track_obj: TidalTrack  # satisfy the type checker
         async for track_obj in self._iter_items(
             get_playlist_tracks, tidal_session, prov_playlist_id, limit=DEFAULT_LIMIT
         ):
             total_playlist_tracks += 1
-            track = PlaylistTrack.from_track(
-                self._parse_track(track_obj=track_obj), total_playlist_tracks
-            )
+            track = self._parse_track(track_obj=track_obj)
+            track.position = total_playlist_tracks
             yield track
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -378,14 +358,14 @@ class TidalProvider(MusicProvider):
             )
             return [self._parse_track(track) for track in similar_tracks_obj]
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         tidal_session = await self._get_tidal_session()
         return await library_items_add_remove(
             tidal_session,
             str(self._tidal_user_id),
-            prov_item_id,
-            media_type,
+            item.item_id,
+            item.media_type,
             add=True,
         )
 
@@ -484,7 +464,7 @@ class TidalProvider(MusicProvider):
             )
             track = self._parse_track(track_obj)
             # get some extra details for the full track info
-            with suppress(tidal_exceptions.MetadataNotAvailable):
+            with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
                 lyrics: TidalLyrics = await asyncio.to_thread(track.lyrics)
                 track.metadata.lyrics = lyrics.text
             return track
@@ -584,7 +564,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=self.domain,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -638,7 +619,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=self.domain,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -647,20 +629,11 @@ class TidalProvider(MusicProvider):
     def _parse_track(
         self,
         track_obj: TidalTrack,
-        extra_init_kwargs: dict[str, Any] | None = None,
-    ) -> Track | AlbumTrack | PlaylistTrack:
+    ) -> Track:
         """Parse tidal track object to generic layout."""
         version = track_obj.version or ""
         track_id = str(track_obj.id)
-        if extra_init_kwargs is None:
-            extra_init_kwargs = {}
-        if "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
-            track_class = AlbumTrack
-        else:
-            track_class = Track
-        track = track_class(
+        track = Track(
             item_id=str(track_id),
             provider=self.instance_id,
             name=track_obj.name,
@@ -673,13 +646,14 @@ class TidalProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.FLAC,
-                        bit_depth=24 if self._is_hi_res(track_obj=track_obj) else 16,
+                        bit_depth=24 if track_obj.is_HiRes else 16,
                     ),
                     url=f"{BROWSE_URL}/track/{track_id}",
                     available=track_obj.available,
                 )
             },
-            **extra_init_kwargs,
+            disc_number=track_obj.volume_num,
+            track_number=track_obj.track_num,
         )
         if track_obj.isrc:
             track.external_ids.add((ExternalID.ISRC, track_obj.isrc))
@@ -706,7 +680,8 @@ class TidalProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
-                        provider=self.domain,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
                     )
                 ]
         return track
@@ -733,7 +708,7 @@ class TidalProvider(MusicProvider):
         is_editable = bool(creator_id and str(creator_id) == self._tidal_user_id)
         playlist.is_editable = is_editable
         # metadata
-        playlist.metadata.checksum = str(playlist_obj.last_updated)
+        playlist.metadata.cache_checksum = str(playlist_obj.last_updated)
         playlist.metadata.popularity = playlist_obj.popularity
         if picture := (playlist_obj.square_picture or playlist_obj.picture):
             picture_id = picture.replace("-", "/")
@@ -742,7 +717,8 @@ class TidalProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=image_url,
-                    provider=self.domain,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
                 )
             ]
 
@@ -779,8 +755,3 @@ class TidalProvider(MusicProvider):
             media_info = await parse_tags(url)
             await self.mass.cache.set(cache_key, media_info.raw)
         return media_info
-
-    def _is_hi_res(self, track_obj: TidalTrack) -> bool:
-        """Check if track is hi-res."""
-        hi_res: bool = track_obj.audio_quality == "HI_RES"
-        return hi_res
