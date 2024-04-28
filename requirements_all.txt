@@ -18,6 +18,7 @@ git+https://github.com/MarvinSchenkel/pytube.git
 hass-client==1.0.1
 ifaddr==0.2.0
 jellyfin_apiclient_python==1.9.2
+m3u8
 mashumaro==3.12
 memory-tempfile==2.2.3
 music-assistant-frontend==2.4.6
@@ -30,6 +31,7 @@ PyChromecast==14.0.1
 pycryptodome==3.20.0
 python-fullykiosk==0.0.12
 python-slugify==8.0.4
+pywidevine==1.8.0
 radios==0.3.1
 shortuuid==1.0.13
 snapcast==2.3.6
