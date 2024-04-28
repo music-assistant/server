@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import json
 import os
@@ -12,7 +13,11 @@ from json.decoder import JSONDecodeError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any
 
+import aiofiles
+import m3u8
 from asyncio_throttle import Throttler
+from pywidevine import PSSH, Cdm, Device, DeviceTypes
+from pywidevine.license_protocol_pb2 import WidevinePsshData
 
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
@@ -36,6 +41,7 @@ from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.app_vars import app_var
 # pylint: enable=no-name-in-module
 from music_assistant.server.helpers.audio import get_chunksize
+from music_assistant.server.helpers.playlists import parse_m3u
 from music_assistant.server.helpers.process import AsyncProcess, check_output
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -65,8 +71,9 @@ SUPPORTED_FEATURES = (
     # ProviderFeature.SIMILAR_TRACKS,
 )
 
-DEVELOPER_TOKEN = "eyJhbGciOiJFUzI1NiIsImtpZCI6IjY3TlQ2UkoyMjciLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiI5NTVENTIzTUs4IiwiaWF0IjoxNzEzMjc4MTYzLCJleHAiOjE3MjkwNTUxNjN9.twNmTgc6Z6_G4JYf1UXAupIdhCyxzqRweyCaUTUUyn6JzFAJ5PfbOo6zrbZGKRUtqaK7X-zdVpDLRrxwDa5TNA"
-
+DEVELOPER_TOKEN = "Todo: parse from appvars"
+DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
+DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -105,11 +112,19 @@ class AppleMusicProvider(MusicProvider):
     """Implementation of an Apple Music MusicProvider."""
 
     _music_user_token: str | None = None
+    _storefront: str | None = None
+    _decrypt_client_id: bytes | None = None
+    _decrypt_private_key: bytes | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._music_user_token = self.config.get_value(CONF_PASSWORD)
         self._storefront = await self._get_user_storefront()
+        base_path = os.path.join(os.path.dirname(__file__), "bin")
+        async with aiofiles.open(os.path.join(base_path, DECRYPT_CLIENT_ID_FILENAME), "rb") as _file:
+            self._decrypt_client_id = await _file.read()
+        async with aiofiles.open(os.path.join(base_path, DECRYPT_PRIVATE_KEY_FILENAME), "rb") as _file:
+            self._decrypt_private_key = await _file.read()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -262,6 +277,10 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
+        stream_metadata = await self._fetch_song_stream_metadata(item_id)
+        license_url = stream_metadata["hls-key-server-url"]
+        stream_url, uri = self._parse_stream_url_and_uri(stream_metadata["assets"])
+        key_id = base64.b64decode(uri.split(",")[1])
         return StreamDetails(
             item_id=item_id,
             provider=self.instance_id,
@@ -269,7 +288,8 @@ class AppleMusicProvider(MusicProvider):
                 content_type=ContentType.AAC,
             ),
             stream_type=StreamType.ENCRYPTED_HTTP,
-            path=self.get_song_stream_url(song_id=item_id),
+            path=stream_url,
+            decryption_key=await self._get_decryption_key(license_url, key_id, uri, item_id),
         )
 
     def _parse_artist(self, artist_obj):
@@ -520,15 +540,86 @@ class AppleMusicProvider(MusicProvider):
         """Check if input is a catalog id, or a library id."""
         return input.isnumeric()
     
-    async def get_song_stream_url(self, song_id: str) -> str:
+    async def _fetch_song_stream_metadata(self, song_id: str) -> str:
         """Get the stream URL for a song from Apple Music."""
         playback_url = "https://play.music.apple.com/WebObjects/MZPlay.woa/wa/webPlayback"
         data = {
             "salableAdamId": song_id,
-        }
+        }        
         async with self.mass.http_session.post(
-            playback_url, json=data, ssl=False
+            playback_url, headers=self._get_decryption_headers(), json=data, ssl=False
         ) as response:
             response.raise_for_status()
             content = await response.json(loads=json_loads)
-            return content
+            return content["songList"][0]
+        
+    def _parse_stream_url_and_uri(self, stream_assets: list[dict]) -> str:
+        """Parse the Stream URL and Key URI from the song."""
+        ctrp256_urls = [asset["URL"] for asset in stream_assets if asset["flavor"] == "28:ctrp256"]
+        if len(ctrp256_urls) == 0:
+            raise MediaNotFoundError("No ctrp256 URL found for song.")
+        m3u8_playlist = m3u8.load(ctrp256_urls[0])
+        track_url = m3u8_playlist.base_uri + m3u8_playlist.segments[0].uri
+        uri = m3u8_playlist.keys[0].uri
+        return (track_url, uri)
+    
+    def _get_decryption_headers(self):
+      """Get headers for decryption requests."""
+      return {
+          "authorization": f"Bearer {DEVELOPER_TOKEN}",
+          "media-user-token": self._music_user_token,
+          "connection": "keep-alive",
+          "accept": "application/json",
+          "origin": "https://music.apple.com",
+          "referer": "https://music.apple.com/",
+          "accept-encoding": "gzip, deflate, br",
+          "content-type": "application/json;charset=utf-8",
+          "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+        }
+    
+    async def _get_decryption_key(self, license_url: str, key_id: str, uri: str, item_id: str) -> str:
+        """Get the decryption key for a song."""
+        pssh = self._get_pssh(key_id)
+        device = Device(client_id=self._decrypt_client_id, private_key=self._decrypt_private_key, type_=DeviceTypes.ANDROID, security_level=3, flags={})
+        cdm = Cdm.from_device(device)
+        session_id = cdm.open()
+        challenge = cdm.get_license_challenge(session_id, pssh)
+        license = await self._get_license(challenge, license_url, uri, item_id)
+        cdm.parse_license(session_id, license)
+        key = [key for key in cdm.get_keys(session_id) if key.type == "CONTENT"][0]
+        if not key:
+            raise MediaNotFoundError("Unable to get decryption key for song %s.".format(item_id))
+        cdm.close(session_id)
+        return key.key.hex()
+
+    def _get_pssh(self, key_id: bytes) -> PSSH:
+        """Get the PSSH for a song."""
+        pssh_data = WidevinePsshData()
+        pssh_data.algorithm = 1
+        pssh_data.key_ids.append(key_id)
+        init_data = base64.b64encode(pssh_data.SerializeToString()).decode("utf-8")
+        return PSSH.new(
+            system_id=PSSH.SystemId.Widevine,
+            init_data=init_data
+        )
+    
+    async def _get_license(self, challenge: bytes, license_url: str, uri: str, item_id: str) -> str:
+        """Get the license for a song based on the challenge."""
+        challenge_b64 = base64.b64encode(challenge).decode("utf-8")
+        data = {
+            "challenge": challenge_b64,
+            "key-system": "com.widevine.alpha",
+            "uri": uri,
+            "adamId": item_id,
+            "isLibrary": False,
+            "user-initiated": True
+        }
+        async with self.mass.http_session.post(
+            license_url, data=json.dumps(data), headers=self._get_decryption_headers(), ssl=False
+        ) as response:
+            response.raise_for_status()
+            content = await response.json(loads=json_loads)
+            license = content.get("license")
+            if not license:
+                raise MediaNotFoundError("No license found for song %s.".format(item_id))
+            return license
