@@ -12,8 +12,6 @@ from json.decoder import JSONDecodeError
 from tempfile import gettempdir
 from typing import TYPE_CHECKING, Any
 
-from asyncio_throttle import Throttler
-
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -23,7 +21,11 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -48,6 +50,7 @@ from music_assistant.server.helpers.app_vars import app_var
 # pylint: enable=no-name-in-module
 from music_assistant.server.helpers.audio import get_chunksize
 from music_assistant.server.helpers.process import AsyncProcess, check_output
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, use_throttler
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -126,7 +129,7 @@ class SpotifyProvider(MusicProvider):
     _librespot_bin: str | None = None
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
-    _throttler = Throttler(rate_limit=1, period=1)
+    throttler = ThrottlerManager(rate_limit=1, period=1)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -760,6 +763,7 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
+    @use_throttler
     async def _get_data(self, endpoint, **kwargs) -> dict[str, Any]:
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
@@ -773,7 +777,6 @@ class SpotifyProvider(MusicProvider):
         language = locale.split("-")[0]
         headers["Accept-Language"] = f"{locale}, {language};q=0.9, *;q=0.5"
         async with (
-            self._throttler,
             self.mass.http_session.get(
                 url, headers=headers, params=kwargs, ssl=True, timeout=120
             ) as response,
@@ -781,23 +784,20 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
-                await asyncio.sleep(backoff_time)
-                return await self._get_data(endpoint, **kwargs)
-            # handle temporary server error
-            if response.status == 503:
-                self.logger.debug(
-                    "Request to %s failed with 503 error, retrying in 30 seconds...",
-                    endpoint,
+                raise ResourceTemporarilyUnavailable(
+                    "Spotify Rate Limiter", backoff_time=backoff_time
                 )
-                await asyncio.sleep(30)
-                return await self._get_data(endpoint, **kwargs)
+            # handle temporary server error
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
+
             # handle 404 not found, convert to MediaNotFoundError
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
             return await response.json(loads=json_loads)
 
+    @use_throttler
     async def _delete_data(self, endpoint, data=None, **kwargs) -> str:
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
@@ -809,12 +809,16 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
-                await asyncio.sleep(backoff_time)
-                return await self._delete_data(endpoint, data=data, **kwargs)
+                raise ResourceTemporarilyUnavailable(
+                    "Spotify Rate Limiter", backoff_time=backoff_time
+                )
+            # handle temporary server error
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
             return await response.text()
 
+    @use_throttler
     async def _put_data(self, endpoint, data=None, **kwargs) -> str:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
@@ -826,12 +830,16 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
-                await asyncio.sleep(backoff_time)
-                return await self._put_data(endpoint, data=data, **kwargs)
+                raise ResourceTemporarilyUnavailable(
+                    "Spotify Rate Limiter", backoff_time=backoff_time
+                )
+            # handle temporary server error
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
             return await response.text()
 
+    @use_throttler
     async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
@@ -843,9 +851,12 @@ class SpotifyProvider(MusicProvider):
             # handle spotify rate limiter
             if response.status == 429:
                 backoff_time = int(response.headers["Retry-After"])
-                self.logger.debug("Waiting %s seconds on Spotify rate limiter", backoff_time)
-                await asyncio.sleep(backoff_time)
-                return await self._post_data(endpoint, data=data, **kwargs)
+                raise ResourceTemporarilyUnavailable(
+                    "Spotify Rate Limiter", backoff_time=backoff_time
+                )
+            # handle temporary server error
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
             return await response.text()
 

@@ -435,7 +435,9 @@ class MusicbrainzProvider(MetadataProvider):
         kwargs["fmt"] = "json"  # type: ignore[assignment]
         async with (
             self.throttler,
-            self.mass.http_session.get(url, headers=headers, params=kwargs, ssl=False) as response,
+            self.mass.http_session.get(
+                url, headers=headers, params=kwargs, raise_for_status=True
+            ) as response,
         ):
             try:
                 result = await response.json()
