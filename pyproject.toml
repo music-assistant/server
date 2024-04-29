@@ -46,7 +46,7 @@ test = [
   "black==24.4.2",
   "codespell==2.2.6",
   "isort==5.13.2",
-  "mypy==1.9.0",
+  "mypy==1.10.0",
   "pre-commit==3.7.0",
   "pre-commit-hooks==4.6.0",
   "pylint==3.1.0",
