@@ -77,9 +77,14 @@ class DatabaseConnection:
         """Perform async initialization."""
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        await self.execute("PRAGMA analysis_limit=400;")
+        await self.execute("PRAGMA optimize;")
+        await self.commit()
 
     async def close(self) -> None:
         """Close db connection on exit."""
+        await self.execute("PRAGMA optimize;")
+        await self.commit()
         await self._db.close()
 
     async def get_rows(
@@ -215,6 +220,10 @@ class DatabaseConnection:
     async def execute(self, query: str, values: dict | None = None) -> Any:
         """Execute command on the database."""
         return await self._db.execute(query, values)
+
+    async def commit(self) -> None:
+        """Commit the current transaction."""
+        return await self._db.commit()
 
     async def iter_items(
         self,

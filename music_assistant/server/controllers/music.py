@@ -819,6 +819,7 @@ class MusicController(CoreController):
             DB_TABLE_PROVIDER_MAPPINGS,
         ):
             await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+        await self.database.commit()
         # recreate missing tables
         await self.__create_database_tables()
 
@@ -991,6 +992,7 @@ class MusicController(CoreController):
             UNIQUE(album_id, artist_id)
             );"""
         )
+        await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
@@ -1050,6 +1052,7 @@ class MusicController(CoreController):
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
         )
+        await self.database.commit()
 
     async def __create_database_triggers(self) -> None:
         """Create database triggers."""
@@ -1066,3 +1069,4 @@ class MusicController(CoreController):
                 END;
                 """
             )
+        await self.database.commit()
