@@ -10,11 +10,9 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-import aiofiles
 import cchardet
 import xmltodict
 
-from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -44,7 +42,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import VARIOUS_ARTISTS_NAME
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, VARIOUS_ARTISTS_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
@@ -152,8 +150,6 @@ class FileSystemProviderBase(MusicProvider):
     """
 
     write_access: bool = False
-    checksums_file: str
-    file_checksums: dict[str, int]
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -165,24 +161,6 @@ class FileSystemProviderBase(MusicProvider):
                 ProviderFeature.PLAYLIST_TRACKS_EDIT,
             )
         return SUPPORTED_FEATURES
-
-    async def loaded_in_mass(self) -> None:
-        """Call after the provider has been loaded."""
-        # load the checksums from disk and store in memory
-        self.checksums_file = os.path.join(self.mass.storage_path, f"{self.instance_id}.json")
-        self.file_checksums = {}
-        if await asyncio.to_thread(os.path.isfile, self.checksums_file):
-            try:
-                async with aiofiles.open(self.checksums_file, "r", encoding="utf-8") as _file:
-                    self.file_checksums = json_loads(await _file.read())
-                    self.logger.debug("Loaded persistent checksums from %s", self.checksums_file)
-                    return
-            except FileNotFoundError:
-                pass
-            except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
-                self.logger.exception(
-                    "Error while reading persistent checksums file %s", self.checksums_file
-                )
 
     @abstractmethod
     async def listdir(
@@ -346,10 +324,18 @@ class FileSystemProviderBase(MusicProvider):
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
+        file_checksums: dict[str, str] = {}
+        query = (
+            f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' "
+            "AND media_type in ('track', 'playlist')"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
+            file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
         cur_filenames = set()
-        prev_filenames = set(self.file_checksums.keys())
+        prev_filenames = set(file_checksums.keys())
         async for item in self.listdir("", recursive=True):
             if "." not in item.filename or not item.ext:
                 # skip system files and files without extension
@@ -362,7 +348,7 @@ class FileSystemProviderBase(MusicProvider):
             cur_filenames.add(item.path)
             try:
                 # continue if the item did not change (checksum still the same)
-                if item.checksum == self.file_checksums.get(item.path):
+                if item.checksum == file_checksums.get(item.path):
                     continue
                 self.logger.debug("Processing: %s", item.path)
                 if item.ext in TRACK_EXTENSIONS:
@@ -390,13 +376,7 @@ class FileSystemProviderBase(MusicProvider):
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
-            else:
-                self.file_checksums[item.path] = item.checksum
-                # save the checksums every 500 items to speed up scan restarts
-                if len(cur_filenames) % 500 == 0:
-                    await self._async_save_checksums()
 
-        await self._async_save_checksums()
         # work out deletions
         deleted_files = prev_filenames - cur_filenames
         await self._process_deletions(deleted_files)
@@ -492,6 +472,7 @@ class FileSystemProviderBase(MusicProvider):
                     item_id=file_item.path,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    details=file_item.checksum,
                 )
             },
         )
@@ -714,6 +695,7 @@ class FileSystemProviderBase(MusicProvider):
                         channels=tags.channels,
                         bit_rate=tags.bit_rate,
                     ),
+                    details=file_item.checksum,
                 )
             },
             disc_number=tags.disc,
@@ -1066,16 +1048,3 @@ class FileSystemProviderBase(MusicProvider):
                         )
                         break
         return images
-
-    async def _async_save_checksums(self) -> None:
-        """Save persistent checksums data to disk."""
-        filename_backup = f"{self.checksums_file}.backup"
-        # make backup before we write a new file
-        if await asyncio.to_thread(os.path.isfile, self.checksums_file):
-            if await asyncio.to_thread(os.path.isfile, filename_backup):
-                await asyncio.to_thread(os.remove, filename_backup)
-            await asyncio.to_thread(os.rename, self.checksums_file, filename_backup)
-
-        async with aiofiles.open(self.checksums_file, "w", encoding="utf-8") as _file:
-            await _file.write(json_dumps(self.file_checksums, indent=True))
-        self.logger.debug("Saved data to persistent storage")

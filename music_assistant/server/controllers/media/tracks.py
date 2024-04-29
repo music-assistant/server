@@ -339,6 +339,8 @@ class TracksController(MediaControllerBase[Track]):
         db_id = int(item_id)  # ensure integer
         # delete entry(s) from albumtracks table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"track_id": db_id})
+        # delete entry(s) from trackartists table
+        await self.mass.music.database.delete(DB_TABLE_TRACK_ARTISTS, {"track_id": db_id})
         # delete the track itself from db
         await super().remove_item_from_library(db_id)
 

@@ -277,15 +277,15 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=5000,
         ):
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
+                await self.mass.music.albums.remove_item_from_library(db_row["album_id"])
 
         # recursively also remove artist tracks
         for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT track_id FROM {DB_TABLE_TRACKS} WHERE artist_id = {db_id}",
+            f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {db_id}",
             limit=5000,
         ):
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.tracks.remove_item_from_library(db_row["item_id"])
+                await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
 
         # delete the artist itself from db
         await super().remove_item_from_library(db_id)

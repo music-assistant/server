@@ -700,23 +700,37 @@ class MusicController(CoreController):
             self.mass.music.tracks,
             self.mass.music.albums,
             self.mass.music.artists,
+            # run main controllers twice to rule out relations
+            self.mass.music.tracks,
+            self.mass.music.albums,
+            self.mass.music.artists,
         ):
-            prov_items = await ctrl.get_library_items_by_prov_id(
-                provider_instance=provider_instance
+            query = (
+                f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = '{ctrl.media_type}' "
+                f"AND provider_instance = '{provider_instance}'"
             )
-            for item in prov_items:
+            for db_row in await self.database.get_rows_from_query(query, limit=100000):
                 try:
-                    await ctrl.remove_provider_mappings(item.item_id, provider_instance)
+                    await ctrl.remove_provider_mappings(db_row["item_id"], provider_instance)
                 except Exception as err:
                     # we dont want the whole removal process to stall on one item
                     # so in case of an unexpected error, we log and move on.
                     self.logger.warning(
                         "Error while removing %s: %s",
-                        item.uri,
+                        db_row["item_id"],
                         str(err),
                         exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                     )
                     errors += 1
+
+        # remove all orphaned items (not in provider mappings table anymore)
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{provider_instance}'"
+        )
+        if remaining_items_count := await self.database.get_count_from_query(query):
+            errors += remaining_items_count
 
         if errors == 0:
             # cleanup successful, remove from the deleted_providers setting
@@ -955,7 +969,7 @@ class MusicController(CoreController):
             [available] BOOLEAN DEFAULT 1,
             [url] text,
             [audio_format] json,
-            [details] json,
+            [details] TEXT,
             UNIQUE(media_type, provider_instance, provider_item_id)
             );"""
         )
