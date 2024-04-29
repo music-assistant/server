@@ -50,7 +50,7 @@ from music_assistant.server.helpers.app_vars import app_var
 # pylint: enable=no-name-in-module
 from music_assistant.server.helpers.audio import get_chunksize
 from music_assistant.server.helpers.process import AsyncProcess, check_output
-from music_assistant.server.helpers.throttle_retry import ThrottlerManager, use_throttler
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -763,7 +763,7 @@ class SpotifyProvider(MusicProvider):
                 break
         return all_items
 
-    @use_throttler
+    @throttle_with_retries
     async def _get_data(self, endpoint, **kwargs) -> dict[str, Any]:
         """Get data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
@@ -797,7 +797,7 @@ class SpotifyProvider(MusicProvider):
             response.raise_for_status()
             return await response.json(loads=json_loads)
 
-    @use_throttler
+    @throttle_with_retries
     async def _delete_data(self, endpoint, data=None, **kwargs) -> str:
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
@@ -818,7 +818,7 @@ class SpotifyProvider(MusicProvider):
             response.raise_for_status()
             return await response.text()
 
-    @use_throttler
+    @throttle_with_retries
     async def _put_data(self, endpoint, data=None, **kwargs) -> str:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
@@ -839,7 +839,7 @@ class SpotifyProvider(MusicProvider):
             response.raise_for_status()
             return await response.text()
 
-    @use_throttler
+    @throttle_with_retries
     async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"

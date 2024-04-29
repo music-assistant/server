@@ -47,7 +47,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import ThrottlerManager
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -213,7 +213,7 @@ class TidalProvider(MusicProvider):
     _tidal_user_id: str | None = None
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
-    throttler = ThrottlerManager(rate_limit=1, period=0.5, retry_attempts=5, initial_backoff=5)
+    throttler = ThrottlerManager(rate_limit=1, period=0.5)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -307,26 +307,25 @@ class TidalProvider(MusicProvider):
         ):
             yield self._parse_playlist(playlist)
 
+    @throttle_with_retries
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        tracks_obj = await self.throttler.wrap(get_album_tracks, tidal_session, prov_album_id)
+        tracks_obj = await get_album_tracks(tidal_session, prov_album_id)
         return [self._parse_track(track_obj=track_obj) for track_obj in tracks_obj]
 
+    @throttle_with_retries
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         tidal_session = await self._get_tidal_session()
-        artist_albums_obj = await self.throttler.wrap(
-            get_artist_albums, tidal_session, prov_artist_id
-        )
+        artist_albums_obj = await get_artist_albums(tidal_session, prov_artist_id)
         return [self._parse_album(album) for album in artist_albums_obj]
 
+    @throttle_with_retries
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        artist_toptracks_obj = await self.throttler.wrap(
-            get_artist_toptracks, tidal_session, prov_artist_id
-        )
+        artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
         return [self._parse_track(track) for track in artist_toptracks_obj]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
@@ -342,12 +341,11 @@ class TidalProvider(MusicProvider):
             track.position = total_playlist_tracks
             yield track
 
+    @throttle_with_retries
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
-        similar_tracks_obj = await self.throttler.wrap(
-            get_similar_tracks, tidal_session, prov_track_id, limit
-        )
+        similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
         return [self._parse_track(track) for track in similar_tracks_obj]
 
     async def library_add(self, item: MediaItemType) -> bool:
@@ -429,22 +427,25 @@ class TidalProvider(MusicProvider):
             path=url,
         )
 
+    @throttle_with_retries
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""
         tidal_session = await self._get_tidal_session()
-        artist_obj = await self.throttler.wrap(get_artist, tidal_session, prov_artist_id)
+        artist_obj = await get_artist(tidal_session, prov_artist_id)
         return self._parse_artist(artist_obj)
 
+    @throttle_with_retries
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details for given album id."""
         tidal_session = await self._get_tidal_session()
-        album_obj = await self.throttler.wrap(get_album, tidal_session, prov_album_id)
+        album_obj = await get_album(tidal_session, prov_album_id)
         return self._parse_album(album_obj)
 
+    @throttle_with_retries
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
         tidal_session = await self._get_tidal_session()
-        track_obj = await self.throttler.wrap(get_track, tidal_session, prov_track_id)
+        track_obj = await get_track(tidal_session, prov_track_id)
         track = self._parse_track(track_obj)
         # get some extra details for the full track info
         with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
@@ -452,10 +453,11 @@ class TidalProvider(MusicProvider):
             track.metadata.lyrics = lyrics.text
         return track
 
+    @throttle_with_retries
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details for given playlist id."""
         tidal_session = await self._get_tidal_session()
-        playlist_obj = await self.throttler.wrap(get_playlist, tidal_session, prov_playlist_id)
+        playlist_obj = await get_playlist(tidal_session, prov_playlist_id)
         return self._parse_playlist(playlist_obj)
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:

@@ -42,7 +42,8 @@ class ThrottlerManager(Throttler):
                 async with self:
                     return await func(self, *args, **kwargs)
             except ResourceTemporarilyUnavailable as e:
-                backoff_time += e.backoff_time
+                if e.backoff_time:
+                    backoff_time = e.backoff_time
                 LOGGER.warning(f"Attempt {attempt + 1}/{self.retry_attempts} failed: {e}")
                 if attempt < self.retry_attempts - 1:
                     LOGGER.warning(f"Retrying in {backoff_time} seconds...")
@@ -53,7 +54,7 @@ class ThrottlerManager(Throttler):
             raise RetriesExhausted(msg)
 
 
-def use_throttler(
+def throttle_with_retries(
     func: Callable[Concatenate[_ProviderT, _P], Awaitable[_R]],
 ) -> Callable[Concatenate[_ProviderT, _P], Coroutine[Any, Any, _R | None]]:
     """Call async function using the throttler with retries."""
@@ -64,19 +65,21 @@ def use_throttler(
         # the trottler attribute must be present on the class
         throttler = self.throttler
         backoff_time = throttler.initial_backoff
-        for attempt in range(throttler.retry_attempts):
-            try:
-                async with throttler:
+        async with throttler:
+            for attempt in range(throttler.retry_attempts):
+                try:
                     return await func(self, *args, **kwargs)
-            except ResourceTemporarilyUnavailable as e:
-                backoff_time += e.backoff_time
-                self.logger.warning(f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}")
-                if attempt < throttler.retry_attempts - 1:
-                    self.logger.warning(f"Retrying in {backoff_time} seconds...")
-                    await asyncio.sleep(backoff_time)
-                    backoff_time *= 2
-        else:  # noqa: PLW0120
-            msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
-            raise RetriesExhausted(msg)
+                except ResourceTemporarilyUnavailable as e:
+                    backoff_time += e.backoff_time
+                    self.logger.warning(
+                        f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
+                    )
+                    if attempt < throttler.retry_attempts - 1:
+                        self.logger.warning(f"Retrying in {backoff_time} seconds...")
+                        await asyncio.sleep(backoff_time)
+                        backoff_time *= 2
+            else:  # noqa: PLW0120
+                msg = f"Retries exhausted, failed after {throttler.retry_attempts} attempts"
+                raise RetriesExhausted(msg)
 
     return wrapper
