@@ -35,20 +35,16 @@ from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
     DB_SCHEMA_VERSION,
     DB_TABLE_ALBUM_ARTISTS,
-    DB_TABLE_ALBUM_PROVIDER_MAPPINGS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
-    DB_TABLE_ARTIST_PROVIDER_MAPPINGS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_PLAYLIST_PROVIDER_MAPPINGS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_PLAYLOG,
-    DB_TABLE_RADIO_PROVIDER_MAPPINGS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACK_LOUDNESS,
-    DB_TABLE_TRACK_PROVIDER_MAPPINGS,
     DB_TABLE_TRACKS,
     PROVIDERS_WITH_SHAREABLE_URLS,
 )
@@ -705,7 +701,9 @@ class MusicController(CoreController):
             self.mass.music.albums,
             self.mass.music.artists,
         ):
-            prov_items = await ctrl.get_library_items_by_prov_id(provider_instance)
+            prov_items = await ctrl.get_library_items_by_prov_id(
+                provider_instance=provider_instance
+            )
             for item in prov_items:
                 try:
                     await ctrl.remove_provider_mappings(item.item_id, provider_instance)
@@ -781,8 +779,9 @@ class MusicController(CoreController):
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
-        # create indexes if needed
+        # create indexes and triggers if needed
         await self.__create_database_indexes()
+        await self.__create_database_triggers()
         # compact db
         self.logger.debug("Compacting database...")
         await self.database.vacuum()
@@ -800,12 +799,10 @@ class MusicController(CoreController):
             DB_TABLE_ARTISTS,
             DB_TABLE_PLAYLISTS,
             DB_TABLE_RADIOS,
-            DB_TABLE_ALBUM_ARTISTS,
             DB_TABLE_ALBUM_TRACKS,
             DB_TABLE_PLAYLOG,
             DB_TABLE_TRACK_LOUDNESS,
-            "provider_mappings",
-            DB_TABLE_TRACK_ARTISTS,
+            DB_TABLE_PROVIDER_MAPPINGS,
         ):
             await self.database.execute(f"DROP TABLE IF EXISTS {table}")
         # recreate missing tables
@@ -850,130 +847,139 @@ class MusicController(CoreController):
                     [album_type] TEXT NOT NULL,
                     [year] INTEGER,
                     [favorite] BOOLEAN DEFAULT 0,
-                    [metadata] json,
+                    [metadata] json NOT NULL,
                     [external_ids] json NOT NULL,
                     [play_count] INTEGER DEFAULT 0,
                     [last_played] INTEGER DEFAULT 0,
-                    [timestamp_added] INTEGER NOT NULL,
-                    [timestamp_modified] INTEGER NOT NULL
+                    [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    [timestamp_modified] INTEGER,
+
+                    [artists] json DEFAULT '[]',
+                    [provider_mappings] json DEFAULT '[]'
                 );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ARTISTS}(
-                    [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [name] TEXT NOT NULL,
-                    [sort_name] TEXT NOT NULL,
-                    [favorite] BOOLEAN DEFAULT 0,
-                    [metadata] json,
-                    [external_ids] json NOT NULL,
-                    [play_count] INTEGER DEFAULT 0,
-                    [last_played] INTEGER DEFAULT 0,
-                    [timestamp_added] INTEGER NOT NULL,
-                    [timestamp_modified] INTEGER NOT NULL
-                    );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_ARTISTS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [provider_mappings] json DEFAULT '[]'
+            );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACKS}(
-                    [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [name] TEXT NOT NULL,
-                    [sort_name] TEXT NOT NULL,
-                    [version] TEXT,
-                    [duration] INTEGER,
-                    [favorite] BOOLEAN DEFAULT 0,
-                    [metadata] json,
-                    [external_ids] json NOT NULL,
-                    [play_count] INTEGER DEFAULT 0,
-                    [last_played] INTEGER DEFAULT 0,
-                    [timestamp_added] INTEGER NOT NULL,
-                    [timestamp_modified] INTEGER NOT NULL
-                );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACKS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [version] TEXT,
+            [duration] INTEGER,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [artists] json DEFAULT '[]',
+            [provider_mappings] json DEFAULT '[]'
+            );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [track_id] INTEGER NOT NULL,
-                    [album_id] INTEGER NOT NULL,
-                    [disc_number] INTEGER NOT NULL,
-                    [track_number] INTEGER NOT NULL,
-                    UNIQUE(track_id, album_id)
-                );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLISTS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [owner] TEXT NOT NULL,
+            [is_editable] BOOLEAN NOT NULL,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [provider_mappings] json DEFAULT '[]'
+            );"""
+        )
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_RADIOS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [provider_mappings] json DEFAULT '[]'
+            );"""
+        )
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [track_id] INTEGER NOT NULL,
+            [album_id] INTEGER NOT NULL,
+            [disc_number] INTEGER NOT NULL,
+            [track_number] INTEGER NOT NULL,
+            FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
+            FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
+            UNIQUE(track_id, album_id)
+            );"""
+        )
+        await self.database.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}(
+            [media_type] TEXT NOT NULL,
+            [item_id] INTEGER NOT NULL,
+            [provider_domain] TEXT NOT NULL,
+            [provider_instance] TEXT NOT NULL,
+            [provider_item_id] TEXT NOT NULL,
+            [available] BOOLEAN DEFAULT 1,
+            [url] text,
+            [audio_format] json,
+            [details] json,
+            UNIQUE(media_type, provider_instance, provider_item_id)
+            );"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [track_id] INTEGER NOT NULL,
-                    [artist_id] INTEGER NOT NULL,
-                    FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
-                    FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
-                    UNIQUE(track_id, artist_id)
-                );"""
+            [track_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(track_id, artist_id)
+            );"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}(
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [album_id] INTEGER NOT NULL,
-                    [artist_id] INTEGER NOT NULL,
-                    FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
-                    FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
-                    UNIQUE(album_id, artist_id)
-                );"""
+            [album_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(album_id, artist_id)
+            );"""
         )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLISTS}(
-                    [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [name] TEXT NOT NULL,
-                    [sort_name] TEXT NOT NULL,
-                    [owner] TEXT NOT NULL,
-                    [is_editable] BOOLEAN NOT NULL,
-                    [favorite] BOOLEAN DEFAULT 0,
-                    [metadata] json,
-                    [external_ids] json NOT NULL,
-                    [play_count] INTEGER DEFAULT 0,
-                    [last_played] INTEGER DEFAULT 0,
-                    [timestamp_added] INTEGER NOT NULL,
-                    [timestamp_modified] INTEGER NOT NULL
-                );"""
-        )
-        await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_RADIOS}(
-                    [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [name] TEXT NOT NULL,
-                    [sort_name] TEXT NOT NULL,
-                    [favorite] BOOLEAN DEFAULT 0,
-                    [metadata] json,
-                    [external_ids] json NOT NULL,
-                    [play_count] INTEGER DEFAULT 0,
-                    [last_played] INTEGER DEFAULT 0,
-                    [timestamp_added] INTEGER NOT NULL,
-                    [timestamp_modified] INTEGER NOT NULL
-                );"""
-        )
-        # create provider_mapping tables
-        for media_type, db_table in (
-            ("artist", DB_TABLE_ARTIST_PROVIDER_MAPPINGS),
-            ("album", DB_TABLE_ALBUM_PROVIDER_MAPPINGS),
-            ("track", DB_TABLE_TRACK_PROVIDER_MAPPINGS),
-            ("playlist", DB_TABLE_PLAYLIST_PROVIDER_MAPPINGS),
-            ("radio", DB_TABLE_RADIO_PROVIDER_MAPPINGS),
-        ):
-            await self.database.execute(
-                f"""CREATE TABLE IF NOT EXISTS {db_table} (
-                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
-                    [{media_type}_id] INTEGER NOT NULL,
-                    [provider_domain] TEXT NOT NULL,
-                    [provider_instance] TEXT NOT NULL,
-                    [provider_item_id] TEXT NOT NULL,
-                    [available] BOOLEAN DEFAULT 1,
-                    [url] text,
-                    [audio_format] json,
-                    [details] json,
-                    UNIQUE({media_type}_id, provider_instance, provider_item_id)
-                );"""
-            )
 
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
-        # indexes for media tables
         for db_table in (
             DB_TABLE_ARTISTS,
             DB_TABLE_ALBUMS,
@@ -997,27 +1003,52 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx on {db_table}(external_ids);"  # noqa: E501
             )
-        # indexes for provider mappings tables
-        for media_type, db_table in (
-            ("artist", DB_TABLE_ARTIST_PROVIDER_MAPPINGS),
-            ("album", DB_TABLE_ALBUM_PROVIDER_MAPPINGS),
-            ("track", DB_TABLE_TRACK_PROVIDER_MAPPINGS),
-            ("playlist", DB_TABLE_PLAYLIST_PROVIDER_MAPPINGS),
-            ("radio", DB_TABLE_RADIO_PROVIDER_MAPPINGS),
-        ):
-            # index on media_type_id column
+
+        # indexes on provider_mappings table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_media_type_item_id_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,item_id);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_provider_domain_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain,provider_item_id);"
+        )
+        await self.database.execute(
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_provider_instance_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,provider_item_id);"
+        )
+
+        # indexes on track_artists table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_track_id_idx "
+            f"on {DB_TABLE_TRACK_ARTISTS}(track_id);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_artist_id_idx "
+            f"on {DB_TABLE_TRACK_ARTISTS}(artist_id);"
+        )
+        # indexes on album_artists table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_album_id_idx "
+            f"on {DB_TABLE_ALBUM_ARTISTS}(album_id);"
+        )
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
+            f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
+        )
+
+    async def __create_database_triggers(self) -> None:
+        """Create database triggers."""
+        # triggers to auto update timestamps
+        for db_table in ("artists", "albums", "tracks", "playlists", "radios"):
             await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_{media_type}_id_idx on {db_table}({media_type}_id);"  # noqa: E501
-            )
-            # index on provider_instance column
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_provider_instance_idx on {db_table}(provider_instance);"  # noqa: E501
-            )
-            # index on provider_domain column
-            await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_provider_domain_idx on {db_table}(provider_domain);"  # noqa: E501
-            )
-            # index on provider_item_id column
-            await self.database.execute(
-                f"CREATE UNIQUE INDEX IF NOT EXISTS {db_table}_provider_item_id_idx on {db_table}(provider_item_id);"  # noqa: E501
+                f"""
+                CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
+                AFTER UPDATE ON {db_table} FOR EACH ROW
+                WHEN NEW.timestamp_modified <= OLD.timestamp_modified
+                BEGIN
+                    UPDATE {db_table} set timestamp_modified=cast(strftime('%s','now') as int)
+                    WHERE item_id=OLD.item_id;
+                END;
+                """
             )

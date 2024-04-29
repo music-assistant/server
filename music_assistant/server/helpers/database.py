@@ -6,6 +6,7 @@ import asyncio
 import logging
 import time
 from contextlib import asynccontextmanager
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
@@ -21,18 +22,19 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.database")
 @asynccontextmanager
 async def time_query(sql_query: str):
     """Time the processing time of an sql query."""
-    time_start = time.time() if LOGGER.isEnabledFor(logging.DEBUG) else 0
+    if not LOGGER.isEnabledFor(logging.DEBUG):
+        yield
+        return
+    time_start = time.time()
     try:
         yield
+    except OperationalError as err:
+        LOGGER.error(f"{err}\n{sql_query}")
+        raise
     finally:
-        if LOGGER.isEnabledFor(logging.DEBUG):
-            process_time = int((time.time() - time_start) * 1000)
-            if process_time > 50:
-                LOGGER.warning(
-                    "Executing query %s took %s milliseconds", sql_query[:25].strip(), process_time
-                )
-            elif process_time > 250:
-                LOGGER.error("SQL Query took %s milliseconds! (\n%s", process_time, sql_query)
+        process_time = int(time.time() - time_start)
+        if process_time > 1:
+            LOGGER.error("SQL Query took %s seconds! (\n%s", process_time, sql_query)
 
 
 def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:

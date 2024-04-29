@@ -142,45 +142,6 @@ class BuiltinProvider(MusicProvider):
         if not await asyncio.to_thread(os.path.exists, self._playlists_dir):
             await asyncio.to_thread(os.mkdir, self._playlists_dir)
 
-        # TEMP: Migrate URL provider entries to builtin
-        # TODO: Remove this once 2.0 is released!
-        cache_key = f"{self.instance_id}.url_migration_done"
-        if await self.mass.cache.get(cache_key):
-            return
-        self.logger.info("Starting migration...")
-        url_instance_id: str | None = None
-        for ctrl in (
-            self.mass.music.radio,
-            self.mass.music.tracks,
-            self.mass.music.artists,
-        ):
-            prov_items = await ctrl.get_library_items_by_prov_id("url")
-            for item in prov_items:
-                try:
-                    existing_mapping = next(
-                        x for x in item.provider_mappings if x.provider_domain == "url"
-                    )
-                    # add new prov mapping for the builtin provider
-                    new_mapping = ProviderMapping.from_dict(existing_mapping.to_dict())
-                    new_mapping.provider_instance = self.instance_id
-                    new_mapping.provider_domain = self.domain
-                    new_mapping.available = True
-                    await ctrl.add_provider_mapping(item.item_id, new_mapping)
-                    # lookup instance id of the url provider if we dont have it yet
-                    url_instance_id = existing_mapping.provider_instance
-                    # remove the old provider mapping for url provider
-                    await ctrl.remove_provider_mappings(item.item_id, url_instance_id)
-                    # ensure its added to our local settings
-                    item.item_id = new_mapping.item_id
-                    item.provider = new_mapping.provider_instance
-                    await self.library_add(item)
-                    self.logger.info("Migrated item %s", item.name)
-                except Exception as err:
-                    self.logger.exception(err)
-        if url_instance_id:
-            await self.mass.cache.clear(url_instance_id)
-        await self.mass.cache.set(cache_key, True, expiration=365 * 86400)
-
     @property
     def is_streaming_provider(self) -> bool:
         """Return True if the provider is a streaming provider."""
@@ -541,55 +502,56 @@ class BuiltinProvider(MusicProvider):
         self, builtin_playlist_id: str
     ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given builtin playlist id."""
-        count = 0
         if builtin_playlist_id == ALL_LIBRARY_TRACKS:
-            async for item in self.mass.music.tracks.iter_library_items(order_by="RANDOM()"):
-                count += 1
-                item.position = count
+            res = await self.mass.music.tracks.library_items(limit=2500, order_by="RANDOM()")
+            for idx, item in enumerate(res.items, 1):
+                item.position = idx
                 yield item
             return
         if builtin_playlist_id == ALL_FAVORITE_TRACKS:
-            async for item in self.mass.music.tracks.iter_library_items(
-                favorite=True, order_by="RANDOM()"
-            ):
-                count += 1
-                item.position = count
+            res = await self.mass.music.tracks.library_items(
+                favorite=True, limit=2500, order_by="RANDOM()"
+            )
+            for idx, item in enumerate(res.items, 1):
+                item.position = idx
                 yield item
             return
         if builtin_playlist_id == RANDOM_TRACKS:
-            async for item in self.mass.music.tracks.iter_library_items(order_by="RANDOM()"):
-                count += 1
-                item.position = count
+            res = await self.mass.music.tracks.library_items(limit=100, order_by="RANDOM()")
+            for idx, item in enumerate(res.items, 1):
+                item.position = idx
                 yield item
-                if count == 100:
-                    return
             return
         if builtin_playlist_id == RANDOM_ALBUM:
-            async for random_album in self.mass.music.albums.iter_library_items(
-                order_by="RANDOM()"
-            ):
+            for random_album in (
+                await self.mass.music.albums.library_items(limit=1, order_by="RANDOM()")
+            ).items:
                 # use the function specified in the queue controller as that
                 # already handles unwrapping an album by user preference
-                for album_track in await self.mass.player_queues.get_album_tracks(random_album):
-                    count += 1
-                    album_track.position = count
-                    yield album_track
+                tracks = await self.mass.music.albums.tracks(
+                    random_album.item_id, random_album.provider
+                )
+                for idx, track in enumerate(tracks, 1):
+                    track.position = idx
+                    yield track
                 return
         if builtin_playlist_id == RANDOM_ARTIST:
-            async for random_artist in self.mass.music.artists.iter_library_items(
-                order_by="RANDOM()"
-            ):
+            for random_artist in (
+                await self.mass.music.artists.library_items(limit=1, order_by="RANDOM()")
+            ).items:
                 # use the function specified in the queue controller as that
                 # already handles unwrapping an artist by user preference
-                for artist_track in await self.mass.player_queues.get_artist_tracks(random_artist):
-                    count += 1
-                    artist_track.position = count
-                    yield artist_track
+                tracks = await self.mass.music.artists.tracks(
+                    random_artist.item_id, random_artist.provider
+                )
+                for idx, track in enumerate(tracks, 1):
+                    track.position = idx
+                    yield track
                 return
         if builtin_playlist_id == RECENTLY_PLAYED:
-            for track in await self.mass.music.recently_played(250, [MediaType.TRACK]):
-                count += 1
-                track.position = count
+            tracks = await self.mass.music.recently_played(250, [MediaType.TRACK])
+            for idx, track in enumerate(tracks, 1):
+                track.position = idx
                 yield track
             return
 

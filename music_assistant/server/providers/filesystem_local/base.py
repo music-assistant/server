@@ -252,26 +252,55 @@ class FileSystemProviderBase(MusicProvider):
             "name": f"%{search_query}%",
             "provider_instance": self.instance_id,
         }
+        subquery = "WHERE "
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
+            subquery = (
+                "WHERE provider_mappings.media_type = 'track' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE tracks.name LIKE :name AND tracks.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
             result.tracks = await self.mass.music.tracks._get_library_items_by_query(
                 extra_query=query, extra_query_params=params
             )
 
         if media_types is None or MediaType.ALBUM in media_types:
-            query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
+            subquery = (
+                "WHERE provider_mappings.media_type = 'album' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE albums.name LIKE :name AND albums.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
             result.albums = await self.mass.music.albums._get_library_items_by_query(
                 extra_query=query, extra_query_params=params
             )
 
         if media_types is None or MediaType.ARTIST in media_types:
-            query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
+            subquery = (
+                "WHERE provider_mappings.media_type = 'artist' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE artists.name LIKE :name AND artists.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
             result.artists = await self.mass.music.artists._get_library_items_by_query(
                 extra_query=query, extra_query_params=params
             )
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "WHERE select_items.name LIKE :name AND provider_instance = :provider_instance"
+            subquery = (
+                "WHERE provider_mappings.media_type = 'playlist' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE playlists.name LIKE :name AND playlists.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
             result.playlists = await self.mass.music.playlists._get_library_items_by_query(
                 extra_query=query, extra_query_params=params
             )
