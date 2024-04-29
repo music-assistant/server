@@ -7,7 +7,6 @@ import contextlib
 from random import choice, random
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
@@ -85,8 +84,12 @@ class ArtistsController(MediaControllerBase[Artist]):
                 cur_item.item_id, item, overwrite=overwrite_existing
             )
         else:
-            # search by name
-            async for db_item in self.iter_library_items(search=item.name):
+            # search by (exact) name match
+            query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
+            query_params = {"name": item.name, "sort_name": item.sort_name}
+            async for db_item in self.iter_library_items(
+                extra_query=query, extra_query_params=query_params
+            ):
                 if compare_artist(db_item, item):
                     # existing item found: update it
                     # NOTE: if we matched an artist by name this could theoretically lead to
@@ -128,6 +131,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 update.mbid = VARIOUS_ARTISTS_ID_MBID
             if update.mbid == VARIOUS_ARTISTS_ID_MBID:
                 update.name = VARIOUS_ARTISTS_NAME
+
         await self.mass.music.database.update(
             self.db_table,
             {"item_id": db_id},
@@ -140,12 +144,16 @@ class ArtistsController(MediaControllerBase[Artist]):
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
                 "metadata": serialize_to_json(metadata),
-                "timestamp_modified": int(utc_timestamp()),
             },
         )
-        ## update/set provider_mappings table
-        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
         self.logger.debug("updated %s in database: %s", update.name, db_id)
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*cur_item.provider_mappings, *update.provider_mappings}
+        )
+        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
         # get full created object
         library_item = await self.get_library_item(db_id)
         self.mass.signal_event(
@@ -169,7 +177,10 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> PagedItems:
         """Get in-database (album) artists."""
         if album_artists_only:
-            artist_query = "artists.item_id in (select albumartists.artist_id from albumartists)"
+            artist_query = (
+                f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
+                f"from {DB_TABLE_ALBUM_ARTISTS})"
+            )
             extra_query = f"{extra_query} AND {artist_query}" if extra_query else artist_query
         return await super().library_items(
             favorite=favorite,
@@ -266,15 +277,15 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=5000,
         ):
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.albums.remove_item_from_library(db_row["album_id"])
+                await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
 
         # recursively also remove artist tracks
         for db_row in await self.mass.music.database.get_rows_from_query(
-            f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {db_id}",
+            f"SELECT track_id FROM {DB_TABLE_TRACKS} WHERE artist_id = {db_id}",
             limit=5000,
         ):
             with contextlib.suppress(MediaNotFoundError):
-                await self.mass.music.tracks.remove_item_from_library(db_row["track_id"])
+                await self.mass.music.tracks.remove_item_from_library(db_row["item_id"])
 
         # delete the artist itself from db
         await super().remove_item_from_library(db_id)
@@ -332,19 +343,22 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
+                subquery = (
+                    "SELECT item_id FROM provider_mappings WHERE "
+                    "media_type = 'track' AND (provider_domain = :prov_id "
+                    "OR provider_instance = :prov_id)"
+                )
                 query = (
-                    "WHERE trackartists.artist_id = :artist_id AND "
-                    "(provider_mappings.provider_domain = :prov_id OR "
-                    "provider_mappings.provider_instance = :prov_id)"
+                    f"WHERE {DB_TABLE_TRACKS}.item_id IN ({subquery}) "
+                    f"AND {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id"
                 )
                 query_params = {
                     "artist_id": db_artist.item_id,
                     "prov_id": provider_instance_id_or_domain,
                 }
-                paged_list = await self.mass.music.tracks.library_items(
+                return await self.mass.music.tracks._get_library_items_by_query(
                     extra_query=query, extra_query_params=query_params
                 )
-                return paged_list.items
         # store (serializable items) in cache
         if prov.is_streaming_provider:
             self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
@@ -355,10 +369,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Track]:
         """Return all tracks for an artist in the library/db."""
-        subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
-        query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
-        paged_list = await self.mass.music.tracks.library_items(extra_query=query)
-        return paged_list.items
+        return await self.mass.music.tracks._get_library_items_by_query(
+            extra_query=f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = {item_id}",
+        )
 
     async def get_provider_artist_albums(
         self,
@@ -388,13 +401,23 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                query = (
-                    f"WHERE albumartists.artist_id = {db_artist.item_id} AND "
-                    f'(provider_mappings.provider_domain = "{provider_instance_id_or_domain}" OR '
-                    f'provider_mappings.provider_instance = "{provider_instance_id_or_domain}")'
+                subquery = (
+                    "SELECT item_id FROM provider_mappings WHERE "
+                    "media_type = 'album' AND (provider_domain = :prov_id "
+                    "OR provider_instance = :prov_id)"
                 )
-                paged_list = await self.mass.music.albums.library_items(extra_query=query)
-                return paged_list.items
+                query = (
+                    f"WHERE {DB_TABLE_ALBUMS}.item_id IN ({subquery}) "
+                    f"AND {DB_TABLE_ALBUM_ARTISTS}.artist_id = :artist_id"
+                )
+                query_params = {
+                    "prov_id": provider_instance_id_or_domain,
+                    "artist_id": db_artist.item_id,
+                }
+                return await self.mass.music.albums._get_library_items_by_query(
+                    extra_query=query, extra_query_params=query_params
+                )
+
         # store (serializable items) in cache
         if prov.is_streaming_provider:
             self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
@@ -405,10 +428,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
-        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
-        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
-        paged_list = await self.mass.music.albums.library_items(extra_query=query)
-        return paged_list.items
+        query = f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {item_id}"
+        return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
 
     async def _add_library_item(self, item: Artist) -> Artist:
         """Add a new item record to the database."""
@@ -418,8 +439,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         if item.mbid == VARIOUS_ARTISTS_ID_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -428,8 +447,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "favorite": item.favorite,
                 "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
-                "timestamp_added": int(utc_timestamp()),
-                "timestamp_modified": int(utc_timestamp()),
             },
         )
         db_id = new_item["item_id"]

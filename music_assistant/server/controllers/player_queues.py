@@ -69,6 +69,7 @@ class CompareState(TypedDict):
     state: PlayerState
     current_index: int | None
     elapsed_time: int
+    stream_title: str | None
 
 
 class PlayerQueuesController(CoreController):
@@ -808,6 +809,7 @@ class PlayerQueuesController(CoreController):
                 state=PlayerState.IDLE,
                 current_index=None,
                 elapsed_time=0,
+                stream_title=None,
             ),
         )
         new_state = CompareState(
@@ -815,6 +817,9 @@ class PlayerQueuesController(CoreController):
             state=queue.state,
             current_index=queue.current_index,
             elapsed_time=queue.elapsed_time,
+            stream_title=queue.current_item.streamdetails.stream_title
+            if queue.current_item and queue.current_item.streamdetails
+            else None,
         )
         changed_keys = get_changed_keys(prev_state, new_state)
         # return early if nothing changed
@@ -848,7 +853,6 @@ class PlayerQueuesController(CoreController):
             queue.next_item = None
         # signal update and store state
         self.signal_update(queue_id)
-
         self._prev_states[queue_id] = new_state
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:

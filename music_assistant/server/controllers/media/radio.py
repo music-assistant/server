@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 
-from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import EventType, MediaType
 from music_assistant.common.models.errors import InvalidDataError
@@ -91,8 +90,12 @@ class RadioController(MediaControllerBase[Radio]):
                 cur_item.item_id, item, overwrite=overwrite_existing
             )
         else:
-            # search by name
-            async for db_item in self.iter_library_items(search=item.name):
+            # search by (exact) name match
+            query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
+            query_params = {"name": item.name, "sort_name": item.sort_name}
+            async for db_item in self.iter_library_items(
+                extra_query=query, extra_query_params=query_params
+            ):
                 if compare_strings(db_item.name, item.name, strict=True):
                     # existing item found: update it
                     library_item = await self.update_item_in_library(db_item.item_id, item)
@@ -131,11 +134,15 @@ class RadioController(MediaControllerBase[Radio]):
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
-                "timestamp_modified": int(utc_timestamp()),
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*cur_item.provider_mappings, *update.provider_mappings}
+        )
+        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # get full created object
         library_item = await self.get_library_item(db_id)
@@ -149,8 +156,6 @@ class RadioController(MediaControllerBase[Radio]):
 
     async def _add_library_item(self, item: Radio) -> Radio:
         """Add a new item record to the database."""
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -159,8 +164,6 @@ class RadioController(MediaControllerBase[Radio]):
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
-                "timestamp_added": int(utc_timestamp()),
-                "timestamp_modified": int(utc_timestamp()),
             },
         )
         db_id = new_item["item_id"]

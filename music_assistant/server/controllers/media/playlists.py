@@ -7,7 +7,6 @@ import random
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
-from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri, parse_uri
 from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
@@ -121,11 +120,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "external_ids": serialize_to_json(
                     update.external_ids if overwrite else cur_item.external_ids
                 ),
-                "timestamp_modified": int(utc_timestamp()),
             },
         )
         # update/set provider_mappings table
-        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*cur_item.provider_mappings, *update.provider_mappings}
+        )
+        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
         self.logger.debug("updated %s in database: %s", update.name, db_id)
         # get full created object
         library_item = await self.get_library_item(db_id)
@@ -312,8 +315,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
     async def _add_library_item(self, item: Playlist) -> Playlist:
         """Add a new record to the database."""
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -324,8 +325,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 "favorite": item.favorite,
                 "metadata": serialize_to_json(item.metadata),
                 "external_ids": serialize_to_json(item.external_ids),
-                "timestamp_added": int(utc_timestamp()),
-                "timestamp_modified": int(utc_timestamp()),
             },
         )
         db_id = new_item["item_id"]

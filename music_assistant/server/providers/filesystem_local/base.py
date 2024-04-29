@@ -10,9 +10,11 @@ from abc import abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import aiofiles
 import cchardet
 import xmltodict
 
+from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_dumps, json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -150,6 +152,8 @@ class FileSystemProviderBase(MusicProvider):
     """
 
     write_access: bool = False
+    checksums_file: str
+    file_checksums: dict[str, int]
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -161,6 +165,24 @@ class FileSystemProviderBase(MusicProvider):
                 ProviderFeature.PLAYLIST_TRACKS_EDIT,
             )
         return SUPPORTED_FEATURES
+
+    async def loaded_in_mass(self) -> None:
+        """Call after the provider has been loaded."""
+        # load the checksums from disk and store in memory
+        self.checksums_file = os.path.join(self.mass.storage_path, f"{self.instance_id}.json")
+        self.file_checksums = {}
+        if await asyncio.to_thread(os.path.isfile, self.checksums_file):
+            try:
+                async with aiofiles.open(self.checksums_file, "r", encoding="utf-8") as _file:
+                    self.file_checksums = json_loads(await _file.read())
+                    self.logger.debug("Loaded persistent checksums from %s", self.checksums_file)
+                    return
+            except FileNotFoundError:
+                pass
+            except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
+                self.logger.exception(
+                    "Error while reading persistent checksums file %s", self.checksums_file
+                )
 
     @abstractmethod
     async def listdir(
@@ -230,35 +252,58 @@ class FileSystemProviderBase(MusicProvider):
             "name": f"%{search_query}%",
             "provider_instance": self.instance_id,
         }
+        subquery = "WHERE "
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            query = "WHERE tracks.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.tracks = (
-                await self.mass.music.tracks.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'track' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE tracks.name LIKE :name AND tracks.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.tracks = await self.mass.music.tracks._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
+
         if media_types is None or MediaType.ALBUM in media_types:
-            query = "WHERE albums.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.albums = (
-                await self.mass.music.albums.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'album' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE albums.name LIKE :name AND albums.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.albums = await self.mass.music.albums._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
+
         if media_types is None or MediaType.ARTIST in media_types:
-            query = "WHERE artists.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.artists = (
-                await self.mass.music.artists.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'artist' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE artists.name LIKE :name AND artists.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.artists = await self.mass.music.artists._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "WHERE playlists.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.playlists = (
-                await self.mass.music.playlists.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'playlist' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE playlists.name LIKE :name AND playlists.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.playlists = await self.mass.music.playlists._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
         return result
 
     async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
@@ -301,34 +346,10 @@ class FileSystemProviderBase(MusicProvider):
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
-        # first build a listing of all current items and their checksums
-        prev_checksums = {}
-        for ctrl in (self.mass.music.tracks, self.mass.music.playlists):
-            async for db_item in ctrl.iter_library_items_by_prov_id(self.instance_id):
-                file_name = next(
-                    x.item_id
-                    for x in db_item.provider_mappings
-                    if x.provider_instance == self.instance_id
-                )
-                prev_checksums[file_name] = db_item.metadata.cache_checksum
-
-        # process all deleted (or renamed) files first
-        cur_filenames = set()
-        async for item in self.listdir("", recursive=True):
-            if "." not in item.filename or not item.ext:
-                # skip system files and files without extension
-                continue
-
-            if item.ext not in SUPPORTED_EXTENSIONS:
-                # unsupported file extension
-                continue
-            cur_filenames.add(item.path)
-        # work out deletions
-        deleted_files = set(prev_checksums.keys()) - cur_filenames
-        await self._process_deletions(deleted_files)
-
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
+        cur_filenames = set()
+        prev_filenames = set(self.file_checksums.keys())
         async for item in self.listdir("", recursive=True):
             if "." not in item.filename or not item.ext:
                 # skip system files and files without extension
@@ -338,9 +359,10 @@ class FileSystemProviderBase(MusicProvider):
                 # unsupported file extension
                 continue
 
+            cur_filenames.add(item.path)
             try:
                 # continue if the item did not change (checksum still the same)
-                if item.checksum == prev_checksums.get(item.path):
+                if item.checksum == self.file_checksums.get(item.path):
                     continue
                 self.logger.debug("Processing: %s", item.path)
                 if item.ext in TRACK_EXTENSIONS:
@@ -368,6 +390,16 @@ class FileSystemProviderBase(MusicProvider):
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
+            else:
+                self.file_checksums[item.path] = item.checksum
+                # save the checksums every 500 items to speed up scan restarts
+                if len(cur_filenames) % 500 == 0:
+                    await self._async_save_checksums()
+
+        await self._async_save_checksums()
+        # work out deletions
+        deleted_files = prev_filenames - cur_filenames
+        await self._process_deletions(deleted_files)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
@@ -1034,3 +1066,16 @@ class FileSystemProviderBase(MusicProvider):
                         )
                         break
         return images
+
+    async def _async_save_checksums(self) -> None:
+        """Save persistent checksums data to disk."""
+        filename_backup = f"{self.checksums_file}.backup"
+        # make backup before we write a new file
+        if await asyncio.to_thread(os.path.isfile, self.checksums_file):
+            if await asyncio.to_thread(os.path.isfile, filename_backup):
+                await asyncio.to_thread(os.remove, filename_backup)
+            await asyncio.to_thread(os.rename, self.checksums_file, filename_backup)
+
+        async with aiofiles.open(self.checksums_file, "w", encoding="utf-8") as _file:
+            await _file.write(json_dumps(self.file_checksums, indent=True))
+        self.logger.debug("Saved data to persistent storage")

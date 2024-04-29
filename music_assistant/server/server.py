@@ -64,6 +64,7 @@ EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]
 
+ENABLE_DEBUG = bool(os.environ.get("PYTHONDEVMODE", "0"))
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -595,6 +596,8 @@ class MusicAssistant:
         async with asyncio.TaskGroup() as tg:
             for dir_str in os.listdir(PROVIDERS_PATH):
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
+                if dir_str == "test" and not ENABLE_DEBUG:
+                    continue
                 if not await isdir(dir_path):
                     continue
                 tg.create_task(load_provider_manifest(dir_str, dir_path))

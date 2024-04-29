@@ -1,0 +1,14 @@
+{
+  "type": "music",
+  "domain": "test",
+  "name": "Test / demo provider",
+  "description": "Test/Demo provider that creates a collection of fake media items.",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "requirements": [],
+  "documentation": "",
+  "multi_instance": false,
+  "builtin": false,
+  "hidden": false
+}

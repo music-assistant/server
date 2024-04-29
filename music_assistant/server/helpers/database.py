@@ -3,12 +3,41 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
+import time
+from contextlib import asynccontextmanager
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
+from music_assistant.constants import MASS_LOGGER_NAME
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.database")
+
+ENABLE_DEBUG = bool(os.environ.get("PYTHONDEVMODE", "0"))
+
+
+@asynccontextmanager
+async def debug_query(sql_query: str):
+    """Time the processing time of an sql query."""
+    if not ENABLE_DEBUG:
+        yield
+        return
+    time_start = time.time()
+    try:
+        yield
+    except OperationalError as err:
+        LOGGER.error(f"{err}\n{sql_query}")
+        raise
+    finally:
+        process_time = time.time() - time_start
+        if process_time > 0.5:
+            LOGGER.warning("SQL Query took %s seconds! (\n%s", process_time, sql_query)
 
 
 def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
@@ -68,7 +97,8 @@ class DatabaseConnection:
         if order_by is not None:
             sql_query += f" ORDER BY {order_by}"
         sql_query += f" LIMIT {limit} OFFSET {offset}"
-        return await self._db.execute_fetchall(sql_query, match)
+        async with debug_query(sql_query):
+            return await self._db.execute_fetchall(sql_query, match)
 
     async def get_rows_from_query(
         self,
@@ -80,7 +110,8 @@ class DatabaseConnection:
         """Get all rows for given custom query."""
         query = f"{query} LIMIT {limit} OFFSET {offset}"
         _query, _params = query_params(query, params)
-        return await self._db.execute_fetchall(_query, _params)
+        async with debug_query(_query):
+            return await self._db.execute_fetchall(_query, _params)
 
     async def get_count_from_query(
         self,
@@ -90,10 +121,11 @@ class DatabaseConnection:
         """Get row count for given custom query."""
         query = f"SELECT count() FROM ({query})"
         _query, _params = query_params(query, params)
-        async with self._db.execute(_query, _params) as cursor:
-            if result := await cursor.fetchone():
-                return result[0]
-        return 0
+        async with debug_query(_query):
+            async with self._db.execute(_query, _params) as cursor:
+                if result := await cursor.fetchone():
+                    return result[0]
+            return 0
 
     async def get_count(
         self,
@@ -101,22 +133,24 @@ class DatabaseConnection:
     ) -> int:
         """Get row count for given table."""
         query = f"SELECT count(*) FROM {table}"
-        async with self._db.execute(query) as cursor:
-            if result := await cursor.fetchone():
-                return result[0]
-        return 0
+        async with debug_query(query):
+            async with self._db.execute(query) as cursor:
+                if result := await cursor.fetchone():
+                    return result[0]
+            return 0
 
     async def search(self, table: str, search: str, column: str = "name") -> list[Mapping]:
         """Search table by column."""
         sql_query = f"SELECT * FROM {table} WHERE {table}.{column} LIKE :search"
         params = {"search": f"%{search}%"}
-        return await self._db.execute_fetchall(sql_query, params)
+        async with debug_query(sql_query):
+            return await self._db.execute_fetchall(sql_query, params)
 
     async def get_row(self, table: str, match: dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
         sql_query += " AND ".join(f"{table}.{x} = :{x}" for x in match)
-        async with self._db.execute(sql_query, match) as cursor:
+        async with debug_query(sql_query), self._db.execute(sql_query, match) as cursor:
             return await cursor.fetchone()
 
     async def insert(
