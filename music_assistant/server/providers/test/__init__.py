@@ -142,7 +142,7 @@ class TestProvider(MusicProvider):
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
-        for artist_idx in range(100):
+        for artist_idx in range(50):
             for album_idx in range(25):
                 for track_idx in range(25):
                     track_item_id = f"{artist_idx}_{album_idx}_{track_idx}"

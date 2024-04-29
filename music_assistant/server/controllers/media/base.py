@@ -21,7 +21,12 @@ from music_assistant.common.models.media_items import (
     Track,
     media_from_dict,
 )
-from music_assistant.constants import DB_TABLE_ALBUMS, DB_TABLE_PROVIDER_MAPPINGS, MASS_LOGGER_NAME
+from music_assistant.constants import (
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    MASS_LOGGER_NAME,
+)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
@@ -464,7 +469,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if provider_mapping in library_item.provider_mappings:
             return
         library_item.provider_mappings.add(provider_mapping)
-        await self._set_provider_mappings(db_id, [provider_mapping])
+        await self._set_provider_mappings(db_id, library_item.provider_mappings)
 
     async def remove_provider_mapping(
         self, item_id: str | int, provider_instance_id: str, provider_item_id: str
@@ -600,18 +605,16 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             if self.media_type == MediaType.ALBUM:
                 query_parts.append(
                     f"({self.db_table}.name LIKE :search "
-                    "OR {self.db_table}.sort_artist LIKE :search)"
+                    f"OR {DB_TABLE_ARTISTS}.name LIKE :search)"
                 )
             elif self.media_type == MediaType.TRACK:
                 query_parts.append(
                     f"({self.db_table}.name LIKE :search "
-                    f"OR {self.db_table}.sort_artist LIKE :search "
-                    f"OR {DB_TABLE_ALBUMS}.sort_name LIKE :search)"
+                    f"OR {DB_TABLE_ARTISTS}.name LIKE :search "
+                    f"OR {DB_TABLE_ALBUMS}.name LIKE :search)"
                 )
             else:
-                query_parts.append(
-                    f"{self.db_table}.name LIKE :search OR {self.db_table}.sort_name LIKE :search"
-                )
+                query_parts.append(f"{self.db_table}.name LIKE :search")
         # handle favorite filter
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
@@ -623,6 +626,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if count_only:
             return await self.mass.music.database.get_count_from_query(sql_query, query_params)
         if order_by:
+            order_by = order_by.replace("sort_artist", f"{DB_TABLE_ARTISTS}.sort_name")
+            order_by = order_by.replace("sort_album", f"{DB_TABLE_ALBUMS}.sort_name")
             sql_query += f" ORDER BY {order_by}"
         # return dbresult parsed to media item model
         return [

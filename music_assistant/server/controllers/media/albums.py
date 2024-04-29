@@ -32,7 +32,6 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
-    DB_TABLE_TRACKS,
 )
 from music_assistant.server.controllers.media.base import MediaControllerBase
 from music_assistant.server.helpers.compare import (
@@ -57,8 +56,7 @@ class AlbumsController(MediaControllerBase[Album]):
         super().__init__(*args, **kwargs)
         self.base_query = f"""
         SELECT
-            {self.db_table}.*,
-            artists.sort_name as sort_artist
+            {self.db_table}.*
         FROM {self.db_table}
         LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
         LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
@@ -291,7 +289,7 @@ class AlbumsController(MediaControllerBase[Album]):
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
         # return all (unique) items from all providers
         result: list[AlbumTrack] = [*db_items]
-        unique_ids: set[str] = set()
+        unique_ids: set[str] = {f"{x.disc_number or 1}.{x.track_number}" for x in db_items}
         for provider_mapping in full_album.provider_mappings:
             provider_tracks = await self._get_provider_album_tracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
@@ -301,22 +299,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 if unique_id in unique_ids:
                     continue
                 unique_ids.add(unique_id)
-                # prefer db item
-                if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
-                    provider_track.item_id, provider_track.provider
-                ):
-                    if db_item in db_items:
-                        continue
-                    result.append(
-                        AlbumTrack.from_track(
-                            db_item,
-                            full_album,
-                            disc_number=provider_track.disc_number,
-                            track_number=provider_track.track_number,
-                        )
-                    )
-                elif not in_library_only and provider_track not in result:
-                    result.append(AlbumTrack.from_track(provider_track, full_album))
+                result.append(AlbumTrack.from_track(provider_track, full_album))
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))
@@ -351,11 +334,7 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str | int,
     ) -> list[AlbumTrack]:
         """Return in-database album tracks for the given database album."""
-        subquery = (
-            f"SELECT DISTINCT track_id FROM {DB_TABLE_ALBUM_TRACKS} "
-            f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {item_id} AND albums.item_id = {item_id}"
-        )
-        query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
+        query = f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {item_id}"
         result = await self.mass.music.tracks._get_library_items_by_query(extra_query=query)
         if TYPE_CHECKING:
             return cast(list[AlbumTrack], result)

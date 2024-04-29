@@ -435,7 +435,7 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         file_path,
         "-an",
         "-vcodec",
-        "copy",
+        "mjpeg",
         "-f",
         "mjpeg",
         "-",

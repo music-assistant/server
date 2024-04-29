@@ -428,8 +428,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
-        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
-        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
+        query = f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {item_id}"
         return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
 
     async def _add_library_item(self, item: Artist) -> Artist:

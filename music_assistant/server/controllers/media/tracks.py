@@ -45,8 +45,6 @@ class TracksController(MediaControllerBase[Track]):
         self.base_query = f"""
         SELECT
             {self.db_table}.*,
-            albums.sort_name as sort_album,
-            artists.sort_name as sort_artist,
             CASE WHEN albums.item_id IS NULL THEN NULL ELSE
             json_object(
                 'item_id', {DB_TABLE_ALBUMS}.item_id,
@@ -362,8 +360,11 @@ class TracksController(MediaControllerBase[Track]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for a track."""
-        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} WHERE track_id = {item_id}"
-        query = f"WHERE {self.db_table}.item_id in ({subquery})"
+        subquery = (
+            f"SELECT album_id FROM {DB_TABLE_ALBUM_TRACKS} "
+            f"WHERE {DB_TABLE_ALBUM_TRACKS}.track_id = {item_id}"
+        )
+        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
         return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
 
     async def _match(self, db_track: Track) -> None:
