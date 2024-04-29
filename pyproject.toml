@@ -43,7 +43,7 @@ server = [
   "ifaddr==0.2.0",
 ]
 test = [
-  "black==24.4.0",
+  "black==24.4.2",
   "codespell==2.2.6",
   "isort==5.13.2",
   "mypy==1.9.0",
