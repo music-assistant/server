@@ -11,7 +11,8 @@ from io import BytesIO
 from typing import TYPE_CHECKING
 
 import aiofiles
-from PIL import Image
+from aiohttp.client_exceptions import ClientError
+from PIL import Image, UnidentifiedImageError
 
 from music_assistant.server.helpers.tags import get_embedded_image
 from music_assistant.server.models.metadata_provider import MetadataProvider
@@ -34,8 +35,11 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
                 path_or_url = resolved_image
     # handle HTTP location
     if path_or_url.startswith("http"):
-        async with mass.http_session.get(path_or_url) as resp:
-            return await resp.read()
+        try:
+            async with mass.http_session.get(path_or_url, raise_for_status=True) as resp:
+                return await resp.read()
+        except ClientError as err:
+            raise FileNotFoundError from err
     # handle FILE location (of type image)
     if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg")):
         if await asyncio.to_thread(os.path.isfile, path_or_url):
@@ -65,7 +69,10 @@ async def get_image_thumb(
 
     def _create_image():
         data = BytesIO()
-        img = Image.open(BytesIO(img_data))
+        try:
+            img = Image.open(BytesIO(img_data))
+        except UnidentifiedImageError:
+            raise FileNotFoundError(f"Invalid image: {path_or_url}")
         if size:
             img.thumbnail((size, size), Image.LANCZOS)  # pylint: disable=no-member
 
