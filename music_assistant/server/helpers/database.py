@@ -19,7 +19,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.database")
 
-ENABLE_DEBUG = bool(os.environ.get("PYTHONDEVMODE", "0"))
+ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 
 
 @asynccontextmanager
@@ -96,7 +96,8 @@ class DatabaseConnection:
             sql_query += " WHERE " + " AND ".join(f"{x} = :{x}" for x in match)
         if order_by is not None:
             sql_query += f" ORDER BY {order_by}"
-        sql_query += f" LIMIT {limit} OFFSET {offset}"
+        if limit:
+            sql_query += f" LIMIT {limit} OFFSET {offset}"
         async with debug_query(sql_query):
             return await self._db.execute_fetchall(sql_query, match)
 
@@ -108,7 +109,8 @@ class DatabaseConnection:
         offset: int = 0,
     ) -> list[Mapping]:
         """Get all rows for given custom query."""
-        query = f"{query} LIMIT {limit} OFFSET {offset}"
+        if limit:
+            query += f" LIMIT {limit} OFFSET {offset}"
         _query, _params = query_params(query, params)
         async with debug_query(_query):
             return await self._db.execute_fetchall(_query, _params)

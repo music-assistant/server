@@ -75,6 +75,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             self.db_table,
             {"item_id": db_id},
         )
+        # update provider_mappings table
+        await self.mass.music.database.delete(
+            DB_TABLE_PROVIDER_MAPPINGS,
+            {"media_type": self.media_type.value, "item_id": db_id},
+        )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
@@ -523,7 +528,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             library_item = await self.get_library_item(db_id)
         except MediaNotFoundError:
             # edge case: already deleted / race condition
-            return
+            library_item = None
         # update provider_mappings table
         await self.mass.music.database.delete(
             DB_TABLE_PROVIDER_MAPPINGS,
@@ -533,6 +538,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 "provider_instance": provider_instance_id,
             },
         )
+        if library_item is None:
+            return
         # update the item's provider mappings (and check if we still have any)
         library_item.provider_mappings = {
             x for x in library_item.provider_mappings if x.provider_instance != provider_instance_id

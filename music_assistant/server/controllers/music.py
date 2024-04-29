@@ -700,6 +700,10 @@ class MusicController(CoreController):
             self.mass.music.tracks,
             self.mass.music.albums,
             self.mass.music.artists,
+            # run main controllers twice to rule out relations
+            self.mass.music.tracks,
+            self.mass.music.albums,
+            self.mass.music.artists,
         ):
             query = (
                 f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
@@ -719,6 +723,14 @@ class MusicController(CoreController):
                         exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                     )
                     errors += 1
+
+        # remove all orphaned items (not in provider mappings table anymore)
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{provider_instance}'"
+        )
+        if remaining_items_count := await self.database.get_count_from_query(query):
+            errors += remaining_items_count
 
         if errors == 0:
             # cleanup successful, remove from the deleted_providers setting
@@ -957,7 +969,7 @@ class MusicController(CoreController):
             [available] BOOLEAN DEFAULT 1,
             [url] text,
             [audio_format] json,
-            [details] json,
+            [details] TEXT,
             UNIQUE(media_type, provider_instance, provider_item_id)
             );"""
         )

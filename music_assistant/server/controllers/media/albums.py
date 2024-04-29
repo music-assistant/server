@@ -268,6 +268,8 @@ class AlbumsController(MediaControllerBase[Album]):
                 await self.mass.music.tracks.remove_item_from_library(db_track.item_id)
         # delete entry(s) from albumtracks table
         await self.mass.music.database.delete(DB_TABLE_ALBUM_TRACKS, {"album_id": db_id})
+        # delete entry(s) from album artists table
+        await self.mass.music.database.delete(DB_TABLE_ALBUM_ARTISTS, {"album_id": db_id})
         # delete the album itself from db
         await super().remove_item_from_library(item_id)
 
