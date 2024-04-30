@@ -452,9 +452,9 @@ class MusicController(CoreController):
         item = await ctrl.get_library_item(library_item_id)
         # remove from all providers
         for provider_mapping in item.provider_mappings:
-            prov_controller = self.mass.get_provider(provider_mapping.provider_instance)
-            with suppress(NotImplementedError):
-                await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
+            if prov_controller := self.mass.get_provider(provider_mapping.provider_instance):
+                with suppress(NotImplementedError):
+                    await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
         await ctrl.remove_item_from_library(library_item_id)
 
     @api_command("music/library/add_item")
@@ -819,6 +819,7 @@ class MusicController(CoreController):
             DB_TABLE_PROVIDER_MAPPINGS,
         ):
             await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+        await self.database.commit()
         # recreate missing tables
         await self.__create_database_tables()
 
@@ -991,6 +992,7 @@ class MusicController(CoreController):
             UNIQUE(album_id, artist_id)
             );"""
         )
+        await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
@@ -1050,6 +1052,7 @@ class MusicController(CoreController):
             f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
             f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
         )
+        await self.database.commit()
 
     async def __create_database_triggers(self) -> None:
         """Create database triggers."""
@@ -1066,3 +1069,4 @@ class MusicController(CoreController):
                 END;
                 """
             )
+        await self.database.commit()
