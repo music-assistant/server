@@ -328,7 +328,10 @@ class OpenSonicProvider(MusicProvider):
             if sonic_info.small_url:
                 album.metadata.images.append(
                     MediaItemImage(
-                        type=ImageType.THUMB, path=sonic_info.small_url, remotely_accessible=False
+                        type=ImageType.THUMB,
+                        path=sonic_info.small_url,
+                        remotely_accessible=False,
+                        provider=self.instance_id,
                     )
                 )
             if sonic_info.notes:
