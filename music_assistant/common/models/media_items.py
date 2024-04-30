@@ -349,12 +349,14 @@ class MediaItem(_MediaItemBase):
         return cls.from_dict(
             {
                 **item.to_dict(),
-                "provider_mappings": {
-                    "item_id": item.item_id,
-                    "provider_domain": item.provider,
-                    "provider_instance": item.provider,
-                    "available": item.available,
-                },
+                "provider_mappings": [
+                    {
+                        "item_id": item.item_id,
+                        "provider_domain": item.provider,
+                        "provider_instance": item.provider,
+                        "available": item.available,
+                    }
+                ],
             }
         )
 
