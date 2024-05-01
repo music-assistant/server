@@ -5,10 +5,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import time
-from json import JSONDecodeError
 from typing import TYPE_CHECKING
-
-import aiohttp
 
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
