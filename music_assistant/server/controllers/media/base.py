@@ -76,15 +76,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if metadata_lookup:
             await self.mass.metadata.get_metadata(item)
         # check for existing item first
-        library_item = None
+        library_id = None
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
             await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
-            library_item = cur_item
+            library_id = cur_item.item_id
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
-            library_item = cur_item
+            library_id = cur_item.item_id
         else:
             # search by (exact) name match
             query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
@@ -97,21 +97,22 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     await self._update_library_item(
                         db_item.item_id, item, overwrite=overwrite_existing
                     )
-                    library_item = cur_item
+                    library_id = db_item.item_id
                     break
-        if not library_item:
+        if library_id is None:
             # actually add a new item in the library db
             if not item.provider_mappings:
                 msg = "Item is missing provider mapping(s)"
                 raise InvalidDataError(msg)
             async with self._db_add_lock:
-                library_item = await self._add_library_item(item)
+                library_id = await self._add_library_item(item)
                 new_item = True
         # also fetch same track on all providers (will also get other quality versions)
         if metadata_lookup:
+            library_item = await self.get_library_item(library_id)
             await self._match(library_item)
         # return final library_item after all match/metadata actions
-        library_item = await self.get_library_item(library_item.item_id)
+        library_item = await self.get_library_item(library_id)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_ADDED if new_item else EventType.MEDIA_ITEM_UPDATED,
             library_item.uri,

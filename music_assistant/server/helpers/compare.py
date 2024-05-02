@@ -146,7 +146,7 @@ def compare_track(
     if (
         base_item.album
         and compare_item.album
-        and compare_album(base_item.album, compare_item.album)
+        and compare_album(base_item.album, compare_item.album, False)
         and base_item.track_number == compare_item.track_number
     ):
         return True
@@ -154,7 +154,7 @@ def compare_track(
     if (
         base_item.album is not None
         and compare_item.album is not None
-        and compare_album(base_item.album, compare_item.album)
+        and compare_album(base_item.album, compare_item.album, False)
         and abs(base_item.duration - compare_item.duration) <= 3
     ):
         return True
@@ -165,7 +165,7 @@ def compare_track(
         and abs(base_item.duration - compare_item.duration) <= 3
     ):
         for track_album in track_albums:
-            if compare_album(track_album, compare_item.album):
+            if compare_album(track_album, compare_item.album, False):
                 return True
     # edge case: albumless track
     if (
