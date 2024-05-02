@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
@@ -11,7 +12,11 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
 from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ProviderUnavailableError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     ItemMapping,
@@ -27,6 +32,7 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
 )
+from music_assistant.server.helpers.compare import compare_media_item
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
@@ -51,19 +57,81 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.mass = mass
         self.base_query = f"SELECT * FROM {self.db_table}"
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
+        # register (base) api handlers
+        self.api_base = api_base = f"{self.media_type}s"
+        self.mass.register_api_command(f"music/{api_base}/library_items", self.library_items)
+        self.mass.register_api_command(f"music/{api_base}/get", self.get)
+        self.mass.register_api_command(f"music/{api_base}/get_{self.media_type}", self.get)
+        self.mass.register_api_command(f"music/{api_base}/add", self.add_item_to_library)
+        self.mass.register_api_command(f"music/{api_base}/update", self.update_item_in_library)
+        self.mass.register_api_command(f"music/{api_base}/remove", self.remove_item_from_library)
+        self._db_add_lock = asyncio.Lock()
 
-    @abstractmethod
     async def add_item_to_library(
-        self, item: ItemCls, metadata_lookup: bool = True, overwrite_existing: bool = False
+        self, item: Track, metadata_lookup: bool = True, overwrite_existing: bool = False
     ) -> ItemCls:
-        """Add item to library and return the database item."""
-        raise NotImplementedError
+        """Add item to library and return the new (or updated) database item."""
+        new_item = False
+        # grab additional metadata
+        if metadata_lookup:
+            await self.mass.metadata.get_metadata(item)
+        # check for existing item first
+        library_item = None
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            # existing item match by provider id
+            await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
+            library_item = cur_item
+        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
+            library_item = cur_item
+        else:
+            # search by (exact) name match
+            query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
+            query_params = {"name": item.name, "sort_name": item.sort_name}
+            async for db_item in self.iter_library_items(
+                extra_query=query, extra_query_params=query_params
+            ):
+                if compare_media_item(db_item, item, True):
+                    # existing item found: update it
+                    await self._update_library_item(
+                        db_item.item_id, item, overwrite=overwrite_existing
+                    )
+                    library_item = cur_item
+                    break
+        if not library_item:
+            # actually add a new item in the library db
+            if not item.provider_mappings:
+                msg = "Item is missing provider mapping(s)"
+                raise InvalidDataError(msg)
+            async with self._db_add_lock:
+                library_item = await self._add_library_item(item)
+                new_item = True
+        # also fetch same track on all providers (will also get other quality versions)
+        if metadata_lookup:
+            await self._match(library_item)
+        # return final library_item after all match/metadata actions
+        library_item = await self.get_library_item(library_item.item_id)
+        self.mass.signal_event(
+            EventType.MEDIA_ITEM_ADDED if new_item else EventType.MEDIA_ITEM_UPDATED,
+            library_item.uri,
+            library_item,
+        )
+        return library_item
 
-    @abstractmethod
     async def update_item_in_library(
         self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> ItemCls:
         """Update existing library record in the database."""
+        await self._update_library_item(item_id, update, overwrite=overwrite)
+        # return the updated object
+        library_item = await self.get_library_item(item_id)
+        self.mass.signal_event(
+            EventType.MEDIA_ITEM_UPDATED,
+            library_item.uri,
+            library_item,
+        )
+        return library_item
 
     async def remove_item_from_library(self, item_id: str | int) -> None:
         """Delete library record from the database."""
@@ -584,6 +652,28 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             )
         # Fallback to the default implementation
         return await self._get_dynamic_tracks(ref_item)
+
+    @abstractmethod
+    async def _add_library_item(
+        self,
+        item: ItemCls,
+        metadata_lookup: bool = True,
+        overwrite_existing: bool = False,
+    ) -> int:
+        """Add artist to library and return the database id."""
+
+    @abstractmethod
+    async def _update_library_item(
+        self, item_id: str | int, update: ItemCls, overwrite: bool = False
+    ) -> None:
+        """Update existing library record in the database."""
+
+    async def _match(self, db_item: ItemCls) -> None:
+        """
+        Try to find match on all (streaming) providers for the provided (database) item.
+
+        This is used to link objects of different providers/qualities together.
+        """
 
     @abstractmethod
     async def _get_provider_dynamic_tracks(

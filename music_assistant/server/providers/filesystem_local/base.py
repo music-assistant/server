@@ -830,6 +830,10 @@ class FileSystemProviderBase(MusicProvider):
         if track.album and not track.album.metadata.images:
             # set embedded cover on album if it does not have one yet
             track.album.metadata.images = track.metadata.images
+        # copy album image from track (only if the album itself doesn't have an image)
+        # this deals with embedded images from filesystem providers
+        if track.album and not track.album.image and track.image:
+            track.album.metadata.images = [track.image]
 
         # parse other info
         track.duration = tags.duration or 0

@@ -2,21 +2,20 @@
 
 from __future__ import annotations
 
-import asyncio
 import random
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri, parse_uri
-from music_assistant.common.models.enums import EventType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import ItemMapping, Playlist, PlaylistTrack, Track
+from music_assistant.common.models.media_items import Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -33,18 +32,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
     def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
         super().__init__(*args, **kwargs)
-        self._db_add_lock = asyncio.Lock()
-        # register api handlers
-        self.mass.register_api_command("music/playlists/library_items", self.library_items)
-        self.mass.register_api_command(
-            "music/playlists/update_item_in_library", self.update_item_in_library
-        )
-        self.mass.register_api_command(
-            "music/playlists/remove_item_from_library", self.remove_item_from_library
-        )
-        self.mass.register_api_command("music/playlists/create_playlist", self.create_playlist)
-
-        self.mass.register_api_command("music/playlists/get_playlist", self.get)
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/create_playlist", self.create_playlist)
         self.mass.register_api_command("music/playlists/playlist_tracks", self.tracks)
         self.mass.register_api_command(
             "music/playlists/add_playlist_tracks", self.add_playlist_tracks
@@ -52,93 +42,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         self.mass.register_api_command(
             "music/playlists/remove_playlist_tracks", self.remove_playlist_tracks
         )
-
-    async def add_item_to_library(
-        self, item: Playlist, metadata_lookup: bool = True, overwrite_existing: bool = False
-    ) -> Playlist:
-        """Add playlist to library and return the new database item."""
-        if isinstance(item, ItemMapping):
-            metadata_lookup = False
-            item = Playlist.from_item_mapping(item)
-        if not isinstance(item, Playlist):
-            msg = "Not a valid Playlist object (ItemMapping can not be added to db)"
-            raise InvalidDataError(msg)
-        if not item.provider_mappings:
-            msg = "Playlist is missing provider mapping(s)"
-            raise InvalidDataError(msg)
-        # check for existing item first
-        library_item = None
-        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-            # existing item match by provider id
-            library_item = await self.update_item_in_library(
-                cur_item.item_id, item, overwrite=overwrite_existing
-            )
-        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
-            # existing item match by external id
-            library_item = await self.update_item_in_library(
-                cur_item.item_id, item, overwrite=overwrite_existing
-            )
-        if not library_item:
-            # actually add a new item in the library db
-            # use the lock to prevent a race condition of the same item being added twice
-            async with self._db_add_lock:
-                library_item = await self._add_library_item(item)
-        # preload playlist tracks listing (do not load them in the db)
-        async for _ in self.tracks(item.item_id, item.provider):
-            await asyncio.sleep(0)  # yield to eventloop
-        # metadata lookup we need to do after adding it to the db
-        if metadata_lookup:
-            await self.mass.metadata.get_playlist_metadata(library_item)
-            library_item = await self.update_item_in_library(library_item.item_id, library_item)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_ADDED,
-            library_item.uri,
-            library_item,
-        )
-        return library_item
-
-    async def update_item_in_library(
-        self, item_id: int, update: Playlist, overwrite: bool = False
-    ) -> Playlist:
-        """Update existing record in the database."""
-        db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        cur_item.external_ids.update(update.external_ids)
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                # always prefer name/owner from updated item here
-                "name": update.name if overwrite else cur_item.name,
-                "sort_name": update.sort_name
-                if overwrite
-                else cur_item.sort_name or update.sort_name,
-                "owner": update.owner or cur_item.owner,
-                "is_editable": update.is_editable,
-                "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-            },
-        )
-        # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
-        )
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
-        self.logger.debug("updated %s in database: %s", update.name, db_id)
-        # get full created object
-        library_item = await self.get_library_item(db_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED,
-            library_item.uri,
-            library_item,
-        )
-        # return the full item we just updated
-        return library_item
 
     async def tracks(
         self,
@@ -313,7 +216,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cache_key = f"{provider.lookup_key}.playlist.{prov_mapping.item_id}.tracks"
         await self.mass.cache.delete(cache_key)
 
-    async def _add_library_item(self, item: Playlist) -> Playlist:
+    async def _add_library_item(self, item: Playlist) -> int:
         """Add a new record to the database."""
         new_item = await self.mass.music.database.insert(
             self.db_table,
@@ -330,9 +233,42 @@ class PlaylistController(MediaControllerBase[Playlist]):
         db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database", item.name)
-        # return the full item we just added
-        return await self.get_library_item(db_id)
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return db_id
+
+    async def _update_library_item(
+        self, item_id: int, update: Playlist, overwrite: bool = False
+    ) -> None:
+        """Update existing record in the database."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_library_item(db_id)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        cur_item.external_ids.update(update.external_ids)
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                # always prefer name/owner from updated item here
+                "name": update.name if overwrite else cur_item.name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
+                "owner": update.owner or cur_item.owner,
+                "is_editable": update.is_editable,
+                "metadata": serialize_to_json(metadata),
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+            },
+        )
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*cur_item.provider_mappings, *update.provider_mappings}
+        )
+        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_playlist_tracks(
         self,

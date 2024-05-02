@@ -7,13 +7,16 @@ import re
 import unidecode
 
 from music_assistant.common.helpers.util import create_sort_name
-from music_assistant.common.models.enums import ExternalID
+from music_assistant.common.models.enums import ExternalID, MediaType
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
     ItemMapping,
     MediaItem,
     MediaItemMetadata,
+    MediaItemType,
+    Playlist,
+    Radio,
     Track,
 )
 
@@ -26,10 +29,29 @@ IGNORE_VERSIONS = (
 )
 
 
+def compare_media_item(
+    base_item: MediaItemType | ItemMapping,
+    compare_item: MediaItemType | ItemMapping,
+    strict: bool = True,
+) -> bool | None:
+    """Compare two media items and return True if they match."""
+    if base_item.media_type == MediaType.ARTIST and compare_item.media_type == MediaType.ARTIST:
+        return compare_artist(base_item, compare_item, strict)
+    if base_item.media_type == MediaType.ALBUM and compare_item.media_type == MediaType.ALBUM:
+        return compare_album(base_item, compare_item, strict)
+    if base_item.media_type == MediaType.TRACK and compare_item.media_type == MediaType.TRACK:
+        return compare_track(base_item, compare_item, strict)
+    if base_item.media_type == MediaType.PLAYLIST and compare_item.media_type == MediaType.PLAYLIST:
+        return compare_playlist(base_item, compare_item, strict)
+    if base_item.media_type == MediaType.RADIO and compare_item.media_type == MediaType.RADIO:
+        return compare_radio(base_item, compare_item, strict)
+    return compare_item_mapping(base_item, compare_item, strict)
+
+
 def compare_artist(
     base_item: Artist | ItemMapping,
     compare_item: Artist | ItemMapping,
-    allow_name_match: bool = True,
+    strict: bool = True,
 ) -> bool | None:
     """Compare two artist items and return True if they match."""
     if base_item is None or compare_item is None:
@@ -41,17 +63,14 @@ def compare_artist(
     external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
     if external_id_match is not None:
         return external_id_match
-    ## fallback to comparing on attributes
-    name_match = compare_strings(base_item.name, compare_item.name, strict=True)
-    if name_match is False:
-        return False
-    return name_match if allow_name_match else None
+    # finally comparing on (exact) name match
+    return compare_strings(base_item.name, compare_item.name, strict=strict)
 
 
 def compare_album(
     base_item: Album | ItemMapping,
     compare_item: Album | ItemMapping,
-    allow_name_match: bool = True,
+    strict: bool = True,
 ) -> bool | None:
     """Compare two album items and return True if they match."""
     if base_item is None or compare_item is None:
@@ -63,43 +82,33 @@ def compare_album(
     external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
     if external_id_match is not None:
         return external_id_match
-    ## fallback to comparing on attributes
     # compare version
     if not compare_version(base_item.version, compare_item.version):
         return False
     # compare name
-    name_match = compare_strings(base_item.name, compare_item.name, strict=True)
-    if name_match is False:
+    if not compare_strings(base_item.name, compare_item.name, strict=True):
         return False
+    if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
+        return True
+    # for strict matching we REQUIRE both items to be a real album object
+    assert isinstance(base_item, Album)
+    assert isinstance(compare_item, Album)
     # compare explicitness
-    if (
-        hasattr(base_item, "metadata")
-        and hasattr(compare_item, "metadata")
-        and compare_explicit(base_item.metadata, compare_item.metadata) is False
-    ):
+    if compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
     # compare album artist
-    # Note: Not present on ItemMapping
-    if (
-        isinstance(base_item, Album)
-        and isinstance(compare_item, Album)
-        and not compare_artists(base_item.artists, compare_item.artists, True)
-    ):
-        return False
-    return name_match if allow_name_match else None
+    return compare_artists(base_item.artists, compare_item.artists, True)
 
 
 def compare_track(
-    base_item: Track,
-    compare_item: Track,
+    base_item: Track | ItemMapping,
+    compare_item: Track | ItemMapping,
     strict: bool = True,
     track_albums: list[Album | ItemMapping] | None = None,
 ) -> bool:
     """Compare two track items and return True if they match."""
     if base_item is None or compare_item is None:
         return False
-    assert isinstance(base_item, Track)
-    assert isinstance(compare_item, Track)
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
@@ -118,6 +127,11 @@ def compare_track(
     # track version must match
     if strict and not compare_version(base_item.version, compare_item.version):
         return False
+    if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
+        return True
+    # for strict matching we REQUIRE both items to be a real track object
+    assert isinstance(base_item, Track)
+    assert isinstance(compare_item, Track)
     # check if both tracks are (not) explicit
     if base_item.metadata.explicit is None and isinstance(base_item.album, Album):
         base_item.metadata.explicit = base_item.album.metadata.explicit
@@ -163,6 +177,76 @@ def compare_track(
 
     # all efforts failed, this is NOT a match
     return False
+
+
+def compare_playlist(
+    base_item: Playlist | ItemMapping,
+    compare_item: Playlist | ItemMapping,
+    strict: bool = True,
+) -> bool | None:
+    """Compare two Playlist items and return True if they match."""
+    if base_item is None or compare_item is None:
+        return False
+    # return early on exact item_id match
+    if compare_item_ids(base_item, compare_item):
+        return True
+    # return early on (un)matched external id
+    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
+    if external_id_match is not None:
+        return external_id_match
+    # compare owner (if not ItemMapping)
+    if isinstance(base_item, Playlist) and isinstance(compare_item, Playlist):
+        if not compare_strings(base_item.owner, compare_item.owner):
+            return False
+    # compare version
+    if not compare_version(base_item.version, compare_item.version):
+        return False
+    # finally comparing on (exact) name match
+    return compare_strings(base_item.name, compare_item.name, strict=strict)
+
+
+def compare_radio(
+    base_item: Radio | ItemMapping,
+    compare_item: Radio | ItemMapping,
+    strict: bool = True,
+) -> bool | None:
+    """Compare two Radio items and return True if they match."""
+    if base_item is None or compare_item is None:
+        return False
+    # return early on exact item_id match
+    if compare_item_ids(base_item, compare_item):
+        return True
+    # return early on (un)matched external id
+    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
+    if external_id_match is not None:
+        return external_id_match
+    # compare version
+    if not compare_version(base_item.version, compare_item.version):
+        return False
+    # finally comparing on (exact) name match
+    return compare_strings(base_item.name, compare_item.name, strict=strict)
+
+
+def compare_item_mapping(
+    base_item: ItemMapping,
+    compare_item: ItemMapping,
+    strict: bool = True,
+) -> bool | None:
+    """Compare two ItemMapping items and return True if they match."""
+    if base_item is None or compare_item is None:
+        return False
+    # return early on exact item_id match
+    if compare_item_ids(base_item, compare_item):
+        return True
+    # return early on (un)matched external id
+    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
+    if external_id_match is not None:
+        return external_id_match
+    # compare version
+    if not compare_version(base_item.version, compare_item.version):
+        return False
+    # finally comparing on (exact) name match
+    return compare_strings(base_item.name, compare_item.name, strict=strict)
 
 
 def compare_artists(

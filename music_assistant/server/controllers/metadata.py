@@ -345,6 +345,19 @@ class MetaDataController(CoreController):
         # NOTE: we do not have any metadata for radio so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
 
+    async def get_metadata(self, item: MediaItemType) -> None:
+        """Get/update rich metadata for/on given MediaItem."""
+        if item.media_type == MediaType.ARTIST:
+            await self.get_artist_metadata(item)
+        if item.media_type == MediaType.ALBUM:
+            await self.get_album_metadata(item)
+        if item.media_type == MediaType.TRACK:
+            await self.get_track_metadata(item)
+        if item.media_type == MediaType.PLAYLIST:
+            await self.get_playlist_metadata(item)
+        if item.media_type == MediaType.RADIO:
+            await self.get_radio_metadata(item)
+
     async def get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
