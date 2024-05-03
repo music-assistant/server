@@ -23,6 +23,7 @@ from music_assistant.common.helpers.global_cache import (
     set_global_cache_values,
 )
 from music_assistant.common.helpers.json import JSON_DECODE_EXCEPTIONS, json_loads
+from music_assistant.common.helpers.util import clean_stream_title
 from music_assistant.common.models.enums import MediaType, StreamType
 from music_assistant.common.models.errors import (
     AudioError,
@@ -539,8 +540,11 @@ async def get_icy_stream(
             if not stream_title:
                 continue
             stream_title = stream_title.group(1).decode()
-            if stream_title != streamdetails.stream_title:
-                streamdetails.stream_title = stream_title
+            cleaned_stream_title = clean_stream_title(stream_title)
+            if cleaned_stream_title != streamdetails.stream_title:
+                LOGGER.debug("ICY Radio streamtitle pristine: %s", stream_title)
+                LOGGER.debug("ICY Radio streamtitle cleaned: %s", cleaned_stream_title)
+                streamdetails.stream_title = cleaned_stream_title
 
 
 async def get_hls_stream(
@@ -596,7 +600,11 @@ async def get_hls_stream(
                 logger.debug("Station support for in-playlist metadata: %s", has_playlist_metadata)
             if has_playlist_metadata and chunk_item.title != "no desc":
                 # bbc (and maybe others?) set the title to 'no desc'
-                streamdetails.stream_title = chunk_item.title
+                cleaned_stream_title = clean_stream_title(chunk_item.title)
+                if cleaned_stream_title != streamdetails.stream_title:
+                    logger.debug("HLS Radio streamtitle pristine: %s", chunk_item.title)
+                    logger.debug("HLS Radio streamtitle cleaned: %s", cleaned_stream_title)
+                    streamdetails.stream_title = cleaned_stream_title
             logger.log(VERBOSE_LOG_LEVEL, "playing chunk %s", chunk_item)
             # prevent that we play this chunk again if we loop through
             prev_chunks.append(chunk_item.path)
