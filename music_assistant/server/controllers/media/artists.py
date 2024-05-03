@@ -17,6 +17,7 @@ from music_assistant.common.models.media_items import (
     MediaType,
     PagedItems,
     Track,
+    UniqueList,
 )
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
@@ -83,7 +84,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[Track]:
+    ) -> UniqueList[Track]:
         """Return all/top tracks for an artist."""
         full_artist = await self.get(item_id, provider_instance_id_or_domain)
         db_items = (
@@ -91,11 +92,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             if full_artist.provider == "library"
             else []
         )
+        result: UniqueList[Track] = UniqueList(db_items)
         if full_artist.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
+            return result
         # return all (unique) items from all providers
-        result: list[Track] = [*db_items]
         unique_ids: set[str] = set()
         for provider_mapping in full_artist.provider_mappings:
             provider_tracks = await self.get_provider_artist_toptracks(
@@ -110,9 +111,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
                     provider_track.item_id, provider_track.provider
                 ):
-                    if db_item not in db_items:
-                        result.append(db_item)
-                elif not in_library_only and provider_track not in result:
+                    result.append(db_item)
+                elif not in_library_only:
                     result.append(provider_track)
         return result
 
@@ -121,7 +121,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[Album]:
+    ) -> UniqueList[Album]:
         """Return (all/most popular) albums for an artist."""
         full_artist = await self.get(item_id, provider_instance_id_or_domain)
         db_items = (
@@ -129,11 +129,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             if full_artist.provider == "library"
             else []
         )
+        result: UniqueList[Album] = UniqueList(db_items)
         if full_artist.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
+            return result
         # return all (unique) items from all providers
-        result: list[Album] = [*db_items]
         unique_ids: set[str] = set()
         for provider_mapping in full_artist.provider_mappings:
             provider_albums = await self.get_provider_artist_albums(
@@ -148,9 +148,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
                     provider_album.item_id, provider_album.provider
                 ):
-                    if db_item not in db_items:
-                        result.append(db_item)
-                elif not in_library_only and provider_album not in result:
+                    result.append(db_item)
+                elif not in_library_only:
                     result.append(provider_album)
         return result
 

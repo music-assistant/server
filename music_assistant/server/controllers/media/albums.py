@@ -149,7 +149,7 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[AlbumTrack]:
+    ) -> UniqueList[AlbumTrack]:
         """Return album tracks for the given provider album id."""
         full_album = await self.get(item_id, provider_instance_id_or_domain)
         db_items = (
@@ -157,11 +157,11 @@ class AlbumsController(MediaControllerBase[Album]):
             if full_album.provider == "library"
             else []
         )
+        # return all (unique) items from all providers
+        result: UniqueList[AlbumTrack] = UniqueList(db_items)
         if full_album.provider == "library" and in_library_only:
             # return in-library items only
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
-        # return all (unique) items from all providers
-        result: list[AlbumTrack] = [*db_items]
         unique_ids: set[str] = {f"{x.disc_number or 1}.{x.track_number}" for x in db_items}
         for provider_mapping in full_album.provider_mappings:
             provider_tracks = await self._get_provider_album_tracks(
@@ -181,25 +181,25 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> list[Album]:
+    ) -> UniqueList[Album]:
         """Return all versions of an album we can find on all providers."""
         album = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
         search_query = f"{album.artists[0].name} - {album.name}" if album.artists else album.name
-        result: list[Album] = []
+        result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
             if not provider:
                 continue
             if not provider.library_supported(MediaType.ALBUM):
                 continue
-            result += [
+            result.extend(
                 prov_item
                 for prov_item in await self.search(search_query, provider_id)
                 if loose_compare_strings(album.name, prov_item.name)
                 and compare_artists(prov_item.artists, album.artists, any_match=True)
                 # make sure that the 'base' version is NOT included
                 and not album.provider_mappings.intersection(prov_item.provider_mappings)
-            ]
+            )
         return result
 
     async def get_library_album_tracks(

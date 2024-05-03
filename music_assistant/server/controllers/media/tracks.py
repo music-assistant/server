@@ -135,25 +135,25 @@ class TracksController(MediaControllerBase[Track]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> list[Track]:
+    ) -> UniqueList[Track]:
         """Return all versions of a track we can find on all providers."""
         track = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
         search_query = f"{track.artist_str} - {track.name}"
-        result: list[Track] = []
+        result: UniqueList[Track] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
             if not provider:
                 continue
             if not provider.library_supported(MediaType.TRACK):
                 continue
-            result += [
+            result.extend(
                 prov_item
                 for prov_item in await self.search(search_query, provider_id)
                 if loose_compare_strings(track.name, prov_item.name)
                 and compare_artists(prov_item.artists, track.artists, any_match=True)
                 # make sure that the 'base' version is NOT included
                 and not track.provider_mappings.intersection(prov_item.provider_mappings)
-            ]
+            )
         return result
 
     async def albums(
@@ -161,7 +161,7 @@ class TracksController(MediaControllerBase[Track]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[Album]:
+    ) -> UniqueList[Album]:
         """Return all albums the track appears on."""
         full_track = await self.get(item_id, provider_instance_id_or_domain)
         db_items = (
@@ -169,15 +169,14 @@ class TracksController(MediaControllerBase[Track]):
             if full_track.provider == "library"
             else []
         )
+        # return all (unique) items from all providers
+        result: UniqueList[Album] = UniqueList(db_items)
         if full_track.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
-        # return all (unique) items from all providers
-        result: list[Album] = [*db_items]
+            return result
         # use search to get all items on the provider
         search_query = f"{full_track.artist_str} - {full_track.name}"
         # TODO: we could use musicbrainz info here to get a list of all releases known
-        result: list[Track] = [*db_items]
         unique_ids: set[str] = set()
         for prov_item in (await self.mass.music.search(search_query, [MediaType.TRACK])).tracks:
             if not loose_compare_strings(full_track.name, prov_item.name):
@@ -194,8 +193,7 @@ class TracksController(MediaControllerBase[Track]):
             if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
                 prov_item.album.item_id, prov_item.album.provider
             ):
-                if db_item not in db_items:
-                    result.append(db_item)
+                result.append(db_item)
             elif not in_library_only:
                 result.append(prov_item.album)
         return result
