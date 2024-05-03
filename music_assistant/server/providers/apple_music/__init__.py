@@ -49,14 +49,14 @@ SUPPORTED_FEATURES = (
     # ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
     # ProviderFeature.LIBRARY_TRACKS_EDIT,
     # ProviderFeature.PLAYLIST_TRACKS_EDIT,
-    # ProviderFeature.BROWSE,
+    ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
     ProviderFeature.ARTIST_TOPTRACKS,
-    # ProviderFeature.SIMILAR_TRACKS,
+    ProviderFeature.SIMILAR_TRACKS,
 )
 
-DEVELOPER_TOKEN = "TODO: Parse from appvars"
+DEVELOPER_TOKEN = ""
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 
@@ -157,7 +157,7 @@ class AppleMusicProvider(MusicProvider):
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
         endpoint = "me/library/albums"
-        for item in await self._get_all_items(endpoint, include="catalog"):
+        for item in await self._get_all_items(endpoint, include="catalog,artists", extend="editorialNotes"):
             if item and item["id"]:
                 yield self._parse_album(item)
 
@@ -251,7 +251,9 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        raise NotImplementedError("Not implemented!")
+        endpoint = f"catalog/{self._storefront}/songs/{prov_track_id}/relationships/station"
+        response = await self._get_data(endpoint)
+        return []
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -307,7 +309,7 @@ class AppleMusicProvider(MusicProvider):
         if genres := attributes.get("genreNames"):
             artist.metadata.genres = set(genres)
         if notes := attributes.get("editorialNotes"):
-            artist.metadata.description = notes.get("standard")
+            artist.metadata.description = notes.get("standard") or notes.get("short")
         return artist
 
     def _parse_album(self, album_obj: dict):
@@ -360,7 +362,7 @@ class AppleMusicProvider(MusicProvider):
         if upc := attributes.get("upc"):
             album.external_ids.add((ExternalID.BARCODE, "0" + upc))
         if notes := attributes.get("editorialNotes"):
-            album.metadata.description = notes.get("standard")
+            album.metadata.description = notes.get("standard") or notes.get("short")
         if content_rating := attributes.get("contentRating"):
             album.metadata.explicit = content_rating == "explicit"
         album_type = AlbumType.ALBUM
@@ -560,6 +562,10 @@ class AppleMusicProvider(MusicProvider):
         self, license_url: str, key_id: str, uri: str, item_id: str
     ) -> str:
         """Get the decryption key for a song."""
+        cache_key = f"{self.instance_id}.decryption_key.{key_id}"
+        if decryption_key := await self.mass.cache.get(cache_key):
+            self.logger.debug("Decryption key for %s found in cache.", item_id)
+            return decryption_key
         pssh = self._get_pssh(key_id)
         device = Device(
             client_id=self._decrypt_client_id,
@@ -575,9 +581,13 @@ class AppleMusicProvider(MusicProvider):
         cdm.parse_license(session_id, track_license)
         key = [key for key in cdm.get_keys(session_id) if key.type == "CONTENT"][0]
         if not key:
-            raise MediaNotFoundError("Unable to get decryption key for song %s.".format())
+            raise MediaNotFoundError("Unable to get decryption key for song %s.", item_id)
         cdm.close(session_id)
-        return key.key.hex()
+        decryption_key = key.key.hex()
+        self.mass.create_task(
+            self.mass.cache.set(cache_key, decryption_key, expiration=7200)
+        )
+        return decryption_key
 
     def _get_pssh(self, key_id: bytes) -> PSSH:
         """Get the PSSH for a song."""
