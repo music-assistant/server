@@ -14,7 +14,7 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import Album, Artist, ItemMapping, Track
+from music_assistant.common.models.media_items import Album, Artist, ItemMapping, Track, UniqueList
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -429,8 +429,9 @@ class TracksController(MediaControllerBase[Track]):
             album.item_id, album.provider
         ):
             db_album = existing
-        else:
-            # not an existing album, we need to fetch before we can add it to the library
+
+        if not db_album or overwrite:
+            # ensure we have an actual album object
             if isinstance(album, ItemMapping):
                 album = await self.mass.music.albums.get_provider_item(
                     album.item_id, album.provider, fallback=album
@@ -473,7 +474,7 @@ class TracksController(MediaControllerBase[Track]):
                     "track_id": db_id,
                 },
             )
-        artist_mappings: list[ItemMapping] = []
+        artist_mappings: UniqueList[ItemMapping] = []
         for artist in artists:
             mapping = await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
             artist_mappings.append(mapping)
