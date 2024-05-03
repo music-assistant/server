@@ -42,7 +42,7 @@ class TracksController(MediaControllerBase[Track]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self.base_query = f"""
-        SELECT
+        SELECT DISTINCT
             {self.db_table}.*,
             CASE WHEN albums.item_id IS NULL THEN NULL ELSE
             json_object(
