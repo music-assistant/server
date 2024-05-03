@@ -13,7 +13,6 @@ from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
-    MusicAssistantError,
     UnsupportedFeaturedException,
 )
 from music_assistant.common.models.media_items import (
@@ -89,18 +88,16 @@ class AlbumsController(MediaControllerBase[Album]):
             if not isinstance(artist, ItemMapping):
                 album_artists.append(artist)
                 continue
-            try:
+            with contextlib.suppress(MediaNotFoundError):
                 album_artists.append(
                     await self.mass.music.artists.get(
                         artist.item_id,
                         artist.provider,
                         lazy=lazy,
-                        add_to_library=False,  # TODO: make this configurable
+                        details=artist,
+                        add_to_library=False,
                     )
                 )
-            except MusicAssistantError as err:
-                # edge case where playlist track has invalid artistdetails
-                self.logger.warning("Unable to fetch artist details %s - %s", artist.uri, str(err))
         album.artists = album_artists
         if not force_refresh:
             return album
@@ -363,7 +360,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     "album_id": db_id,
                 },
             )
-        artist_mappings: UniqueList[ItemMapping] = []
+        artist_mappings: UniqueList[ItemMapping] = UniqueList()
         for artist in artists:
             mapping = await self._set_album_artist(db_id, artist=artist, overwrite=overwrite)
             artist_mappings.append(mapping)

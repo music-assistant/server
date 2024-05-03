@@ -474,7 +474,7 @@ class TracksController(MediaControllerBase[Track]):
                     "track_id": db_id,
                 },
             )
-        artist_mappings: UniqueList[ItemMapping] = []
+        artist_mappings: UniqueList[ItemMapping] = UniqueList()
         for artist in artists:
             mapping = await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
             artist_mappings.append(mapping)

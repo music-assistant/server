@@ -800,8 +800,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         db_row_dict["item_id"] = str(db_row_dict["item_id"])
 
         for key in JSON_KEYS:
-            if key in db_row_dict and db_row_dict[key] not in (None, ""):
-                db_row_dict[key] = json_loads(db_row_dict[key])
+            if key not in db_row_dict:
+                continue
+            if not (raw_value := db_row_dict[key]):
+                continue
+            db_row_dict[key] = json_loads(raw_value)
 
         # copy album image to itemmapping single image
         if (album := db_row_dict.get("album")) and (images := album.get("images")):
