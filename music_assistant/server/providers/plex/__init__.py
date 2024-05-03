@@ -787,6 +787,16 @@ class PlexProvider(MusicProvider):
 
         return stream_details
 
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+
+        def mark_played():
+            item = streamdetails.data
+            params = {"key": str(item.ratingKey), "identifier": "com.plexapp.plugins.library"}
+            self._plex_server.query("/:/scrobble", params=params)
+
+        await asyncio.to_thread(mark_played)
+
     async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""
 
