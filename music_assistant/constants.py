@@ -5,7 +5,7 @@ from typing import Final
 
 API_SCHEMA_VERSION: Final[int] = 24
 MIN_SCHEMA_VERSION: Final[int] = 24
-DB_SCHEMA_VERSION: Final[int] = 30
+DB_SCHEMA_VERSION: Final[int] = 1
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
@@ -75,15 +75,16 @@ DB_TABLE_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
 DB_TABLE_TRACKS: Final[str] = "tracks"
-DB_TABLE_ALBUM_TRACKS: Final[str] = "albumtracks"
-DB_TABLE_TRACK_ARTISTS: Final[str] = "trackartists"
-DB_TABLE_ALBUM_ARTISTS: Final[str] = "albumartists"
 DB_TABLE_PLAYLISTS: Final[str] = "playlists"
 DB_TABLE_RADIOS: Final[str] = "radios"
 DB_TABLE_CACHE: Final[str] = "cache"
 DB_TABLE_SETTINGS: Final[str] = "settings"
 DB_TABLE_THUMBS: Final[str] = "thumbnails"
 DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
+DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
+DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
+DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
+
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
