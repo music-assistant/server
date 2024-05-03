@@ -2,20 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import urllib.parse
 from collections.abc import Iterable
 from contextlib import suppress
 
 from music_assistant.common.helpers.json import serialize_to_json
-from music_assistant.common.models.enums import AlbumType, EventType, MediaType, ProviderFeature
+from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import Album, Artist, ItemMapping, Track
+from music_assistant.common.models.media_items import Album, Artist, ItemMapping, Track, UniqueList
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -43,7 +42,7 @@ class TracksController(MediaControllerBase[Track]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self.base_query = f"""
-        SELECT
+        SELECT DISTINCT
             {self.db_table}.*,
             CASE WHEN albums.item_id IS NULL THEN NULL ELSE
             json_object(
@@ -62,19 +61,11 @@ class TracksController(MediaControllerBase[Track]):
         LEFT JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = {self.db_table}.item_id
         LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
         """  # noqa: E501
-        self._db_add_lock = asyncio.Lock()
-        # register api handlers
-        self.mass.register_api_command("music/tracks/library_items", self.library_items)
-        self.mass.register_api_command("music/tracks/get_track", self.get)
-        self.mass.register_api_command("music/tracks/track_versions", self.versions)
-        self.mass.register_api_command("music/tracks/track_albums", self.albums)
-        self.mass.register_api_command(
-            "music/tracks/update_item_in_library", self.update_item_in_library
-        )
-        self.mass.register_api_command(
-            "music/tracks/remove_item_from_library", self.remove_item_from_library
-        )
-        self.mass.register_api_command("music/tracks/preview", self.get_preview_url)
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/track_versions", self.versions)
+        self.mass.register_api_command(f"music/{api_base}/track_albums", self.albums)
+        self.mass.register_api_command(f"music/{api_base}/preview", self.get_preview_url)
 
     async def get(
         self,
@@ -140,154 +131,29 @@ class TracksController(MediaControllerBase[Track]):
         track.artists = track_artists
         return track
 
-    async def add_item_to_library(
-        self, item: Track, metadata_lookup: bool = True, overwrite_existing: bool = False
-    ) -> Track:
-        """Add track to library and return the new database item."""
-        if not isinstance(item, Track):
-            msg = "Not a valid Track object (ItemMapping can not be added to db)"
-            raise InvalidDataError(msg)
-        if not item.artists:
-            msg = "Track is missing artist(s)"
-            raise InvalidDataError(msg)
-        if not item.provider_mappings:
-            msg = "Track is missing provider mapping(s)"
-            raise InvalidDataError(msg)
-        # grab additional metadata
-        if metadata_lookup:
-            await self.mass.metadata.get_track_metadata(item)
-        # copy album image from track (only if albumtype != single)
-        # this deals with embedded images from filesystem providers
-        if (
-            isinstance(item.album, Album)
-            and not item.album.image
-            and item.image
-            and item.album.album_type == AlbumType.SINGLE
-        ):
-            item.album.metadata.images = [item.image]
-        # check for existing item first
-        library_item = None
-        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-            # existing item match by provider id
-            library_item = await self.update_item_in_library(
-                cur_item.item_id, item, overwrite=overwrite_existing
-            )
-        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
-            # existing item match by external id
-            library_item = await self.update_item_in_library(
-                cur_item.item_id, item, overwrite=overwrite_existing
-            )
-        else:
-            # search by (exact) name match
-            query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
-            query_params = {"name": item.name, "sort_name": item.sort_name}
-            async for db_item in self.iter_library_items(
-                extra_query=query, extra_query_params=query_params
-            ):
-                if compare_track(db_item, item):
-                    # existing item found: update it
-                    library_item = await self.update_item_in_library(
-                        db_item.item_id, item, overwrite=overwrite_existing
-                    )
-                    break
-        if not library_item:
-            # actually add a new item in the library db
-            # use the lock to prevent a race condition of the same item being added twice
-            async with self._db_add_lock:
-                library_item = await self._add_library_item(item)
-        # also fetch same track on all providers (will also get other quality versions)
-        if metadata_lookup:
-            await self._match(library_item)
-            library_item = await self.get_library_item(library_item.item_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_ADDED,
-            library_item.uri,
-            library_item,
-        )
-        # return final library_item after all match/metadata actions
-        return library_item
-
-    async def update_item_in_library(
-        self, item_id: str | int, update: Track, overwrite: bool = False
-    ) -> Track:
-        """Update Track record in the database, merging data."""
-        db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        cur_item.external_ids.update(update.external_ids)
-
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                "name": update.name if overwrite else cur_item.name,
-                "sort_name": update.sort_name
-                if overwrite
-                else cur_item.sort_name or update.sort_name,
-                "version": update.version if overwrite else cur_item.version or update.version,
-                "duration": update.duration if overwrite else cur_item.duration or update.duration,
-                "metadata": serialize_to_json(metadata),
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-            },
-        )
-
-        # update/set provider_mappings table
-        provider_mappings = (
-            update.provider_mappings
-            if overwrite
-            else {*cur_item.provider_mappings, *update.provider_mappings}
-        )
-        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
-        # set track artist(s)
-        artists = update.artists if overwrite else cur_item.artists + update.artists
-        await self._set_track_artists(db_id, artists, overwrite=overwrite)
-
-        # update/set track album
-        if update.album:
-            await self._set_track_album(
-                db_id=db_id,
-                album=update.album,
-                disc_number=getattr(update, "disc_number", None) or 0,
-                track_number=getattr(update, "track_number", None) or 1,
-                overwrite=overwrite,
-            )
-
-        # get full/final created object
-        library_item = await self.get_library_item(db_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED,
-            library_item.uri,
-            library_item,
-        )
-        self.logger.debug("updated %s in database: %s", update.name, db_id)
-        # return the full item we just updated
-        return library_item
-
     async def versions(
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> list[Track]:
+    ) -> UniqueList[Track]:
         """Return all versions of a track we can find on all providers."""
         track = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
         search_query = f"{track.artist_str} - {track.name}"
-        result: list[Track] = []
+        result: UniqueList[Track] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
             provider = self.mass.get_provider(provider_id)
             if not provider:
                 continue
             if not provider.library_supported(MediaType.TRACK):
                 continue
-            result += [
+            result.extend(
                 prov_item
                 for prov_item in await self.search(search_query, provider_id)
                 if loose_compare_strings(track.name, prov_item.name)
                 and compare_artists(prov_item.artists, track.artists, any_match=True)
                 # make sure that the 'base' version is NOT included
                 and not track.provider_mappings.intersection(prov_item.provider_mappings)
-            ]
+            )
         return result
 
     async def albums(
@@ -295,7 +161,7 @@ class TracksController(MediaControllerBase[Track]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[Album]:
+    ) -> UniqueList[Album]:
         """Return all albums the track appears on."""
         full_track = await self.get(item_id, provider_instance_id_or_domain)
         db_items = (
@@ -303,15 +169,14 @@ class TracksController(MediaControllerBase[Track]):
             if full_track.provider == "library"
             else []
         )
+        # return all (unique) items from all providers
+        result: UniqueList[Album] = UniqueList(db_items)
         if full_track.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
-        # return all (unique) items from all providers
-        result: list[Album] = [*db_items]
+            return result
         # use search to get all items on the provider
         search_query = f"{full_track.artist_str} - {full_track.name}"
         # TODO: we could use musicbrainz info here to get a list of all releases known
-        result: list[Track] = [*db_items]
         unique_ids: set[str] = set()
         for prov_item in (await self.mass.music.search(search_query, [MediaType.TRACK])).tracks:
             if not loose_compare_strings(full_track.name, prov_item.name):
@@ -328,8 +193,7 @@ class TracksController(MediaControllerBase[Track]):
             if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
                 prov_item.album.item_id, prov_item.album.provider
             ):
-                if db_item not in db_items:
-                    result.append(db_item)
+                result.append(db_item)
             elif not in_library_only:
                 result.append(prov_item.album)
         return result
@@ -448,8 +312,14 @@ class TracksController(MediaControllerBase[Track]):
         msg = "No Music Provider found that supports requesting similar tracks."
         raise UnsupportedFeaturedException(msg)
 
-    async def _add_library_item(self, item: Track) -> Track:
+    async def _add_library_item(self, item: Track) -> int:
         """Add a new item record to the database."""
+        if not isinstance(item, Track):
+            msg = "Not a valid Track object (ItemMapping can not be added to db)"
+            raise InvalidDataError(msg)
+        if not item.artists:
+            msg = "Track is missing artist(s)"
+            raise InvalidDataError(msg)
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -475,9 +345,53 @@ class TracksController(MediaControllerBase[Track]):
                 disc_number=getattr(item, "disc_number", None) or 0,
                 track_number=getattr(item, "track_number", None) or 0,
             )
-        self.logger.debug("added %s to database: %s", item.name, db_id)
-        # return the full item we just added
-        return await self.get_library_item(db_id)
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return db_id
+
+    async def _update_library_item(
+        self, item_id: str | int, update: Track, overwrite: bool = False
+    ) -> None:
+        """Update Track record in the database, merging data."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_library_item(db_id)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        cur_item.external_ids.update(update.external_ids)
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "name": update.name if overwrite else cur_item.name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
+                "version": update.version if overwrite else cur_item.version or update.version,
+                "duration": update.duration if overwrite else cur_item.duration or update.duration,
+                "metadata": serialize_to_json(metadata),
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+            },
+        )
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*cur_item.provider_mappings, *update.provider_mappings}
+        )
+        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        # set track artist(s)
+        artists = update.artists if overwrite else cur_item.artists + update.artists
+        await self._set_track_artists(db_id, artists, overwrite=overwrite)
+        # update/set track album
+        if update.album:
+            await self._set_track_album(
+                db_id=db_id,
+                album=update.album,
+                disc_number=getattr(update, "disc_number", None) or 0,
+                track_number=getattr(update, "track_number", None) or 1,
+                overwrite=overwrite,
+            )
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _set_track_album(
         self,
@@ -513,8 +427,9 @@ class TracksController(MediaControllerBase[Track]):
             album.item_id, album.provider
         ):
             db_album = existing
-        else:
-            # not an existing album, we need to fetch before we can add it to the library
+
+        if not db_album or overwrite:
+            # ensure we have an actual album object
             if isinstance(album, ItemMapping):
                 album = await self.mass.music.albums.get_provider_item(
                     album.item_id, album.provider, fallback=album
@@ -524,7 +439,6 @@ class TracksController(MediaControllerBase[Track]):
                     album,
                     metadata_lookup=False,
                     overwrite_existing=overwrite,
-                    add_album_tracks=False,
                 )
         if not db_album:
             # this should not happen but streaming providers can be awful sometimes
@@ -558,7 +472,7 @@ class TracksController(MediaControllerBase[Track]):
                     "track_id": db_id,
                 },
             )
-        artist_mappings: list[ItemMapping] = []
+        artist_mappings: UniqueList[ItemMapping] = UniqueList()
         for artist in artists:
             mapping = await self._set_track_artist(db_id, artist=artist, overwrite=overwrite)
             artist_mappings.append(mapping)

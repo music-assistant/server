@@ -8,19 +8,22 @@ from __future__ import annotations
 import re
 from contextlib import suppress
 from dataclasses import dataclass, field
-from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
 
-import aiohttp.client_exceptions
-from asyncio_throttle import Throttler
 from mashumaro import DataClassDictMixin
 from mashumaro.exceptions import MissingField
 
+from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.enums import ExternalID, ProviderFeature
-from music_assistant.common.models.errors import InvalidDataError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.compare import compare_strings
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -201,12 +204,11 @@ class MusicBrainzRecording(DataClassDictMixin):
 class MusicbrainzProvider(MetadataProvider):
     """The Musicbrainz Metadata provider."""
 
-    throttler: Throttler
+    throttler = ThrottlerManager(rate_limit=1, period=1)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
-        self.throttler = Throttler(rate_limit=1, period=1)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -328,13 +330,13 @@ class MusicbrainzProvider(MetadataProvider):
         raise InvalidDataError(msg)
 
     async def get_recording_details(
-        self, recording_id: str | None = None, isrsc: str | None = None
+        self, recording_id: str | None = None, isrc: str | None = None
     ) -> MusicBrainzRecording:
         """Get Recording details by providing a MusicBrainz recording id OR isrc."""
-        assert recording_id or isrsc, "Provider either Recording ID or ISRC"
+        assert recording_id or isrc, "Provider either Recording ID or ISRC"
         if not recording_id:
             # lookup recording id first by isrc
-            if (result := await self.get_data(f"isrc/{isrsc}")) and result.get("recordings"):
+            if (result := await self.get_data(f"isrc/{isrc}")) and result.get("recordings"):
                 recording_id = result["recordings"][0]["id"]
             else:
                 msg = "Invalid ISRC provided"
@@ -412,7 +414,7 @@ class MusicbrainzProvider(MetadataProvider):
             return None
         for isrc in isrcs:
             result = None
-            with suppress(InvalidDataError):
+            with suppress(InvalidDataError, MediaNotFoundError):
                 result = await self.get_recording_details(ref_track.mbid, isrc)
             if not (result and result.artist_credit):
                 return None
@@ -426,26 +428,26 @@ class MusicbrainzProvider(MetadataProvider):
         return None
 
     @use_cache(86400 * 30)
+    @throttle_with_retries
     async def get_data(self, endpoint: str, **kwargs: dict[str, Any]) -> Any:
         """Get data from api."""
         url = f"http://musicbrainz.org/ws/2/{endpoint}"
         headers = {
-            "User-Agent": f"Music Assistant/{self.mass.version} ( https://github.com/music-assistant )"  # noqa: E501
+            "User-Agent": f"Music Assistant/{self.mass.version} (https://music-assistant.io)"
         }
         kwargs["fmt"] = "json"  # type: ignore[assignment]
         async with (
-            self.throttler,
-            self.mass.http_session.get(
-                url, headers=headers, params=kwargs, raise_for_status=True
-            ) as response,
+            self.mass.http_session.get(url, headers=headers, params=kwargs) as response,
         ):
-            try:
-                result = await response.json()
-            except (
-                aiohttp.client_exceptions.ContentTypeError,
-                JSONDecodeError,
-            ) as exc:
-                msg = await response.text()
-                self.logger.warning("%s - %s", str(exc), msg)
-                result = None
-            return result
+            # handle rate limiter
+            if response.status == 429:
+                backoff_time = int(response.headers.get("Retry-After", 0))
+                raise ResourceTemporarilyUnavailable("Rate Limiter", backoff_time=backoff_time)
+            # handle temporary server error
+            if response.status in (502, 503):
+                raise ResourceTemporarilyUnavailable(backoff_time=30)
+            # handle 404 not found, convert to MediaNotFoundError
+            if response.status == 404:
+                raise MediaNotFoundError(f"{endpoint} not found")
+            response.raise_for_status()
+            return await response.json(loads=json_loads)

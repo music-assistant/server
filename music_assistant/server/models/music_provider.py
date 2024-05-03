@@ -397,11 +397,8 @@ class MusicProvider(Provider):
                         # note that we skip the metadata lookup purely to speed up the sync
                         # the additional metadata is then lazy retrieved afterwards
                         prov_item.favorite = True
-                        extra_kwargs = (
-                            {"add_album_tracks": True} if media_type == MediaType.ALBUM else {}
-                        )
                         library_item = await controller.add_item_to_library(
-                            prov_item, metadata_lookup=False, **extra_kwargs
+                            prov_item, metadata_lookup=False
                         )
                     elif library_item.metadata.cache_checksum != prov_item.metadata.cache_checksum:
                         # existing dbitem checksum changed
