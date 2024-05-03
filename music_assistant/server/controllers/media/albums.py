@@ -54,7 +54,7 @@ class AlbumsController(MediaControllerBase[Album]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self.base_query = f"""
-        SELECT
+        SELECT DISTINCT
             {self.db_table}.*
         FROM {self.db_table}
         LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
@@ -363,7 +363,7 @@ class AlbumsController(MediaControllerBase[Album]):
                     "album_id": db_id,
                 },
             )
-        artist_mappings: list[ItemMapping] = []
+        artist_mappings: UniqueList[ItemMapping] = []
         for artist in artists:
             mapping = await self._set_album_artist(db_id, artist=artist, overwrite=overwrite)
             artist_mappings.append(mapping)
