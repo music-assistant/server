@@ -22,7 +22,7 @@ keyword_pattern = re.compile("title=|artist=")
 title_pattern = re.compile(r"title=\"(?P<title>.*?)\"")
 artist_pattern = re.compile(r"artist=\"(?P<artist>.*?)\"")
 dot_com_pattern = re.compile(r"(?P<netloc>\(?\w+\.(?:\w+\.)?(\w{2,3})\)?)")
-ad_pattern = re.compile(r"((.+)?(ad|advertisement)_.+)", flags=re.I)
+ad_pattern = re.compile(r"((ad|advertisement)_)|^AD\s\d+$|ADBREAK", flags=re.I)
 title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.I)
 multi_space_pattern = re.compile(r"\s{2,}")
 end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
@@ -157,7 +157,9 @@ def get_version_substitute(version_str: str):
 
 def strip_ads(line: str) -> str:
     """Strip Ads from line."""
-    return ad_pattern.sub("Advert", line)
+    if ad_pattern.search(line):
+        return "Advert"
+    return line
 
 
 def strip_url(line: str) -> str:
