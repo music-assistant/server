@@ -542,8 +542,10 @@ async def get_icy_stream(
             stream_title = stream_title.group(1).decode()
             cleaned_stream_title = clean_stream_title(stream_title)
             if cleaned_stream_title != streamdetails.stream_title:
-                LOGGER.debug("ICY Radio streamtitle pristine: %s", stream_title)
-                LOGGER.debug("ICY Radio streamtitle cleaned: %s", cleaned_stream_title)
+                LOGGER.log(VERBOSE_LOG_LEVEL, "ICY Radio streamtitle original: %s", stream_title)
+                LOGGER.log(
+                    VERBOSE_LOG_LEVEL, "ICY Radio streamtitle cleaned: %s", cleaned_stream_title
+                )
                 streamdetails.stream_title = cleaned_stream_title
 
 
@@ -602,8 +604,12 @@ async def get_hls_stream(
                 # bbc (and maybe others?) set the title to 'no desc'
                 cleaned_stream_title = clean_stream_title(chunk_item.title)
                 if cleaned_stream_title != streamdetails.stream_title:
-                    logger.debug("HLS Radio streamtitle pristine: %s", chunk_item.title)
-                    logger.debug("HLS Radio streamtitle cleaned: %s", cleaned_stream_title)
+                    logger.log(
+                        VERBOSE_LOG_LEVEL, "HLS Radio streamtitle original: %s", chunk_item.title
+                    )
+                    logger.log(
+                        VERBOSE_LOG_LEVEL, "HLS Radio streamtitle cleaned: %s", cleaned_stream_title
+                    )
                     streamdetails.stream_title = cleaned_stream_title
             logger.log(VERBOSE_LOG_LEVEL, "playing chunk %s", chunk_item)
             # prevent that we play this chunk again if we loop through
