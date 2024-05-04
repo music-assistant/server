@@ -18,14 +18,14 @@ CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
 CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
 
-keyword_pattern = re.compile('title=|artist=')
-title_pattern = re.compile(r'title=\"(?P<title>.*?)\"')
-artist_pattern = re.compile(r'artist=\"(?P<artist>.*?)\"')
-dot_com_pattern = re.compile(r'(?P<netloc>\(?\w+\.(?:\w+\.)?(\w{2,3})\)?)')
-ad_pattern = re.compile(r'((.+)?(ad|advertisement)_.+)', flags=re.I)
-title_artist_order_pattern = re.compile(r'(?P<title>.+)\sBy:\s(?P<artist>.+)', flags=re.I)
-multi_space_pattern = re.compile(r'\s{2,}')
-end_junk_pattern = re.compile(r'(.+?)(\s\W+)$')
+keyword_pattern = re.compile("title=|artist=")
+title_pattern = re.compile(r"title=\"(?P<title>.*?)\"")
+artist_pattern = re.compile(r"artist=\"(?P<artist>.*?)\"")
+dot_com_pattern = re.compile(r"(?P<netloc>\(?\w+\.(?:\w+\.)?(\w{2,3})\)?)")
+ad_pattern = re.compile(r"((.+)?(ad|advertisement)_.+)", flags=re.I)
+title_artist_order_pattern = re.compile(r"(?P<title>.+)\sBy:\s(?P<artist>.+)", flags=re.I)
+multi_space_pattern = re.compile(r"\s{2,}")
+end_junk_pattern = re.compile(r"(.+?)(\s\W+)$")
 
 
 def filename_from_string(string: str) -> str:
@@ -156,61 +156,65 @@ def get_version_substitute(version_str: str):
 
 
 def strip_ads(line: str) -> str:
-    """Strip Ads from line"""
-    return ad_pattern.sub('Advert', line)
+    """Strip Ads from line."""
+    return ad_pattern.sub("Advert", line)
 
 
 def strip_url(line: str) -> str:
-    """Strip URL from line"""
-    return (' '.join([p for p in line.split() if (not urlparse(p).scheme or not urlparse(p).netloc)])).rstrip()
+    """Strip URL from line."""
+    return (
+        " ".join([p for p in line.split() if (not urlparse(p).scheme or not urlparse(p).netloc)])
+    ).rstrip()
 
 
 def strip_dotcom(line: str):
-    """Strip scheme-less netloc from line"""
-    return dot_com_pattern.sub('', line)
+    """Strip scheme-less netloc from line."""
+    return dot_com_pattern.sub("", line)
 
 
 def strip_end_junk(line: str) -> str:
-    """Strip non-word info from end of line"""
-    return end_junk_pattern.sub(r'\1', line)
+    """Strip non-word info from end of line."""
+    return end_junk_pattern.sub(r"\1", line)
 
 
 def swap_title_artist_order(line: str) -> str:
-    """Swap title/artist order in line"""
-    return title_artist_order_pattern.sub(r'\g<artist> - \g<title>', line)
+    """Swap title/artist order in line."""
+    return title_artist_order_pattern.sub(r"\g<artist> - \g<title>", line)
+
 
 def strip_multi_space(line: str) -> str:
-    """Strip multi-whitespace from line"""
-    return multi_space_pattern.sub(' ', line)
+    """Strip multi-whitespace from line."""
+    return multi_space_pattern.sub(" ", line)
 
 
 def multi_strip(line: str) -> str:
-    """Strip assorted junk from line"""
-    return strip_multi_space(swap_title_artist_order(strip_end_junk(strip_dotcom(strip_url(strip_ads(line)))))).rstrip()
+    """Strip assorted junk from line."""
+    return strip_multi_space(
+        swap_title_artist_order(strip_end_junk(strip_dotcom(strip_url(strip_ads(line)))))
+    ).rstrip()
 
 
 def clean_stream_title(line: str) -> str:
     """Strip junk text from radio streamtitle."""
-
-    title: str = ''
-    artist: str = ''
+    title: str = ""
+    artist: str = ""
 
     if not keyword_pattern.search(line):
         return multi_strip(line)
 
     if match := title_pattern.search(line):
-        title = multi_strip(match.group('title'))
+        title = multi_strip(match.group("title"))
 
     if match := artist_pattern.search(line):
-        possible_artist = multi_strip(match.group('artist'))
+        possible_artist = multi_strip(match.group("artist"))
         if possible_artist and possible_artist != title:
             artist = possible_artist
 
     if not title and not artist:
-        return ''
+        return ""
 
     if title:
-        if re.search(' - ', title) or not artist:
+        if re.search(" - ", title) or not artist:
             return title
         if artist:
             return f"{artist} - {title}"
@@ -219,6 +223,7 @@ def clean_stream_title(line: str) -> str:
         return artist
 
     return line
+
 
 async def get_ip():
     """Get primary IP-address for this host."""
