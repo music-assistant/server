@@ -30,7 +30,7 @@ server = [
   "python-slugify==8.0.4",
   "mashumaro==3.12",
   "memory-tempfile==2.2.3",
-  "music-assistant-frontend==2.4.7",
+  "music-assistant-frontend==2.5.1",
   "pillow==10.3.0",
   "pyatv==0.14.5",
   "soundcloudpy==0.1.0",
