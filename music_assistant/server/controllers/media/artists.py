@@ -7,18 +7,17 @@ import contextlib
 from random import choice, random
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.json import serialize_to_json
-from music_assistant.common.models.enums import EventType, ProviderFeature
+from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
     Artist,
-    ItemMapping,
     MediaType,
     PagedItems,
     Track,
+    UniqueList,
 )
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
@@ -47,114 +46,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self._db_add_lock = asyncio.Lock()
-        # register api handlers
-        self.mass.register_api_command("music/artists/library_items", self.library_items)
-        self.mass.register_api_command(
-            "music/artists/update_item_in_library", self.update_item_in_library
-        )
-        self.mass.register_api_command(
-            "music/artists/remove_item_from_library", self.remove_item_from_library
-        )
-        self.mass.register_api_command("music/artists/get_artist", self.get)
-        self.mass.register_api_command("music/artists/artist_albums", self.albums)
-        self.mass.register_api_command("music/artists/artist_tracks", self.tracks)
-
-    async def add_item_to_library(
-        self,
-        item: Artist | ItemMapping,
-        metadata_lookup: bool = True,
-        overwrite_existing: bool = False,
-    ) -> Artist:
-        """Add artist to library and return the database item."""
-        if isinstance(item, ItemMapping):
-            metadata_lookup = False
-            item = Artist.from_item_mapping(item)
-        # grab musicbrainz id and additional metadata
-        if metadata_lookup:
-            await self.mass.metadata.get_artist_metadata(item)
-        # check for existing item first
-        library_item = None
-        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-            # existing item match by provider id
-            library_item = await self.update_item_in_library(
-                cur_item.item_id, item, overwrite=overwrite_existing
-            )
-        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
-            # existing item match by external id
-            library_item = await self.update_item_in_library(
-                cur_item.item_id, item, overwrite=overwrite_existing
-            )
-        else:
-            # search by name
-            async for db_item in self.iter_library_items(search=item.name):
-                if compare_artist(db_item, item):
-                    # existing item found: update it
-                    # NOTE: if we matched an artist by name this could theoretically lead to
-                    # collisions but the chance is so small it is not worth the additional
-                    # overhead of grabbing the musicbrainz id upfront
-                    library_item = await self.update_item_in_library(
-                        db_item.item_id, item, overwrite=overwrite_existing
-                    )
-                    break
-        if not library_item:
-            # actually add (or update) the item in the library db
-            # use the lock to prevent a race condition of the same item being added twice
-            async with self._db_add_lock:
-                library_item = await self._add_library_item(item)
-        # also fetch same artist on all providers
-        if metadata_lookup:
-            await self.match_artist(library_item)
-            library_item = await self.get_library_item(library_item.item_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_ADDED,
-            library_item.uri,
-            library_item,
-        )
-        # return final library_item after all match/metadata actions
-        return library_item
-
-    async def update_item_in_library(
-        self, item_id: str | int, update: Artist, overwrite: bool = False
-    ) -> Artist:
-        """Update existing record in the database."""
-        db_id = int(item_id)  # ensure integer
-        cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
-        cur_item.external_ids.update(update.external_ids)
-        # enforce various artists name + id
-        mbid = cur_item.mbid
-        if (not mbid or overwrite) and getattr(update, "mbid", None):
-            if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
-                update.mbid = VARIOUS_ARTISTS_ID_MBID
-            if update.mbid == VARIOUS_ARTISTS_ID_MBID:
-                update.name = VARIOUS_ARTISTS_NAME
-        await self.mass.music.database.update(
-            self.db_table,
-            {"item_id": db_id},
-            {
-                "name": update.name if overwrite else cur_item.name,
-                "sort_name": update.sort_name
-                if overwrite
-                else cur_item.sort_name or update.sort_name,
-                "external_ids": serialize_to_json(
-                    update.external_ids if overwrite else cur_item.external_ids
-                ),
-                "metadata": serialize_to_json(metadata),
-                "timestamp_modified": int(utc_timestamp()),
-            },
-        )
-        ## update/set provider_mappings table
-        await self._set_provider_mappings(db_id, update.provider_mappings, overwrite=overwrite)
-        self.logger.debug("updated %s in database: %s", update.name, db_id)
-        # get full created object
-        library_item = await self.get_library_item(db_id)
-        self.mass.signal_event(
-            EventType.MEDIA_ITEM_UPDATED,
-            library_item.uri,
-            library_item,
-        )
-        # return the full item we just updated
-        return library_item
+        # register (extra) api handlers
+        api_base = self.api_base
+        self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
+        self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
 
     async def library_items(
         self,
@@ -169,7 +64,10 @@ class ArtistsController(MediaControllerBase[Artist]):
     ) -> PagedItems:
         """Get in-database (album) artists."""
         if album_artists_only:
-            artist_query = "artists.item_id in (select albumartists.artist_id from albumartists)"
+            artist_query = (
+                f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
+                f"from {DB_TABLE_ALBUM_ARTISTS})"
+            )
             extra_query = f"{extra_query} AND {artist_query}" if extra_query else artist_query
         return await super().library_items(
             favorite=favorite,
@@ -186,7 +84,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[Track]:
+    ) -> UniqueList[Track]:
         """Return all/top tracks for an artist."""
         full_artist = await self.get(item_id, provider_instance_id_or_domain)
         db_items = (
@@ -194,11 +92,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             if full_artist.provider == "library"
             else []
         )
+        result: UniqueList[Track] = UniqueList(db_items)
         if full_artist.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
+            return result
         # return all (unique) items from all providers
-        result: list[Track] = [*db_items]
         unique_ids: set[str] = set()
         for provider_mapping in full_artist.provider_mappings:
             provider_tracks = await self.get_provider_artist_toptracks(
@@ -213,9 +111,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
                     provider_track.item_id, provider_track.provider
                 ):
-                    if db_item not in db_items:
-                        result.append(db_item)
-                elif not in_library_only and provider_track not in result:
+                    result.append(db_item)
+                elif not in_library_only:
                     result.append(provider_track)
         return result
 
@@ -224,7 +121,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[Album]:
+    ) -> UniqueList[Album]:
         """Return (all/most popular) albums for an artist."""
         full_artist = await self.get(item_id, provider_instance_id_or_domain)
         db_items = (
@@ -232,11 +129,11 @@ class ArtistsController(MediaControllerBase[Artist]):
             if full_artist.provider == "library"
             else []
         )
+        result: UniqueList[Album] = UniqueList(db_items)
         if full_artist.provider == "library" and in_library_only:
             # return in-library items only
-            return db_items
+            return result
         # return all (unique) items from all providers
-        result: list[Album] = [*db_items]
         unique_ids: set[str] = set()
         for provider_mapping in full_artist.provider_mappings:
             provider_albums = await self.get_provider_artist_albums(
@@ -251,9 +148,8 @@ class ArtistsController(MediaControllerBase[Artist]):
                 if db_item := await self.mass.music.albums.get_library_item_by_prov_id(
                     provider_album.item_id, provider_album.provider
                 ):
-                    if db_item not in db_items:
-                        result.append(db_item)
-                elif not in_library_only and provider_album not in result:
+                    result.append(db_item)
+                elif not in_library_only:
                     result.append(provider_album)
         return result
 
@@ -278,32 +174,6 @@ class ArtistsController(MediaControllerBase[Artist]):
 
         # delete the artist itself from db
         await super().remove_item_from_library(db_id)
-
-    async def match_artist(self, db_artist: Artist) -> None:
-        """Try to find matching artists on all providers for the provided (database) item_id.
-
-        This is used to link objects of different providers together.
-        """
-        assert db_artist.provider == "library", "Matching only supported for database items!"
-        cur_provider_domains = {x.provider_domain for x in db_artist.provider_mappings}
-        for provider in self.mass.music.providers:
-            if provider.domain in cur_provider_domains:
-                continue
-            if ProviderFeature.SEARCH not in provider.supported_features:
-                continue
-            if not provider.library_supported(MediaType.ARTIST):
-                continue
-            if not provider.is_streaming_provider:
-                # matching on unique providers is pointless as they push (all) their content to MA
-                continue
-            if await self._match(db_artist, provider):
-                cur_provider_domains.add(provider.domain)
-            else:
-                self.logger.debug(
-                    "Could not find match for Artist %s on provider %s",
-                    db_artist.name,
-                    provider.name,
-                )
 
     async def get_provider_artist_toptracks(
         self,
@@ -332,19 +202,22 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
+                subquery = (
+                    "SELECT item_id FROM provider_mappings WHERE "
+                    "media_type = 'track' AND (provider_domain = :prov_id "
+                    "OR provider_instance = :prov_id)"
+                )
                 query = (
-                    "WHERE trackartists.artist_id = :artist_id AND "
-                    "(provider_mappings.provider_domain = :prov_id OR "
-                    "provider_mappings.provider_instance = :prov_id)"
+                    f"WHERE {DB_TABLE_TRACKS}.item_id IN ({subquery}) "
+                    f"AND {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id"
                 )
                 query_params = {
                     "artist_id": db_artist.item_id,
                     "prov_id": provider_instance_id_or_domain,
                 }
-                paged_list = await self.mass.music.tracks.library_items(
+                return await self.mass.music.tracks._get_library_items_by_query(
                     extra_query=query, extra_query_params=query_params
                 )
-                return paged_list.items
         # store (serializable items) in cache
         if prov.is_streaming_provider:
             self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
@@ -355,10 +228,9 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Track]:
         """Return all tracks for an artist in the library/db."""
-        subquery = f"SELECT track_id FROM {DB_TABLE_TRACK_ARTISTS} WHERE artist_id = {item_id}"
-        query = f"WHERE {DB_TABLE_TRACKS}.item_id in ({subquery})"
-        paged_list = await self.mass.music.tracks.library_items(extra_query=query)
-        return paged_list.items
+        return await self.mass.music.tracks._get_library_items_by_query(
+            extra_query=f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = {item_id}",
+        )
 
     async def get_provider_artist_albums(
         self,
@@ -388,13 +260,23 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                query = (
-                    f"WHERE albumartists.artist_id = {db_artist.item_id} AND "
-                    f'(provider_mappings.provider_domain = "{provider_instance_id_or_domain}" OR '
-                    f'provider_mappings.provider_instance = "{provider_instance_id_or_domain}")'
+                subquery = (
+                    "SELECT item_id FROM provider_mappings WHERE "
+                    "media_type = 'album' AND (provider_domain = :prov_id "
+                    "OR provider_instance = :prov_id)"
                 )
-                paged_list = await self.mass.music.albums.library_items(extra_query=query)
-                return paged_list.items
+                query = (
+                    f"WHERE {DB_TABLE_ALBUMS}.item_id IN ({subquery}) "
+                    f"AND {DB_TABLE_ALBUM_ARTISTS}.artist_id = :artist_id"
+                )
+                query_params = {
+                    "prov_id": provider_instance_id_or_domain,
+                    "artist_id": db_artist.item_id,
+                }
+                return await self.mass.music.albums._get_library_items_by_query(
+                    extra_query=query, extra_query_params=query_params
+                )
+
         # store (serializable items) in cache
         if prov.is_streaming_provider:
             self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
@@ -405,12 +287,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         item_id: str | int,
     ) -> list[Album]:
         """Return all in-library albums for an artist."""
-        subquery = f"SELECT album_id FROM {DB_TABLE_ALBUM_ARTISTS} WHERE artist_id = {item_id}"
-        query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
-        paged_list = await self.mass.music.albums.library_items(extra_query=query)
-        return paged_list.items
+        query = f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {item_id}"
+        return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
 
-    async def _add_library_item(self, item: Artist) -> Artist:
+    async def _add_library_item(self, item: Artist) -> int:
         """Add a new item record to the database."""
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
@@ -418,8 +298,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         if item.mbid == VARIOUS_ARTISTS_ID_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
-        item.timestamp_added = int(utc_timestamp())
-        item.timestamp_modified = int(utc_timestamp())
         new_item = await self.mass.music.database.insert(
             self.db_table,
             {
@@ -428,16 +306,53 @@ class ArtistsController(MediaControllerBase[Artist]):
                 "favorite": item.favorite,
                 "external_ids": serialize_to_json(item.external_ids),
                 "metadata": serialize_to_json(item.metadata),
-                "timestamp_added": int(utc_timestamp()),
-                "timestamp_modified": int(utc_timestamp()),
             },
         )
         db_id = new_item["item_id"]
         # update/set provider_mappings table
         await self._set_provider_mappings(db_id, item.provider_mappings)
-        self.logger.debug("added %s to database", item.name)
-        # return the full item we just added
-        return await self.get_library_item(db_id)
+        self.logger.debug("added %s to database (id: %s)", item.name, db_id)
+        return db_id
+
+    async def _update_library_item(
+        self, item_id: str | int, update: Artist, overwrite: bool = False
+    ) -> None:
+        """Update existing record in the database."""
+        db_id = int(item_id)  # ensure integer
+        cur_item = await self.get_library_item(db_id)
+        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        cur_item.external_ids.update(update.external_ids)
+        # enforce various artists name + id
+        mbid = cur_item.mbid
+        if (not mbid or overwrite) and getattr(update, "mbid", None):
+            if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
+                update.mbid = VARIOUS_ARTISTS_ID_MBID
+            if update.mbid == VARIOUS_ARTISTS_ID_MBID:
+                update.name = VARIOUS_ARTISTS_NAME
+
+        await self.mass.music.database.update(
+            self.db_table,
+            {"item_id": db_id},
+            {
+                "name": update.name if overwrite else cur_item.name,
+                "sort_name": update.sort_name
+                if overwrite
+                else cur_item.sort_name or update.sort_name,
+                "external_ids": serialize_to_json(
+                    update.external_ids if overwrite else cur_item.external_ids
+                ),
+                "metadata": serialize_to_json(metadata),
+            },
+        )
+        self.logger.debug("updated %s in database: %s", update.name, db_id)
+        # update/set provider_mappings table
+        provider_mappings = (
+            update.provider_mappings
+            if overwrite
+            else {*cur_item.provider_mappings, *update.provider_mappings}
+        )
+        await self._set_provider_mappings(db_id, provider_mappings, overwrite)
+        self.logger.debug("updated %s in database: (id %s)", update.name, db_id)
 
     async def _get_provider_dynamic_tracks(
         self,
@@ -483,7 +398,33 @@ class ArtistsController(MediaControllerBase[Artist]):
         msg = "No Music Provider found that supports requesting similar tracks."
         raise UnsupportedFeaturedException(msg)
 
-    async def _match(self, db_artist: Artist, provider: MusicProvider) -> bool:
+    async def _match(self, db_artist: Artist) -> None:
+        """Try to find matching artists on all providers for the provided (database) item_id.
+
+        This is used to link objects of different providers together.
+        """
+        assert db_artist.provider == "library", "Matching only supported for database items!"
+        cur_provider_domains = {x.provider_domain for x in db_artist.provider_mappings}
+        for provider in self.mass.music.providers:
+            if provider.domain in cur_provider_domains:
+                continue
+            if ProviderFeature.SEARCH not in provider.supported_features:
+                continue
+            if not provider.library_supported(MediaType.ARTIST):
+                continue
+            if not provider.is_streaming_provider:
+                # matching on unique providers is pointless as they push (all) their content to MA
+                continue
+            if await self._match_provider(db_artist, provider):
+                cur_provider_domains.add(provider.domain)
+            else:
+                self.logger.debug(
+                    "Could not find match for Artist %s on provider %s",
+                    db_artist.name,
+                    provider.name,
+                )
+
+    async def _match_provider(self, db_artist: Artist, provider: MusicProvider) -> bool:
         """Try to find matching artists on given provider for the provided (database) artist."""
         self.logger.debug("Trying to match artist %s on provider %s", db_artist.name, provider.name)
         # try to get a match with some reference tracks of this artist
@@ -546,9 +487,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                     if not compare_strings(search_result_item.name, ref_album.name):
                         continue
                     # artist must match 100%
-                    if not compare_artist(
-                        db_artist, search_result_item.artists[0], allow_name_match=True
-                    ):
+                    if not compare_artist(db_artist, search_result_item.artists[0]):
                         continue
                     # 100% match
                     # get full artist details so we have all metadata
@@ -557,6 +496,6 @@ class ArtistsController(MediaControllerBase[Artist]):
                         search_result_item.artists[0].provider,
                         fallback=search_result_item,
                     )
-                    await self.update_item_in_library(db_artist.item_id, prov_artist)
+                    await self._update_library_item(db_artist.item_id, prov_artist)
                     return True
         return False

@@ -318,16 +318,19 @@ class PlexProvider(MusicProvider):
         )
 
     async def _get_or_create_artist_by_name(self, artist_name) -> Artist:
+        subquery = (
+            "WHERE provider_mappings.media_type = 'artist' "
+            "AND provider_mappings.provider_instance = :provider_instance"
+        )
         query = (
-            "WHERE artists.name = :name AND "
-            "provider_mappings.provider_instance = :provider_instance"
+            "WHERE artists.name LIKE :name AND artists.item_id in "
+            f"(SELECT item_id FROM provider_mappings {subquery})"
         )
         query_params = {"name": artist_name, "provider_instance": self.instance_id}
-        paged_list = await self.mass.music.artists.library_items(
+        if library_items := await self.mass.music.artists._get_library_items_by_query(
             extra_query=query, extra_query_params=query_params
-        )
-        if paged_list and paged_list.items:
-            return ItemMapping.from_item(paged_list.items[0])
+        ):
+            return ItemMapping.from_item(library_items[0])
 
         artist_id = FAKE_ARTIST_PREFIX + artist_name
         return Artist(
@@ -783,6 +786,16 @@ class PlexProvider(MusicProvider):
             stream_details.audio_format.bit_depth = media_info.bits_per_sample
 
         return stream_details
+
+    async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
+        """Handle callback when an item completed streaming."""
+
+        def mark_played():
+            item = streamdetails.data
+            params = {"key": str(item.ratingKey), "identifier": "com.plexapp.plugins.library"}
+            self._plex_server.query("/:/scrobble", params=params)
+
+        await asyncio.to_thread(mark_played)
 
     async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""

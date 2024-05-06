@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import sys
 from collections.abc import Awaitable, Callable, Coroutine
 from typing import TYPE_CHECKING, Any, Self
 from uuid import uuid4
@@ -64,16 +63,11 @@ EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]
 
+ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 LOGGER = logging.getLogger(MASS_LOGGER_NAME)
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 PROVIDERS_PATH = os.path.join(BASE_DIR, "providers")
-
-ENABLE_HTTP_CLEANUP_CLOSED = not (3, 11, 1) <= sys.version_info < (3, 11, 4)
-# Enabling cleanup closed on python 3.11.1+ leaks memory relatively quickly
-# see https://github.com/aio-libs/aiohttp/issues/7252
-# aiohttp interacts poorly with https://github.com/python/cpython/pull/98540
-# The issue was fixed in 3.11.4 via https://github.com/python/cpython/pull/104485
 
 
 class MusicAssistant:
@@ -120,7 +114,7 @@ class MusicAssistant:
             loop=self.loop,
             connector=TCPConnector(
                 ssl=False,
-                enable_cleanup_closed=ENABLE_HTTP_CLEANUP_CLOSED,
+                enable_cleanup_closed=True,
                 limit=4096,
                 limit_per_host=100,
             ),
@@ -595,6 +589,8 @@ class MusicAssistant:
         async with asyncio.TaskGroup() as tg:
             for dir_str in os.listdir(PROVIDERS_PATH):
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
+                if dir_str == "test" and not ENABLE_DEBUG:
+                    continue
                 if not await isdir(dir_path):
                     continue
                 tg.create_task(load_provider_manifest(dir_str, dir_path))

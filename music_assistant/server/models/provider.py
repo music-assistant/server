@@ -6,6 +6,7 @@ import logging
 from typing import TYPE_CHECKING
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager
 
 if TYPE_CHECKING:
     from zeroconf import ServiceStateChange
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
 
 class Provider:
     """Base representation of a Provider implementation within Music Assistant."""
+
+    throttler: ThrottlerManager  # optional throttler
 
     def __init__(
         self, mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig

@@ -10,5 +10,5 @@
   "documentation": "https://music-assistant.io/music-providers/builtin/",
   "multi_instance": false,
   "builtin": true,
-  "hidden": true
+  "hidden": false
 }
