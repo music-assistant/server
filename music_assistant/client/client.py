@@ -11,7 +11,6 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant.client.exceptions import ConnectionClosed, InvalidServerVersion, InvalidState
 from music_assistant.common.models.api import (
-    ChunkedResultMessage,
     CommandMessage,
     ErrorResultMessage,
     EventMessage,
@@ -330,14 +329,6 @@ class MusicAssistantClient:
 
             if future is None:
                 # no listener for this result
-                return
-            if isinstance(msg, ChunkedResultMessage):
-                # handle chunked response (for very large objects)
-                if not hasattr(future, "intermediate_result"):
-                    future.intermediate_result = []
-                future.intermediate_result += msg.result
-                if msg.is_last_chunk:
-                    future.set_result(future.intermediate_result)
                 return
             if isinstance(msg, SuccessResultMessage):
                 future.set_result(msg.result)

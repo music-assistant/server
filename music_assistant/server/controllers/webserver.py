@@ -8,21 +8,19 @@ this webserver allows for more fine grained configuration to better secure it.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import os
 import urllib.parse
 from concurrent import futures
 from contextlib import suppress
 from functools import partial
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
 from aiohttp import WSMsgType, web
 from music_assistant_frontend import where as locate_frontend
 
 from music_assistant.common.helpers.util import get_ip
 from music_assistant.common.models.api import (
-    ChunkedResultMessage,
     CommandMessage,
     ErrorResultMessage,
     MessageType,
@@ -349,19 +347,6 @@ class WebsocketClientHandler:
         try:
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result = handler.target(**args)
-            if inspect.isasyncgen(result):
-                # async generator = send chunked response
-                chunk_size = 100
-                batch: list[Any] = []
-                async for item in result:
-                    batch.append(item)
-                    if len(batch) == chunk_size:
-                        self._send_message(ChunkedResultMessage(msg.message_id, batch))
-                        batch = []
-                # send last chunk
-                self._send_message(ChunkedResultMessage(msg.message_id, batch, True))
-                del batch
-                return
             if asyncio.iscoroutine(result):
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))
