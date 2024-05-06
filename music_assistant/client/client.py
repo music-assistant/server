@@ -74,15 +74,16 @@ class MusicAssistantClient:
         """Return Music handler."""
         return self._music
 
-    def get_image_url(self, image: MediaItemImage) -> str:
+    def get_image_url(self, image: MediaItemImage, size: int = 0) -> str:
         """Get (proxied) URL for MediaItemImage."""
-        if image.remotely_accessible:
+        if image.remotely_accessible and not size:
             return image.path
         # return imageproxy url for images that need to be resolved
         # the original path is double encoded
         encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
         return (
-            f"{self.server_info.base_url}/imageproxy?path={encoded_url}&provider={image.provider}"
+            f"{self.server_info.base_url}/imageproxy?path={encoded_url}"
+            f"&provider={image.provider}&size={size}"
         )
 
     def subscribe(
