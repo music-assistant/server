@@ -85,6 +85,7 @@ from .const import (
     ITEM_TYPE_ARTIST,
     ITEM_TYPE_ARTIST_2,
     ITEM_TYPE_AUDIO,
+    ITEM_TYPE_MUSICARTISTS,
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
     USER_APP_NAME,
@@ -760,7 +761,7 @@ class JellyfinProvider(MusicProvider):
             ITEM_KEY_PARENT_ID: parent_id,
         }
         if item_type in ITEM_TYPE_ARTIST:
-            params["IncludeItemTypes"] = [ITEM_TYPE_ARTIST_2, ITEM_TYPE_ARTIST]
+            params["IncludeItemTypes"] = [ITEM_TYPE_MUSICARTISTS, ITEM_TYPE_ARTIST]
         else:
             params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
