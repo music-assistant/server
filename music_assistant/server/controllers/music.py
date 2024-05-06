@@ -566,17 +566,33 @@ class MusicController(CoreController):
         self, media_type: MediaType, item_id: str, provider_instance_id_or_domain: str
     ) -> None:
         """Mark item as played in playlog."""
-        # TODO: also mark in media table (for library items)
         timestamp = utc_timestamp()
+
+        if provider_instance_id_or_domain == "library":
+            prov_key = "library"
+        else:
+            prov = self.mass.get_provider(provider_instance_id_or_domain)
+            prov_key = prov.lookup_key
+
+        # update generic playlog table
         await self.database.insert(
             DB_TABLE_PLAYLOG,
             {
                 "item_id": item_id,
-                "provider": provider_instance_id_or_domain,
+                "provider": prov_key,
                 "media_type": media_type.value,
                 "timestamp": timestamp,
             },
             allow_replace=True,
+        )
+
+        # also update playcount in library table
+        if provider_instance_id_or_domain != "library":
+            return
+        ctrl = self.get_controller(media_type)
+        await self.database.execute(
+            f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
+            f"last_played = {timestamp} WHERE item_id = {item_id}"
         )
 
     def get_controller(
