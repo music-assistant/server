@@ -235,7 +235,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         if library_item and (time() - (library_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
-            metadata_lookup = True
+            if library_item.available:
+                # do not attempts metadata refresh on unavailable items as it has side effects
+                metadata_lookup = True
         if library_item and (force_refresh or metadata_lookup):
             # get (first) provider item id belonging to this library item
             add_to_library = True
@@ -259,6 +261,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 force_refresh=force_refresh,
                 fallback=details,
             )
+        if not details and library_item:
+            # something went wrong while trying to fetch/refresh this item
+            # return the existing (unavailable) library item and leave this for another day
+            return library_item
         if not details:
             # we couldn't get a match from any of the providers, raise error
             msg = f"Item not found: {provider_instance_id_or_domain}/{item_id}"
@@ -337,11 +343,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get_provider_mapping(self, item: ItemCls) -> tuple[str, str]:
         """Return (first) provider and item id."""
         if not getattr(item, "provider_mappings", None):
-            # make sure we have a full object
-            item = await self.get_library_item(item.item_id)
+            if item.provider == "library":
+                item = await self.get_library_item(item.item_id)
+            return (item.provider, item.item_id)
         for prefer_unique in (True, False):
             for prov_mapping in item.provider_mappings:
-                # returns the first provider that is available
                 if not prov_mapping.available:
                     continue
                 if provider := self.mass.get_provider(
@@ -352,6 +358,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     if prefer_unique and provider.is_streaming_provider:
                         continue
                     return (prov_mapping.provider_instance, prov_mapping.item_id)
+        # last resort: return just the first entry
+        for prov_mapping in item.provider_mappings:
+            return (prov_mapping.provider_domain, prov_mapping.item_id)
+
         return (None, None)
 
     async def get_library_item(self, item_id: int | str) -> ItemCls:

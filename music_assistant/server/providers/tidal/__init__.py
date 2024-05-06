@@ -218,7 +218,18 @@ class TidalProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._tidal_user_id: str = self.config.get_value(CONF_USER_ID)
-        self._tidal_session = await self._get_tidal_session()
+        try:
+            self._tidal_session = await self._get_tidal_session()
+        except Exception as err:
+            if "401 Client Error: Unauthorized" in str(err):
+                self.mass.config.set_raw_provider_config_value(
+                    self.instance_id, CONF_AUTH_TOKEN, None
+                )
+                self.mass.config.set_raw_provider_config_value(
+                    self.instance_id, CONF_REFRESH_TOKEN, None
+                )
+                raise LoginFailed("Credentials, expired, you need to re-setup")
+            raise
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:

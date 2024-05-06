@@ -186,12 +186,15 @@ class MetaDataController(CoreController):
             if lang in (locale_code.lower(), lang_name.lower()):
                 self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
                 return
-        # attempt loose match on either language or country code
-        for locale_code in tuple(LOCALES):
-            language_code, region_code = locale_code.lower().split("_", 1)
-            if lang in (language_code, region_code):
-                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
-                return
+        # attempt loose match on language code or region code
+        for lang_part in (lang[:2], lang[:-2]):
+            for locale_code in tuple(LOCALES):
+                language_code, region_code = locale_code.lower().split("_", 1)
+                if lang_part in (language_code, region_code):
+                    self.mass.config.set_raw_core_config_value(
+                        self.domain, CONF_LANGUAGE, locale_code
+                    )
+                    return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
 
@@ -508,7 +511,7 @@ class MetaDataController(CoreController):
             # assuming that images do not/rarely change
             return web.Response(
                 body=image_data,
-                headers={"Cache-Control": "max-age=31536000"},
+                headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
                 content_type=f"image/{image_format}",
             )
         return web.Response(status=404)

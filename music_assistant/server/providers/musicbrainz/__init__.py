@@ -447,7 +447,7 @@ class MusicbrainzProvider(MetadataProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             # handle 404 not found, convert to MediaNotFoundError
-            if response.status == 404:
+            if response.status in (400, 401, 404):
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
             return await response.json(loads=json_loads)
