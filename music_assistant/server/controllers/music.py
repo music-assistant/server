@@ -594,7 +594,7 @@ class MusicController(CoreController):
             f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
             f"last_played = {timestamp} WHERE item_id = {item_id}"
         )
-        await self._db.commit()
+        await self.database.commit()
 
     def get_controller(
         self, media_type: MediaType
