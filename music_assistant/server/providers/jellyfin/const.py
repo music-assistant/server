@@ -41,7 +41,7 @@ ITEM_KEY_RUNTIME_TICKS: Final = "RunTimeTicks"
 
 ITEM_TYPE_ALBUM: Final = "MusicAlbum"
 ITEM_TYPE_ARTIST: Final = "MusicArtist"
-ITEM_TYPE_ARTIST_2: Final = "MusicArtists"
+ITEM_TYPE_MUSICARTISTS: Final = "MusicArtists"
 ITEM_TYPE_AUDIO: Final = "Audio"
 ITEM_TYPE_LIBRARY: Final = "CollectionFolder"
 
