@@ -84,6 +84,7 @@ from .const import (
     ITEM_TYPE_ALBUM,
     ITEM_TYPE_ARTIST,
     ITEM_TYPE_AUDIO,
+    ITEM_TYPE_MUSICARTISTS,
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
     USER_APP_NAME,
@@ -469,6 +470,15 @@ class JellyfinProvider(MusicProvider):
                 current_jellyfin_track[ITEM_KEY_PARENT_ID],
                 current_jellyfin_track[ITEM_KEY_ALBUM],
             )
+        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+            parent_album = API.get_item(
+                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
+            )
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM,
+                parent_album[ITEM_KEY_ID],
+                parent_album[ITEM_KEY_NAME],
+            )
         if ITEM_KEY_PARENT_INDEX_NUM in current_jellyfin_track:
             track.disc_number = current_jellyfin_track[ITEM_KEY_PARENT_INDEX_NUM]
         if ITEM_KEY_RUNTIME_TICKS in current_jellyfin_track:
@@ -748,8 +758,11 @@ class JellyfinProvider(MusicProvider):
         params = {
             "Recursive": "true",
             ITEM_KEY_PARENT_ID: parent_id,
-            "IncludeItemTypes": item_type,
         }
+        if item_type in ITEM_TYPE_ARTIST:
+            params["IncludeItemTypes"] = [ITEM_TYPE_MUSICARTISTS, ITEM_TYPE_ARTIST]
+        else:
+            params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
             params["Fields"] = ITEM_KEY_MEDIA_SOURCES
 
