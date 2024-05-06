@@ -47,9 +47,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import (
-    AsyncThrottleWithRetryContextManager,
-)
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -213,14 +211,25 @@ class TidalProvider(MusicProvider):
 
     _tidal_session: TidalSession | None = None
     _tidal_user_id: str | None = None
+    # rate limiter needs to be specified on provider-level,
+    # so make it an instance attribute
+    throttler = ThrottlerManager(rate_limit=1, period=0.5)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._tidal_user_id: str = self.config.get_value(CONF_USER_ID)
-        self._tidal_session = await self._get_tidal_session()
-        self._throttle_retry = AsyncThrottleWithRetryContextManager(
-            rate_limit=1, period=0.5, retry_attempts=5, initial_backoff=5
-        )
+        try:
+            self._tidal_session = await self._get_tidal_session()
+        except Exception as err:
+            if "401 Client Error: Unauthorized" in str(err):
+                self.mass.config.set_raw_provider_config_value(
+                    self.instance_id, CONF_AUTH_TOKEN, None
+                )
+                self.mass.config.set_raw_provider_config_value(
+                    self.instance_id, CONF_REFRESH_TOKEN, None
+                )
+                raise LoginFailed("Credentials, expired, you need to re-setup")
+            raise
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -309,32 +318,26 @@ class TidalProvider(MusicProvider):
         ):
             yield self._parse_playlist(playlist)
 
+    @throttle_with_retries
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            tracks_obj = await manager.wrapped_function_with_retry(
-                get_album_tracks, tidal_session, prov_album_id
-            )
-            return [self._parse_track(track_obj=track_obj) for track_obj in tracks_obj]
+        tracks_obj = await get_album_tracks(tidal_session, prov_album_id)
+        return [self._parse_track(track_obj=track_obj) for track_obj in tracks_obj]
 
+    @throttle_with_retries
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            artist_albums_obj = await manager.wrapped_function_with_retry(
-                get_artist_albums, tidal_session, prov_artist_id
-            )
-            return [self._parse_album(album) for album in artist_albums_obj]
+        artist_albums_obj = await get_artist_albums(tidal_session, prov_artist_id)
+        return [self._parse_album(album) for album in artist_albums_obj]
 
+    @throttle_with_retries
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            artist_toptracks_obj = await manager.wrapped_function_with_retry(
-                get_artist_toptracks, tidal_session, prov_artist_id
-            )
-            return [self._parse_track(track) for track in artist_toptracks_obj]
+        artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
+        return [self._parse_track(track) for track in artist_toptracks_obj]
 
     async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
@@ -349,14 +352,12 @@ class TidalProvider(MusicProvider):
             track.position = total_playlist_tracks
             yield track
 
+    @throttle_with_retries
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            similar_tracks_obj = await manager.wrapped_function_with_retry(
-                get_similar_tracks, tidal_session, prov_track_id, limit
-            )
-            return [self._parse_track(track) for track in similar_tracks_obj]
+        similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
+        return [self._parse_track(track) for track in similar_tracks_obj]
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
@@ -437,46 +438,38 @@ class TidalProvider(MusicProvider):
             path=url,
         )
 
+    @throttle_with_retries
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            artist_obj = await manager.wrapped_function_with_retry(
-                get_artist, tidal_session, prov_artist_id
-            )
-            return self._parse_artist(artist_obj)
+        artist_obj = await get_artist(tidal_session, prov_artist_id)
+        return self._parse_artist(artist_obj)
 
+    @throttle_with_retries
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details for given album id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            album_obj = await manager.wrapped_function_with_retry(
-                get_album, tidal_session, prov_album_id
-            )
-            return self._parse_album(album_obj)
+        album_obj = await get_album(tidal_session, prov_album_id)
+        return self._parse_album(album_obj)
 
+    @throttle_with_retries
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            track_obj = await manager.wrapped_function_with_retry(
-                get_track, tidal_session, prov_track_id
-            )
-            track = self._parse_track(track_obj)
-            # get some extra details for the full track info
-            with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
-                lyrics: TidalLyrics = await asyncio.to_thread(track.lyrics)
-                track.metadata.lyrics = lyrics.text
-            return track
+        track_obj = await get_track(tidal_session, prov_track_id)
+        track = self._parse_track(track_obj)
+        # get some extra details for the full track info
+        with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
+            lyrics: TidalLyrics = await asyncio.to_thread(track.lyrics)
+            track.metadata.lyrics = lyrics.text
+        return track
 
+    @throttle_with_retries
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details for given playlist id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttle_retry as manager:
-            playlist_obj = await manager.wrapped_function_with_retry(
-                get_playlist, tidal_session, prov_playlist_id
-            )
-            return self._parse_playlist(playlist_obj)
+        playlist_obj = await get_playlist(tidal_session, prov_playlist_id)
+        return self._parse_playlist(playlist_obj)
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
@@ -729,17 +722,16 @@ class TidalProvider(MusicProvider):
     ) -> AsyncGenerator[Any, None]:
         """Yield all items from a larger listing."""
         offset = 0
-        async with self._throttle_retry:
-            while True:
-                if asyncio.iscoroutinefunction(func):
-                    chunk = await func(*args, **kwargs, offset=offset)
-                else:
-                    chunk = await asyncio.to_thread(func, *args, **kwargs, offset=offset)
-                offset += len(chunk)
-                for item in chunk:
-                    yield item
-                if len(chunk) < DEFAULT_LIMIT:
-                    break
+        while True:
+            if asyncio.iscoroutinefunction(func):
+                chunk = await func(*args, **kwargs, offset=offset)
+            else:
+                chunk = await asyncio.to_thread(func, *args, **kwargs, offset=offset)
+            offset += len(chunk)
+            for item in chunk:
+                yield item
+            if len(chunk) < DEFAULT_LIMIT:
+                break
 
     async def _get_media_info(
         self, item_id: str, url: str, force_refresh: bool = False

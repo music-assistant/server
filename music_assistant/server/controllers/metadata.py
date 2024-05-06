@@ -186,12 +186,15 @@ class MetaDataController(CoreController):
             if lang in (locale_code.lower(), lang_name.lower()):
                 self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
                 return
-        # attempt loose match on either language or country code
-        for locale_code in tuple(LOCALES):
-            language_code, region_code = locale_code.lower().split("_", 1)
-            if lang in (language_code, region_code):
-                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
-                return
+        # attempt loose match on language code or region code
+        for lang_part in (lang[:2], lang[:-2]):
+            for locale_code in tuple(LOCALES):
+                language_code, region_code = locale_code.lower().split("_", 1)
+                if lang_part in (language_code, region_code):
+                    self.mass.config.set_raw_core_config_value(
+                        self.domain, CONF_LANGUAGE, locale_code
+                    )
+                    return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
 
@@ -345,6 +348,19 @@ class MetaDataController(CoreController):
         # NOTE: we do not have any metadata for radio so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
 
+    async def get_metadata(self, item: MediaItemType) -> None:
+        """Get/update rich metadata for/on given MediaItem."""
+        if item.media_type == MediaType.ARTIST:
+            await self.get_artist_metadata(item)
+        if item.media_type == MediaType.ALBUM:
+            await self.get_album_metadata(item)
+        if item.media_type == MediaType.TRACK:
+            await self.get_track_metadata(item)
+        if item.media_type == MediaType.PLAYLIST:
+            await self.get_playlist_metadata(item)
+        if item.media_type == MediaType.RADIO:
+            await self.get_radio_metadata(item)
+
     async def get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
@@ -495,7 +511,7 @@ class MetaDataController(CoreController):
             # assuming that images do not/rarely change
             return web.Response(
                 body=image_data,
-                headers={"Cache-Control": "max-age=31536000"},
+                headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
                 content_type=f"image/{image_format}",
             )
         return web.Response(status=404)

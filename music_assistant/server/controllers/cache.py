@@ -224,8 +224,9 @@ class CacheController(CoreController):
 
         # create indexes
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
         )
+        await self.database.commit()
 
     def __schedule_cleanup_task(self) -> None:
         """Schedule the cleanup task."""

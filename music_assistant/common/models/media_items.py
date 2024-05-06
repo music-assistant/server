@@ -273,13 +273,13 @@ class _MediaItemBase(DataClassDictMixin):
 
     def __post_init__(self):
         """Call after init."""
-        if not self.name:
+        if self.name is None:
             # we've got some reports where the name was empty, causing weird issues.
             # e.g. here: https://github.com/music-assistant/hass-music-assistant/issues/1515
             self.name = "[Unknown]"
-        if not self.uri:
+        if self.uri is None:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
-        if not self.sort_name:
+        if self.sort_name is None:
             self.sort_name = create_sort_name(self.name)
 
     @property
@@ -329,9 +329,6 @@ class MediaItem(_MediaItemBase):
     metadata: MediaItemMetadata = field(default_factory=MediaItemMetadata)
     favorite: bool = False
     position: int | None = None  # required for playlist tracks, optional for all other
-    # timestamps to determine when the item was added/modified to the db
-    timestamp_added: int = 0
-    timestamp_modified: int = 0
 
     @property
     def available(self):
@@ -352,12 +349,14 @@ class MediaItem(_MediaItemBase):
         return cls.from_dict(
             {
                 **item.to_dict(),
-                "provider_mappings": {
-                    "item_id": item.item_id,
-                    "provider_domain": item.provider,
-                    "provider_instance": item.provider,
-                    "available": item.available,
-                },
+                "provider_mappings": [
+                    {
+                        "item_id": item.item_id,
+                        "provider_domain": item.provider,
+                        "provider_instance": item.provider,
+                        "available": item.available,
+                    }
+                ],
             }
         )
 

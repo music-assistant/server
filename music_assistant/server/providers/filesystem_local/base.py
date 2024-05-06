@@ -42,7 +42,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import VARIOUS_ARTISTS_NAME
+from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, VARIOUS_ARTISTS_NAME
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
@@ -230,35 +230,58 @@ class FileSystemProviderBase(MusicProvider):
             "name": f"%{search_query}%",
             "provider_instance": self.instance_id,
         }
+        subquery = "WHERE "
         # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            query = "WHERE tracks.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.tracks = (
-                await self.mass.music.tracks.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'track' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE tracks.name LIKE :name AND tracks.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.tracks = await self.mass.music.tracks._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
+
         if media_types is None or MediaType.ALBUM in media_types:
-            query = "WHERE albums.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.albums = (
-                await self.mass.music.albums.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'album' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE albums.name LIKE :name AND albums.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.albums = await self.mass.music.albums._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
+
         if media_types is None or MediaType.ARTIST in media_types:
-            query = "WHERE artists.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.artists = (
-                await self.mass.music.artists.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'artist' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE artists.name LIKE :name AND artists.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.artists = await self.mass.music.artists._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
         if media_types is None or MediaType.PLAYLIST in media_types:
-            query = "WHERE playlists.name LIKE :name AND provider_mappings.provider_instance = :provider_instance"
-            result.playlists = (
-                await self.mass.music.playlists.library_items(
-                    extra_query=query, extra_query_params=params
-                )
-            ).items
+            subquery = (
+                "WHERE provider_mappings.media_type = 'playlist' "
+                "AND provider_mappings.provider_instance = :provider_instance"
+            )
+            query = (
+                "WHERE playlists.name LIKE :name AND playlists.item_id in "
+                f"(SELECT item_id FROM provider_mappings {subquery})"
+            )
+            result.playlists = await self.mass.music.playlists._get_library_items_by_query(
+                extra_query=query, extra_query_params=params
+            )
         return result
 
     async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
@@ -301,34 +324,18 @@ class FileSystemProviderBase(MusicProvider):
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
-        # first build a listing of all current items and their checksums
-        prev_checksums = {}
-        for ctrl in (self.mass.music.tracks, self.mass.music.playlists):
-            async for db_item in ctrl.iter_library_items_by_prov_id(self.instance_id):
-                file_name = next(
-                    x.item_id
-                    for x in db_item.provider_mappings
-                    if x.provider_instance == self.instance_id
-                )
-                prev_checksums[file_name] = db_item.metadata.cache_checksum
-
-        # process all deleted (or renamed) files first
-        cur_filenames = set()
-        async for item in self.listdir("", recursive=True):
-            if "." not in item.filename or not item.ext:
-                # skip system files and files without extension
-                continue
-
-            if item.ext not in SUPPORTED_EXTENSIONS:
-                # unsupported file extension
-                continue
-            cur_filenames.add(item.path)
-        # work out deletions
-        deleted_files = set(prev_checksums.keys()) - cur_filenames
-        await self._process_deletions(deleted_files)
-
+        file_checksums: dict[str, str] = {}
+        query = (
+            f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' "
+            "AND media_type in ('track', 'playlist')"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=0):
+            file_checksums[db_row["provider_item_id"]] = str(db_row["details"])
         # find all music files in the music directory and all subfolders
         # we work bottom up, as-in we derive all info from the tracks
+        cur_filenames = set()
+        prev_filenames = set(file_checksums.keys())
         async for item in self.listdir("", recursive=True):
             if "." not in item.filename or not item.ext:
                 # skip system files and files without extension
@@ -338,9 +345,10 @@ class FileSystemProviderBase(MusicProvider):
                 # unsupported file extension
                 continue
 
+            cur_filenames.add(item.path)
             try:
                 # continue if the item did not change (checksum still the same)
-                if item.checksum == prev_checksums.get(item.path):
+                if item.checksum == file_checksums.get(item.path):
                     continue
                 self.logger.debug("Processing: %s", item.path)
                 if item.ext in TRACK_EXTENSIONS:
@@ -368,6 +376,10 @@ class FileSystemProviderBase(MusicProvider):
                     str(err),
                     exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
+
+        # work out deletions
+        deleted_files = prev_filenames - cur_filenames
+        await self._process_deletions(deleted_files)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
@@ -460,6 +472,7 @@ class FileSystemProviderBase(MusicProvider):
                     item_id=file_item.path,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    details=file_item.checksum,
                 )
             },
         )
@@ -682,6 +695,7 @@ class FileSystemProviderBase(MusicProvider):
                         channels=tags.channels,
                         bit_rate=tags.bit_rate,
                     ),
+                    details=file_item.checksum,
                 )
             },
             disc_number=tags.disc,
@@ -816,6 +830,10 @@ class FileSystemProviderBase(MusicProvider):
         if track.album and not track.album.metadata.images:
             # set embedded cover on album if it does not have one yet
             track.album.metadata.images = track.metadata.images
+        # copy album image from track (only if the album itself doesn't have an image)
+        # this deals with embedded images from filesystem providers
+        if track.album and not track.album.image and track.image:
+            track.album.metadata.images = [track.image]
 
         # parse other info
         track.duration = tags.duration or 0
