@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import TYPE_CHECKING
 
+from music_assistant.common.models.provider import ProviderInstanceDict
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager
 
@@ -14,7 +15,7 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.enums import ProviderFeature, ProviderType
-    from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
+    from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
 
 
@@ -93,7 +94,7 @@ class Provider:
             return f"{self.manifest.name}.{postfix}"
         return self.manifest.name
 
-    def to_dict(self, *args, **kwargs) -> ProviderInstance:
+    def to_dict(self, *args, **kwargs) -> ProviderInstanceDict:
         """Return Provider(instance) as serializable dict."""
         return {
             "type": self.type.value,

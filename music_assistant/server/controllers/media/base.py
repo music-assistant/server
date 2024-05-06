@@ -163,7 +163,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         order_by: str = "sort_name",
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-    ) -> PagedItems:
+    ) -> PagedItems[ItemCls]:
         """Get in-database items."""
         items = await self._get_library_items_by_query(
             favorite=favorite,

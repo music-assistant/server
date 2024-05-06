@@ -334,7 +334,7 @@ class ConfigController:
 
     @api_command("config/players/get")
     async def get_player_config(self, player_id: str) -> PlayerConfig:
-        """Return configuration for a single player."""
+        """Return (full) configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
                 conf_entries = await prov.get_player_config_entries(player_id)

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from typing import TYPE_CHECKING, Any, TypedDict
 
@@ -30,7 +29,12 @@ from music_assistant.common.models.errors import (
     PlayerUnavailableError,
     QueueEmpty,
 )
-from music_assistant.common.models.media_items import AlbumTrack, MediaItemType, media_from_dict
+from music_assistant.common.models.media_items import (
+    AlbumTrack,
+    MediaItemType,
+    PagedItems,
+    media_from_dict,
+)
 from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -191,25 +195,31 @@ class PlayerQueuesController(CoreController):
         """Iterate over (available) players."""
         return iter(self._queues.values())
 
-    @api_command("players/queue/all")
+    @api_command("player_queues/all")
     def all(self) -> tuple[PlayerQueue, ...]:
         """Return all registered PlayerQueues."""
         return tuple(self._queues.values())
 
-    @api_command("players/queue/get")
+    @api_command("player_queues/get")
     def get(self, queue_id: str) -> PlayerQueue | None:
         """Return PlayerQueue by queue_id or None if not found."""
         return self._queues.get(queue_id)
 
-    @api_command("players/queue/items")
-    async def items(self, queue_id: str) -> AsyncGenerator[QueueItem, None]:
+    @api_command("player_queues/items")
+    def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> PagedItems[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
-        # because the QueueItems can potentially be a very large list, this is a async generator
-        for index, queue_item in enumerate(self._queue_items.get(queue_id, [])):
-            queue_item.index = index
-            yield queue_item
+        if queue_id not in self._queue_items:
+            return PagedItems(items=[], count=0, limit=limit, offset=offset, total=0)
 
-    @api_command("players/queue/get_active_queue")
+        return PagedItems(
+            items=self._queue_items[queue_id][offset:limit],
+            count=len(self._queue_items[offset:limit][queue_id]),
+            limit=limit,
+            offset=offset,
+            total=len(self._queue_items[queue_id]),
+        )
+
+    @api_command("player_queues/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
         if player := self.mass.players.get(player_id):
@@ -228,7 +238,7 @@ class PlayerQueuesController(CoreController):
 
     # Queue commands
 
-    @api_command("players/queue/shuffle")
+    @api_command("player_queues/shuffle")
     def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the the queue."""
         if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
@@ -259,7 +269,7 @@ class PlayerQueuesController(CoreController):
             shuffle=shuffle_enabled,
         )
 
-    @api_command("players/queue/repeat")
+    @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
         if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
@@ -271,7 +281,7 @@ class PlayerQueuesController(CoreController):
         queue.repeat_mode = repeat_mode
         self.signal_update(queue_id)
 
-    @api_command("players/queue/play_media")
+    @api_command("player_queues/play_media")
     async def play_media(
         self,
         queue_id: str,
@@ -451,7 +461,7 @@ class PlayerQueuesController(CoreController):
                 queue.items = len(queue_items)
                 self.signal_update(queue_id)
 
-    @api_command("players/queue/move_item")
+    @api_command("player_queues/move_item")
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
         """
         Move queue item x up/down the queue.
@@ -486,7 +496,7 @@ class PlayerQueuesController(CoreController):
         queue_items.insert(new_index, queue_items.pop(item_index))
         self.update_items(queue_id, queue_items)
 
-    @api_command("players/queue/delete_item")
+    @api_command("player_queues/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
         if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
@@ -506,7 +516,7 @@ class PlayerQueuesController(CoreController):
         queue_items.pop(item_index)
         self.update_items(queue_id, queue_items)
 
-    @api_command("players/queue/clear")
+    @api_command("player_queues/clear")
     def clear(self, queue_id: str) -> None:
         """Clear all items in the queue."""
         if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
@@ -523,7 +533,7 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
 
-    @api_command("players/queue/stop")
+    @api_command("player_queues/stop")
     async def stop(self, queue_id: str) -> None:
         """
         Handle STOP command for given queue.
@@ -538,7 +548,7 @@ class PlayerQueuesController(CoreController):
         # simply forward the command to underlying player
         await self.mass.players.cmd_stop(queue_id)
 
-    @api_command("players/queue/play")
+    @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
         """
         Handle PLAY command for given queue.
@@ -554,7 +564,7 @@ class PlayerQueuesController(CoreController):
         else:
             await self.resume(queue_id)
 
-    @api_command("players/queue/pause")
+    @api_command("player_queues/pause")
     async def pause(self, queue_id: str) -> None:
         """Handle PAUSE command for given queue.
 
@@ -571,7 +581,7 @@ class PlayerQueuesController(CoreController):
         # simply forward the command to underlying player
         await self.mass.players.cmd_pause(queue_id)
 
-    @api_command("players/queue/play_pause")
+    @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
         """Toggle play/pause on given playerqueue.
 
@@ -582,7 +592,7 @@ class PlayerQueuesController(CoreController):
             return
         await self.play(queue_id)
 
-    @api_command("players/queue/next")
+    @api_command("player_queues/next")
     async def next(self, queue_id: str) -> None:
         """Handle NEXT TRACK command for given queue.
 
@@ -595,7 +605,7 @@ class PlayerQueuesController(CoreController):
         if (next_index := self._get_next_index(queue_id, current_index, True)) is not None:
             await self.play_index(queue_id, next_index)
 
-    @api_command("players/queue/previous")
+    @api_command("player_queues/previous")
     async def previous(self, queue_id: str) -> None:
         """Handle PREVIOUS TRACK command for given queue.
 
@@ -609,7 +619,7 @@ class PlayerQueuesController(CoreController):
             return
         await self.play_index(queue_id, max(current_index - 1, 0))
 
-    @api_command("players/queue/skip")
+    @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
         """Handle SKIP command for given queue.
 
@@ -621,7 +631,7 @@ class PlayerQueuesController(CoreController):
             return
         await self.seek(queue_id, self._queues[queue_id].elapsed_time + seconds)
 
-    @api_command("players/queue/seek")
+    @api_command("player_queues/seek")
     async def seek(self, queue_id: str, position: int = 10) -> None:
         """Handle SEEK command for given queue.
 
@@ -638,7 +648,7 @@ class PlayerQueuesController(CoreController):
         assert position < queue.current_item.duration
         await self.play_index(queue_id, queue.current_index, position)
 
-    @api_command("players/queue/resume")
+    @api_command("player_queues/resume")
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """Handle RESUME command for given queue.
 
@@ -677,7 +687,7 @@ class PlayerQueuesController(CoreController):
             msg = f"Resume queue requested but queue {queue_id} is empty"
             raise QueueEmpty(msg)
 
-    @api_command("players/queue/play_index")
+    @api_command("player_queues/play_index")
     async def play_index(
         self,
         queue_id: str,

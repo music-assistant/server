@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
 from mashumaro import DataClassDictMixin
 
@@ -566,17 +566,48 @@ MediaItemType = Artist | Album | Track | Radio | Playlist | BrowseFolder
 
 
 @dataclass(kw_only=True)
-class PagedItems(DataClassDictMixin):
+class PagedItems(Generic[_T], DataClassDictMixin):
     """Model for a paged listing."""
 
-    items: list[MediaItemType]
+    items: list[_T]
     count: int
     limit: int
     offset: int
     total: int | None = None
 
     @classmethod
-    def parse(cls, raw: dict[str, Any], item_type: type) -> PagedItems:
+    def parse(cls, raw: dict[str, Any], item_type: DataClassDictMixin) -> PagedItems:
+        """Parse PagedItems object including correct item type."""
+        return PagedItems(
+            items=[item_type.from_dict(x) for x in raw["items"]],
+            count=raw["count"],
+            limit=raw["limit"],
+            offset=raw["offset"],
+            total=raw["total"],
+        )
+
+
+class PagedItemsAlt(Generic[_T]):
+    """Model for a paged listing."""
+
+    def __init__(
+        self,
+        items: list[_T],
+        limit: int,
+        offset: int,
+        total: int | None = None,
+    ):
+        """Initialize PagedItems."""
+        self.items = items
+        self.count = count = len(items)
+        self.limit = limit
+        self.offset = offset
+        self.total = total
+        if total is None and offset == 0 and count < limit:
+            self.total = count
+
+    @classmethod
+    def parse(cls, raw: dict[str, Any], item_type: _T) -> PagedItems[_T]:
         """Parse PagedItems object including correct item type."""
         return PagedItems(
             items=[item_type.from_dict(x) for x in raw["items"]],
