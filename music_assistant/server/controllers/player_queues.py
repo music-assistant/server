@@ -1177,6 +1177,10 @@ class PlayerQueuesController(CoreController):
             CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
             ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
         )
+        self.logger.debug(
+            "Fetching tracks to play for artist %s",
+            artist.name,
+        )
         if artist_items_conf in ("library_tracks", "all_tracks"):
             all_items = await self.mass.music.artists.tracks(
                 artist.item_id,
@@ -1210,6 +1214,10 @@ class PlayerQueuesController(CoreController):
             CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
+        self.logger.debug(
+            "Fetching tracks to play for album %s",
+            album.name,
+        )
         return await self.mass.music.albums.tracks(
             item_id=album.item_id,
             provider_instance_id_or_domain=album.provider,
@@ -1221,6 +1229,10 @@ class PlayerQueuesController(CoreController):
         result: list[PlaylistTrack] = []
         offset = 0
         limit = 50
+        self.logger.debug(
+            "Fetching tracks to play for playlist %s",
+            playlist.name,
+        )
         while True:
             paged_items = await self.mass.music.playlists.tracks(
                 item_id=playlist.item_id,
@@ -1232,6 +1244,12 @@ class PlayerQueuesController(CoreController):
             if paged_items.count < limit:
                 break
             offset += paged_items.count
+            if offset == 500:
+                self.logger.info(
+                    "Adding tracks for playlist %s to the queue which "
+                    "has more than 500 items, this can take a while.",
+                    playlist.name,
+                )
         return result
 
     def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
