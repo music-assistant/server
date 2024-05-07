@@ -123,12 +123,12 @@ class SoundcloudMusicProvider(MusicProvider):
         return await asyncio.to_thread(call, *args, **kwargs)
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
+        self, search_query: str, media_types=list[MediaType], limit: int = 10
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
@@ -140,23 +140,25 @@ class SoundcloudMusicProvider(MusicProvider):
         if MediaType.PLAYLIST in media_types:
             searchtypes.append("playlist")
 
-        time_start = time.time()
+        media_types = [
+            x for x in media_types if x in (MediaType.ARTIST, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return result
 
         searchresult = await self._soundcloud.search(search_query, limit)
-
-        self.logger.debug(
-            "Processing Soundcloud search took %s seconds",
-            round(time.time() - time_start, 2),
-        )
 
         for item in searchresult["collection"]:
             media_type = item["kind"]
             if media_type == "user":
-                result.artists.append(await self._parse_artist(item))
+                if MediaType.ARTIST in media_types:
+                    result.artists.append(await self._parse_artist(item))
             elif media_type == "track":
-                result.tracks.append(await self._parse_track(item))
+                if MediaType.TRACK in media_types:
+                    result.tracks.append(await self._parse_track(item))
             elif media_type == "playlist":
-                result.playlists.append(await self._parse_playlist(item))
+                if MediaType.PLAYLIST in media_types:
+                    result.playlists.append(await self._parse_playlist(item))
 
         return result
 

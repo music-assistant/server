@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from time import time
 from typing import TYPE_CHECKING
 
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
@@ -84,7 +83,7 @@ class RadioBrowserProvider(MusicProvider):
             self.logger.exception("%s", err)
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
+        self, search_query: str, media_types=list[MediaType], limit: int = 10
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -93,18 +92,11 @@ class RadioBrowserProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
-        searchtypes = []
-        if MediaType.RADIO in media_types:
-            searchtypes.append("radio")
-
-        time_start = time()
+        if MediaType.RADIO not in media_types:
+            return result
 
         searchresult = await self.radios.search(name=search_query, limit=limit)
 
-        self.logger.debug(
-            "Processing RadioBrowser search took %s seconds",
-            round(time() - time_start, 2),
-        )
         for item in searchresult:
             result.radio.append(await self._parse_radio(item))
 

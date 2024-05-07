@@ -161,15 +161,15 @@ class SpotifyProvider(MusicProvider):
         )
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
-        result = SearchResults()
+        searchresult = SearchResults()
         searchtypes = []
         if MediaType.ARTIST in media_types:
             searchtypes.append("artist")
@@ -179,34 +179,36 @@ class SpotifyProvider(MusicProvider):
             searchtypes.append("track")
         if MediaType.PLAYLIST in media_types:
             searchtypes.append("playlist")
+        if not searchtypes:
+            return searchresult
         searchtype = ",".join(searchtypes)
         search_query = search_query.replace("'", "")
-        searchresult = await self._get_data("search", q=search_query, type=searchtype, limit=limit)
-        if "artists" in searchresult:
-            result.artists += [
+        api_result = await self._get_data("search", q=search_query, type=searchtype, limit=limit)
+        if "artists" in api_result:
+            searchresult.artists += [
                 self._parse_artist(item)
-                for item in searchresult["artists"]["items"]
+                for item in api_result["artists"]["items"]
                 if (item and item["id"] and item["name"])
             ]
-        if "albums" in searchresult:
-            result.albums += [
+        if "albums" in api_result:
+            searchresult.albums += [
                 self._parse_album(item)
-                for item in searchresult["albums"]["items"]
+                for item in api_result["albums"]["items"]
                 if (item and item["id"])
             ]
-        if "tracks" in searchresult:
-            result.tracks += [
+        if "tracks" in api_result:
+            searchresult.tracks += [
                 self._parse_track(item)
-                for item in searchresult["tracks"]["items"]
+                for item in api_result["tracks"]["items"]
                 if (item and item["id"])
             ]
-        if "playlists" in searchresult:
-            result.playlists += [
+        if "playlists" in api_result:
+            searchresult.playlists += [
                 self._parse_playlist(item)
-                for item in searchresult["playlists"]["items"]
+                for item in api_result["playlists"]["items"]
                 if (item and item["id"])
             ]
-        return result
+        return searchresult
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from spotify."""

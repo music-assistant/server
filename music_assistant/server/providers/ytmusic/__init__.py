@@ -212,7 +212,7 @@ class YoutubeMusicProvider(MusicProvider):
         return SUPPORTED_FEATURES
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -220,6 +220,7 @@ class YoutubeMusicProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
+        parsed_results = SearchResults()
         ytm_filter = None
         if len(media_types) == 1:
             # YTM does not support multiple searchtypes, falls back to all if no type given
@@ -231,20 +232,25 @@ class YoutubeMusicProvider(MusicProvider):
                 ytm_filter = "songs"
             if media_types[0] == MediaType.PLAYLIST:
                 ytm_filter = "playlists"
+            if media_types[0] == MediaType.RADIO:
+                # bit of an edge case but still good to handle
+                return parsed_results
         results = await search(
             query=search_query, ytm_filter=ytm_filter, limit=limit, language=self.language
         )
         parsed_results = SearchResults()
         for result in results:
             try:
-                if result["resultType"] == "artist":
+                if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
                     parsed_results.artists.append(await self._parse_artist(result))
-                elif result["resultType"] == "album":
+                elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
                     parsed_results.albums.append(await self._parse_album(result))
-                elif result["resultType"] == "playlist":
+                elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
                     parsed_results.playlists.append(await self._parse_playlist(result))
-                elif result["resultType"] in ("song", "video") and (
-                    track := await self._parse_track(result)
+                elif (
+                    result["resultType"] in ("song", "video")
+                    and MediaType.TRACK in media_types
+                    and (track := await self._parse_track(result))
                 ):
                     parsed_results.tracks.append(track)
             except InvalidDataError:

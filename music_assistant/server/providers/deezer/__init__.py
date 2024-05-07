@@ -205,22 +205,13 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         return SUPPORTED_FEATURES
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on music provider.
 
         :param search_query: Search query.
         :param media_types: A list of media_types to include. All types if None.
         """
-        # If no media_types are provided, search for all types
-        if not media_types:
-            media_types = [
-                MediaType.ARTIST,
-                MediaType.ALBUM,
-                MediaType.TRACK,
-                MediaType.PLAYLIST,
-            ]
-
         # Create a task for each media_type
         tasks = {}
 
