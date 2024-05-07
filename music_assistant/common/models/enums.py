@@ -289,7 +289,6 @@ class EventType(StrEnum):
     QUEUE_UPDATED = "queue_updated"
     QUEUE_ITEMS_UPDATED = "queue_items_updated"
     QUEUE_TIME_UPDATED = "queue_time_updated"
-    QUEUE_SETTINGS_UPDATED = "queue_settings_updated"
     SHUTDOWN = "application_shutdown"
     MEDIA_ITEM_ADDED = "media_item_added"
     MEDIA_ITEM_UPDATED = "media_item_updated"

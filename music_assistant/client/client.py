@@ -9,9 +9,12 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.client.exceptions import ConnectionClosed, InvalidServerVersion, InvalidState
+from music_assistant.client.exceptions import (
+    ConnectionClosed,
+    InvalidServerVersion,
+    InvalidState,
+)
 from music_assistant.common.models.api import (
-    ChunkedResultMessage,
     CommandMessage,
     ErrorResultMessage,
     EventMessage,
@@ -20,13 +23,18 @@ from music_assistant.common.models.api import (
     SuccessResultMessage,
     parse_message,
 )
-from music_assistant.common.models.enums import EventType
+from music_assistant.common.models.enums import EventType, ImageType
 from music_assistant.common.models.errors import ERROR_MAP
 from music_assistant.common.models.event import MassEvent
+from music_assistant.common.models.media_items import ItemMapping, MediaItemType
+from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
+from music_assistant.common.models.queue_item import QueueItem
 from music_assistant.constants import API_SCHEMA_VERSION
 
+from .config import Config
 from .connection import WebsocketsConnection
 from .music import Music
+from .player_queues import PlayerQueues
 from .players import Players
 
 if TYPE_CHECKING:
@@ -54,10 +62,14 @@ class MusicAssistantClient:
         self._subscribers: list[EventSubscriptionType] = []
         self._stop_called: bool = False
         self._loop: asyncio.AbstractEventLoop | None = None
+        self._config = Config(self)
         self._players = Players(self)
+        self._player_queues = PlayerQueues(self)
         self._music = Music(self)
         # below items are retrieved after connect
         self._server_info: ServerInfoMessage | None = None
+        self._provider_manifests: dict[str, ProviderManifest] = {}
+        self._providers: dict[str, ProviderInstance] = {}
 
     @property
     def server_info(self) -> ServerInfoMessage | None:
@@ -65,25 +77,92 @@ class MusicAssistantClient:
         return self._server_info
 
     @property
+    def providers(self) -> list[ProviderInstance]:
+        """Return all loaded/running Providers (instances)."""
+        return list(self._providers.values())
+
+    @property
+    def provider_manifests(self) -> list[ProviderManifest]:
+        """Return all Provider manifests."""
+        return list(self._provider_manifests.values())
+
+    @property
+    def config(self) -> Config:
+        """Return Config handler."""
+        return self._config
+
+    @property
     def players(self) -> Players:
         """Return Players handler."""
         return self._players
+
+    @property
+    def player_queues(self) -> PlayerQueues:
+        """Return PlayerQueues handler."""
+        return self._player_queues
 
     @property
     def music(self) -> Music:
         """Return Music handler."""
         return self._music
 
-    def get_image_url(self, image: MediaItemImage) -> str:
+    def get_provider_manifest(self, domain: str) -> ProviderManifest:
+        """Return Provider manifests of single provider(domain)."""
+        return self._provider_manifests[domain]
+
+    def get_provider(
+        self, provider_instance_or_domain: str, return_unavailable: bool = False
+    ) -> ProviderInstance | None:
+        """Return provider by instance id or domain."""
+        # lookup by instance_id first
+        if prov := self._providers.get(provider_instance_or_domain):
+            if return_unavailable or prov.available:
+                return prov
+            if not prov.is_streaming_provider:
+                # no need to lookup other instances because this provider has unique data
+                return None
+            provider_instance_or_domain = prov.domain
+        # fallback to match on domain
+        for prov in self._providers.values():
+            if prov.domain != provider_instance_or_domain:
+                continue
+            if return_unavailable or prov.available:
+                return prov
+        self.logger.debug("Provider %s is not available", provider_instance_or_domain)
+        return None
+
+    def get_image_url(self, image: MediaItemImage, size: int = 0) -> str:
         """Get (proxied) URL for MediaItemImage."""
-        if image.remotely_accessible:
+        if image.remotely_accessible and not size:
             return image.path
+        if image.remotely_accessible and size:
+            # get url to resized image(thumb) from weserv service
+            return (
+                f"https://images.weserv.nl/?url={urllib.parse.quote(image.path)}"
+                f"&w=${size}&h=${size}&fit=cover&a=attention"
+            )
         # return imageproxy url for images that need to be resolved
         # the original path is double encoded
         encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
         return (
-            f"{self.server_info.base_url}/imageproxy?path={encoded_url}&provider={image.provider}"
+            f"{self.server_info.base_url}/imageproxy?path={encoded_url}"
+            f"&provider={image.provider}&size={size}"
         )
+
+    def get_media_item_image_url(
+        self,
+        item: MediaItemType | ItemMapping | QueueItem,
+        type: ImageType = ImageType.THUMB,  # noqa: A002
+        size: int = 0,
+    ) -> str | None:
+        """Get image URL for MediaItem, QueueItem or ItemMapping."""
+        # handle queueitem with media_item attribute
+        if media_item := getattr(item, "media_item", None):
+            if img := self.music.get_media_item_image(media_item, type):
+                return self.get_image_url(img, size)
+        if img := self.music.get_media_item_image(item, type):
+            return self.get_image_url(img, size)
+        return None
 
     def subscribe(
         self,
@@ -135,9 +214,8 @@ class MusicAssistantClient:
         self._server_info = info
 
         self.logger.info(
-            "Connected to Music Assistant Server %s using %s, Version %s, Schema Version %s",
+            "Connected to Music Assistant Server %s, Version %s, Schema Version %s",
             info.server_id,
-            self.connection.__class__.__name__,
             info.server_version,
             info.schema_version,
         )
@@ -208,6 +286,15 @@ class MusicAssistantClient:
         # fetch initial state
         # we do this in a separate task to not block reading messages
         async def fetch_initial_state() -> None:
+            self._providers = {
+                x["instance_id"]: ProviderInstance.from_dict(x)
+                for x in await self.send_command("providers")
+            }
+            self._provider_manifests = {
+                x["domain"]: ProviderManifest.from_dict(x)
+                for x in await self.send_command("providers/manifests")
+            }
+            await self._player_queues.fetch_state()
             await self._players.fetch_state()
 
             if init_ready is not None:
@@ -247,14 +334,6 @@ class MusicAssistantClient:
             if future is None:
                 # no listener for this result
                 return
-            if isinstance(msg, ChunkedResultMessage):
-                # handle chunked response (for very large objects)
-                if not hasattr(future, "intermediate_result"):
-                    future.intermediate_result = []
-                future.intermediate_result += msg.result
-                if msg.is_last_chunk:
-                    future.set_result(future.intermediate_result)
-                return
             if isinstance(msg, SuccessResultMessage):
                 future.set_result(msg.result)
                 return
@@ -280,6 +359,9 @@ class MusicAssistantClient:
         """Forward event to subscribers."""
         if self._stop_called:
             return
+
+        if event.event == EventType.PROVIDERS_UPDATED:
+            self._providers = {x["instance_id"]: ProviderInstance.from_dict(x) for x in event.data}
 
         for cb_func, event_filter, id_filter in self._subscribers:
             if not (event_filter is None or event.event in event_filter):

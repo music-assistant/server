@@ -4,13 +4,17 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
 from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
+from music_assistant.common.helpers.util import (
+    create_sort_name,
+    is_valid_uuid,
+    merge_lists,
+)
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
@@ -125,7 +129,8 @@ class ProviderMapping(DataClassDictMixin):
         # having items for unavailable providers can have all sorts
         # of unpredictable results so ensure we have accurate availability status
         if not (available_providers := get_global_cache_value("unique_providers")):
-            self.available = False
+            # this is probably the client
+            self.available = self.available
             return
         if TYPE_CHECKING:
             available_providers = cast(set[str], available_providers)
@@ -248,7 +253,11 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set) and isinstance(new_val, set | list | tuple):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif new_val and fld.name in ("popularity", "last_refresh", "cache_checksum"):
+            elif new_val and fld.name in (
+                "popularity",
+                "last_refresh",
+                "cache_checksum",
+            ):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
@@ -411,6 +420,11 @@ class Album(MediaItem):
     artists: UniqueList[Artist | ItemMapping] = field(default_factory=UniqueList)
     album_type: AlbumType = AlbumType.UNKNOWN
 
+    @property
+    def artist_str(self) -> str:
+        """Return (combined) artist string for track."""
+        return "/".join(x.name for x in self.artists)
+
 
 @dataclass(kw_only=True)
 class Track(MediaItem):
@@ -565,18 +579,40 @@ class BrowseFolder(MediaItem):
 MediaItemType = Artist | Album | Track | Radio | Playlist | BrowseFolder
 
 
-@dataclass(kw_only=True)
-class PagedItems(DataClassDictMixin):
+class PagedItems(Generic[_T]):
     """Model for a paged listing."""
 
-    items: list[MediaItemType]
-    count: int
-    limit: int
-    offset: int
-    total: int | None = None
+    def __init__(
+        self,
+        items: list[_T],
+        limit: int,
+        offset: int,
+        count: int | None = None,
+        total: int | None = None,
+    ):
+        """Initialize PagedItems."""
+        self.items = items
+        self.count = count = count or len(items)
+        self.limit = limit
+        self.offset = offset
+        self.total = total
+        if total is None and offset == 0 and count != limit:
+            self.total = count
+        if total is None and offset and count < limit:
+            self.total = offset + count
+
+    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
+        """Return PagedItems as serializable dict."""
+        return {
+            "items": [x.to_dict() for x in self.items],
+            "count": self.count,
+            "limit": self.limit,
+            "offset": self.offset,
+            "total": self.total,
+        }
 
     @classmethod
-    def parse(cls, raw: dict[str, Any], item_type: type) -> PagedItems:
+    def parse(cls, raw: dict[str, Any], item_type: type[MediaItemType]) -> Self[MediaItemType]:
         """Parse PagedItems object including correct item type."""
         return PagedItems(
             items=[item_type.from_dict(x) for x in raw["items"]],

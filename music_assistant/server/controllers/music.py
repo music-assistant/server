@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 import shutil
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from itertools import zip_longest
 from typing import TYPE_CHECKING
@@ -29,7 +28,12 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    MediaItemType,
+    PagedItems,
+    SearchResults,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
@@ -300,37 +304,46 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(self, path: str | None = None) -> AsyncGenerator[MediaItemType, None]:
+    async def browse(
+        self, offset: int, limit: int, path: str | None = None
+    ) -> PagedItems[MediaItemType]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider
+            root_items: list[MediaItemType] = []
             for prov in self.providers:
                 if ProviderFeature.BROWSE not in prov.supported_features:
                     continue
-                yield BrowseFolder(
-                    item_id="root",
-                    provider=prov.domain,
-                    path=f"{prov.instance_id}://",
-                    uri=f"{prov.instance_id}://",
-                    name=prov.name,
+                root_items.append(
+                    BrowseFolder(
+                        item_id="root",
+                        provider=prov.domain,
+                        path=f"{prov.instance_id}://",
+                        uri=f"{prov.instance_id}://",
+                        name=prov.name,
+                    )
                 )
-            return
+            return PagedItems(items=root_items, limit=limit, offset=offset)
 
         # provider level
+        prepend_items: list[MediaItemType] = []
         provider_instance, sub_path = path.split("://", 1)
         prov = self.mass.get_provider(provider_instance)
         # handle regular provider listing, always add back folder first
         if not prov or not sub_path:
-            yield BrowseFolder(item_id="root", provider="library", path="root", name="..")
+            prepend_items.append(
+                BrowseFolder(item_id="root", provider="library", path="root", name="..")
+            )
             if not prov:
-                return
+                return PagedItems(items=prepend_items, limit=limit, offset=offset)
         else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
-            yield BrowseFolder(
-                item_id="back", provider=provider_instance, path=back_path, name=".."
+            prepend_items.append(
+                BrowseFolder(item_id="back", provider=provider_instance, path=back_path, name="..")
             )
-        async for item in prov.browse(path):
-            yield item
+        prov_items = await prov.browse(path, offset, limit)
+        prov_items.items = prepend_items + prov_items.items
+        return prov_items
 
     @api_command("music/recently_played_items")
     async def recently_played(
@@ -594,7 +607,7 @@ class MusicController(CoreController):
             f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
             f"last_played = {timestamp} WHERE item_id = {item_id}"
         )
-        await self._db.commit()
+        await self.database.commit()
 
     def get_controller(
         self, media_type: MediaType

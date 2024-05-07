@@ -645,8 +645,11 @@ class OpenSonicProvider(MusicProvider):
             raise MediaNotFoundError(msg) from e
         return self._parse_playlist(sonic_playlist)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
-        """Provide a generator for the tracks on a specified Playlist."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
         try:
             sonic_playlist: SonicPlaylist = await self._run_async(
                 self._conn.getPlaylist, prov_playlist_id
@@ -657,7 +660,8 @@ class OpenSonicProvider(MusicProvider):
         for index, sonic_song in enumerate(sonic_playlist.songs):
             track = self._parse_track(sonic_song)
             track.position = index
-            yield track
+            result.append(track)
+        return result
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""

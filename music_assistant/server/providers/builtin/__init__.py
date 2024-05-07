@@ -349,16 +349,16 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
-        # handle built-in playlists
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            async for item in self._get_builtin_playlist_tracks(prov_playlist_id):
-                yield item
-            return
+            return await self._get_builtin_playlist_tracks(prov_playlist_id)
         # user created universal playlist
+        result: list[Track] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id)
-        for count, uri in enumerate(playlist_items):
+        for index, uri in enumerate(playlist_items[offset:limit]):
             try:
                 # get the provider item and not the full track from a regular 'get' call
                 # as we only need basic track info here
@@ -367,10 +367,11 @@ class BuiltinProvider(MusicProvider):
                 track = await media_controller.get_provider_item(
                     item_id, provider_instance_id_or_domain
                 )
-                track.position = count
-                yield track
+                track.position = offset + index
+                result.append(track)
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning("Skipping item in playlist: %s:%s", uri, str(err))
+        return result
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
@@ -502,26 +503,27 @@ class BuiltinProvider(MusicProvider):
         self, builtin_playlist_id: str
     ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given builtin playlist id."""
+        result: list[Track] = []
         if builtin_playlist_id == ALL_LIBRARY_TRACKS:
-            res = await self.mass.music.tracks.library_items(limit=2500, order_by="RANDOM()")
-            for idx, item in enumerate(res.items, 1):
+            db_result = await self.mass.music.tracks.library_items(limit=2500, order_by="RANDOM()")
+            for idx, item in enumerate(db_result.items):
                 item.position = idx
-                yield item
-            return
+                result.append(item)
+            return result
         if builtin_playlist_id == ALL_FAVORITE_TRACKS:
             res = await self.mass.music.tracks.library_items(
                 favorite=True, limit=2500, order_by="RANDOM()"
             )
             for idx, item in enumerate(res.items, 1):
                 item.position = idx
-                yield item
-            return
+                result.append(item)
+            return result
         if builtin_playlist_id == RANDOM_TRACKS:
             res = await self.mass.music.tracks.library_items(limit=100, order_by="RANDOM()")
             for idx, item in enumerate(res.items, 1):
                 item.position = idx
-                yield item
-            return
+                result.append(item)
+            return result
         if builtin_playlist_id == RANDOM_ALBUM:
             for random_album in (
                 await self.mass.music.albums.library_items(limit=1, order_by="RANDOM()")
@@ -533,8 +535,8 @@ class BuiltinProvider(MusicProvider):
                 )
                 for idx, track in enumerate(tracks, 1):
                     track.position = idx
-                    yield track
-                return
+                    result.append(track)
+                return result
         if builtin_playlist_id == RANDOM_ARTIST:
             for random_artist in (
                 await self.mass.music.artists.library_items(limit=1, order_by="RANDOM()")
@@ -546,14 +548,15 @@ class BuiltinProvider(MusicProvider):
                 )
                 for idx, track in enumerate(tracks, 1):
                     track.position = idx
-                    yield track
-                return
+                    result.append(track)
+                return result
         if builtin_playlist_id == RECENTLY_PLAYED:
             tracks = await self.mass.music.recently_played(250, [MediaType.TRACK])
             for idx, track in enumerate(tracks, 1):
                 track.position = idx
-                yield track
-            return
+                result.append(track)
+            return result
+        return result
 
     async def _read_playlist_file_items(self, playlist_id: str) -> list[str]:
         """Return lines of a playlist file."""

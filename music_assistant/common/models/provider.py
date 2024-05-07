@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any
 
 from mashumaro.mixins.orjson import DataClassORJSONMixin
 
@@ -58,8 +58,9 @@ class ProviderManifest(DataClassORJSONMixin):
         return await load_json_file(manifest_file, ProviderManifest)
 
 
-class ProviderInstance(TypedDict):
-    """Provider instance detailed dict when a provider is serialized over the api."""
+@dataclass
+class ProviderInstance(DataClassORJSONMixin):
+    """Provider instance details when a provider is serialized over the api."""
 
     type: ProviderType
     domain: str
@@ -67,7 +68,7 @@ class ProviderInstance(TypedDict):
     instance_id: str
     supported_features: list[ProviderFeature]
     available: bool
-    icon: str | None
+    icon: str | None = None
     is_streaming_provider: bool | None = None  # music providers only
 
 
