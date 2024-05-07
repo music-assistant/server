@@ -585,9 +585,10 @@ class MusicController(CoreController):
 
         if provider_instance_id_or_domain == "library":
             prov_key = "library"
-        else:
-            prov = self.mass.get_provider(provider_instance_id_or_domain)
+        elif prov := self.mass.get_provider(provider_instance_id_or_domain):
             prov_key = prov.lookup_key
+        else:
+            prov_key = provider_instance_id_or_domain
 
         # update generic playlog table
         await self.database.insert(
