@@ -22,7 +22,6 @@ from typing import Self
 from music_assistant.constants import MASS_LOGGER_NAME
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.helpers.process")
-PRIVILEGED = True
 
 DEFAULT_CHUNKSIZE = 64000
 
