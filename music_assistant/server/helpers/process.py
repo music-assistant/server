@@ -105,6 +105,7 @@ class AsyncProcess:
                     limit=1000000 if attempt == 0 else 65536,
                     pipesize=1000000 if attempt == 0 else -1,
                 )
+                break
             except PermissionError:
                 if attempt > 0:
                     raise
