@@ -664,6 +664,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             metadata=self.parse_metadata_track(track=track),
             track_number=position,
             position=position,
+            disc_number=getattr(track, "disk_number", 1),
         )
         if isrc := getattr(track, "isrc", None):
             item.external_ids.add((ExternalID.ISRC, isrc))
