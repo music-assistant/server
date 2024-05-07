@@ -143,7 +143,7 @@ class QobuzProvider(MusicProvider):
         return SUPPORTED_FEATURES
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -152,6 +152,13 @@ class QobuzProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
+        media_types = [
+            x
+            for x in media_types
+            if x in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return result
         params = {"query": search_query, "limit": limit}
         if len(media_types) == 1:
             # qobuz does not support multiple searchtypes, falls back to all if no type given
@@ -164,25 +171,25 @@ class QobuzProvider(MusicProvider):
             if media_types[0] == MediaType.PLAYLIST:
                 params["type"] = "playlists"
         if searchresult := await self._get_data("catalog/search", **params):
-            if "artists" in searchresult:
+            if "artists" in searchresult and MediaType.ARTIST in media_types:
                 result.artists += [
                     self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
-            if "albums" in searchresult:
+            if "albums" in searchresult and MediaType.ALBUM in media_types:
                 result.albums += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
-            if "tracks" in searchresult:
+            if "tracks" in searchresult and MediaType.TRACK in media_types:
                 result.tracks += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
-            if "playlists" in searchresult:
+            if "playlists" in searchresult and MediaType.PLAYLIST in media_types:
                 result.playlists += [
                     self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]

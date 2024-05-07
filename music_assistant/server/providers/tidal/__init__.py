@@ -255,19 +255,28 @@ class TidalProvider(MusicProvider):
     async def search(
         self,
         search_query: str,
-        media_types: list[MediaType] | None = None,
+        media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
+        parsed_results = SearchResults()
+        media_types = [
+            x
+            for x in media_types
+            if x in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return parsed_results
+
         tidal_session = await self._get_tidal_session()
         search_query = search_query.replace("'", "")
         results = await search(tidal_session, search_query, media_types, limit)
-        parsed_results = SearchResults()
+
         if results["artists"]:
             for artist in results["artists"]:
                 parsed_results.artists.append(self._parse_artist(artist))

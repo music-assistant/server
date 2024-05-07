@@ -178,6 +178,8 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
+        if not media_types:
+            media_types = MediaType.ALL
         # Check if the search query is a streaming provider public shareable URL
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
@@ -231,13 +233,13 @@ class MusicController(CoreController):
                 for sublist in zip_longest(*[x.artists for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             albums=[
                 item
                 for sublist in zip_longest(*[x.albums for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             tracks=[
                 item
                 for sublist in zip_longest(*[x.tracks for x in results_per_provider])
@@ -249,20 +251,20 @@ class MusicController(CoreController):
                 for sublist in zip_longest(*[x.playlists for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             radio=[
                 item
                 for sublist in zip_longest(*[x.radio for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
         )
 
     async def search_provider(
         self,
         search_query: str,
         provider_instance_id_or_domain: str,
-        media_types: list[MediaType] = MediaType.ALL,
+        media_types: list[MediaType],
         limit: int = 10,
     ) -> SearchResults:
         """Perform search on given provider.
@@ -271,7 +273,7 @@ class MusicController(CoreController):
         :param provider_instance_id_or_domain: instance_id or domain of the provider
                                                to perform the search on.
         :param provider_instance: instance id of the provider to perform the search on.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
         prov = self.mass.get_provider(provider_instance_id_or_domain)
