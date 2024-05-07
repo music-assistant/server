@@ -12,11 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
 from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    MediaNotFoundError,
-    ProviderUnavailableError,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     ItemMapping,
@@ -101,9 +97,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     break
         if library_id is None:
             # actually add a new item in the library db
-            if not item.provider_mappings:
-                msg = "Item is missing provider mapping(s)"
-                raise InvalidDataError(msg)
             async with self._db_add_lock:
                 library_id = await self._add_library_item(item)
                 new_item = True
@@ -188,7 +181,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 extra_query_params=extra_query_params,
                 count_only=True,
             )
-        return PagedItems(items=items, count=count, limit=limit, offset=offset, total=total)
+        return PagedItems(items=items, limit=limit, offset=offset, count=count, total=total)
 
     async def iter_library_items(
         self,

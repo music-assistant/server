@@ -718,17 +718,20 @@ class PlexProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_playlist_tracks(  # type: ignore[return]
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        # TODO: implement paging ?!
         plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
-        playlist_items = await self._run_async(plex_playlist.items)
-
-        for index, plex_track in enumerate(playlist_items or []):
+        if not (playlist_items := await self._run_async(plex_playlist.items)):
+            return result
+        for index, plex_track in enumerate(playlist_items):
             if track := await self._parse_track(plex_track):
                 track.position = index
-                yield track
+                result.append(track)
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""

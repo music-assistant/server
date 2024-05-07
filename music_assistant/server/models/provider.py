@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
-from music_assistant.common.models.provider import ProviderInstanceDict
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 from music_assistant.server.helpers.throttle_retry import ThrottlerManager
 
@@ -94,7 +93,7 @@ class Provider:
             return f"{self.manifest.name}.{postfix}"
         return self.manifest.name
 
-    def to_dict(self, *args, **kwargs) -> ProviderInstanceDict:
+    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
         """Return Provider(instance) as serializable dict."""
         return {
             "type": self.type.value,

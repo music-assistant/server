@@ -16,6 +16,7 @@ from music_assistant.common.models.media_items import (
     MediaItemType,
     PagedItems,
     Playlist,
+    PlaylistTrack,
     Radio,
     SearchResults,
     Track,
@@ -297,16 +298,20 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-    ) -> list[Track]:
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> PagedItems[PlaylistTrack]:
         """Get tracks for given playlist."""
-        return [
-            Track.from_dict(item)
-            for item in await self.client.send_command(
+        return PagedItems.parse(
+            await self.client.send_command(
                 "music/playlists/playlist_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-            )
-        ]
+                limit=limit,
+                offset=offset,
+            ),
+            PlaylistTrack,
+        )
 
     async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
@@ -432,12 +437,19 @@ class Music:
     async def browse(
         self,
         path: str | None = None,
-    ) -> list[MediaItemType]:
+        limit: int | None = None,
+        offset: int | None = None,
+    ) -> PagedItems[MediaItemType]:
         """Browse Music providers."""
-        return [
-            media_from_dict(item)
-            for item in await self.client.send_command("music/browse", path=path)
-        ]
+        return PagedItems.parse(
+            await self.client.send_command(
+                "music/browse",
+                path=path,
+                limit=limit,
+                offset=offset,
+            ),
+            MediaItemType,
+        )
 
     async def recently_played(
         self, limit: int = 10, media_types: list[MediaType] | None = None
@@ -547,7 +559,7 @@ class Music:
         # handle regular image within mediaitem
         metadata: MediaItemMetadata
         if metadata := getattr(item, "metadata", None):
-            for img in metadata.images:
+            for img in metadata.images or []:
                 if img.type == type:
                     return img
         # retry with album/track artist(s)

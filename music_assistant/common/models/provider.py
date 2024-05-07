@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field, fields
-from typing import Any, TypedDict
+from dataclasses import dataclass, field
+from typing import Any
 
 from mashumaro.mixins.orjson import DataClassORJSONMixin
 
@@ -68,11 +68,8 @@ class ProviderInstance(DataClassORJSONMixin):
     instance_id: str
     supported_features: list[ProviderFeature]
     available: bool
-    icon: str | None
+    icon: str | None = None
     is_streaming_provider: bool | None = None  # music providers only
-
-
-ProviderInstanceDict = TypedDict("ProviderInstanceDict", fields(ProviderInstance))
 
 
 @dataclass

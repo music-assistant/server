@@ -9,7 +9,11 @@ import uuid
 from collections.abc import Callable
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.client.exceptions import ConnectionClosed, InvalidServerVersion, InvalidState
+from music_assistant.client.exceptions import (
+    ConnectionClosed,
+    InvalidServerVersion,
+    InvalidState,
+)
 from music_assistant.common.models.api import (
     CommandMessage,
     ErrorResultMessage,
@@ -150,7 +154,7 @@ class MusicAssistantClient:
         item: MediaItemType | ItemMapping | QueueItem,
         type: ImageType = ImageType.THUMB,  # noqa: A002
         size: int = 0,
-    ) -> MediaItemImage | None:
+    ) -> str | None:
         """Get image URL for MediaItem, QueueItem or ItemMapping."""
         # handle queueitem with media_item attribute
         if media_item := getattr(item, "media_item", None):
@@ -215,15 +219,6 @@ class MusicAssistantClient:
             info.server_version,
             info.schema_version,
         )
-        # grab initial info
-        self._providers = {
-            x["instance_id"]: ProviderInstance.from_dict(x)
-            for x in await self.send_command("providers")
-        }
-        self._provider_manifests = {
-            x["domain"]: ProviderManifest.from_dict(x)
-            for x in await self.send_command("providers/manifests")
-        }
 
     async def send_command(
         self,
@@ -291,6 +286,15 @@ class MusicAssistantClient:
         # fetch initial state
         # we do this in a separate task to not block reading messages
         async def fetch_initial_state() -> None:
+            self._providers = {
+                x["instance_id"]: ProviderInstance.from_dict(x)
+                for x in await self.send_command("providers")
+            }
+            self._provider_manifests = {
+                x["domain"]: ProviderManifest.from_dict(x)
+                for x in await self.send_command("providers/manifests")
+            }
+            await self._player_queues.fetch_state()
             await self._players.fetch_state()
 
             if init_ready is not None:

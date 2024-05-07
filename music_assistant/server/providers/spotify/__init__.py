@@ -310,24 +310,25 @@ class SpotifyProvider(MusicProvider):
             if item["id"]
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
-        count = 1
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
         uri = (
             "me/tracks"
             if prov_playlist_id == self._get_liked_songs_playlist_id()
             else f"playlists/{prov_playlist_id}/tracks"
         )
-        for item in await self._get_all_items(
-            uri,
-        ):
+        spotify_result = await self._get_data(uri, limit=limit, offset=offset)
+        for index, item in enumerate(spotify_result["items"]):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
             # use count as position
             track = self._parse_track(item["track"])
-            track.position = count
-            yield track
-            count += 1
+            track.position = offset + index
+            result.append(track)
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
@@ -389,11 +390,9 @@ class SpotifyProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         track_uris = []
-        async for track in self.get_playlist_tracks(prov_playlist_id):
-            if track.position in positions_to_remove:
+        for pos in positions_to_remove:
+            for track in await self.get_playlist_tracks(prov_playlist_id, pos, pos):
                 track_uris.append({"uri": f"spotify:track:{track.item_id}"})
-            if len(track_uris) == positions_to_remove:
-                break
         data = {"tracks": track_uris}
         return await self._delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 

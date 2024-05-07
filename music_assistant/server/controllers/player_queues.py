@@ -209,11 +209,10 @@ class PlayerQueuesController(CoreController):
     def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> PagedItems[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
         if queue_id not in self._queue_items:
-            return PagedItems(items=[], count=0, limit=limit, offset=offset, total=0)
+            return PagedItems(items=[], limit=limit, offset=offset)
 
         return PagedItems(
             items=self._queue_items[queue_id][offset:limit],
-            count=len(self._queue_items[offset:limit][queue_id]),
             limit=limit,
             offset=offset,
             total=len(self._queue_items[queue_id]),

@@ -329,13 +329,22 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             for count, deezer_track in enumerate(await album.get_tracks(), 1)
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
-        """Get all tracks in a playlist."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        # TODO: implement pagination!
         playlist = await self.client.get_playlist(int(prov_playlist_id))
-        for count, deezer_track in enumerate(await playlist.get_tracks(), 1):
-            yield self.parse_track(
-                track=deezer_track, user_country=self.gw_client.user_country, position=count
+        for index, deezer_track in enumerate(await playlist.get_tracks()):
+            result.append(
+                self.parse_track(
+                    track=deezer_track,
+                    user_country=self.gw_client.user_country,
+                    position=offset + index,
+                )
             )
+        return result
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get albums by an artist."""
@@ -413,7 +422,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = []
-        async for track in self.get_playlist_tracks(prov_playlist_id):
+        for track in await self.get_playlist_tracks(prov_playlist_id, 0, 10000):
             if track.position in positions_to_remove:
                 playlist_track_ids.append(int(track.item_id))
             if len(playlist_track_ids) == len(positions_to_remove):
