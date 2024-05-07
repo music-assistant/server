@@ -69,7 +69,7 @@ def handle_player_command(
         player_id = kwargs["player_id"] if "player_id" in kwargs else args[0]
         if (player := self._players.get(player_id)) is None or not player.available:
             # player not existent
-            self.logger.debug(
+            self.logger.warning(
                 "Ignoring command %s for unavailable player %s",
                 func.__name__,
                 player_id,
@@ -582,7 +582,6 @@ class PlayerController(CoreController):
         await self.cmd_unsync_many([player_id])
 
     @api_command("players/cmd/sync_many")
-    @handle_player_command
     async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
         parent_player: Player = self.get(target_player, True)
@@ -617,14 +616,13 @@ class PlayerController(CoreController):
                 )
                 continue
             # if we reach here, all checks passed
-            final_player_ids.add(child_player_id)
+            final_player_ids.append(child_player_id)
 
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
         await player_provider.cmd_sync_many(target_player, child_player_ids)
 
     @api_command("players/cmd/unsync_many")
-    @handle_player_command
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:
         """Handle UNSYNC command for all the given players.
 
