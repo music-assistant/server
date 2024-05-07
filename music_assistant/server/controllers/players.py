@@ -28,6 +28,7 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import (
     AlreadyRegisteredError,
+    PlayerCommandFailed,
     PlayerUnavailableError,
     ProviderUnavailableError,
     UnsupportedFeaturedException,
@@ -441,6 +442,8 @@ class PlayerController(CoreController):
         player = self.get(player_id, True)
         if player.announcement_in_progress:
             return
+        if not url.startswith("http"):
+            raise PlayerCommandFailed("Only URLs are supported for announcements")
         try:
             # mark announcement_in_progress on player
             player.announcement_in_progress = True
