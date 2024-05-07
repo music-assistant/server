@@ -12,6 +12,7 @@ from music_assistant.common.models.media_items import (
     Artist,
     BrowseFolder,
     MediaItemType,
+    PagedItems,
     Playlist,
     Radio,
     SearchResults,
@@ -145,13 +146,12 @@ class MusicProvider(Provider):
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
 
-    async def get_playlist_tracks(  # type: ignore[return]
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
-        yield  # type: ignore
 
     async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
@@ -283,7 +283,7 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
+    async def browse(self, path: str, offset: int, limit: int) -> PagedItems[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -291,74 +291,88 @@ class MusicProvider(Provider):
         if ProviderFeature.BROWSE not in self.supported_features:
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
-
+        items: list[MediaItemType] = []
+        index = 0
         subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
+        generator: AsyncGenerator[MediaItemType, None] | None = None
         if subpath == "artists":
-            async for artist in self.get_library_artists():
-                yield artist
-            return
-        if subpath == "albums":
-            async for album in self.get_library_albums():
-                yield album
-            return
-        if subpath == "tracks":
-            async for track in self.get_library_tracks():
-                yield track
-            return
-        if subpath == "radios":
-            async for radio in self.get_library_radios():
-                yield radio
-            return
-        if subpath == "playlists":
-            async for playlist in self.get_library_playlists():
-                yield playlist
-            return
-        if subpath:
+            generator = self.get_library_artists()
+        elif subpath == "albums":
+            generator = self.get_library_albums()
+        elif subpath == "tracks":
+            generator = self.get_library_tracks()
+        elif subpath == "radios":
+            generator = self.get_library_radios()
+        elif subpath == "playlists":
+            generator = self.get_library_playlists()
+        elif subpath:
             # unknown path
             msg = "Invalid subpath"
             raise KeyError(msg)
-        # no subpath: return main listing
-        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            yield BrowseFolder(
-                item_id="artists",
-                provider=self.domain,
-                path=path + "artists",
-                name="",
-                label="artists",
-            )
-        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            yield BrowseFolder(
-                item_id="albums",
-                provider=self.domain,
-                path=path + "albums",
-                name="",
-                label="albums",
-            )
-        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-            yield BrowseFolder(
-                item_id="tracks",
-                provider=self.domain,
-                path=path + "tracks",
-                name="",
-                label="tracks",
-            )
-        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            yield BrowseFolder(
-                item_id="playlists",
-                provider=self.domain,
-                path=path + "playlists",
-                name="",
-                label="playlists",
-            )
-        if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-            yield BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path + "radios",
-                name="",
-                label="radios",
-            )
+
+        if generator:
+            # grab items from library generator
+            async for item in generator:
+                if index < offset:
+                    continue
+                items.append(item)
+                index += 1
+                if len(items) >= limit:
+                    break
+        else:
+            # no subpath: return main listing
+            if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
+                items.append(
+                    BrowseFolder(
+                        item_id="artists",
+                        provider=self.domain,
+                        path=path + "artists",
+                        name="",
+                        label="artists",
+                    )
+                )
+            if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
+                items.append(
+                    BrowseFolder(
+                        item_id="albums",
+                        provider=self.domain,
+                        path=path + "albums",
+                        name="",
+                        label="albums",
+                    )
+                )
+            if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
+                items.append(
+                    BrowseFolder(
+                        item_id="tracks",
+                        provider=self.domain,
+                        path=path + "tracks",
+                        name="",
+                        label="tracks",
+                    )
+                )
+            if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
+                items.append(
+                    BrowseFolder(
+                        item_id="playlists",
+                        provider=self.domain,
+                        path=path + "playlists",
+                        name="",
+                        label="playlists",
+                    )
+                )
+            if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
+                items.append(
+                    BrowseFolder(
+                        item_id="radios",
+                        provider=self.domain,
+                        path=path + "radios",
+                        name="",
+                        label="radios",
+                    )
+                )
+        return PagedItems(items=items, limit=limit, offset=offset)
 
     async def recommendations(self) -> list[MediaItemType]:
         """Get this provider's recommendations.

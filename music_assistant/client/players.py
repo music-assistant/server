@@ -4,16 +4,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from music_assistant.common.models.enums import EventType, QueueOption, RepeatMode
+from music_assistant.common.models.enums import EventType
 from music_assistant.common.models.player import Player
-from music_assistant.common.models.player_queue import PlayerQueue
-from music_assistant.common.models.queue_item import QueueItem
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from music_assistant.common.models.event import MassEvent
-    from music_assistant.common.models.media_items import MediaItemType
 
     from .client import MusicAssistantClient
 
@@ -31,45 +28,41 @@ class Players:
                 EventType.PLAYER_ADDED,
                 EventType.PLAYER_REMOVED,
                 EventType.PLAYER_UPDATED,
-                EventType.QUEUE_ADDED,
-                EventType.QUEUE_UPDATED,
             ),
         )
-        # below items are retrieved after connect
+        # the initial items are retrieved after connect
         self._players: dict[str, Player] = {}
-        self._queues: dict[str, PlayerQueue] = {}
 
     @property
     def players(self) -> list[Player]:
         """Return all players."""
         return list(self._players.values())
 
-    @property
-    def player_queues(self) -> list[PlayerQueue]:
-        """Return all player queues."""
-        return list(self._queues.values())
-
     def __iter__(self) -> Iterator[Player]:
         """Iterate over (available) players."""
         return iter(self._players.values())
 
-    def get_player(self, player_id: str) -> Player | None:
+    def get(self, player_id: str) -> Player | None:
         """Return Player by ID (or None if not found)."""
         return self._players.get(player_id)
 
-    def get_player_queue(self, queue_id: str) -> PlayerQueue | None:
-        """Return PlayerQueue by ID (or None if not found)."""
-        return self._queues.get(queue_id)
-
     #  Player related endpoints/commands
-
-    async def get_players(self) -> list[Player]:
-        """Fetch all Players from the server."""
-        return [Player.from_dict(item) for item in await self.client.send_command("players/all")]
 
     async def player_command_stop(self, player_id: str) -> None:
         """Send STOP command to given player (directly)."""
         await self.client.send_command("players/cmd/stop", player_id=player_id)
+
+    async def player_command_play(self, player_id: str) -> None:
+        """Send PLAY command to given player (directly)."""
+        await self.client.send_command("players/cmd/play", player_id=player_id)
+
+    async def player_command_pause(self, player_id: str) -> None:
+        """Send PAUSE command to given player (directly)."""
+        await self.client.send_command("players/cmd/pause", player_id=player_id)
+
+    async def player_command_play_pause(self, player_id: str) -> None:
+        """Send PLAY_PAUSE (toggle) command to given player (directly)."""
+        await self.client.send_command("players/cmd/pause", player_id=player_id)
 
     async def player_command_power(self, player_id: str, powered: bool) -> None:
         """Send POWER command to given player."""
@@ -92,6 +85,14 @@ class Players:
     async def player_command_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
         await self.client.send_command("players/cmd/volume_mute", player_id=player_id, muted=muted)
+
+    async def player_command_seek(self, player_id: str, position: int) -> None:
+        """Handle SEEK command for given player (directly).
+
+        - player_id: player_id of the player to handle the command.
+        - position: position in seconds to seek to in the current playing item.
+        """
+        await self.client.send_command("players/cmd/seek", player_id=player_id, position=position)
 
     async def player_command_sync(self, player_id: str, target_player: str) -> None:
         """
@@ -121,6 +122,16 @@ class Players:
         """
         await self.client.send_command("players/cmd/unsync", player_id=player_id)
 
+    async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
+        """Create temporary sync group by joining given players to target player."""
+        await self.client.send_command(
+            "players/cmd/sync_many", target_player=target_player, child_player_ids=child_player_ids
+        )
+
+    async def cmd_unsync_many(self, player_ids: list[str]) -> None:
+        """Create temporary sync group by joining given players to target player."""
+        await self.client.send_command("players/cmd/unsync_many", player_ids)
+
     async def play_announcement(
         self,
         player_id: str,
@@ -139,6 +150,23 @@ class Players:
 
     #  PlayerGroup related endpoints/commands
 
+    async def create_group(self, provider: str, name: str, members: list[str]) -> Player:
+        """Create new (permanent) Player/Sync Group on given PlayerProvider with name and members.
+
+        - provider: provider domain or instance id to create the new group on.
+        - name: Name for the new group to create.
+        - members: A list of player_id's that should be part of this group.
+
+        Returns the newly created player on success.
+        NOTE: Fails if the given provider does not support creating new groups
+        or members are given that can not be handled by the provider.
+        """
+        return Player.from_dict(
+            await self.client.send_command(
+                "players/create_group", provider=provider, name=name, members=members
+            )
+        )
+
     async def set_player_group_volume(self, player_id: str, volume_level: int) -> None:
         """
         Send VOLUME_SET command to given playergroup.
@@ -151,6 +179,10 @@ class Players:
             "players/cmd/group_volume", player_id=player_id, volume_level=volume_level
         )
 
+    async def set_player_group_power(self, player_id: str, power: bool) -> None:
+        """Handle power command for a (Sync)Group."""
+        await self.client.send_command("players/cmd/group_volume", player_id=player_id, power=power)
+
     async def set_player_group_members(self, player_id: str, members: list[str]) -> None:
         """
         Update the memberlist of the given PlayerGroup.
@@ -162,159 +194,21 @@ class Players:
             "players/cmd/set_members", player_id=player_id, members=members
         )
 
-    #  PlayerQueue related endpoints/commands
-
-    async def get_player_queues(self) -> list[PlayerQueue]:
-        """Fetch all PlayerQueues from the server."""
-        return [
-            PlayerQueue.from_dict(item)
-            for item in await self.client.send_command("players/queue/all")
-        ]
-
-    async def get_player_queue_items(self, queue_id: str) -> list[QueueItem]:
-        """Get all QueueItems for given PlayerQueue."""
-        return [
-            QueueItem.from_dict(item)
-            for item in await self.client.send_command("players/queue/items", queue_id=queue_id)
-        ]
-
-    async def queue_command_play(self, queue_id: str) -> None:
-        """Send PLAY command to given queue."""
-        await self.client.send_command("players/queue/play", queue_id=queue_id)
-
-    async def queue_command_pause(self, queue_id: str) -> None:
-        """Send PAUSE command to given queue."""
-        await self.client.send_command("players/queue/pause", queue_id=queue_id)
-
-    async def queue_command_stop(self, queue_id: str) -> None:
-        """Send STOP command to given queue."""
-        await self.client.send_command("players/queue/stop", queue_id=queue_id)
-
-    async def queue_command_next(self, queue_id: str) -> None:
-        """Send NEXT TRACK command to given queue."""
-        await self.client.send_command("players/queue/next", queue_id=queue_id)
-
-    async def queue_command_previous(self, queue_id: str) -> None:
-        """Send PREVIOUS TRACK command to given queue."""
-        await self.client.send_command("players/queue/previous", queue_id=queue_id)
-
-    async def queue_command_clear(self, queue_id: str) -> None:
-        """Send CLEAR QUEUE command to given queue."""
-        await self.client.send_command("players/queue/clear", queue_id=queue_id)
-
-    async def queue_command_move_item(
-        self, queue_id: str, queue_item_id: str, pos_shift: int = 1
-    ) -> None:
-        """
-        Move queue item x up/down the queue.
-
-        Parameters:
-        - queue_id: id of the queue to process this request.
-        - queue_item_id: the item_id of the queueitem that needs to be moved.
-        - pos_shift: move item x positions down if positive value
-        - pos_shift: move item x positions up if negative value
-        - pos_shift:  move item to top of queue as next item if 0
-
-        NOTE: Fails if the given QueueItem is already player or loaded in the buffer.
-        """
-        await self.client.send_command(
-            "players/queue/move_item",
-            queue_id=queue_id,
-            queue_item_id=queue_item_id,
-            pos_shift=pos_shift,
-        )
-
-    async def queue_command_move_up(self, queue_id: str, queue_item_id: str) -> None:
-        """Move given queue item one place up in the queue."""
-        await self.queue_command_move_item(
-            queue_id=queue_id, queue_item_id=queue_item_id, pos_shift=-1
-        )
-
-    async def queue_command_move_down(self, queue_id: str, queue_item_id: str) -> None:
-        """Move given queue item one place down in the queue."""
-        await self.queue_command_move_item(
-            queue_id=queue_id, queue_item_id=queue_item_id, pos_shift=1
-        )
-
-    async def queue_command_move_next(self, queue_id: str, queue_item_id: str) -> None:
-        """Move given queue item as next up in the queue."""
-        await self.queue_command_move_item(
-            queue_id=queue_id, queue_item_id=queue_item_id, pos_shift=0
-        )
-
-    async def queue_command_delete(self, queue_id: str, item_id_or_index: int | str) -> None:
-        """Delete item (by id or index) from the queue."""
-        await self.client.send_command(
-            "players/queue/delete_item", queue_id=queue_id, item_id_or_index=item_id_or_index
-        )
-
-    async def queue_command_seek(self, queue_id: str, position: int) -> None:
-        """
-        Handle SEEK command for given queue.
-
-        Parameters:
-        - position: position in seconds to seek to in the current playing item.
-        """
-        await self.client.send_command("players/queue/seek", queue_id=queue_id, position=position)
-
-    async def queue_command_skip(self, queue_id: str, seconds: int) -> None:
-        """
-        Handle SKIP command for given queue.
-
-        Parameters:
-        - seconds: number of seconds to skip in track. Use negative value to skip back.
-        """
-        await self.client.send_command("players/queue/skip", queue_id=queue_id, seconds=seconds)
-
-    async def queue_command_shuffle(self, queue_id: str, shuffle_enabled=bool) -> None:
-        """Configure shuffle mode on the the queue."""
-        await self.client.send_command(
-            "players/queue/shuffle", queue_id=queue_id, shuffle_enabled=shuffle_enabled
-        )
-
-    async def queue_command_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
-        """Configure repeat mode on the the queue."""
-        await self.client.send_command(
-            "players/queue/repeat", queue_id=queue_id, repeat_mode=repeat_mode
-        )
-
-    async def play_media(
-        self,
-        queue_id: str,
-        media: MediaItemType | list[MediaItemType] | str | list[str],
-        option: QueueOption | None = None,
-        radio_mode: bool = False,
-    ) -> None:
-        """
-        Play media item(s) on the given queue.
-
-        - media: Media that should be played (MediaItem(s) or uri's).
-        - queue_opt: Which enqueue mode to use.
-        - radio_mode: Enable radio mode for the given item(s).
-        """
-        await self.client.send_command(
-            "players/queue/play_media",
-            queue_id=queue_id,
-            media=media,
-            option=option,
-            radio_mode=radio_mode,
-        )
-
     # Other endpoints/commands
+
+    async def _get_players(self) -> list[Player]:
+        """Fetch all Players from the server."""
+        return [Player.from_dict(item) for item in await self.client.send_command("players/all")]
 
     async def fetch_state(self) -> None:
         """Fetch initial state once the server is connected."""
-        for player in await self.get_players():
+        for player in await self._get_players():
             self._players[player.player_id] = player
-        for queue in await self.get_player_queues():
-            self._queues[queue.queue_id] = queue
 
     def _handle_event(self, event: MassEvent) -> None:
-        """Handle incoming player(queue) event."""
+        """Handle incoming player event."""
         if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_UPDATED):
             self._players[event.object_id] = Player.from_dict(event.data)
             return
         if event.event == EventType.PLAYER_REMOVED:
             self._players.pop(event.object_id, None)
-        if event.event in (EventType.QUEUE_ADDED, EventType.QUEUE_UPDATED):
-            self._queues[event.object_id] = PlayerQueue.from_dict(event.data)

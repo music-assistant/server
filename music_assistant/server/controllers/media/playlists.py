@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import random
-from collections.abc import AsyncGenerator
-from typing import TYPE_CHECKING, Any, cast
+from typing import Any
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri, parse_uri
@@ -15,7 +14,7 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import Playlist, PlaylistTrack, Track
+from music_assistant.common.models.media_items import PagedItems, Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -48,7 +47,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+        offset: int = 0,
+        limit: int = 50,
+    ) -> PagedItems[PlaylistTrack]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(
             item_id,
@@ -56,19 +57,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
             force_refresh=force_refresh,
         )
         prov = next(x for x in playlist.provider_mappings)
-        count = 0
-        async for track in self._get_provider_playlist_tracks(
+        tracks = await self._get_provider_playlist_tracks(
             prov.item_id,
             prov.provider_instance,
             cache_checksum=playlist.metadata.cache_checksum,
-        ):
-            count += 1
-            yield track
-            if count == 2500:
-                self.logger.warning(
-                    "Playlist %s has more than 2500 tracks - this will hurt performance!",
-                    playlist.name,
-                )
+            offset=offset,
+            limit=limit,
+        )
+        return PagedItems(items=tracks, limit=limit, offset=offset)
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
@@ -275,25 +271,24 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         cache_checksum: Any = None,
-    ) -> AsyncGenerator[PlaylistTrack, None]:
-        """Return album tracks for the given provider album id."""
+        offset: int = 0,
+        limit: int = 100,
+    ) -> list[PlaylistTrack]:
+        """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
         provider: MusicProvider = self.mass.get_provider(provider_instance_id_or_domain)
         if not provider:
-            return
+            return []
         # prefer cache items (if any)
-        cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks"
+        cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks.{offset}.{limit}"
         if (cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)) is not None:
-            for track_dict in cache:
-                yield PlaylistTrack.from_dict(track_dict)
-            return
+            return [PlaylistTrack.from_dict(x) for x in cache]
         # no items in cache - get listing from provider
-        all_items = []
-        async for item in provider.get_playlist_tracks(item_id):
+        result: list[Track] = []
+        for item in await provider.get_playlist_tracks(item_id, offset=offset, limit=limit):
             # double check if position set
             assert item.position is not None, "Playlist items require position to be set"
-            yield cast(PlaylistTrack, item) if TYPE_CHECKING else item
-            all_items.append(item)
+            result.append(item)
             # if this is a complete track object, pre-cache it as
             # that will save us an (expensive) lookup later
             if item.image and item.artist_str and item.album and provider.domain != "builtin":
@@ -304,9 +299,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if cache_checksum != "no_cache":
             self.mass.create_task(
                 self.mass.cache.set(
-                    cache_key, [x.to_dict() for x in all_items], checksum=cache_checksum
+                    cache_key, [x.to_dict() for x in result], checksum=cache_checksum
                 )
             )
+        return result
 
     async def _get_provider_dynamic_tracks(
         self,
