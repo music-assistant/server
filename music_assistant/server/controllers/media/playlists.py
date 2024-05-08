@@ -203,8 +203,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         await playlist_prov.add_playlist_tracks(playlist_prov_map.item_id, list(ids_to_add))
         # invalidate cache so tracks get refreshed
-        cache_key = f"{playlist_prov.lookup_key}.playlist.{playlist_prov_map.item_id}.tracks"
-        await self.mass.cache.delete(cache_key)
+        await self.get(
+            playlist.item_id,
+            playlist.provider,
+            force_refresh=True,
+        )
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
         """Add (single) track to playlist."""
@@ -232,8 +235,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             await provider.remove_playlist_tracks(prov_mapping.item_id, positions_to_remove)
         # invalidate cache so tracks get refreshed
-        cache_key = f"{provider.lookup_key}.playlist.{prov_mapping.item_id}.tracks"
-        await self.mass.cache.delete(cache_key)
+        await self.get(
+            playlist.item_id,
+            playlist.provider,
+            force_refresh=True,
+        )
 
     async def get_all_playlist_tracks(self, playlist: Playlist) -> list[PlaylistTrack]:
         """Return all tracks for given playlist (by unwrapping the paged listing)."""
