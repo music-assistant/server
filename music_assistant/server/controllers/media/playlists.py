@@ -142,21 +142,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
 
             # if target playlist is an exact provider match, we can add it
-            item_prov = self.mass.get_provider(provider_instance_id_or_domain)
-            if not item_prov or not item_prov.available:
-                self.logger.warning(
-                    "Skip adding %s to playlist: Provider %s is not available",
-                    uri,
-                    provider_instance_id_or_domain,
-                )
-                continue
-            if item_prov.lookup_key == playlist_prov.lookup_key:
-                ids_to_add.add(item_id)
-                continue
+            if provider_instance_id_or_domain != "library":
+                item_prov = self.mass.get_provider(provider_instance_id_or_domain)
+                if not item_prov or not item_prov.available:
+                    self.logger.warning(
+                        "Skip adding %s to playlist: Provider %s is not available",
+                        uri,
+                        provider_instance_id_or_domain,
+                    )
+                    continue
+                if item_prov.lookup_key == playlist_prov.lookup_key:
+                    ids_to_add.add(item_id)
+                    continue
 
             # ensure we have a full library track
             db_track = await self.mass.music.tracks.get(
-                item_id, provider_instance_id_or_domain, lazy=False, add_to_library=False
+                item_id, provider_instance_id_or_domain, lazy=False, add_to_library=True
             )
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
@@ -176,26 +177,35 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     track_version.item_id,
                 )
                 if track_version_uri in cur_playlist_track_uris:
-                    self.logger.info(
+                    self.logger.warning(
                         "Not adding %s to playlist %s - it already exists",
-                        track_version_uri,
+                        db_track.name,
                         playlist.name,
                     )
                     break  # already existing in the playlist
                 if playlist_prov.domain == "builtin":
                     # the builtin provider can handle uri's from all providers (with uri as id)
                     ids_to_add.add(track_version_uri)
+                    self.logger.info(
+                        "Adding %s to playlist %s",
+                        db_track.name,
+                        playlist.name,
+                    )
                     break
                 if item_prov.lookup_key == playlist_prov.lookup_key:
                     ids_to_add.add(track_version.item_id)
+                    self.logger.info(
+                        "Adding %s to playlist %s",
+                        db_track.name,
+                        playlist.name,
+                    )
                     break
             else:
                 self.logger.warning(
-                    "Can't add %s to playlist %s "
-                    " - If you want to migrate tracks between different providers, "
-                    "add the track(s) to the library first.",
-                    uri,
+                    "Can't add %s to playlist %s - it is not available provider %s",
+                    db_track.name,
                     playlist.name,
+                    playlist_prov.name,
                 )
 
         if not ids_to_add:
