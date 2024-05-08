@@ -8,13 +8,12 @@ from typing import Any
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri, parse_uri
 from music_assistant.common.models.enums import MediaType, ProviderFeature
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    MediaNotFoundError,
-    ProviderUnavailableError,
-    UnsupportedFeaturedException,
-)
-from music_assistant.common.models.media_items import PagedItems, Playlist, PlaylistTrack, Track
+from music_assistant.common.models.errors import (InvalidDataError,
+                                                  MediaNotFoundError,
+                                                  ProviderUnavailableError,
+                                                  UnsupportedFeaturedException)
+from music_assistant.common.models.media_items import (PagedItems, Playlist,
+                                                       PlaylistTrack, Track)
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -317,7 +316,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         playlist_tracks = [
             x
-            async for x in self._get_provider_playlist_tracks(
+            for x in await self._get_provider_playlist_tracks(
                 item_id, provider_instance_id_or_domain
             )
             # filter out unavailable tracks
