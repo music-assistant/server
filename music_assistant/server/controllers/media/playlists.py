@@ -153,8 +153,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 ids_to_add.add(item_id)
                 continue
 
-            # ensure we have a full library version,
-            # matched against all providers before we continue
+            # ensure we have a full library track
             db_track = await self.mass.music.tracks.get(
                 item_id, provider_instance_id_or_domain, lazy=True, add_to_library=False
             )
