@@ -153,6 +153,7 @@ class SpotifyProvider(MusicProvider):
             ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
             ProviderFeature.LIBRARY_TRACKS_EDIT,
             ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_CREATE,
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
@@ -397,6 +398,12 @@ class SpotifyProvider(MusicProvider):
                 track_uris.append({"uri": f"spotify:track:{track.item_id}"})
         data = {"tracks": track_uris}
         return await self._delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
+
+    async def create_playlist(self, name: str) -> Playlist:
+        """Create a new playlist on provider with given name."""
+        data = {"name": name, "public": False}
+        new_playlist = await self._post_data(f"users/{self._sp_user}/playlists", data=data)
+        return self._parse_playlist(new_playlist)
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
