@@ -33,8 +33,6 @@ from music_assistant.common.models.media_items import (
     AlbumTrack,
     MediaItemType,
     PagedItems,
-    Playlist,
-    PlaylistTrack,
     media_from_dict,
 )
 from music_assistant.common.models.player import PlayerMedia
@@ -343,7 +341,7 @@ class PlayerQueuesController(CoreController):
                 if radio_mode:
                     radio_source.append(media_item)
                 elif media_item.media_type == MediaType.PLAYLIST:
-                    tracks += await self.get_playlist_tracks(media_item)
+                    tracks += await self.mass.music.playlists.get_all_playlist_tracks(media_item)
                     await self.mass.music.mark_item_played(
                         media_item.media_type, media_item.item_id, media_item.provider
                     )
@@ -1223,34 +1221,6 @@ class PlayerQueuesController(CoreController):
             provider_instance_id_or_domain=album.provider,
             in_library_only=album_items_conf == "library_tracks",
         )
-
-    async def get_playlist_tracks(self, playlist: Playlist) -> list[PlaylistTrack]:
-        """Return all tracks for given playlist."""
-        result: list[PlaylistTrack] = []
-        offset = 0
-        limit = 50
-        self.logger.debug(
-            "Fetching tracks to play for playlist %s",
-            playlist.name,
-        )
-        while True:
-            paged_items = await self.mass.music.playlists.tracks(
-                item_id=playlist.item_id,
-                provider_instance_id_or_domain=playlist.provider,
-                offset=offset,
-                limit=limit,
-            )
-            result += paged_items.items
-            if paged_items.count != limit:
-                break
-            offset += paged_items.count
-            if offset == 500:
-                self.logger.info(
-                    "Adding tracks for playlist %s to the queue which "
-                    "has more than 500 items, this can take a while.",
-                    playlist.name,
-                )
-        return result
 
     def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""
