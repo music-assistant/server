@@ -1241,7 +1241,7 @@ class PlayerQueuesController(CoreController):
                 limit=limit,
             )
             result += paged_items.items
-            if paged_items.count < limit:
+            if paged_items.count != limit:
                 break
             offset += paged_items.count
             if offset == 500:
