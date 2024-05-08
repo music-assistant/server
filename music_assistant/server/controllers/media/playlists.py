@@ -317,7 +317,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         playlist_tracks = [
             x
-            async for x in self._get_provider_playlist_tracks(
+            for x in await self._get_provider_playlist_tracks(
                 item_id, provider_instance_id_or_domain
             )
             # filter out unavailable tracks
