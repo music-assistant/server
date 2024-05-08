@@ -8,6 +8,7 @@ import os
 import shutil
 from contextlib import suppress
 from itertools import zip_longest
+from math import inf
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
@@ -547,11 +548,11 @@ class MusicController(CoreController):
                 {
                     "item_id": item_id,
                     "provider": provider.lookup_key,
-                    "integrated": loudness.integrated,
-                    "true_peak": loudness.true_peak,
-                    "lra": loudness.lra,
-                    "threshold": loudness.threshold,
-                    "target_offset": loudness.target_offset,
+                    "integrated": round(loudness.integrated, 2),
+                    "true_peak": round(loudness.true_peak, 2),
+                    "lra": round(loudness.lra, 2),
+                    "threshold": round(loudness.threshold, 2),
+                    "target_offset": round(loudness.target_offset, 2),
                 },
                 allow_replace=True,
             )
@@ -568,6 +569,9 @@ class MusicController(CoreController):
                     "provider": provider.lookup_key,
                 },
             ):
+                if result["integrated"] == inf or result["integrated"] == -inf:
+                    return None
+
                 return LoudnessMeasurement(
                     integrated=result["integrated"],
                     true_peak=result["true_peak"],
