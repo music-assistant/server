@@ -55,6 +55,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             item_id,
             provider_instance_id_or_domain,
             force_refresh=force_refresh,
+            lazy=not force_refresh,
         )
         prov = next(x for x in playlist.provider_mappings)
         tracks = await self._get_provider_playlist_tracks(
@@ -347,12 +348,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     f"provider_item.track.{provider.lookup_key}.{item_id}", item.to_dict()
                 )
         # store (serializable items) in cache
-        if cache_checksum != "no_cache":
-            self.mass.create_task(
-                self.mass.cache.set(
-                    cache_key, [x.to_dict() for x in result], checksum=cache_checksum
-                )
-            )
+        self.mass.create_task(
+            self.mass.cache.set(cache_key, [x.to_dict() for x in result], checksum=cache_checksum)
+        )
         return result
 
     async def _get_provider_dynamic_tracks(

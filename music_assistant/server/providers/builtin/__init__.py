@@ -63,7 +63,6 @@ CONF_KEY_TRACKS = "stored_tracks"
 CONF_KEY_PLAYLISTS = "stored_playlists"
 
 
-ALL_LIBRARY_TRACKS = "all_library_tracks"
 ALL_FAVORITE_TRACKS = "all_favorite_tracks"
 RANDOM_ARTIST = "random_artist"
 RANDOM_ALBUM = "random_album"
@@ -71,15 +70,14 @@ RANDOM_TRACKS = "random_tracks"
 RECENTLY_PLAYED = "recently_played"
 
 BUILTIN_PLAYLISTS = {
-    ALL_LIBRARY_TRACKS: "All library tracks",
     ALL_FAVORITE_TRACKS: "All favorited tracks",
     RANDOM_ARTIST: "Random Artist (from library)",
     RANDOM_ALBUM: "Random Album (from library)",
-    RANDOM_TRACKS: "100 Random tracks (from library)",
+    RANDOM_TRACKS: "500 Random tracks (from library)",
     RECENTLY_PLAYED: "Recently played tracks",
 }
 
-COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, ALL_LIBRARY_TRACKS, RANDOM_TRACKS)
+COLLAGE_IMAGE_PLAYLISTS = (ALL_FAVORITE_TRACKS, RANDOM_TRACKS)
 
 DEFAULT_THUMB = MediaItemImage(
     type=ImageType.THUMB,
@@ -236,7 +234,7 @@ class BuiltinProvider(MusicProvider):
                     images=[DEFAULT_THUMB]
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
                     else [DEFAULT_THUMB, DEFAULT_FANART],
-                    cache_checksum="no_cache",
+                    cache_checksum=str(time.time()),
                 ),
             )
         # user created universal playlist
@@ -504,22 +502,18 @@ class BuiltinProvider(MusicProvider):
     ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given builtin playlist id."""
         result: list[Track] = []
-        if builtin_playlist_id == ALL_LIBRARY_TRACKS:
-            db_result = await self.mass.music.tracks.library_items(limit=2500, order_by="RANDOM()")
-            for idx, item in enumerate(db_result.items):
-                item.position = idx
-                result.append(item)
-            return result
         if builtin_playlist_id == ALL_FAVORITE_TRACKS:
             res = await self.mass.music.tracks.library_items(
-                favorite=True, limit=2500, order_by="RANDOM()"
+                favorite=True, limit=2500, order_by="RANDOM(), play_count"
             )
             for idx, item in enumerate(res.items, 1):
                 item.position = idx
                 result.append(item)
             return result
         if builtin_playlist_id == RANDOM_TRACKS:
-            res = await self.mass.music.tracks.library_items(limit=100, order_by="RANDOM()")
+            res = await self.mass.music.tracks.library_items(
+                limit=500, order_by="RANDOM(), play_count"
+            )
             for idx, item in enumerate(res.items, 1):
                 item.position = idx
                 result.append(item)
