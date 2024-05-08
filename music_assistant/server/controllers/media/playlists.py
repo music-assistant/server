@@ -155,7 +155,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # ensure we have a full library track
             db_track = await self.mass.music.tracks.get(
-                item_id, provider_instance_id_or_domain, lazy=True, add_to_library=False
+                item_id, provider_instance_id_or_domain, lazy=False, add_to_library=False
             )
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
