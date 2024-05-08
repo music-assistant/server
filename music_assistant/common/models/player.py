@@ -72,11 +72,6 @@ class Player(DataClassDictMixin):
     # if the player is grouped and a group is active, this will be set to the group's player_id
     active_group: str | None = None
 
-    # current_item_id: return item_id/uri of the current active/loaded item on the player
-    # this may be a MA queue_item_id, url, uri or some provider specific string
-    # deprecated: use current_media instead
-    current_item_id: str | None = None
-
     # current_media: return current active/loaded item on the player
     # this may be a MA queue item, url, uri or some provider specific string
     # includes metadata if supported by the provider/player
@@ -142,3 +137,15 @@ class Player(DataClassDictMixin):
         if self.state == PlayerState.PLAYING:
             return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
         return self.elapsed_time
+
+    @property
+    def current_item_id(self) -> str | None:
+        """Return current_item_id from current_media (if exists)."""
+        if self.current_media:
+            return self.current_media.uri
+        return None
+
+    @current_item_id.setter
+    def current_item_id(self, uri: str) -> str | None:
+        """Set current_item_id (for backwards compatibility)."""
+        self.current_media = PlayerMedia(uri)
