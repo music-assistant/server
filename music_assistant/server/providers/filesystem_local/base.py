@@ -622,7 +622,7 @@ class FileSystemProviderBase(MusicProvider):
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:
-            playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
+            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
         await self.write_file_content(prov_playlist_id, new_playlist_data.encode("utf-8"))
 
     async def create_playlist(self, name: str) -> Playlist:

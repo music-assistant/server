@@ -287,14 +287,23 @@ async def get_playlist_tracks(
     return await asyncio.to_thread(inner)
 
 
-async def add_remove_playlist_tracks(
-    session: TidalSession, prov_playlist_id: str, track_ids: list[str], add: bool = True
+async def add_playlist_tracks(
+    session: TidalSession, prov_playlist_id: str, track_ids: list[str]
 ) -> None:
-    """Async wrapper around the tidal Playlist.add and Playlist.remove function."""
+    """Async wrapper around the tidal Playlist.add function."""
 
     def inner() -> None:
-        if add:
-            TidalUserPlaylist(session, prov_playlist_id).add(track_ids)
+        TidalUserPlaylist(session, prov_playlist_id).add(track_ids)
+
+    return await asyncio.to_thread(inner)
+
+
+async def remove_playlist_tracks(
+    session: TidalSession, prov_playlist_id: str, track_ids: list[str]
+) -> None:
+    """Async wrapper around the tidal Playlist.remove function."""
+
+    def inner() -> None:
         for item in track_ids:
             TidalUserPlaylist(session, prov_playlist_id).remove_by_id(int(item))
 

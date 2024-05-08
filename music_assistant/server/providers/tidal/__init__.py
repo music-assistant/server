@@ -52,7 +52,7 @@ from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
     DEFAULT_LIMIT,
-    add_remove_playlist_tracks,
+    add_playlist_tracks,
     create_playlist,
     get_album,
     get_album_tracks,
@@ -69,6 +69,7 @@ from .helpers import (
     get_track,
     get_track_url,
     library_items_add_remove,
+    remove_playlist_tracks,
     search,
 )
 
@@ -395,9 +396,7 @@ class TidalProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         tidal_session = await self._get_tidal_session()
-        return await add_remove_playlist_tracks(
-            tidal_session, prov_playlist_id, prov_track_ids, add=True
-        )
+        return await add_playlist_tracks(tidal_session, prov_playlist_id, prov_track_ids)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -410,9 +409,7 @@ class TidalProvider(MusicProvider):
                 prov_track_ids.append(track.item_id)
             if len(prov_track_ids) == len(positions_to_remove):
                 break
-        return await add_remove_playlist_tracks(
-            tidal_session, prov_playlist_id, prov_track_ids, add=False
-        )
+        return await remove_playlist_tracks(tidal_session, prov_playlist_id, prov_track_ids)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
