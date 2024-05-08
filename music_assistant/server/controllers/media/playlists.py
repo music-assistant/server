@@ -123,7 +123,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
             # skip if item already in the playlist
             if item_id in cur_playlist_track_ids:
-                self.logger.info(
+                self.logger.warning(
                     "Not adding %s to playlist %s - it already exists", uri, playlist.name
                 )
                 continue
@@ -131,7 +131,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             # skip non-track items
             # TODO: revisit this once we support audiobooks and podcasts ?
             if media_type != MediaType.TRACK:
-                self.logger.info("Not adding %s to playlist %s - not a track", uri, playlist.name)
+                self.logger.warning(
+                    "Not adding %s to playlist %s - not a track", uri, playlist.name
+                )
                 continue
 
             # special: the builtin provider can handle uri's from all providers (with uri as id)
@@ -139,6 +141,11 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # note: we try not to add library uri's to the builtin playlists
                 # so we can survive db rebuilds
                 ids_to_add.add(uri)
+                self.logger.info(
+                    "Adding %s to playlist %s",
+                    uri,
+                    playlist.name,
+                )
                 continue
 
             # if target playlist is an exact provider match, we can add it
