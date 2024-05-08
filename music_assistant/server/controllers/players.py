@@ -996,14 +996,11 @@ class PlayerController(CoreController):
                 if player_playing:
                     self.mass.loop.call_soon(self.update, player_id)
                 # Poll player;
-                # - every 120 seconds if the player if not powered
-                # - every 30 seconds if the player is powered
-                # - every 5 seconds if the player is playing
-                if (
-                    (player.powered and count % 30 == 0)
-                    or (player_playing and count % 5 == 0)
-                    or count % 120 == 0
-                ) and (player_prov := self.get_player_provider(player_id)):
+                if not player.needs_poll:
+                    continue
+                if count % player.poll_interval == 0 and (
+                    player_prov := self.get_player_provider(player_id)
+                ):
                     try:
                         await player_prov.poll_player(player_id)
                     except PlayerUnavailableError:

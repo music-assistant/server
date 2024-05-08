@@ -279,16 +279,7 @@ class PlayerProvider(Provider):
         """Poll player for state updates.
 
         This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
+        if 'needs_poll' is set to True in the player object.
         """
 
     def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:

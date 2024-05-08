@@ -94,6 +94,13 @@ class Player(DataClassDictMixin):
     # can be used by a player provider to exclude some sort of players
     enabled_by_default: bool = True
 
+    # needs_poll: bool that can be set by the player(provider)
+    # if this player needs to be polled for state changes by the player manager
+    needs_poll: bool = False
+
+    # poll_interval: a (dynamic) interval in seconds to poll the player (used with needs_poll)
+    poll_interval: int = 30
+
     #
     # THE BELOW ATTRIBUTES ARE MANAGED BY CONFIG AND THE PLAYER MANAGER
     #
