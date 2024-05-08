@@ -125,7 +125,7 @@ class SpotifyProvider(MusicProvider):
     """Implementation of a Spotify MusicProvider."""
 
     _auth_token: str | None = None
-    _sp_user: str | None = None
+    _sp_user: dict[str, Any] | None = None
     _librespot_bin: str | None = None
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
@@ -356,37 +356,33 @@ class SpotifyProvider(MusicProvider):
 
     async def library_add(self, item: MediaItemType):
         """Add item to library."""
-        result = False
         if item.media_type == MediaType.ARTIST:
-            result = await self._put_data("me/following", {"ids": [item.item_id]}, type="artist")
+            await self._put_data("me/following", {"ids": [item.item_id]}, type="artist")
         elif item.media_type == MediaType.ALBUM:
-            result = await self._put_data("me/albums", {"ids": [item.item_id]})
+            await self._put_data("me/albums", {"ids": [item.item_id]})
         elif item.media_type == MediaType.TRACK:
-            result = await self._put_data("me/tracks", {"ids": [item.item_id]})
+            await self._put_data("me/tracks", {"ids": [item.item_id]})
         elif item.media_type == MediaType.PLAYLIST:
-            result = await self._put_data(
-                f"playlists/{item.item_id}/followers", data={"public": False}
-            )
-        return result
+            await self._put_data(f"playlists/{item.item_id}/followers", data={"public": False})
+        return True
 
     async def library_remove(self, prov_item_id, media_type: MediaType):
         """Remove item from library."""
-        result = False
         if media_type == MediaType.ARTIST:
-            result = await self._delete_data("me/following", {"ids": [prov_item_id]}, type="artist")
+            await self._delete_data("me/following", {"ids": [prov_item_id]}, type="artist")
         elif media_type == MediaType.ALBUM:
-            result = await self._delete_data("me/albums", {"ids": [prov_item_id]})
+            await self._delete_data("me/albums", {"ids": [prov_item_id]})
         elif media_type == MediaType.TRACK:
-            result = await self._delete_data("me/tracks", {"ids": [prov_item_id]})
+            await self._delete_data("me/tracks", {"ids": [prov_item_id]})
         elif media_type == MediaType.PLAYLIST:
-            result = await self._delete_data(f"playlists/{prov_item_id}/followers")
-        return result
+            await self._delete_data(f"playlists/{prov_item_id}/followers")
+        return True
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]):
         """Add track(s) to playlist."""
         track_uris = [f"spotify:track:{track_id}" for track_id in prov_track_ids]
         data = {"uris": track_uris}
-        return await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
+        await self._post_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -397,12 +393,12 @@ class SpotifyProvider(MusicProvider):
             for track in await self.get_playlist_tracks(prov_playlist_id, pos, pos):
                 track_uris.append({"uri": f"spotify:track:{track.item_id}"})
         data = {"tracks": track_uris}
-        return await self._delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
+        await self._delete_data(f"playlists/{prov_playlist_id}/tracks", data=data)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
         data = {"name": name, "public": False}
-        new_playlist = await self._post_data(f"users/{self._sp_user}/playlists", data=data)
+        new_playlist = await self._post_data(f"users/{self._sp_user['id']}/playlists", data=data)
         return self._parse_playlist(new_playlist)
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
@@ -623,6 +619,8 @@ class SpotifyProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             ]
+        if playlist.owner is None:
+            playlist.owner = self._sp_user["display_name"]
         playlist.metadata.cache_checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
@@ -806,7 +804,7 @@ class SpotifyProvider(MusicProvider):
             return await response.json(loads=json_loads)
 
     @throttle_with_retries
-    async def _delete_data(self, endpoint, data=None, **kwargs) -> str:
+    async def _delete_data(self, endpoint, data=None, **kwargs) -> None:
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
@@ -824,10 +822,9 @@ class SpotifyProvider(MusicProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
-            return await response.text()
 
     @throttle_with_retries
-    async def _put_data(self, endpoint, data=None, **kwargs) -> str:
+    async def _put_data(self, endpoint, data=None, **kwargs) -> dict[str, Any]:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
@@ -845,10 +842,10 @@ class SpotifyProvider(MusicProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
-            return await response.text()
+            return await response.json(loads=json_loads)
 
     @throttle_with_retries
-    async def _post_data(self, endpoint, data=None, **kwargs) -> str:
+    async def _post_data(self, endpoint, data=None, **kwargs) -> dict[str, Any]:
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
@@ -866,7 +863,7 @@ class SpotifyProvider(MusicProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
-            return await response.text()
+            return await response.json(loads=json_loads)
 
     async def get_librespot_binary(self):
         """Find the correct librespot binary belonging to the platform."""
