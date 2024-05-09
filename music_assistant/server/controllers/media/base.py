@@ -220,7 +220,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         add_to_library: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
-        metadata_lookup = force_refresh or add_to_library
+        metadata_lookup = False
         # always prefer the full library item if we have it
         library_item = await self.get_library_item_by_prov_id(
             item_id,
@@ -231,40 +231,38 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             if library_item.available:
                 # do not attempts metadata refresh on unavailable items as it has side effects
                 metadata_lookup = True
-        if library_item and (force_refresh or metadata_lookup):
-            # get (first) provider item id belonging to this library item
-            add_to_library = True
-            provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)
-        elif library_item:
+
+        if library_item and not (force_refresh or metadata_lookup):
             # we have a library item and no refreshing is needed, return the results!
             return library_item
-        if (
-            provider_instance_id_or_domain
-            and item_id
-            and (
-                not details
-                or isinstance(details, ItemMapping)
-                or (add_to_library and details.provider == "library")
-            )
-        ):
-            # grab full details from the provider
-            details = await self.get_provider_item(
-                item_id,
-                provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                fallback=details,
-            )
+
+        if force_refresh:
+            # get (first) provider item id belonging to this library item
+            add_to_library = True
+            metadata_lookup = True
+            provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)
+
+        # grab full details from the provider
+        details = await self.get_provider_item(
+            item_id,
+            provider_instance_id_or_domain,
+            force_refresh=force_refresh,
+            fallback=details,
+        )
         if not details and library_item:
             # something went wrong while trying to fetch/refresh this item
             # return the existing (unavailable) library item and leave this for another day
             return library_item
+
         if not details:
             # we couldn't get a match from any of the providers, raise error
             msg = f"Item not found: {provider_instance_id_or_domain}/{item_id}"
             raise MediaNotFoundError(msg)
+
         if not (add_to_library or metadata_lookup):
             # return the provider item as-is
             return details
+
         # create task to add the item to the library,
         # including matching metadata etc. takes some time
         # in 99% of the cases we just return lazy because we want the details as fast as possible
@@ -504,11 +502,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         fallback: ItemMapping | ItemCls = None,
     ) -> ItemCls:
         """Return item details for the given provider item id."""
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_item(item_id)
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         cache_key = f"provider_item.{self.media_type.value}.{provider.lookup_key}.{item_id}"
-        if provider_instance_id_or_domain == "library":
-            return await self.get_library_item(item_id)
         if not force_refresh and (cache := await self.mass.cache.get(cache_key)):
             return self.item_cls.from_dict(cache)
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
