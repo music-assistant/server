@@ -240,7 +240,9 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/shuffle")
     def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
@@ -271,7 +273,9 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
@@ -298,7 +302,9 @@ class PlayerQueuesController(CoreController):
         """
         # ruff: noqa: PLR0915,PLR0912
         queue = self._queues[queue_id]
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
@@ -466,7 +472,9 @@ class PlayerQueuesController(CoreController):
         - pos_shift: move item x positions up if negative value
         - pos_shift:  move item to top of queue as next item if 0.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
@@ -493,7 +501,9 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if isinstance(item_id_or_index, str):
@@ -513,7 +523,9 @@ class PlayerQueuesController(CoreController):
     @api_command("player_queues/clear")
     def clear(self, queue_id: str) -> None:
         """Clear all items in the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
@@ -534,7 +546,9 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if queue := self.get(queue_id):
@@ -549,7 +563,9 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if self._queues[queue_id].state == PlayerState.PAUSED:
@@ -564,10 +580,11 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        player = self.mass.players.get(queue_id, True)
         if PlayerFeature.PAUSE not in player.supported_features:
             # if player does not support pause, we need to send stop
             await self.stop(queue_id)
@@ -592,7 +609,9 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         current_index = self._queues[queue_id].current_index
@@ -605,7 +624,9 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         current_index = self._queues[queue_id].current_index
@@ -620,7 +641,9 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         - seconds: number of seconds to skip in track. Use negative value to skip back.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         await self.seek(queue_id, self._queues[queue_id].elapsed_time + seconds)
@@ -632,7 +655,9 @@ class PlayerQueuesController(CoreController):
         - queue_id: queue_id of the queue to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]

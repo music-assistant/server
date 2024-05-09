@@ -443,7 +443,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise UnsupportedFeaturedException(msg)
 
         radio_items: list[Track] = []
-        radio_item_titles: set[str] = {}
+        radio_item_titles: set[str] = set()
         playlist_tracks = await self.get_all_playlist_tracks(media_item, prefer_library_items=True)
         random.shuffle(playlist_tracks)
         for playlist_track in playlist_tracks:
