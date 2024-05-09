@@ -1195,7 +1195,7 @@ class PlayerQueuesController(CoreController):
                 artist.provider,
                 in_library_only=artist_items_conf == "library_album_tracks",
             ):
-                for album_track in self.mass.music.albums.tracks(
+                for album_track in await self.mass.music.albums.tracks(
                     library_album.item_id, library_album.provider
                 ):
                     if album_track not in all_items:

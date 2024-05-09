@@ -7,7 +7,7 @@ from typing import Any
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.helpers.uri import create_uri, parse_uri
-from music_assistant.common.models.enums import MediaType, ProviderFeature
+from music_assistant.common.models.enums import MediaType, ProviderFeature, ProviderType
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -49,6 +49,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         force_refresh: bool = False,
         offset: int = 0,
         limit: int = 50,
+        prefer_library_items: bool = True,
     ) -> PagedItems[PlaylistTrack]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(
@@ -65,7 +66,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
             offset=offset,
             limit=limit,
         )
-        return PagedItems(items=tracks, limit=limit, offset=offset)
+        if prefer_library_items:
+            final_tracks = []
+            for track in tracks:
+                if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
+                    track.item_id, track.provider
+                ):
+                    final_tracks.append(db_item)
+                else:
+                    final_tracks.append(track)
+        else:
+            final_tracks = tracks
+        return PagedItems(items=final_tracks, limit=limit, offset=offset)
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
@@ -259,7 +271,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             force_refresh=True,
         )
 
-    async def get_all_playlist_tracks(self, playlist: Playlist) -> list[PlaylistTrack]:
+    async def get_all_playlist_tracks(
+        self, playlist: Playlist, prefer_library_items: bool = False
+    ) -> list[PlaylistTrack]:
         """Return all tracks for given playlist (by unwrapping the paged listing)."""
         result: list[PlaylistTrack] = []
         offset = 0
@@ -274,6 +288,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 provider_instance_id_or_domain=playlist.provider,
                 offset=offset,
                 limit=limit,
+                prefer_library_items=prefer_library_items,
             )
             result += paged_items.items
             if paged_items.count != limit:
@@ -341,7 +356,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider_instance_id_or_domain: str,
         cache_checksum: Any = None,
         offset: int = 0,
-        limit: int = 100,
+        limit: int = 50,
     ) -> list[PlaylistTrack]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
@@ -381,17 +396,16 @@ class PlaylistController(MediaControllerBase[Playlist]):
         provider = self.mass.get_provider(provider_instance_id_or_domain)
         if not provider or ProviderFeature.SIMILAR_TRACKS not in provider.supported_features:
             return []
+        playlist = await self.get(item_id, provider_instance_id_or_domain)
         playlist_tracks = [
             x
-            for x in await self._get_provider_playlist_tracks(
-                item_id, provider_instance_id_or_domain
-            )
+            for x in await self.get_all_playlist_tracks(playlist)
             # filter out unavailable tracks
             if x.available
         ]
         limit = min(limit, len(playlist_tracks))
         # use set to prevent duplicates
-        final_items = []
+        final_items: list[Track] = []
         # to account for playlists with mixed content we grab suggestions from a few
         # random playlist tracks to prevent getting too many tracks of one of the
         # source playlist's genres.
@@ -418,6 +432,42 @@ class PlaylistController(MediaControllerBase[Playlist]):
         limit: int = 25,
     ) -> list[Track]:
         """Get dynamic list of tracks for given item, fallback/default implementation."""
-        # TODO: query metadata provider(s) to get similar tracks (or tracks from similar artists)
-        msg = "No Music Provider found that supports requesting similar tracks."
-        raise UnsupportedFeaturedException(msg)
+        # check if we have any provider that supports dynamic tracks
+        # TODO: query metadata provider(s) (such as lastfm?)
+        # to get similar tracks (or tracks from similar artists)
+        for prov in self.mass.get_providers(ProviderType.MUSIC):
+            if ProviderFeature.SIMILAR_TRACKS in prov.supported_features:
+                break
+        else:
+            msg = "No Music Provider found that supports requesting similar tracks."
+            raise UnsupportedFeaturedException(msg)
+
+        radio_items: list[Track] = []
+        radio_item_titles: set[str] = {}
+        playlist_tracks = await self.get_all_playlist_tracks(media_item, prefer_library_items=True)
+        random.shuffle(playlist_tracks)
+        for playlist_track in playlist_tracks:
+            if not playlist_track.available:
+                continue
+            # include base item in the list
+            radio_items.append(playlist_track)
+            radio_item_titles.add(playlist_track.name)
+            # now try to find similar tracks
+            for item_prov_mapping in playlist_track.provider_mappings:
+                if not (prov := self.mass.get_provider(item_prov_mapping.provider_instance)):
+                    continue
+                if ProviderFeature.SIMILAR_TRACKS not in prov.supported_features:
+                    continue
+                # fetch some similar tracks on this provider
+                for similar_track in await prov.get_similar_tracks(
+                    prov_track_id=item_prov_mapping.item_id, limit=5
+                ):
+                    if similar_track.name not in radio_item_titles:
+                        radio_items.append(similar_track)
+                        radio_item_titles.add(similar_track.name)
+                continue
+            if len(radio_items) >= limit:
+                break
+        # Shuffle the final items list
+        random.shuffle(radio_items)
+        return radio_items
