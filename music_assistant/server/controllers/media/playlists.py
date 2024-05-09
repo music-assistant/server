@@ -72,6 +72,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
                     track.item_id, track.provider
                 ):
+                    db_item.position = track.position
                     final_tracks.append(db_item)
                 else:
                     final_tracks.append(track)
