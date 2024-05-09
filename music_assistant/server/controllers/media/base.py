@@ -47,8 +47,6 @@ SORT_KEYS = {
     "sort_name_desc": "sort_name DESC",
     "timestamp_added": "timestamp_added ASC",
     "timestamp_added_desc": "timestamp_added DESC",
-    "timestamp_modified": "timestamp_modified ASC",
-    "timestamp_modified_desc": "timestamp_modified DESC",
     "last_played": "last_played ASC",
     "last_played_desc": "last_played DESC",
     "play_count": "play_count ASC",
@@ -264,11 +262,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # get (first) provider item id belonging to this library item
             add_to_library = True
             metadata_lookup = True
-            if library_item:
-                # resolve library item into a provider item to get the source details
-                provider_instance_id_or_domain, item_id = await self.get_provider_mapping(
-                    library_item
-                )
+            provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)
 
         # grab full details from the provider
         details = await self.get_provider_item(
