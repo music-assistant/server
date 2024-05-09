@@ -248,8 +248,8 @@ class SpotifyProvider(MusicProvider):
         liked_songs = Playlist(
             item_id=self._get_liked_songs_playlist_id(),
             provider=self.domain,
-            name="Liked Songs",  # TODO to be translated
-            owner="Me",  # TODO Get logged in user display name
+            name=f'Liked Songs {self._sp_user["display_name"]}',  # TODO to be translated
+            owner=self._sp_user["display_name"],
             provider_mappings={
                 ProviderMapping(
                     item_id=self._get_liked_songs_playlist_id(),

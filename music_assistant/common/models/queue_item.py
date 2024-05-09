@@ -9,7 +9,7 @@ from uuid import uuid4
 from mashumaro import DataClassDictMixin
 
 from .enums import MediaType
-from .media_items import Album, ItemMapping, MediaItemImage, Radio, Track
+from .media_items import ItemMapping, MediaItemImage, Radio, Track
 from .streamdetails import StreamDetails
 
 
@@ -101,6 +101,6 @@ def get_image(media_item: Track | Radio | None) -> MediaItemImage | None:
         return None
     if media_item.image:
         return media_item.image
-    if isinstance(media_item, Track) and isinstance(media_item.album, Album):
-        return media_item.album.image
+    if media_item.media_type == MediaType.TRACK and (album := getattr(media_item, "album", None)):
+        return get_image(album)
     return None

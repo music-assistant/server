@@ -8,6 +8,7 @@ import os
 import shutil
 from contextlib import suppress
 from itertools import zip_longest
+from math import inf
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
@@ -69,6 +70,7 @@ if TYPE_CHECKING:
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
+CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
 
 
 class MusicController(CoreController):
@@ -111,6 +113,14 @@ class MusicController(CoreController):
                 label="Sync interval",
                 description="Interval (in minutes) that a (delta) sync "
                 "of all providers should be performed.",
+            ),
+            ConfigEntry(
+                key=CONF_ADD_LIBRARY_ON_PLAY,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Add item to the library as soon as its played",
+                description="Automatically add a track or radio station to "
+                "the library when played (if its not already in the library).",
             ),
         )
 
@@ -547,11 +557,11 @@ class MusicController(CoreController):
                 {
                     "item_id": item_id,
                     "provider": provider.lookup_key,
-                    "integrated": loudness.integrated,
-                    "true_peak": loudness.true_peak,
-                    "lra": loudness.lra,
-                    "threshold": loudness.threshold,
-                    "target_offset": loudness.target_offset,
+                    "integrated": round(loudness.integrated, 2),
+                    "true_peak": round(loudness.true_peak, 2),
+                    "lra": round(loudness.lra, 2),
+                    "threshold": round(loudness.threshold, 2),
+                    "target_offset": round(loudness.target_offset, 2),
                 },
                 allow_replace=True,
             )
@@ -568,6 +578,9 @@ class MusicController(CoreController):
                     "provider": provider.lookup_key,
                 },
             ):
+                if result["integrated"] == inf or result["integrated"] == -inf:
+                    return None
+
                 return LoudnessMeasurement(
                     integrated=result["integrated"],
                     true_peak=result["true_peak"],
@@ -603,13 +616,21 @@ class MusicController(CoreController):
         )
 
         # also update playcount in library table
-        if provider_instance_id_or_domain != "library":
-            return
         ctrl = self.get_controller(media_type)
-        await self.database.execute(
-            f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
-            f"last_played = {timestamp} WHERE item_id = {item_id}"
-        )
+        if self.mass.config.get_raw_core_config_value(self.domain, CONF_ADD_LIBRARY_ON_PLAY):
+            # handle feature to add to the lib on playback
+            db_item = await ctrl.get(
+                item_id, provider_instance_id_or_domain, lazy=False, add_to_library=True
+            )
+        else:
+            db_item = await ctrl.get_library_item_by_prov_id(
+                item_id, provider_instance_id_or_domain
+            )
+        if db_item:
+            await self.database.execute(
+                f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
+                f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
+            )
         await self.database.commit()
 
     def get_controller(

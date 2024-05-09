@@ -38,6 +38,7 @@ from music_assistant.constants import (
     CONF_EQ_MID,
     CONF_EQ_TREBLE,
     CONF_OUTPUT_CHANNELS,
+    CONF_VOLUME_NORMALIZATION,
     CONF_VOLUME_NORMALIZATION_TARGET,
     MASS_LOGGER_NAME,
     VERBOSE_LOG_LEVEL,
@@ -394,7 +395,7 @@ async def get_stream_details(
             streamdetails.item_id, streamdetails.provider
         )
     player_settings = await mass.config.get_player_config(streamdetails.queue_id)
-    if player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET):
+    if player_settings.get_value(CONF_VOLUME_NORMALIZATION):
         streamdetails.target_loudness = player_settings.get_value(CONF_VOLUME_NORMALIZATION_TARGET)
     else:
         streamdetails.target_loudness = None
@@ -1083,7 +1084,7 @@ def parse_loudnorm(raw_stderr: bytes | str) -> LoudnessMeasurement | None:
     if "[Parsed_loudnorm_" not in stderr_data:
         return None
     stderr_data = stderr_data.split("[Parsed_loudnorm_")[1]
-    stderr_data = stderr_data.rsplit("]")[-1].strip()
+    stderr_data = "{" + stderr_data.rsplit("{")[-1].strip()
     stderr_data = stderr_data.rsplit("}")[0].strip() + "}"
     try:
         loudness_data = json_loads(stderr_data)
