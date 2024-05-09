@@ -40,6 +40,27 @@ ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
 JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids")
 
+SORT_KEYS = {
+    "name": "name COLLATE NOCASE ASC",
+    "name_desc": "name COLLATE NOCASE DESC",
+    "sort_name": "sort_name ASC",
+    "sort_name_desc": "sort_name DESC",
+    "timestamp_added": "timestamp_added ASC",
+    "timestamp_added_desc": "timestamp_added DESC",
+    "last_played": "last_played ASC",
+    "last_played_desc": "last_played DESC",
+    "play_count": "play_count ASC",
+    "play_count_desc": "play_count DESC",
+    "artist": "artists.name COLLATE NOCASE ASC",
+    "album": "albums.name COLLATE NOCASE ASC",
+    "sort_artist": "artists.sort_name ASC",
+    "sort_album": "albums.sort_name ASC",
+    "year": "year ASC",
+    "year_desc": "year DESC",
+    "position": "position ASC",
+    "position_desc": "position DESC",
+}
+
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     """Base model for controller managing a MediaType."""
@@ -232,7 +253,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 # do not attempts metadata refresh on unavailable items as it has side effects
                 metadata_lookup = True
 
-        if library_item and not (force_refresh or metadata_lookup):
+        if library_item and not (force_refresh or metadata_lookup or add_to_library):
             # we have a library item and no refreshing is needed, return the results!
             return library_item
 
@@ -737,9 +758,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if count_only:
             return await self.mass.music.database.get_count_from_query(sql_query, query_params)
         if order_by:
-            order_by = order_by.replace("sort_artist", f"{DB_TABLE_ARTISTS}.sort_name")
-            order_by = order_by.replace("sort_album", f"{DB_TABLE_ALBUMS}.sort_name")
-            sql_query += f" ORDER BY {order_by}"
+            if sort_key := SORT_KEYS.get(order_by):
+                sql_query += f" ORDER BY {sort_key}"
+            else:
+                self.logger.warning("%s is not a valid sort option!", order_by)
+
         # return dbresult parsed to media item model
         return [
             self.item_cls.from_dict(self._parse_db_row(db_row))
