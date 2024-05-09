@@ -6,5 +6,8 @@
       "source.organizeImports": "explicit"
     }
   },
-  "editor.defaultFormatter": "charliermarsh.ruff"
+  "editor.defaultFormatter": "charliermarsh.ruff",
+  "[github-actions-workflow]": {
+    "editor.defaultFormatter": "esbenp.prettier-vscode"
+  }
 }

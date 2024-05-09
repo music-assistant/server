@@ -446,6 +446,12 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.display_name,
             status.player_state,
         )
+        # handle castplayer playing from a group
+        if castplayer.active_group is not None:
+            if not (group_player := self.castplayers.get(castplayer.active_group)):
+                return
+            status = group_player.cc.media_controller.status
+
         # player state
         castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
@@ -578,6 +584,8 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.poll_interval = 300
             return
         if not castplayer.cc.media_controller.status.player_is_playing:
+            return
+        if castplayer.active_group:
             return
         if castplayer.player.state != PlayerState.PLAYING:
             return

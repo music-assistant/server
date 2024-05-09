@@ -576,7 +576,9 @@ class BrowseFolder(MediaItem):
             )
 
 
-MediaItemType = Artist | Album | Track | Radio | Playlist | BrowseFolder
+MediaItemType = (
+    Artist | Album | PlaylistTrack | AlbumTrack | Track | Radio | Playlist | BrowseFolder
+)
 
 
 class PagedItems(Generic[_T]):
