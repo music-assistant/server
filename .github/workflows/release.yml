@@ -62,7 +62,7 @@ jobs:
         run: sleep 300
 
   build-and-push-container-image:
-    name: Builds and pushes the Matter Server container to ghcr.io
+    name: Builds and pushes the Music Assistant Server container to ghcr.io
     runs-on: ubuntu-latest
     permissions:
       packages: write
