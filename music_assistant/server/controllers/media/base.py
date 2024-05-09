@@ -59,6 +59,7 @@ SORT_KEYS = {
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
+    "random": "RANDOM()",
 }
 
 
