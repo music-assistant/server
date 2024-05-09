@@ -84,7 +84,7 @@ def handle_player_command(
         try:
             await func(self, *args, **kwargs)
         except Exception as err:
-            raise PlayerCommandFailed from err
+            raise PlayerCommandFailed(str(err)) from err
 
     return wrapper
 
