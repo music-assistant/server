@@ -607,13 +607,12 @@ class MusicController(CoreController):
         )
 
         # also update playcount in library table
-        if provider_instance_id_or_domain != "library":
-            return
         ctrl = self.get_controller(media_type)
-        await self.database.execute(
-            f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
-            f"last_played = {timestamp} WHERE item_id = {item_id}"
-        )
+        if db_item := await ctrl.get(item_id, provider_instance_id_or_domain, lazy=False):
+            await self.database.execute(
+                f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
+                f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
+            )
         await self.database.commit()
 
     def get_controller(
