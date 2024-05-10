@@ -514,7 +514,6 @@ class ArtistsController(MediaControllerBase[Artist]):
         if prov := self.mass.get_provider(item.provider):
             domain = prov.domain
             instance_id = prov.instance_id
-        assert prov
         return Artist.from_dict(
             {
                 **item.to_dict(),
