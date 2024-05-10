@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from time import time
 from typing import TYPE_CHECKING
 
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
@@ -17,6 +16,7 @@ from music_assistant.common.models.media_items import (
     MediaItemLink,
     MediaItemType,
     MediaType,
+    PagedItems,
     ProviderMapping,
     Radio,
     SearchResults,
@@ -27,8 +27,6 @@ from music_assistant.server.models.music_provider import MusicProvider
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
 
 if TYPE_CHECKING:
-    from collections.abc import AsyncGenerator
-
     from music_assistant.common.models.config_entries import (
         ConfigEntry,
         ConfigValueType,
@@ -85,7 +83,7 @@ class RadioBrowserProvider(MusicProvider):
             self.logger.exception("%s", err)
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
+        self, search_query: str, media_types=list[MediaType], limit: int = 10
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -94,60 +92,53 @@ class RadioBrowserProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
-        searchtypes = []
-        if MediaType.RADIO in media_types:
-            searchtypes.append("radio")
-
-        time_start = time()
+        if MediaType.RADIO not in media_types:
+            return result
 
         searchresult = await self.radios.search(name=search_query, limit=limit)
 
-        self.logger.debug(
-            "Processing RadioBrowser search took %s seconds",
-            round(time() - time_start, 2),
-        )
         for item in searchresult:
             result.radio.append(await self._parse_radio(item))
 
         return result
 
-    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
+    async def browse(self, path: str, limit: int, offset: int) -> PagedItems[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
+        items: list[BrowseFolder | Radio] = []
         subpath = path.split("://", 1)[1]
         subsubpath = "" if "/" not in subpath else subpath.split("/")[-1]
 
         if not subpath:
             # return main listing
-            yield BrowseFolder(
-                item_id="popular",
-                provider=self.domain,
-                path=path + "popular",
-                name="",
-                label="radiobrowser_by_popularity",
-            )
-            yield BrowseFolder(
-                item_id="country",
-                provider=self.domain,
-                path=path + "country",
-                name="",
-                label="radiobrowser_by_country",
-            )
-            yield BrowseFolder(
-                item_id="tag",
-                provider=self.domain,
-                path=path + "tag",
-                name="",
-                label="radiobrowser_by_tag",
-            )
-            return
+            items = [
+                BrowseFolder(
+                    item_id="popular",
+                    provider=self.domain,
+                    path=path + "popular",
+                    name="",
+                    label="radiobrowser_by_popularity",
+                ),
+                BrowseFolder(
+                    item_id="country",
+                    provider=self.domain,
+                    path=path + "country",
+                    name="",
+                    label="radiobrowser_by_country",
+                ),
+                BrowseFolder(
+                    item_id="tag",
+                    provider=self.domain,
+                    path=path + "tag",
+                    name="",
+                    label="radiobrowser_by_tag",
+                ),
+            ]
 
         if subpath == "popular":
-            for item in await self.get_by_popularity():
-                yield item
-            return
+            items = await self.get_by_popularity()
 
         if subpath == "tag":
             tags = await self.radios.tags(
@@ -157,14 +148,15 @@ class RadioBrowserProvider(MusicProvider):
                 reverse=True,
             )
             tags.sort(key=lambda tag: tag.name)
-            for tag in tags:
-                yield BrowseFolder(
+            items = [
+                BrowseFolder(
                     item_id=tag.name.lower(),
                     provider=self.domain,
                     path=path + "/" + tag.name.lower(),
                     name=tag.name,
                 )
-            return
+                for tag in tags
+            ]
 
         if subpath == "country":
             for country in await self.radios.countries(order=Order.NAME):
@@ -182,17 +174,14 @@ class RadioBrowserProvider(MusicProvider):
                         remotely_accessible=True,
                     )
                 ]
-                yield folder
-            return
+                items.append(folder)
 
         if subsubpath in await self.get_tag_names():
-            for item in await self.get_by_tag(subsubpath):
-                yield item
-            return
+            items = await self.get_by_tag(subsubpath)
 
         if subsubpath in await self.get_country_codes():
-            for item in await self.get_by_country(subsubpath):
-                yield item
+            items = await self.get_by_country(subsubpath)
+        return PagedItems(items=items, limit=limit, offset=offset)
 
     async def get_tag_names(self):
         """Get a list of tag names."""

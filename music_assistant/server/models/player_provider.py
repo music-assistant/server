@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from abc import abstractmethod
 from collections.abc import Iterable
 
@@ -224,6 +225,25 @@ class PlayerProvider(Provider):
         # will only be called for players with SYNC feature set.
         raise NotImplementedError
 
+    async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
+        """Create temporary sync group by joining given players to target player."""
+        # default implementation, simply call the cmd_sync for all child players
+        async with asyncio.TaskGroup() as tg:
+            for child_player_id in child_player_ids:
+                tg.create_task(self.cmd_sync(child_player_id, target_player))
+
+    async def cmd_unsync_many(self, player_ids: str) -> None:
+        """Handle UNSYNC command for all the given players.
+
+        Remove the given player from any syncgroups it currently is synced to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        # default implementation, simply call the cmd_sync for all player_ids
+        async with asyncio.TaskGroup() as tg:
+            for player_id in player_ids:
+                tg.create_task(self.cmd_unsync(player_id))
+
     async def create_group(self, name: str, members: list[str]) -> Player:
         """Create new PlayerGroup on this provider.
 
@@ -259,16 +279,7 @@ class PlayerProvider(Provider):
         """Poll player for state updates.
 
         This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
+        if 'needs_poll' is set to True in the player object.
         """
 
     def on_child_power(self, player_id: str, child_player_id: str, new_power: bool) -> None:

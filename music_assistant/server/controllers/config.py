@@ -326,15 +326,18 @@ class ConfigController:
             if include_values
             else PlayerConfig.parse([], raw_conf)
             for raw_conf in list(self.get(CONF_PLAYERS, {}).values())
-            # filter out unavailable providers
-            if raw_conf["provider"] in get_global_cache_value("available_providers", [])
+            # filter out unavailable providers (only if we requested the full info)
+            if (
+                not include_values
+                or raw_conf["provider"] in get_global_cache_value("available_providers", [])
+            )
             # optional provider filter
             and (provider in (None, raw_conf["provider"]))
         ]
 
     @api_command("config/players/get")
     async def get_player_config(self, player_id: str) -> PlayerConfig:
-        """Return configuration for a single player."""
+        """Return (full) configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
             if prov := self.mass.get_provider(raw_conf["provider"]):
                 conf_entries = await prov.get_player_config_entries(player_id)
@@ -430,6 +433,8 @@ class ConfigController:
         if provider := self.mass.get_provider(existing["provider"]):
             assert isinstance(provider, PlayerProvider)
             provider.on_player_config_removed(player_id)
+        if not player:
+            self.mass.signal_event(EventType.PLAYER_REMOVED, player_id)
 
     def create_default_player_config(
         self,

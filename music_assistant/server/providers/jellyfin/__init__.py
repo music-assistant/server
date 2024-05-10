@@ -522,7 +522,7 @@ class JellyfinProvider(MusicProvider):
     async def search(
         self,
         search_query: str,
-        media_types: list[MediaType] | None = None,
+        media_types: list[MediaType],
         limit: int = 20,
     ) -> SearchResults:
         """Perform search on the plex library.
@@ -531,9 +531,6 @@ class JellyfinProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        if not media_types:
-            media_types = [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
-
         tasks = {}
 
         async with TaskGroup() as tg:
@@ -679,20 +676,23 @@ class JellyfinProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_playlist_tracks(  # type: ignore[return]
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
         jellyfin_playlist = API.get_item(self._jellyfin_server.jellyfin, prov_playlist_id)
-
         playlist_items = await self._get_children(
             self._jellyfin_server, jellyfin_playlist[ITEM_KEY_ID], ITEM_TYPE_AUDIO
         )
-        for index, jellyfin_track in enumerate(playlist_items or [], 1):
+        if not playlist_items:
+            return result
+        for index, jellyfin_track in enumerate(playlist_items):
             if track := await self._parse_track(jellyfin_track):
                 if not track.position:
                     track.position = index
-                yield track
+                result.append(track)
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""

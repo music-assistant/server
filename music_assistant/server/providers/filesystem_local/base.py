@@ -36,6 +36,7 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     MediaItemType,
     MediaType,
+    PagedItems,
     Playlist,
     ProviderMapping,
     SearchResults,
@@ -284,43 +285,55 @@ class FileSystemProviderBase(MusicProvider):
             )
         return result
 
-    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
+    async def browse(self, path: str, offset: int, limit: int) -> PagedItems[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
+        items: list[MediaItemType] = []
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
+        index = 0
         async for item in self.listdir(item_path, recursive=False):
-            if item.is_dir:
-                yield BrowseFolder(
-                    item_id=item.path,
-                    provider=self.instance_id,
-                    path=f"{self.instance_id}://{item.path}",
-                    name=item.filename,
-                )
-                continue
-
-            if "." not in item.filename or not item.ext:
+            if not item.is_dir and "." not in item.filename or not item.ext:
                 # skip system files and files without extension
                 continue
 
-            if item.ext in TRACK_EXTENSIONS:
-                yield ItemMapping(
-                    media_type=MediaType.TRACK,
-                    item_id=item.path,
-                    provider=self.instance_id,
-                    name=item.filename,
-                )
+            if index < offset:
                 continue
-            if item.ext in PLAYLIST_EXTENSIONS:
-                yield ItemMapping(
-                    media_type=MediaType.PLAYLIST,
-                    item_id=item.path,
-                    provider=self.instance_id,
-                    name=item.filename,
+
+            if item.is_dir:
+                items.append(
+                    BrowseFolder(
+                        item_id=item.path,
+                        provider=self.instance_id,
+                        path=f"{self.instance_id}://{item.path}",
+                        name=item.filename,
+                    )
                 )
+            elif item.ext in TRACK_EXTENSIONS:
+                items.append(
+                    ItemMapping(
+                        media_type=MediaType.TRACK,
+                        item_id=item.path,
+                        provider=self.instance_id,
+                        name=item.filename,
+                    )
+                )
+            elif item.ext in PLAYLIST_EXTENSIONS:
+                items.append(
+                    ItemMapping(
+                        media_type=MediaType.PLAYLIST,
+                        item_id=item.path,
+                        provider=self.instance_id,
+                        name=item.filename,
+                    )
+                )
+            index += 1
+            if len(items) >= limit:
+                break
+        return PagedItems(items=items, limit=limit, offset=offset)
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
@@ -504,8 +517,11 @@ class FileSystemProviderBase(MusicProvider):
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
-        """Get playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
@@ -524,12 +540,14 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 playlist_lines = parse_pls(playlist_data)
 
-            for line_no, playlist_line in enumerate(playlist_lines, 0):
+            playlist_lines = playlist_lines[offset:limit]
+
+            for line_no, playlist_line in enumerate(playlist_lines):
                 if track := await self._parse_playlist_line(
                     playlist_line.path, os.path.dirname(prov_playlist_id)
                 ):
-                    track.position = line_no
-                    yield track
+                    track.position = offset + line_no
+                    result.append(track)
 
         except Exception as err:  # pylint: disable=broad-except
             self.logger.warning(
@@ -538,6 +556,7 @@ class FileSystemProviderBase(MusicProvider):
                 str(err),
                 exc_info=err if self.logger.isEnabledFor(10) else None,
             )
+        return result
 
     async def _parse_playlist_line(self, line: str, playlist_path: str) -> Track | None:
         """Try to parse a track from a playlist line."""
@@ -603,7 +622,7 @@ class FileSystemProviderBase(MusicProvider):
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:
-            playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
+            new_playlist_data += f"\n#EXTINF:{item.length or 0},{item.title}\n{item.path}\n"
         await self.write_file_content(prov_playlist_id, new_playlist_data.encode("utf-8"))
 
     async def create_playlist(self, name: str) -> Playlist:

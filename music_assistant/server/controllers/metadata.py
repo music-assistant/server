@@ -291,7 +291,8 @@ class MetaDataController(CoreController):
         playlist_genres: dict[str, int] = {}
         # retrieve metedata for the playlist from the tracks (such as genres etc.)
         # TODO: retrieve style/mood ?
-        async for track in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
+        playlist_items = await self.mass.music.playlists.tracks(playlist.item_id, playlist.provider)
+        for track in playlist_items.items:
             if track.image:
                 all_playlist_tracks_images.add(track.image)
             if track.metadata.genres:
@@ -311,6 +312,7 @@ class MetaDataController(CoreController):
         # create collage images
         cur_images = playlist.metadata.images or []
         new_images = []
+        # thumb image
         thumb_image = next((x for x in cur_images if x.type == ImageType.THUMB), None)
         if not thumb_image or self._collage_images_dir in thumb_image.path:
             thumb_image_path = (
@@ -322,9 +324,10 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images, thumb_image_path
             ):
                 new_images.append(collage_thumb_image)
-            elif thumb_image:
-                # just use old image
-                new_images.append(thumb_image)
+        elif thumb_image:
+            # just use old image
+            new_images.append(thumb_image)
+        # fanart image
         fanart_image = next((x for x in cur_images if x.type == ImageType.FANART), None)
         if not fanart_image or self._collage_images_dir in fanart_image.path:
             fanart_image_path = (
@@ -336,9 +339,9 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images, fanart_image_path, fanart=True
             ):
                 new_images.append(collage_fanart_image)
-            elif fanart_image:
-                # just use old image
-                new_images.append(fanart_image)
+        elif fanart_image:
+            # just use old image
+            new_images.append(fanart_image)
         playlist.metadata.images = new_images
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())

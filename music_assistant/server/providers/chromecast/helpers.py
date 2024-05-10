@@ -191,9 +191,11 @@ class CastStatusListener:
             if group_player.cc.media_controller.is_active:
                 self.castplayer.active_group = group_uuid
                 self.castplayer.player.active_source = group_uuid
+                self.castplayer.player.state = group_player.player.state
             elif group_uuid == self.castplayer.active_group:
                 self.castplayer.active_group = None
                 self.castplayer.player.active_source = self.castplayer.player.player_id
+
         self.prov.logger.log(
             VERBOSE_LOG_LEVEL,
             "%s got new cast status for group: %s",
@@ -212,6 +214,7 @@ class CastStatusListener:
             self.castplayer.player.display_name,
             group_uuid,
         )
+        self.prov.on_new_media_status(self.castplayer, media_status)
 
     def load_media_failed(self, queue_item_id, error_code) -> None:
         """Call when media failed to load."""

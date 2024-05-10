@@ -132,6 +132,8 @@ class FullyKioskProvider(PlayerProvider):
                     address=address,
                 ),
                 supported_features=(PlayerFeature.VOLUME_SET,),
+                needs_poll=True,
+                poll_interval=10,
             )
         self.mass.players.register_or_update(player)
         self._handle_player_update()
@@ -193,20 +195,7 @@ class FullyKioskProvider(PlayerProvider):
         self.mass.players.update(player_id)
 
     async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates.
-
-        This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
-        """
+        """Poll player for state updates."""
         try:
             async with asyncio.timeout(15):
                 await self._fully.getDeviceInfo()

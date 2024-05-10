@@ -123,12 +123,12 @@ class SoundcloudMusicProvider(MusicProvider):
         return await asyncio.to_thread(call, *args, **kwargs)
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
+        self, search_query: str, media_types=list[MediaType], limit: int = 10
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
@@ -140,23 +140,25 @@ class SoundcloudMusicProvider(MusicProvider):
         if MediaType.PLAYLIST in media_types:
             searchtypes.append("playlist")
 
-        time_start = time.time()
+        media_types = [
+            x for x in media_types if x in (MediaType.ARTIST, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return result
 
         searchresult = await self._soundcloud.search(search_query, limit)
-
-        self.logger.debug(
-            "Processing Soundcloud search took %s seconds",
-            round(time.time() - time_start, 2),
-        )
 
         for item in searchresult["collection"]:
             media_type = item["kind"]
             if media_type == "user":
-                result.artists.append(await self._parse_artist(item))
+                if MediaType.ARTIST in media_types:
+                    result.artists.append(await self._parse_artist(item))
             elif media_type == "track":
-                result.tracks.append(await self._parse_track(item))
+                if MediaType.TRACK in media_types:
+                    result.tracks.append(await self._parse_track(item))
             elif media_type == "playlist":
-                result.playlists.append(await self._parse_playlist(item))
+                if MediaType.PLAYLIST in media_types:
+                    result.playlists.append(await self._parse_playlist(item))
 
         return result
 
@@ -253,19 +255,25 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        # TODO: soundcloud doesn't seem to support paging for playlist tracks ?!
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
-            return
+            return result
         for index, item in enumerate(playlist_obj["tracks"]):
             song = await self._soundcloud.get_track_details(item["id"])
             try:
-                if track := await self._parse_track(song[0], index + 1):
-                    yield track
+                # TODO: is it really needed to grab the entire track with an api call ?
+                if track := await self._parse_track(song[0], index + offset):
+                    result.append(track)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
+        return result
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""

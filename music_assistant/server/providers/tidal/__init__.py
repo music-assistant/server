@@ -52,7 +52,7 @@ from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
     DEFAULT_LIMIT,
-    add_remove_playlist_tracks,
+    add_playlist_tracks,
     create_playlist,
     get_album,
     get_album_tracks,
@@ -69,6 +69,7 @@ from .helpers import (
     get_track,
     get_track_url,
     library_items_add_remove,
+    remove_playlist_tracks,
     search,
 )
 
@@ -255,19 +256,28 @@ class TidalProvider(MusicProvider):
     async def search(
         self,
         search_query: str,
-        media_types: list[MediaType] | None = None,
+        media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
+        parsed_results = SearchResults()
+        media_types = [
+            x
+            for x in media_types
+            if x in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return parsed_results
+
         tidal_session = await self._get_tidal_session()
         search_query = search_query.replace("'", "")
         results = await search(tidal_session, search_query, media_types, limit)
-        parsed_results = SearchResults()
+
         if results["artists"]:
             for artist in results["artists"]:
                 parsed_results.artists.append(self._parse_artist(artist))
@@ -339,18 +349,20 @@ class TidalProvider(MusicProvider):
         artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
         return [self._parse_track(track) for track in artist_toptracks_obj]
 
-    async def get_playlist_tracks(self, prov_playlist_id: str) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
         tidal_session = await self._get_tidal_session()
-        total_playlist_tracks = 0
+        result: list[Track] = []
         track_obj: TidalTrack  # satisfy the type checker
-        async for track_obj in self._iter_items(
-            get_playlist_tracks, tidal_session, prov_playlist_id, limit=DEFAULT_LIMIT
+        for index, track_obj in enumerate(
+            await get_playlist_tracks(tidal_session, prov_playlist_id, limit=limit, offset=offset)
         ):
-            total_playlist_tracks += 1
             track = self._parse_track(track_obj=track_obj)
-            track.position = total_playlist_tracks
-            yield track
+            track.position = offset + index
+            result.append(track)
+        return result
 
     @throttle_with_retries
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
@@ -384,9 +396,7 @@ class TidalProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         tidal_session = await self._get_tidal_session()
-        return await add_remove_playlist_tracks(
-            tidal_session, prov_playlist_id, prov_track_ids, add=True
-        )
+        return await add_playlist_tracks(tidal_session, prov_playlist_id, prov_track_ids)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -394,14 +404,12 @@ class TidalProvider(MusicProvider):
         """Remove track(s) from playlist."""
         prov_track_ids = []
         tidal_session = await self._get_tidal_session()
-        async for track in self.get_playlist_tracks(prov_playlist_id):
+        for track in await self.get_playlist_tracks(prov_playlist_id, 0, 10000):
             if track.position in positions_to_remove:
                 prov_track_ids.append(track.item_id)
             if len(prov_track_ids) == len(positions_to_remove):
                 break
-        return await add_remove_playlist_tracks(
-            tidal_session, prov_playlist_id, prov_track_ids, add=False
-        )
+        return await remove_playlist_tracks(tidal_session, prov_playlist_id, prov_track_ids)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
