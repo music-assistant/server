@@ -10,11 +10,7 @@ from mashumaro import DataClassDictMixin
 
 from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.uri import create_uri
-from music_assistant.common.helpers.util import (
-    create_sort_name,
-    is_valid_uuid,
-    merge_lists,
-)
+from music_assistant.common.helpers.util import create_sort_name, is_valid_uuid, merge_lists
 from music_assistant.common.models.enums import (
     AlbumType,
     ContentType,
@@ -79,14 +75,15 @@ class AudioFormat(DataClassDictMixin):
     def quality(self) -> int:
         """Calculate quality score."""
         if self.content_type.is_lossless():
+            # lossless content is scored very high based on sample rate and bit depth
             return int(self.sample_rate / 1000) + self.bit_depth
         # lossy content, bit_rate is most important score
         # but prefer some codecs over others
-        # rule out bitrates > 320 as that is just an error (happens e.g. for AC3 stream somehow)
-        score = min(320, self.bit_rate) / 100
+        # calculate a rough score based on bit rate per channel
+        bit_rate_score = (self.bit_rate / self.channels) / 100
         if self.content_type in (ContentType.AAC, ContentType.OGG):
-            score += 1
-        return int(score)
+            bit_rate_score += 1
+        return int(bit_rate_score)
 
     @property
     def pcm_sample_size(self) -> int:
