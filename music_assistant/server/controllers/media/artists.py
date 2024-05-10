@@ -294,7 +294,7 @@ class ArtistsController(MediaControllerBase[Artist]):
     async def _add_library_item(self, item: Artist | ItemMapping) -> int:
         """Add a new item record to the database."""
         if isinstance(item, ItemMapping):
-            item = Artist.from_item_mapping(item)
+            item = self._artist_from_item_mapping(item)
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
             item.mbid = VARIOUS_ARTISTS_ID_MBID
@@ -508,3 +508,22 @@ class ArtistsController(MediaControllerBase[Artist]):
                     await self._update_library_item(db_artist.item_id, prov_artist)
                     return True
         return False
+
+    def _artist_from_item_mapping(self, item: ItemMapping) -> Artist:
+        domain, instance_id = None, None
+        if prov := self.mass.get_provider(item.provider):
+            domain = prov.domain
+            instance_id = prov.instance_id
+        return Artist.from_dict(
+            {
+                **item.to_dict(),
+                "provider_mappings": [
+                    {
+                        "item_id": item.item_id,
+                        "provider_domain": domain,
+                        "provider_instance": instance_id,
+                        "available": item.available,
+                    }
+                ],
+            }
+        )
