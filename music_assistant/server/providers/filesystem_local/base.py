@@ -540,7 +540,7 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 playlist_lines = parse_pls(playlist_data)
 
-            playlist_lines = playlist_lines[offset:limit]
+            playlist_lines = playlist_lines[offset : offset + limit]
 
             for line_no, playlist_line in enumerate(playlist_lines):
                 if track := await self._parse_playlist_line(
