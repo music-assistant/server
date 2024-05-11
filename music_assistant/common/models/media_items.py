@@ -577,7 +577,7 @@ class PagedItems(Generic[_T]):
         self.limit = limit
         self.offset = offset
         self.total = total
-        if total is None and offset == 0 and count != limit:
+        if total is None and offset == 0 and count > limit:
             self.total = count
         if total is None and offset and count < limit:
             self.total = offset + count

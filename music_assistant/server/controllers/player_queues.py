@@ -212,7 +212,7 @@ class PlayerQueuesController(CoreController):
             return PagedItems(items=[], limit=limit, offset=offset)
 
         return PagedItems(
-            items=self._queue_items[queue_id][offset:limit],
+            items=self._queue_items[queue_id][offset : offset + limit],
             limit=limit,
             offset=offset,
             total=len(self._queue_items[queue_id]),

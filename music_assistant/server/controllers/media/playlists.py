@@ -69,12 +69,18 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if prefer_library_items:
             final_tracks = []
             for track in tracks:
-                if db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
+                # prefer library_item
+                # TODO: we could speedup this call by requesting all tracks at once
+                # but so far this doesn't seem to be that slow due to the paging
+                if track.provider == "library":
+                    final_tracks.append(track)
+                elif db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
                     track.item_id, track.provider
                 ):
                     db_item.position = track.position
                     final_tracks.append(db_item)
                 else:
+                    # fall back to the original playlist item if we do not know it in the db
                     final_tracks.append(track)
         else:
             final_tracks = tracks
