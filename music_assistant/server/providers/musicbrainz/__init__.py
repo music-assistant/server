@@ -15,7 +15,7 @@ from mashumaro.exceptions import MissingField
 
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.enums import ExternalID, ProviderFeature
+from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -221,11 +221,11 @@ class MusicbrainzProvider(MetadataProvider):
         """Discover MusicBrainzArtistId for an artist given some reference albums/tracks."""
         if artist.mbid:
             return artist.mbid
-        # try with (strict) ref track(s), using recording id or isrc
+        # try with (strict) ref track(s), using recording id
         for ref_track in ref_tracks:
             if mb_artist := await self.get_artist_details_by_track(artist.name, ref_track):
                 return mb_artist.id
-        # try with (strict) ref album(s), using releasegroup id or barcode
+        # try with (strict) ref album(s), using releasegroup id
         for ref_album in ref_albums:
             if mb_artist := await self.get_artist_details_by_album(artist.name, ref_album):
                 return mb_artist.id
@@ -329,18 +329,8 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz Artist ID provided"
         raise InvalidDataError(msg)
 
-    async def get_recording_details(
-        self, recording_id: str | None = None, isrc: str | None = None
-    ) -> MusicBrainzRecording:
-        """Get Recording details by providing a MusicBrainz recording id OR isrc."""
-        assert recording_id or isrc, "Provider either Recording ID or ISRC"
-        if not recording_id:
-            # lookup recording id first by isrc
-            if (result := await self.get_data(f"isrc/{isrc}")) and result.get("recordings"):
-                recording_id = result["recordings"][0]["id"]
-            else:
-                msg = "Invalid ISRC provided"
-                raise InvalidDataError(msg)
+    async def get_recording_details(self, recording_id: str) -> MusicBrainzRecording:
+        """Get Recording details by providing a MusicBrainz Recording Id."""
         if result := await self.get_data(f"recording/{recording_id}?inc=artists+releases"):
             if "id" not in result:
                 result["id"] = recording_id
@@ -348,22 +338,11 @@ class MusicbrainzProvider(MetadataProvider):
                 return MusicBrainzRecording.from_dict(replace_hyphens(result))
             except MissingField as err:
                 raise InvalidDataError from err
-        msg = "Invalid ISRC provided"
+        msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
 
-    async def get_releasegroup_details(
-        self, releasegroup_id: str | None = None, barcode: str | None = None
-    ) -> MusicBrainzReleaseGroup:
-        """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id OR barcode."""
-        assert releasegroup_id or barcode, "Provider either ReleaseGroup ID or barcode"
-        if not releasegroup_id:
-            # lookup releasegroup id first by barcode
-            endpoint = f"release?query=barcode:{barcode}"
-            if (result := await self.get_data(endpoint)) and result.get("releases"):
-                releasegroup_id = result["releases"][0]["release-group"]["id"]
-            else:
-                msg = "Invalid barcode provided"
-                raise InvalidDataError(msg)
+    async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:
+        """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id."""
         endpoint = f"release-group/{releasegroup_id}?inc=artists+aliases"
         if result := await self.get_data(endpoint):
             if "id" not in result:
@@ -383,22 +362,20 @@ class MusicbrainzProvider(MetadataProvider):
 
         MusicBrainzArtist object that is returned does not contain the optional data.
         """
-        barcodes = [x[1] for x in ref_album.external_ids if x[0] == ExternalID.BARCODE]
-        if not (ref_album.mbid or barcodes):
+        if not ref_album.mbid:
             return None
-        for barcode in barcodes:
-            result = None
-            with suppress(InvalidDataError):
-                result = await self.get_releasegroup_details(ref_album.mbid, barcode)
-            if not (result and result.artist_credit):
-                return None
-            for strict in (True, False):
-                for artist_credit in result.artist_credit:
-                    if compare_strings(artist_credit.artist.name, artistname, strict):
+        result = None
+        with suppress(InvalidDataError):
+            result = await self.get_releasegroup_details(ref_album.mbid)
+        if not (result and result.artist_credit):
+            return None
+        for strict in (True, False):
+            for artist_credit in result.artist_credit:
+                if compare_strings(artist_credit.artist.name, artistname, strict):
+                    return artist_credit.artist
+                for alias in artist_credit.artist.aliases or []:
+                    if compare_strings(alias.name, artistname, strict):
                         return artist_credit.artist
-                    for alias in artist_credit.artist.aliases or []:
-                        if compare_strings(alias.name, artistname, strict):
-                            return artist_credit.artist
         return None
 
     async def get_artist_details_by_track(
@@ -409,22 +386,20 @@ class MusicbrainzProvider(MetadataProvider):
 
         MusicBrainzArtist object that is returned does not contain the optional data.
         """
-        isrcs = [x[1] for x in ref_track.external_ids if x[0] == ExternalID.ISRC]
-        if not (ref_track.mbid or isrcs):
+        if not ref_track.mbid:
             return None
-        for isrc in isrcs:
-            result = None
-            with suppress(InvalidDataError, MediaNotFoundError):
-                result = await self.get_recording_details(ref_track.mbid, isrc)
-            if not (result and result.artist_credit):
-                return None
-            for strict in (True, False):
-                for artist_credit in result.artist_credit:
-                    if compare_strings(artist_credit.artist.name, artistname, strict):
+        result = None
+        with suppress(InvalidDataError, MediaNotFoundError):
+            result = await self.get_recording_details(ref_track.mbid)
+        if not (result and result.artist_credit):
+            return None
+        for strict in (True, False):
+            for artist_credit in result.artist_credit:
+                if compare_strings(artist_credit.artist.name, artistname, strict):
+                    return artist_credit.artist
+                for alias in artist_credit.artist.aliases or []:
+                    if compare_strings(alias.name, artistname, strict):
                         return artist_credit.artist
-                    for alias in artist_credit.artist.aliases or []:
-                        if compare_strings(alias.name, artistname, strict):
-                            return artist_credit.artist
         return None
 
     @use_cache(86400 * 30)
