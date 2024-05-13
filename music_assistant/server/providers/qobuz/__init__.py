@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import time
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.json import json_loads
@@ -555,8 +556,9 @@ class QobuzProvider(MusicProvider):
             ]
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
-        if (released_at := album_obj.get("released_at")) and released_at != 0:
-            album.year = datetime.datetime.fromtimestamp(album_obj["released_at"]).year
+        if released_at := album_obj.get("released_at"):
+            with suppress(ValueError):
+                album.year = datetime.datetime.fromtimestamp(released_at).year
         if album_obj.get("copyright"):
             album.metadata.copyright = album_obj["copyright"]
         if album_obj.get("description"):
