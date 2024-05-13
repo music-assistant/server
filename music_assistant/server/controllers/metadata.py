@@ -28,7 +28,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.common.models.errors import ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -102,7 +102,6 @@ class MetaDataController(CoreController):
         super().__init__(*args, **kwargs)
         self.cache = self.mass.cache
         self._pref_lang: str | None = None
-        self.scan_busy: bool = False
         self.manifest.name = "Metadata controller"
         self.manifest.description = (
             "Music Assistant's core controller which handles all metadata for music."
@@ -197,34 +196,6 @@ class MetaDataController(CoreController):
                     return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
-
-    def start_scan(self) -> None:
-        """Start background scan for missing metadata."""
-
-        async def scan_artist_metadata() -> None:
-            """Background task that scans for artists missing metadata on filesystem providers."""
-            if self.scan_busy:
-                return
-
-            self.logger.debug("Start scan for missing artist metadata")
-            self.scan_busy = True
-            async for artist in self.mass.music.artists.iter_library_items():
-                if artist.metadata.last_refresh is not None:
-                    continue
-                # most important is to see artist thumb in listings
-                # so if that is already present, move on
-                # full details can be grabbed later
-                if artist.image:
-                    continue
-                # simply grabbing the full artist will trigger a full fetch
-                with suppress(MediaNotFoundError):
-                    await self.mass.music.artists.get(artist.item_id, artist.provider, lazy=False)
-                # this is slow on purpose to not cause stress on the metadata providers
-                await asyncio.sleep(30)
-            self.scan_busy = False
-            self.logger.debug("Finished scan for missing artist metadata")
-
-        self.mass.create_task(scan_artist_metadata)
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
