@@ -44,9 +44,10 @@ class ThrottlerManager(Throttler):
             except ResourceTemporarilyUnavailable as e:
                 if e.backoff_time:
                     backoff_time = e.backoff_time
-                LOGGER.info(f"Attempt {attempt + 1}/{self.retry_attempts} failed: {e}")
+                level = logging.DEBUG if attempt > 1 else logging.INFO
+                LOGGER.log(level, f"Attempt {attempt + 1}/{self.retry_attempts} failed: {e}")
                 if attempt < self.retry_attempts - 1:
-                    LOGGER.info(f"Retrying in {backoff_time} seconds...")
+                    LOGGER.log(level, f"Retrying in {backoff_time} seconds...")
                     await asyncio.sleep(backoff_time)
                     backoff_time *= 2
         else:  # noqa: PLW0120
