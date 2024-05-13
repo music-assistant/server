@@ -45,13 +45,17 @@ def split_items(org_str: str, allow_unsafe_splitters: bool = False) -> tuple[str
     return (org_str.strip(),)
 
 
-def split_artists(org_artists: str | tuple[str, ...]) -> tuple[str, ...]:
+def split_artists(
+    org_artists: str | tuple[str, ...], allow_ampersand: bool = False
+) -> tuple[str, ...]:
     """Parse all artists from a string."""
     final_artists = set()
     # when not using the multi artist tag, the artist string may contain
     # multiple artists in freeform, even featuring artists may be included in this
     # string. Try to parse the featuring artists and separate them.
-    splitters = ("featuring", " feat. ", " feat ", "feat.")
+    splitters = ("featuring", " feat. ", " feat ", "feat.", " & ")
+    if allow_ampersand:
+        splitters = (*splitters, " & ")
     for item in split_items(org_artists):
         for splitter in splitters:
             for subitem in item.split(splitter):
@@ -117,6 +121,10 @@ class AudioTags:
         if tag := self.tags.get("artist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
+            if len(self.musicbrainz_artistids) > 1:
+                # special case: artist noted as 2 artists with ampersand
+                # but with 2 mb ids so they should be treated as 2 artists
+                return split_artists(tag, allow_ampersand=True)
             return split_artists(tag)
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
@@ -136,6 +144,11 @@ class AudioTags:
         if tag := self.tags.get("albumartist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
+            if len(self.musicbrainz_albumartistids) > 1:
+                # special case: album artist noted as 2 artists with ampersand
+                # but with 2 mb ids so they should be treated as 2 artists
+                # example: John Travolta & Olivia Newton John on the Grease album
+                return split_artists(tag, allow_ampersand=True)
             return split_artists(tag)
         return ()
 
