@@ -180,6 +180,8 @@ class ContentType(StrEnum):
             ContentType.FLAC,
             ContentType.AIFF,
             ContentType.WAV,
+            ContentType.ALAC,
+            ContentType.WAVPACK,
         )
 
     @classmethod

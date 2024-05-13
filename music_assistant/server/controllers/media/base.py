@@ -252,9 +252,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         if library_item and (time() - (library_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
-            if library_item.available:
-                # do not attempts metadata refresh on unavailable items as it has side effects
-                metadata_lookup = True
+            # NOTE: do not attempt metadata refresh on unavailable items as it has side effects
+            metadata_lookup = library_item.available
 
         if library_item and not (force_refresh or metadata_lookup or add_to_library):
             # we have a library item and no refreshing is needed, return the results!

@@ -20,11 +20,7 @@ from music_assistant.common.models.config_entries import (
     ConfigValueOption,
 )
 from music_assistant.common.models.enums import ExternalID, ProviderFeature, StreamType
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    MediaNotFoundError,
-    MusicAssistantError,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -56,7 +52,6 @@ from .helpers import get_parentdir
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from music_assistant.server.providers.musicbrainz import MusicbrainzProvider
 
 CONF_MISSING_ALBUM_ARTIST_ACTION = "missing_album_artist_action"
 
@@ -64,14 +59,13 @@ CONF_ENTRY_MISSING_ALBUM_ARTIST = ConfigEntry(
     key=CONF_MISSING_ALBUM_ARTIST_ACTION,
     type=ConfigEntryType.STRING,
     label="Action when a track is missing the Albumartist ID3 tag",
-    default_value="folder_name",
+    default_value="various_artists",
     help_link="https://music-assistant.io/music-providers/filesystem/#tagging-files",
     required=False,
     options=(
-        ConfigValueOption("Skip track and log warning", "skip"),
         ConfigValueOption("Use Track artist(s)", "track_artist"),
         ConfigValueOption("Use Various Artists", "various_artists"),
-        ConfigValueOption("Use Folder name", "folder_name"),
+        ConfigValueOption("Use Folder name (if possible)", "folder_name"),
     ),
 )
 
@@ -540,7 +534,7 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 playlist_lines = parse_pls(playlist_data)
 
-            playlist_lines = playlist_lines[offset:limit]
+            playlist_lines = playlist_lines[offset : offset + limit]
 
             for line_no, playlist_line in enumerate(playlist_lines):
                 if track := await self._parse_playlist_line(
@@ -754,32 +748,15 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 # album artist tag is missing, determine fallback
                 fallback_action = self.config.get_value(CONF_MISSING_ALBUM_ARTIST_ACTION)
-                musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
-                assert musicbrainz
-                # lookup track details on musicbrainz first
-                if mb_search_details := await musicbrainz.search(
-                    tags.artists[0], tags.album, tags.title, tags.version
-                ):
-                    # get full releasegroup details and get the releasegroup artist(s)
-                    mb_details = await musicbrainz.get_releasegroup_details(mb_search_details[1].id)
-                    for mb_artist in mb_details.artist_credit:
-                        artist = await self._parse_artist(
-                            mb_artist.artist.name, mb_artist.artist.sort_name
-                        )
-                        artist.mbid = mb_artist.artist.id
-                        album_artists.append(artist)
-                    if not tags.musicbrainz_recordingid:
-                        tags.tags["musicbrainzrecordingid"] = mb_search_details[2].id
-                    if not tags.musicbrainz_releasegroupid:
-                        tags.tags["musicbrainzreleasegroupid"] = mb_search_details[1].id
-                # fallback to various artists (if defined by user)
-                elif fallback_action == "various_artists":
+                if fallback_action == "folder_name" and album_dir:
+                    possible_artist_folder = os.path.dirname(album_dir)
                     self.logger.warning(
-                        "%s is missing ID3 tag [albumartist], using %s as fallback",
+                        "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
                         file_item.path,
-                        VARIOUS_ARTISTS_NAME,
+                        possible_artist_folder,
                     )
-                    album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS_NAME)]
+                    album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
+                    album_artists = [await self._parse_artist(name=album_artist_str)]
                 # fallback to track artists (if defined by user)
                 elif fallback_action == "track_artist":
                     self.logger.warning(
@@ -790,20 +767,14 @@ class FileSystemProviderBase(MusicProvider):
                         await self._parse_artist(name=track_artist_str)
                         for track_artist_str in tags.artists
                     ]
-                elif fallback_action == "folder_name" and album_dir:
-                    possible_artist_folder = os.path.dirname(album_dir)
-                    self.logger.warning(
-                        "%s is missing ID3 tag [albumartist], using foldername %s as fallback",
-                        file_item.path,
-                        possible_artist_folder,
-                    )
-                    album_artist_str = possible_artist_folder.rsplit(os.sep)[-1]
-                    album_artists = [await self._parse_artist(name=album_artist_str)]
-                # fallback to just log error and add track without album
+                # all other: fallback to various artists
                 else:
-                    # default action is to skip the track
-                    msg = "missing ID3 tag [albumartist]"
-                    raise InvalidDataError(msg)
+                    self.logger.warning(
+                        "%s is missing ID3 tag [albumartist], using %s as fallback",
+                        file_item.path,
+                        VARIOUS_ARTISTS_NAME,
+                    )
+                    album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS_NAME)]
 
             track.album = await self._parse_album(
                 tags.album,

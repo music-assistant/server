@@ -56,11 +56,11 @@ CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 
-CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_action_artist"
-CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_action_album"
-CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_action_track"
-CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_action_radio"
-CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_action_playlist"
+CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
+CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
+CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
+CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
+CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
 
 
 class CompareState(TypedDict):
@@ -152,7 +152,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Artist item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -160,7 +160,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Album item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -168,7 +168,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.PLAY,
+                default_value=QueueOption.PLAY.value,
                 label="Default enqueue option for Track item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -176,7 +176,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Track item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -184,7 +184,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Playlist item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -212,7 +212,7 @@ class PlayerQueuesController(CoreController):
             return PagedItems(items=[], limit=limit, offset=offset)
 
         return PagedItems(
-            items=self._queue_items[queue_id][offset:limit],
+            items=self._queue_items[queue_id][offset : offset + limit],
             limit=limit,
             offset=offset,
             total=len(self._queue_items[queue_id]),
@@ -337,7 +337,7 @@ class PlayerQueuesController(CoreController):
                     option = QueueOption(
                         await self.mass.config.get_core_config_value(
                             self.domain,
-                            f"default_enqueue_action_{media_item.media_type.value}",
+                            f"default_enqueue_option_{media_item.media_type.value}",
                         )
                     )
                     if option == QueueOption.REPLACE:

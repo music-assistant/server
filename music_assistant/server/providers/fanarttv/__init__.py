@@ -75,7 +75,7 @@ class FanartTvMetadataProvider(MetadataProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
-        self.throttler = Throttler(rate_limit=2, period=1)
+        self.throttler = Throttler(rate_limit=1, period=30)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -132,7 +132,7 @@ class FanartTvMetadataProvider(MetadataProvider):
                 return metadata
         return None
 
-    @use_cache(86400 * 14)
+    @use_cache(86400 * 30)
     async def _get_data(self, endpoint, **kwargs) -> dict | None:
         """Get data from api."""
         url = f"http://webservice.fanart.tv/v3/{endpoint}"
