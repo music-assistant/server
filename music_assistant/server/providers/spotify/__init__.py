@@ -129,7 +129,7 @@ class SpotifyProvider(MusicProvider):
     _librespot_bin: str | None = None
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
-    throttler = ThrottlerManager(rate_limit=1, period=1)
+    throttler = ThrottlerManager(rate_limit=1, period=2)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
