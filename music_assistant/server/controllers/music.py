@@ -719,9 +719,6 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s completed", provider.name)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            # trigger metadata scan after all provider syncs completed
-            if len(self.in_progress_syncs) == 0:
-                self.mass.metadata.start_scan()
 
         task.add_done_callback(on_sync_task_done)
 

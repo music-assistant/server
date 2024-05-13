@@ -28,7 +28,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.common.models.errors import ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -102,7 +102,6 @@ class MetaDataController(CoreController):
         super().__init__(*args, **kwargs)
         self.cache = self.mass.cache
         self._pref_lang: str | None = None
-        self.scan_busy: bool = False
         self.manifest.name = "Metadata controller"
         self.manifest.description = (
             "Music Assistant's core controller which handles all metadata for music."
@@ -197,34 +196,6 @@ class MetaDataController(CoreController):
                     return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
-
-    def start_scan(self) -> None:
-        """Start background scan for missing metadata."""
-
-        async def scan_artist_metadata() -> None:
-            """Background task that scans for artists missing metadata on filesystem providers."""
-            if self.scan_busy:
-                return
-
-            self.logger.debug("Start scan for missing artist metadata")
-            self.scan_busy = True
-            async for artist in self.mass.music.artists.iter_library_items():
-                if artist.metadata.last_refresh is not None:
-                    continue
-                # most important is to see artist thumb in listings
-                # so if that is already present, move on
-                # full details can be grabbed later
-                if artist.image:
-                    continue
-                # simply grabbing the full artist will trigger a full fetch
-                with suppress(MediaNotFoundError):
-                    await self.mass.music.artists.get(artist.item_id, artist.provider, lazy=False)
-                # this is slow on purpose to not cause stress on the metadata providers
-                await asyncio.sleep(30)
-            self.scan_busy = False
-            self.logger.debug("Finished scan for missing artist metadata")
-
-        self.mass.create_task(scan_artist_metadata)
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
@@ -368,24 +339,12 @@ class MetaDataController(CoreController):
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
             return VARIOUS_ARTISTS_ID_MBID
-        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
-        if len(ref_albums) < 10:
-            # fetch reference albums from provider(s) attached to the artist
-            for provider_mapping in artist.provider_mappings:
-                if provider_mapping.provider_instance == artist.provider:
-                    continue
-                ref_albums += await self.mass.music.artists.albums(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
-        ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
-        if len(ref_tracks) < 10:
-            # fetch reference tracks from provider(s) attached to the artist
-            for provider_mapping in artist.provider_mappings:
-                if provider_mapping.provider_instance == artist.provider:
-                    continue
-                ref_tracks += await self.mass.music.artists.tracks(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
+        ref_albums = await self.mass.music.artists.albums(
+            artist.item_id, artist.provider, in_library_only=False
+        )
+        ref_tracks = await self.mass.music.artists.tracks(
+            artist.item_id, artist.provider, in_library_only=False
+        )
         # start lookup of musicbrainz id
         musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
         assert musicbrainz
