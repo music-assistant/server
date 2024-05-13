@@ -368,24 +368,12 @@ class MetaDataController(CoreController):
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
             return VARIOUS_ARTISTS_ID_MBID
-        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
-        if len(ref_albums) < 10:
-            # fetch reference albums from provider(s) attached to the artist
-            for provider_mapping in artist.provider_mappings:
-                if provider_mapping.provider_instance == artist.provider:
-                    continue
-                ref_albums += await self.mass.music.artists.albums(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
-        ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
-        if len(ref_tracks) < 10:
-            # fetch reference tracks from provider(s) attached to the artist
-            for provider_mapping in artist.provider_mappings:
-                if provider_mapping.provider_instance == artist.provider:
-                    continue
-                ref_tracks += await self.mass.music.artists.tracks(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
+        ref_albums = await self.mass.music.artists.albums(
+            artist.item_id, artist.provider, in_library_only=False
+        )
+        ref_tracks = await self.mass.music.artists.tracks(
+            artist.item_id, artist.provider, in_library_only=False
+        )
         # start lookup of musicbrainz id
         musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
         assert musicbrainz
