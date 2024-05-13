@@ -316,7 +316,7 @@ class BuiltinProvider(MusicProvider):
             return False
         stored_item = StoredItem(item_id=item.item_id, name=item.name)
         if item.image:
-            stored_item["image_url"] = item.image
+            stored_item["image_url"] = item.image.path
         stored_items: list[StoredItem] = self.mass.config.get(key, [])
         # filter out existing
         stored_items = [x for x in stored_items if x["item_id"] != item.item_id]
