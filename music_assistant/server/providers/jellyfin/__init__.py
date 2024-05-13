@@ -140,7 +140,7 @@ async def get_config_entries(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
             label="Password",
-            required=True,
+            required=False,
             description="The password to authenticate to the remote server.",
         ),
     )
