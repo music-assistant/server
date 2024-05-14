@@ -376,7 +376,8 @@ class MusicController(CoreController):
                 continue
             with suppress(MediaNotFoundError, ProviderUnavailableError):
                 media_type = MediaType(db_row["media_type"])
-                item = await self.get_item(media_type, db_row["item_id"], db_row["provider"])
+                ctrl = self.get_controller(media_type)
+                item = await ctrl.get_provider_item(db_row["item_id"], db_row["provider"])
                 result.append(item)
         return result
 
