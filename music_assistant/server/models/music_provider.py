@@ -292,7 +292,7 @@ class MusicProvider(Provider):
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
         items: list[MediaItemType] = []
-        index = 0
+        index = -1
         subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
         generator: AsyncGenerator[MediaItemType, None] | None = None
@@ -314,10 +314,10 @@ class MusicProvider(Provider):
         if generator:
             # grab items from library generator
             async for item in generator:
+                index += 1
                 if index < offset:
                     continue
                 items.append(item)
-                index += 1
                 if len(items) >= limit:
                     break
         else:

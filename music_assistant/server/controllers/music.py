@@ -348,12 +348,13 @@ class MusicController(CoreController):
             )
             if not prov:
                 return PagedItems(items=prepend_items, limit=limit, offset=offset)
-        else:
+        elif offset == 0:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
                 BrowseFolder(item_id="back", provider=provider_instance, path=back_path, name="..")
             )
-        prov_items = await prov.browse(path, offset, limit)
+        # limit -1 to account for the prepended items
+        prov_items = await prov.browse(path, offset=offset, limit=limit)
         prov_items.items = prepend_items + prov_items.items
         return prov_items
 
