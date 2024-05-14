@@ -350,6 +350,10 @@ class OpenSonicProvider(MusicProvider):
             name=sonic_song.title,
             album=mapping,
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
+            # We are setting disc number to 0 because the standard for what is part of
+            # a Open Subsonic Song is not yet set and the implementations I have checked
+            # do not contain this field. We should revisit this when the spec is finished
+            disc_number=0,
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_song.id,
