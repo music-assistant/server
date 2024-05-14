@@ -29,7 +29,7 @@ server = [
   "colorlog==6.8.2",
   "aiosqlite==0.20.0",
   "python-slugify==8.0.4",
-  "mashumaro==3.12",
+  "mashumaro==3.13",
   "memory-tempfile==2.2.3",
   "music-assistant-frontend==2.5.10",
   "pillow==10.3.0",
