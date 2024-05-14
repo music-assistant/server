@@ -310,7 +310,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         if ITEM_KEY_OVERVIEW in current_jellyfin_album:
@@ -374,7 +374,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         return artist
@@ -421,7 +421,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         if len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]) >= 1:
@@ -513,7 +513,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         playlist.is_editable = False
