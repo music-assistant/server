@@ -561,7 +561,7 @@ class ChromecastProvider(PlayerProvider):
             "metadataType": 3,
             "albumName": media.album or "",
             "songName": media.title or "",
-            "artist": media.title or "",
+            "artist": media.artist or "",
             "title": media.title or "",
             "images": [{"url": media.image_url}] if media.image_url else None,
         }
