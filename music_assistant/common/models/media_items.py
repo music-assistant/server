@@ -577,9 +577,8 @@ class PagedItems(Generic[_T]):
         self.limit = limit
         self.offset = offset
         self.total = total
-        if total is None and offset == 0 and count > limit:
-            self.total = count
-        if total is None and offset and count < limit:
+        if total is None and count != limit:
+            # total is important so always calculate it from count if omitted
             self.total = offset + count
 
     def to_dict(self, *args, **kwargs) -> dict[str, Any]:
