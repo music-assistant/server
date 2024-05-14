@@ -326,7 +326,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         if isinstance(update, ItemMapping):
             # NOTE that artist is the only mediatype where its accepted we
             # receive an itemmapping from streaming providers
-            update = Artist.from_item_mapping(update)
+            update = self._artist_from_item_mapping(update)
             metadata = cur_item.metadata
         else:
             metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)

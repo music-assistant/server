@@ -310,7 +310,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         if ITEM_KEY_OVERVIEW in current_jellyfin_album:
@@ -374,7 +374,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         return artist
@@ -421,7 +421,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         if len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]) >= 1:
@@ -444,13 +444,6 @@ class JellyfinProvider(MusicProvider):
         elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
             parent_album = API.get_item(
                 self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
-            )
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    parent_album[ITEM_KEY_PARENT_ID],
-                    parent_album[ITEM_KEY_ALBUM_ARTIST],
-                )
             )
             track.artists.append(
                 self._get_item_mapping(
@@ -513,7 +506,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         playlist.is_editable = False
@@ -681,6 +674,7 @@ class JellyfinProvider(MusicProvider):
     ) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
+        # TODO: Does Jellyfin support paging here?
         jellyfin_playlist = API.get_item(self._jellyfin_server.jellyfin, prov_playlist_id)
         playlist_items = await self._get_children(
             self._jellyfin_server, jellyfin_playlist[ITEM_KEY_ID], ITEM_TYPE_AUDIO
@@ -688,10 +682,15 @@ class JellyfinProvider(MusicProvider):
         if not playlist_items:
             return result
         for index, jellyfin_track in enumerate(playlist_items):
-            if track := await self._parse_track(jellyfin_track):
-                if not track.position:
-                    track.position = index
-                result.append(track)
+            try:
+                if track := await self._parse_track(jellyfin_track):
+                    if not track.position:
+                        track.position = index
+                    result.append(track)
+            except (KeyError, ValueError) as err:
+                self.logger.error(
+                    "Skipping track %s: %s", jellyfin_track.get(ITEM_KEY_NAME, index), str(err)
+                )
         return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
