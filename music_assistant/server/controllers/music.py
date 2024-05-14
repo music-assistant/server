@@ -605,6 +605,11 @@ class MusicController(CoreController):
         else:
             prov_key = provider_instance_id_or_domain
 
+        # do not try to store dynamic urls (e.g. with auth token etc.),
+        # stick with plaun uri/urls only
+        if "http" in item_id and "?" in item_id:
+            return
+
         # update generic playlog table
         await self.database.insert(
             DB_TABLE_PLAYLOG,
