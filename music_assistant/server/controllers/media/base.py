@@ -62,6 +62,7 @@ SORT_KEYS = {
     "position": "position ASC",
     "position_desc": "position DESC",
     "random": "RANDOM()",
+    "random_play_count": "RANDOM(), play_count",
 }
 
 

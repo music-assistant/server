@@ -102,7 +102,7 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
-    async def browse(self, path: str, limit: int, offset: int) -> PagedItems[MediaItemType]:
+    async def browse(self, path: str, offset: int, limit: int) -> PagedItems[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).

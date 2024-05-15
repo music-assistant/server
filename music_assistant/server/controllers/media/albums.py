@@ -302,6 +302,13 @@ class AlbumsController(MediaControllerBase[Album]):
         # store (serializable items) in cache
         if prov.is_streaming_provider:
             self.mass.create_task(self.mass.cache.set(cache_key, [x.to_dict() for x in items]))
+        for item in items:
+            # if this is a complete track object, pre-cache it as
+            # that will save us an (expensive) lookup later
+            if item.image and item.artist_str and item.album and prov.domain != "builtin":
+                await self.mass.cache.set(
+                    f"provider_item.track.{prov.lookup_key}.{item_id}", item.to_dict()
+                )
         return items
 
     async def _get_provider_dynamic_tracks(
