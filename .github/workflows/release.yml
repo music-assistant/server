@@ -118,21 +118,12 @@ jobs:
     needs: [build-and-publish-pypi, build-and-push-container-image]
     runs-on: ubuntu-latest
     steps:
-      - name: Update changelog and release notes including frontend notes BETA
+      - name: Update changelog and release notes including frontend notes
         uses: music-assistant/release-notes-merge-action@main
-        if: github.event.release.prerelease == true
         with:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           release_tag: ${{ needs.build-and-publish-pypi.outputs.version }}
-          release_type: "BETA"
-      - name: Update changelog and release notes including frontend notes STABLE
-        uses: music-assistant/release-notes-merge-action@main
-        if: github.event.release.prerelease == false
-        with:
-          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          release_tag: ${{ needs.build-and-publish-pypi.outputs.version }}
-          release_type: "STABLE"
-        
+          pre_release: ${{ github.event.release.prerelease }}
 
   addon-version-update:
     name: Updates the Addon repository with the new version
@@ -144,17 +135,10 @@ jobs:
       ]
     runs-on: ubuntu-latest
     steps:
-      - name: Push new version number to addon config BETA
+      - name: Push new version number to addon config
         uses: music-assistant/addon-update-action@main
-        if: github.event.release.prerelease == true
         with:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           new_server_version: ${{ needs.build-and-publish-pypi.outputs.version }}
-          release_type: "BETA"
-      - name: Push new version number to addon config STABLE
-        uses: music-assistant/addon-update-action@main
-        if: github.event.release.prerelease == false
-        with:
-          github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
-          new_server_version: ${{ needs.build-and-publish-pypi.outputs.version }}
-          release_type: "STABLE"
+          pre_release: ${{ github.event.release.prerelease }}
+
