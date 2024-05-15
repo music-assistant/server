@@ -101,9 +101,7 @@ async def get_artist(session: TidalSession, prov_artist_id: str) -> TidalArtist:
     return await asyncio.to_thread(inner)
 
 
-async def get_artist_albums(
-    session: TidalSession, prov_artist_id: str
-) -> list[TidalAlbum]:
+async def get_artist_albums(session: TidalSession, prov_artist_id: str) -> list[TidalAlbum]:
     """Async wrapper around 3 tidalapi album functions."""
 
     def inner() -> list[TidalAlbum]:
@@ -134,9 +132,9 @@ async def get_artist_toptracks(
     """Async wrapper around the tidalapi Artist.get_top_tracks function."""
 
     def inner() -> list[TidalTrack]:
-        top_tracks: list[TidalTrack] = TidalArtist(
-            session, prov_artist_id
-        ).get_top_tracks(limit=limit, offset=offset)
+        top_tracks: list[TidalTrack] = TidalArtist(session, prov_artist_id).get_top_tracks(
+            limit=limit, offset=offset
+        )
         return top_tracks
 
     return await asyncio.to_thread(inner)
@@ -205,9 +203,7 @@ async def get_track_url(session: TidalSession, prov_track_id: str) -> str:
     return await asyncio.to_thread(inner)
 
 
-async def get_album_tracks(
-    session: TidalSession, prov_album_id: str
-) -> list[TidalTrack]:
+async def get_album_tracks(session: TidalSession, prov_album_id: str) -> list[TidalTrack]:
     """Async wrapper around the tidalapi Album.tracks function."""
 
     def inner() -> list[TidalTrack]:
@@ -323,9 +319,7 @@ async def create_playlist(
     """Async wrapper around the tidal LoggedInUser.create_playlist function."""
 
     def inner() -> TidalPlaylist:
-        playlist: TidalPlaylist = LoggedInUser(session, user_id).create_playlist(
-            title, description
-        )
+        playlist: TidalPlaylist = LoggedInUser(session, user_id).create_playlist(title, description)
         return playlist
 
     return await asyncio.to_thread(inner)
@@ -338,9 +332,9 @@ async def get_similar_tracks(
 
     def inner() -> list[TidalTrack]:
         try:
-            tracks: list[TidalTrack] = TidalTrack(
-                session, prov_track_id
-            ).get_track_radio(limit=limit)
+            tracks: list[TidalTrack] = TidalTrack(session, prov_track_id).get_track_radio(
+                limit=limit
+            )
             return tracks
         except (MetadataNotAvailable, ObjectNotFound) as err:
             msg = f"Track {prov_track_id} not found"
