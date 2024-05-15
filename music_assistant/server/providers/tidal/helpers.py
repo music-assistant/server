@@ -23,7 +23,10 @@ from tidalapi import UserPlaylist as TidalUserPlaylist
 from tidalapi.exceptions import MetadataNotAvailable, ObjectNotFound, TooManyRequests
 
 from music_assistant.common.models.enums import MediaType
-from music_assistant.common.models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    ResourceTemporarilyUnavailable,
+)
 
 DEFAULT_LIMIT = 50
 LOGGER = logging.getLogger(__name__)
@@ -54,7 +57,7 @@ async def library_items_add_remove(
 
     def inner() -> bool:
         tidal_favorites = TidalFavorites(session, user_id)
-        if MediaType.UNKNOWN:
+        if media_type == MediaType.UNKNOWN:
             return False
         response: bool = False
         if add:
