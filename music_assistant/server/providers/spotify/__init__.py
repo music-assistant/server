@@ -824,7 +824,7 @@ class SpotifyProvider(MusicProvider):
             response.raise_for_status()
 
     @throttle_with_retries
-    async def _put_data(self, endpoint, data=None, **kwargs) -> dict[str, Any]:
+    async def _put_data(self, endpoint, data=None, **kwargs) -> None:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
         token = await self.login()
@@ -842,7 +842,6 @@ class SpotifyProvider(MusicProvider):
             if response.status in (502, 503):
                 raise ResourceTemporarilyUnavailable(backoff_time=30)
             response.raise_for_status()
-            return await response.json(loads=json_loads)
 
     @throttle_with_retries
     async def _post_data(self, endpoint, data=None, **kwargs) -> dict[str, Any]:
