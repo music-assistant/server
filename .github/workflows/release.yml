@@ -141,4 +141,3 @@ jobs:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           new_server_version: ${{ needs.build-and-publish-pypi.outputs.version }}
           pre_release: ${{ github.event.release.prerelease }}
-
