@@ -548,7 +548,7 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
         ConfigValueOption("44.1kHz / 16 bits", (44100, 16)),
         ConfigValueOption("44.1kHz / 24 bits", (44100, 24)),
         ConfigValueOption("48kHz / 16 bits", (48000, 16)),
-        ConfigValueOption("48kHz / 16 bits", (48000, 24)),
+        ConfigValueOption("48kHz / 24 bits", (48000, 24)),
         ConfigValueOption("88.2kHz / 16 bits", (88200, 16)),
         ConfigValueOption("88.2kHz / 24 bits", (88200, 24)),
         ConfigValueOption("96kHz / 16 bits", (96000, 16)),
