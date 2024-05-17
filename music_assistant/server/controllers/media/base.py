@@ -12,11 +12,7 @@ from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
 from music_assistant.common.models.enums import EventType, ExternalID, MediaType, ProviderFeature
-from music_assistant.common.models.errors import (
-    InvalidDataError,
-    MediaNotFoundError,
-    ProviderUnavailableError,
-)
+from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     ItemMapping,
@@ -43,6 +39,31 @@ ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
 REFRESH_INTERVAL = 60 * 60 * 24 * 30
 JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids")
+
+SORT_KEYS = {
+    "name": "name COLLATE NOCASE ASC",
+    "name_desc": "name COLLATE NOCASE DESC",
+    "sort_name": "sort_name ASC",
+    "sort_name_desc": "sort_name DESC",
+    "timestamp_added": "timestamp_added ASC",
+    "timestamp_added_desc": "timestamp_added DESC",
+    "timestamp_modified": "timestamp_modified ASC",
+    "timestamp_modified_desc": "timestamp_modified DESC",
+    "last_played": "last_played ASC",
+    "last_played_desc": "last_played DESC",
+    "play_count": "play_count ASC",
+    "play_count_desc": "play_count DESC",
+    "artist": "artists.name COLLATE NOCASE ASC",
+    "album": "albums.name COLLATE NOCASE ASC",
+    "sort_artist": "artists.sort_name ASC",
+    "sort_album": "albums.sort_name ASC",
+    "year": "year ASC",
+    "year_desc": "year DESC",
+    "position": "position ASC",
+    "position_desc": "position DESC",
+    "random": "RANDOM()",
+    "random_play_count": "RANDOM(), play_count",
+}
 
 
 class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
@@ -101,9 +122,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     break
         if library_id is None:
             # actually add a new item in the library db
-            if not item.provider_mappings:
-                msg = "Item is missing provider mapping(s)"
-                raise InvalidDataError(msg)
             async with self._db_add_lock:
                 library_id = await self._add_library_item(item)
                 new_item = True
@@ -163,7 +181,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         order_by: str = "sort_name",
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-    ) -> PagedItems:
+    ) -> PagedItems[ItemCls]:
         """Get in-database items."""
         items = await self._get_library_items_by_query(
             favorite=favorite,
@@ -188,7 +206,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 extra_query_params=extra_query_params,
                 count_only=True,
             )
-        return PagedItems(items=items, count=count, limit=limit, offset=offset, total=total)
+        return PagedItems(items=items, limit=limit, offset=offset, count=count, total=total)
 
     async def iter_library_items(
         self,
@@ -227,7 +245,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         add_to_library: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
-        metadata_lookup = force_refresh or add_to_library
+        metadata_lookup = False
         # always prefer the full library item if we have it
         library_item = await self.get_library_item_by_prov_id(
             item_id,
@@ -235,37 +253,44 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         if library_item and (time() - (library_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
             # it's been too long since the full metadata was last retrieved (or never at all)
-            metadata_lookup = True
-        if library_item and (force_refresh or metadata_lookup):
-            # get (first) provider item id belonging to this library item
-            add_to_library = True
-            provider_instance_id_or_domain, item_id = await self.get_provider_mapping(library_item)
-        elif library_item:
+            # NOTE: do not attempt metadata refresh on unavailable items as it has side effects
+            metadata_lookup = library_item.available
+
+        if library_item and not (force_refresh or metadata_lookup or add_to_library):
             # we have a library item and no refreshing is needed, return the results!
             return library_item
-        if (
-            provider_instance_id_or_domain
-            and item_id
-            and (
-                not details
-                or isinstance(details, ItemMapping)
-                or (add_to_library and details.provider == "library")
-            )
-        ):
-            # grab full details from the provider
-            details = await self.get_provider_item(
-                item_id,
-                provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                fallback=details,
-            )
+
+        if force_refresh:
+            # get (first) provider item id belonging to this library item
+            add_to_library = True
+            metadata_lookup = True
+            if library_item:
+                # resolve library item into a provider item to get the source details
+                provider_instance_id_or_domain, item_id = await self.get_provider_mapping(
+                    library_item
+                )
+
+        # grab full details from the provider
+        details = await self.get_provider_item(
+            item_id,
+            provider_instance_id_or_domain,
+            force_refresh=force_refresh,
+            fallback=details,
+        )
+        if not details and library_item:
+            # something went wrong while trying to fetch/refresh this item
+            # return the existing (unavailable) library item and leave this for another day
+            return library_item
+
         if not details:
             # we couldn't get a match from any of the providers, raise error
             msg = f"Item not found: {provider_instance_id_or_domain}/{item_id}"
             raise MediaNotFoundError(msg)
+
         if not (add_to_library or metadata_lookup):
             # return the provider item as-is
             return details
+
         # create task to add the item to the library,
         # including matching metadata etc. takes some time
         # in 99% of the cases we just return lazy because we want the details as fast as possible
@@ -337,11 +362,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def get_provider_mapping(self, item: ItemCls) -> tuple[str, str]:
         """Return (first) provider and item id."""
         if not getattr(item, "provider_mappings", None):
-            # make sure we have a full object
-            item = await self.get_library_item(item.item_id)
+            if item.provider == "library":
+                item = await self.get_library_item(item.item_id)
+            return (item.provider, item.item_id)
         for prefer_unique in (True, False):
             for prov_mapping in item.provider_mappings:
-                # returns the first provider that is available
                 if not prov_mapping.available:
                     continue
                 if provider := self.mass.get_provider(
@@ -352,6 +377,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     if prefer_unique and provider.is_streaming_provider:
                         continue
                     return (prov_mapping.provider_instance, prov_mapping.item_id)
+        # last resort: return just the first entry
+        for prov_mapping in item.provider_mappings:
+            return (prov_mapping.provider_domain, prov_mapping.item_id)
+
         return (None, None)
 
     async def get_library_item(self, item_id: int | str) -> ItemCls:
@@ -501,18 +530,17 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         fallback: ItemMapping | ItemCls = None,
     ) -> ItemCls:
         """Return item details for the given provider item id."""
+        if provider_instance_id_or_domain == "library":
+            return await self.get_library_item(item_id)
         if not (provider := self.mass.get_provider(provider_instance_id_or_domain)):
             raise ProviderUnavailableError(f"{provider_instance_id_or_domain} is not available")
         cache_key = f"provider_item.{self.media_type.value}.{provider.lookup_key}.{item_id}"
-        if provider_instance_id_or_domain == "library":
-            return await self.get_library_item(item_id)
         if not force_refresh and (cache := await self.mass.cache.get(cache_key)):
             return self.item_cls.from_dict(cache)
         if provider := self.mass.get_provider(provider_instance_id_or_domain):
             with suppress(MediaNotFoundError):
                 if item := await provider.get_item(self.media_type, item_id):
-                    if item.metadata.cache_checksum != "no_cache":
-                        await self.mass.cache.set(cache_key, item.to_dict())
+                    await self.mass.cache.set(cache_key, item.to_dict())
                     return item
         # if we reach this point all possibilities failed and the item could not be found.
         # There is a possibility that the (streaming) provider changed the id of the item
@@ -737,9 +765,11 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if count_only:
             return await self.mass.music.database.get_count_from_query(sql_query, query_params)
         if order_by:
-            order_by = order_by.replace("sort_artist", f"{DB_TABLE_ARTISTS}.sort_name")
-            order_by = order_by.replace("sort_album", f"{DB_TABLE_ALBUMS}.sort_name")
-            sql_query += f" ORDER BY {order_by}"
+            if sort_key := SORT_KEYS.get(order_by):
+                sql_query += f" ORDER BY {sort_key}"
+            else:
+                self.logger.warning("%s is not a valid sort option!", order_by)
+
         # return dbresult parsed to media item model
         return [
             self.item_cls.from_dict(self._parse_db_row(db_row))

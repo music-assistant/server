@@ -37,14 +37,6 @@ class SuccessResultMessage(ResultMessageBase):
 
 
 @dataclass
-class ChunkedResultMessage(ResultMessageBase):
-    """Message sent when the result of a command is sent in multiple chunks."""
-
-    result: Any = field(default=None, metadata={"serialize": lambda v: get_serializable_value(v)})
-    is_last_chunk: bool = False
-
-
-@dataclass
 class ErrorResultMessage(ResultMessageBase):
     """Message sent when a command did not execute successfully."""
 
@@ -79,8 +71,6 @@ def parse_message(raw: dict) -> MessageType:
         return EventMessage.from_dict(raw)
     if "error_code" in raw:
         return ErrorResultMessage.from_dict(raw)
-    if "result" in raw and "is_last_chunk" in raw:
-        return ChunkedResultMessage.from_dict(raw)
     if "result" in raw:
         return SuccessResultMessage.from_dict(raw)
     if "sdk_version" in raw:

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
 
 from mashumaro import DataClassDictMixin
 
@@ -75,14 +75,15 @@ class AudioFormat(DataClassDictMixin):
     def quality(self) -> int:
         """Calculate quality score."""
         if self.content_type.is_lossless():
+            # lossless content is scored very high based on sample rate and bit depth
             return int(self.sample_rate / 1000) + self.bit_depth
         # lossy content, bit_rate is most important score
         # but prefer some codecs over others
-        # rule out bitrates > 320 as that is just an error (happens e.g. for AC3 stream somehow)
-        score = min(320, self.bit_rate) / 100
+        # calculate a rough score based on bit rate per channel
+        bit_rate_score = (self.bit_rate / self.channels) / 100
         if self.content_type in (ContentType.AAC, ContentType.OGG):
-            score += 1
-        return int(score)
+            bit_rate_score += 1
+        return int(bit_rate_score)
 
     @property
     def pcm_sample_size(self) -> int:
@@ -125,7 +126,8 @@ class ProviderMapping(DataClassDictMixin):
         # having items for unavailable providers can have all sorts
         # of unpredictable results so ensure we have accurate availability status
         if not (available_providers := get_global_cache_value("unique_providers")):
-            self.available = False
+            # this is probably the client
+            self.available = self.available
             return
         if TYPE_CHECKING:
             available_providers = cast(set[str], available_providers)
@@ -248,7 +250,11 @@ class MediaItemMetadata(DataClassDictMixin):
             elif isinstance(cur_val, set) and isinstance(new_val, set | list | tuple):
                 new_val = cur_val.update(new_val)
                 setattr(self, fld.name, new_val)
-            elif new_val and fld.name in ("popularity", "last_refresh", "cache_checksum"):
+            elif new_val and fld.name in (
+                "popularity",
+                "last_refresh",
+                "cache_checksum",
+            ):
                 # some fields are always allowed to be overwritten
                 # (such as checksum and last_refresh)
                 setattr(self, fld.name, new_val)
@@ -342,24 +348,6 @@ class MediaItem(_MediaItemBase):
             return None
         return next((x for x in self.metadata.images if x.type == ImageType.THUMB), None)
 
-    @classmethod
-    def from_item_mapping(cls: type, item: ItemMapping) -> Self:
-        """Instantiate MediaItem from ItemMapping."""
-        # NOTE: This will not work for albums and tracks!
-        return cls.from_dict(
-            {
-                **item.to_dict(),
-                "provider_mappings": [
-                    {
-                        "item_id": item.item_id,
-                        "provider_domain": item.provider,
-                        "provider_instance": item.provider,
-                        "available": item.available,
-                    }
-                ],
-            }
-        )
-
 
 @dataclass(kw_only=True)
 class ItemMapping(_MediaItemBase):
@@ -410,6 +398,11 @@ class Album(MediaItem):
     year: int | None = None
     artists: UniqueList[Artist | ItemMapping] = field(default_factory=UniqueList)
     album_type: AlbumType = AlbumType.UNKNOWN
+
+    @property
+    def artist_str(self) -> str:
+        """Return (combined) artist string for track."""
+        return "/".join(x.name for x in self.artists)
 
 
 @dataclass(kw_only=True)
@@ -562,21 +555,44 @@ class BrowseFolder(MediaItem):
             )
 
 
-MediaItemType = Artist | Album | Track | Radio | Playlist | BrowseFolder
+MediaItemType = (
+    Artist | Album | PlaylistTrack | AlbumTrack | Track | Radio | Playlist | BrowseFolder
+)
 
 
-@dataclass(kw_only=True)
-class PagedItems(DataClassDictMixin):
+class PagedItems(Generic[_T]):
     """Model for a paged listing."""
 
-    items: list[MediaItemType]
-    count: int
-    limit: int
-    offset: int
-    total: int | None = None
+    def __init__(
+        self,
+        items: list[_T],
+        limit: int,
+        offset: int,
+        count: int | None = None,
+        total: int | None = None,
+    ):
+        """Initialize PagedItems."""
+        self.items = items
+        self.count = count = count or len(items)
+        self.limit = limit
+        self.offset = offset
+        self.total = total
+        if total is None and count != limit:
+            # total is important so always calculate it from count if omitted
+            self.total = offset + count
+
+    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
+        """Return PagedItems as serializable dict."""
+        return {
+            "items": [x.to_dict() for x in self.items],
+            "count": self.count,
+            "limit": self.limit,
+            "offset": self.offset,
+            "total": self.total,
+        }
 
     @classmethod
-    def parse(cls, raw: dict[str, Any], item_type: type) -> PagedItems:
+    def parse(cls, raw: dict[str, Any], item_type: type[MediaItemType]) -> Self[MediaItemType]:
         """Parse PagedItems object including correct item type."""
         return PagedItems(
             items=[item_type.from_dict(x) for x in raw["items"]],

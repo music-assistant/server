@@ -350,6 +350,10 @@ class OpenSonicProvider(MusicProvider):
             name=sonic_song.title,
             album=mapping,
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
+            # We are setting disc number to 0 because the standard for what is part of
+            # a Open Subsonic Song is not yet set and the implementations I have checked
+            # do not contain this field. We should revisit this when the spec is finished
+            disc_number=0,
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_song.id,
@@ -438,19 +442,14 @@ class OpenSonicProvider(MusicProvider):
         return await asyncio.to_thread(_get_cover_art)
 
     async def search(
-        self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 20
+        self, search_query: str, media_types: list[MediaType], limit: int = 20
     ) -> SearchResults:
         """Search the sonic library."""
-        artists = limit
-        albums = limit
-        songs = limit
-        if media_types:
-            if MediaType.ARTIST not in media_types:
-                artists = 0
-            if MediaType.ALBUM not in media_types:
-                albums = 0
-            if MediaType.TRACK not in media_types:
-                songs = 0
+        artists = limit if MediaType.ARTIST in media_types else 0
+        albums = limit if MediaType.ALBUM in media_types else 0
+        songs = limit if MediaType.TRACK in media_types else 0
+        if not (artists or albums or songs):
+            return SearchResults()
         answer = await self._run_async(
             self._conn.search3,
             query=search_query,
@@ -645,8 +644,11 @@ class OpenSonicProvider(MusicProvider):
             raise MediaNotFoundError(msg) from e
         return self._parse_playlist(sonic_playlist)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
-        """Provide a generator for the tracks on a specified Playlist."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
         try:
             sonic_playlist: SonicPlaylist = await self._run_async(
                 self._conn.getPlaylist, prov_playlist_id
@@ -657,7 +659,8 @@ class OpenSonicProvider(MusicProvider):
         for index, sonic_song in enumerate(sonic_playlist.songs):
             track = self._parse_track(sonic_song)
             track.position = index
-            yield track
+            result.append(track)
+        return result
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""

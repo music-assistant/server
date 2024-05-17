@@ -68,8 +68,18 @@ class Webserver:
         await self._apprunner.setup()
         # set host to None to bind to all addresses on both IPv4 and IPv6
         host = None if bind_ip == "0.0.0.0" else bind_ip
-        self._tcp_site = web.TCPSite(self._apprunner, host=host, port=bind_port)
-        await self._tcp_site.start()
+        try:
+            self._tcp_site = web.TCPSite(self._apprunner, host=host, port=bind_port)
+            await self._tcp_site.start()
+        except OSError:
+            if host is None:
+                raise
+            # the configured interface is not available, retry on all interfaces
+            self.logger.error(
+                "Could not bind to %s, will start on all interfaces as fallback!", host
+            )
+            self._tcp_site = web.TCPSite(self._apprunner, host=None, port=bind_port)
+            await self._tcp_site.start()
 
     async def close(self) -> None:
         """Cleanup on exit."""

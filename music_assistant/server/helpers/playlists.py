@@ -83,6 +83,9 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
             continue
         elif len(line) != 0:
             # Get song path from all other, non-blank lines
+            if "%20" in line:
+                # apparently VLC manages to encode spaces in filenames
+                line = line.replace("%20", " ")  # noqa: PLW2901
             playlist.append(
                 PlaylistItem(path=line, length=length, title=title, stream_info=stream_info)
             )

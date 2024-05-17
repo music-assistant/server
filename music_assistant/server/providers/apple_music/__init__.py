@@ -13,21 +13,34 @@ from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
 from music_assistant.common.helpers.json import json_loads
-from music_assistant.common.models.config_entries import (ConfigEntry,
-                                                          ConfigValueType)
-from music_assistant.common.models.enums import (ConfigEntryType, ExternalID,
-                                                 ProviderFeature, StreamType)
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant.common.models.errors import MediaNotFoundError
-from music_assistant.common.models.media_items import (Album, AlbumType,
-                                                       Artist, AudioFormat,
-                                                       ContentType, ImageType,
-                                                       MediaItemImage,
-                                                       MediaItemType,
-                                                       MediaType, Playlist,
-                                                       ProviderMapping,
-                                                       SearchResults, Track)
+from music_assistant.common.models.media_items import (
+    Album,
+    AlbumType,
+    Artist,
+    AudioFormat,
+    ContentType,
+    ImageType,
+    MediaItemImage,
+    MediaItemType,
+    MediaType,
+    Playlist,
+    ProviderMapping,
+    SearchResults,
+    Track,
+)
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD
+
+# pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -56,7 +69,7 @@ SUPPORTED_FEATURES = (
     ProviderFeature.SIMILAR_TRACKS,
 )
 
-DEVELOPER_TOKEN = ""
+DEVELOPER_TOKEN = app_var(8)
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 
@@ -157,7 +170,9 @@ class AppleMusicProvider(MusicProvider):
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve library albums from the provider."""
         endpoint = "me/library/albums"
-        for item in await self._get_all_items(endpoint, include="catalog,artists", extend="editorialNotes"):
+        for item in await self._get_all_items(
+            endpoint, include="catalog,artists", extend="editorialNotes"
+        ):
             if item and item["id"]:
                 yield self._parse_album(item)
 
@@ -584,9 +599,7 @@ class AppleMusicProvider(MusicProvider):
             raise MediaNotFoundError("Unable to get decryption key for song %s.", item_id)
         cdm.close(session_id)
         decryption_key = key.key.hex()
-        self.mass.create_task(
-            self.mass.cache.set(cache_key, decryption_key, expiration=7200)
-        )
+        self.mass.create_task(self.mass.cache.set(cache_key, decryption_key, expiration=7200))
         return decryption_key
 
     def _get_pssh(self, key_id: bytes) -> PSSH:
@@ -615,5 +628,5 @@ class AppleMusicProvider(MusicProvider):
             content = await response.json(loads=json_loads)
             track_license = content.get("license")
             if not track_license:
-                raise MediaNotFoundError("No license found for song %s.".format())
+                raise MediaNotFoundError("No license found for song %s.", item_id)
             return track_license

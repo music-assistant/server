@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import hashlib
 import time
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.json import json_loads
@@ -124,7 +125,7 @@ class QobuzProvider(MusicProvider):
     _user_auth_info: str | None = None
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
-    throttler = ThrottlerManager(rate_limit=1, period=1)
+    throttler = ThrottlerManager(rate_limit=1, period=2)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -143,7 +144,7 @@ class QobuzProvider(MusicProvider):
         return SUPPORTED_FEATURES
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -152,6 +153,13 @@ class QobuzProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
+        media_types = [
+            x
+            for x in media_types
+            if x in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return result
         params = {"query": search_query, "limit": limit}
         if len(media_types) == 1:
             # qobuz does not support multiple searchtypes, falls back to all if no type given
@@ -164,25 +172,25 @@ class QobuzProvider(MusicProvider):
             if media_types[0] == MediaType.PLAYLIST:
                 params["type"] = "playlists"
         if searchresult := await self._get_data("catalog/search", **params):
-            if "artists" in searchresult:
+            if "artists" in searchresult and MediaType.ARTIST in media_types:
                 result.artists += [
                     self._parse_artist(item)
                     for item in searchresult["artists"]["items"]
                     if (item and item["id"])
                 ]
-            if "albums" in searchresult:
+            if "albums" in searchresult and MediaType.ALBUM in media_types:
                 result.albums += [
                     await self._parse_album(item)
                     for item in searchresult["albums"]["items"]
                     if (item and item["id"])
                 ]
-            if "tracks" in searchresult:
+            if "tracks" in searchresult and MediaType.TRACK in media_types:
                 result.tracks += [
                     await self._parse_track(item)
                     for item in searchresult["tracks"]["items"]
                     if (item and item["id"])
                 ]
-            if "playlists" in searchresult:
+            if "playlists" in searchresult and MediaType.PLAYLIST in media_types:
                 result.playlists += [
                     self._parse_playlist(item)
                     for item in searchresult["playlists"]["items"]
@@ -259,21 +267,26 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
-        count = 1
-        for track_obj in await self._get_all_items(
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        qobuz_result = await self._get_data(
             "playlist/get",
             key="tracks",
             playlist_id=prov_playlist_id,
             extra="tracks",
-        ):
+            offset=offset,
+            limit=limit,
+        )
+        for index, track_obj in enumerate(qobuz_result["tracks"]["items"]):
             if not (track_obj and track_obj["id"]):
                 continue
             track = await self._parse_track(track_obj)
-            track.position = count
-            yield track
-            count += 1
+            track.position = index + offset
+            result.append(track)
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -369,11 +382,9 @@ class QobuzProvider(MusicProvider):
     ) -> None:
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
-        async for track in self.get_playlist_tracks(prov_playlist_id):
-            if track.position in positions_to_remove:
+        for pos in positions_to_remove:
+            for track in await self.get_playlist_tracks(prov_playlist_id, pos, pos):
                 playlist_track_ids.add(str(track["playlist_track_id"]))
-            if len(playlist_track_ids) == positions_to_remove:
-                break
         return await self._get_data(
             "playlist/deleteTracks",
             playlist_id=prov_playlist_id,
@@ -545,8 +556,9 @@ class QobuzProvider(MusicProvider):
             ]
         if "label" in album_obj:
             album.metadata.label = album_obj["label"]["name"]
-        if (released_at := album_obj.get("released_at")) and released_at != 0:
-            album.year = datetime.datetime.fromtimestamp(album_obj["released_at"]).year
+        if released_at := album_obj.get("released_at"):
+            with suppress(ValueError):
+                album.year = datetime.datetime.fromtimestamp(released_at).year
         if album_obj.get("copyright"):
             album.metadata.copyright = album_obj["copyright"]
         if album_obj.get("description"):

@@ -6,9 +6,9 @@ import asyncio
 import logging
 import os
 import shutil
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from itertools import zip_longest
+from math import inf
 from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.datetime import utc_timestamp
@@ -29,7 +29,12 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    MediaItemType,
+    PagedItems,
+    SearchResults,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
@@ -65,6 +70,7 @@ if TYPE_CHECKING:
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
+CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
 
 
 class MusicController(CoreController):
@@ -107,6 +113,14 @@ class MusicController(CoreController):
                 label="Sync interval",
                 description="Interval (in minutes) that a (delta) sync "
                 "of all providers should be performed.",
+            ),
+            ConfigEntry(
+                key=CONF_ADD_LIBRARY_ON_PLAY,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Add item to the library as soon as its played",
+                description="Automatically add a track or radio station to "
+                "the library when played (if its not already in the library).",
             ),
         )
 
@@ -174,6 +188,8 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
+        if not media_types:
+            media_types = MediaType.ALL
         # Check if the search query is a streaming provider public shareable URL
         try:
             media_type, provider_instance_id_or_domain, item_id = await parse_uri(
@@ -227,13 +243,13 @@ class MusicController(CoreController):
                 for sublist in zip_longest(*[x.artists for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             albums=[
                 item
                 for sublist in zip_longest(*[x.albums for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             tracks=[
                 item
                 for sublist in zip_longest(*[x.tracks for x in results_per_provider])
@@ -245,20 +261,20 @@ class MusicController(CoreController):
                 for sublist in zip_longest(*[x.playlists for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             radio=[
                 item
                 for sublist in zip_longest(*[x.radio for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
         )
 
     async def search_provider(
         self,
         search_query: str,
         provider_instance_id_or_domain: str,
-        media_types: list[MediaType] = MediaType.ALL,
+        media_types: list[MediaType],
         limit: int = 10,
     ) -> SearchResults:
         """Perform search on given provider.
@@ -267,7 +283,7 @@ class MusicController(CoreController):
         :param provider_instance_id_or_domain: instance_id or domain of the provider
                                                to perform the search on.
         :param provider_instance: instance id of the provider to perform the search on.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
         prov = self.mass.get_provider(provider_instance_id_or_domain)
@@ -300,37 +316,47 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(self, path: str | None = None) -> AsyncGenerator[MediaItemType, None]:
+    async def browse(
+        self, offset: int, limit: int, path: str | None = None
+    ) -> PagedItems[MediaItemType]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider
+            root_items: list[MediaItemType] = []
             for prov in self.providers:
                 if ProviderFeature.BROWSE not in prov.supported_features:
                     continue
-                yield BrowseFolder(
-                    item_id="root",
-                    provider=prov.domain,
-                    path=f"{prov.instance_id}://",
-                    uri=f"{prov.instance_id}://",
-                    name=prov.name,
+                root_items.append(
+                    BrowseFolder(
+                        item_id="root",
+                        provider=prov.domain,
+                        path=f"{prov.instance_id}://",
+                        uri=f"{prov.instance_id}://",
+                        name=prov.name,
+                    )
                 )
-            return
+            return PagedItems(items=root_items, limit=limit, offset=offset)
 
         # provider level
+        prepend_items: list[MediaItemType] = []
         provider_instance, sub_path = path.split("://", 1)
         prov = self.mass.get_provider(provider_instance)
         # handle regular provider listing, always add back folder first
         if not prov or not sub_path:
-            yield BrowseFolder(item_id="root", provider="library", path="root", name="..")
-            if not prov:
-                return
-        else:
-            back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
-            yield BrowseFolder(
-                item_id="back", provider=provider_instance, path=back_path, name=".."
+            prepend_items.append(
+                BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
-        async for item in prov.browse(path):
-            yield item
+            if not prov:
+                return PagedItems(items=prepend_items, limit=limit, offset=offset)
+        elif offset == 0:
+            back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
+            prepend_items.append(
+                BrowseFolder(item_id="back", provider=provider_instance, path=back_path, name="..")
+            )
+        # limit -1 to account for the prepended items
+        prov_items = await prov.browse(path, offset=offset, limit=limit)
+        prov_items.items = prepend_items + prov_items.items
+        return prov_items
 
     @api_command("music/recently_played_items")
     async def recently_played(
@@ -351,7 +377,8 @@ class MusicController(CoreController):
                 continue
             with suppress(MediaNotFoundError, ProviderUnavailableError):
                 media_type = MediaType(db_row["media_type"])
-                item = await self.get_item(media_type, db_row["item_id"], db_row["provider"])
+                ctrl = self.get_controller(media_type)
+                item = await ctrl.get_provider_item(db_row["item_id"], db_row["provider"])
                 result.append(item)
         return result
 
@@ -532,11 +559,11 @@ class MusicController(CoreController):
                 {
                     "item_id": item_id,
                     "provider": provider.lookup_key,
-                    "integrated": loudness.integrated,
-                    "true_peak": loudness.true_peak,
-                    "lra": loudness.lra,
-                    "threshold": loudness.threshold,
-                    "target_offset": loudness.target_offset,
+                    "integrated": round(loudness.integrated, 2),
+                    "true_peak": round(loudness.true_peak, 2),
+                    "lra": round(loudness.lra, 2),
+                    "threshold": round(loudness.threshold, 2),
+                    "target_offset": round(loudness.target_offset, 2),
                 },
                 allow_replace=True,
             )
@@ -553,6 +580,9 @@ class MusicController(CoreController):
                     "provider": provider.lookup_key,
                 },
             ):
+                if result["integrated"] == inf or result["integrated"] == -inf:
+                    return None
+
                 return LoudnessMeasurement(
                     integrated=result["integrated"],
                     true_peak=result["true_peak"],
@@ -566,18 +596,49 @@ class MusicController(CoreController):
         self, media_type: MediaType, item_id: str, provider_instance_id_or_domain: str
     ) -> None:
         """Mark item as played in playlog."""
-        # TODO: also mark in media table (for library items)
         timestamp = utc_timestamp()
+
+        if provider_instance_id_or_domain == "library":
+            prov_key = "library"
+        elif prov := self.mass.get_provider(provider_instance_id_or_domain):
+            prov_key = prov.lookup_key
+        else:
+            prov_key = provider_instance_id_or_domain
+
+        # do not try to store dynamic urls (e.g. with auth token etc.),
+        # stick with plaun uri/urls only
+        if "http" in item_id and "?" in item_id:
+            return
+
+        # update generic playlog table
         await self.database.insert(
             DB_TABLE_PLAYLOG,
             {
                 "item_id": item_id,
-                "provider": provider_instance_id_or_domain,
+                "provider": prov_key,
                 "media_type": media_type.value,
                 "timestamp": timestamp,
             },
             allow_replace=True,
         )
+
+        # also update playcount in library table
+        ctrl = self.get_controller(media_type)
+        if self.mass.config.get_raw_core_config_value(self.domain, CONF_ADD_LIBRARY_ON_PLAY):
+            # handle feature to add to the lib on playback
+            db_item = await ctrl.get(
+                item_id, provider_instance_id_or_domain, lazy=False, add_to_library=True
+            )
+        else:
+            db_item = await ctrl.get_library_item_by_prov_id(
+                item_id, provider_instance_id_or_domain
+            )
+        if db_item:
+            await self.database.execute(
+                f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
+                f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
+            )
+        await self.database.commit()
 
     def get_controller(
         self, media_type: MediaType
@@ -665,9 +726,6 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s completed", provider.name)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            # trigger metadata scan after all provider syncs completed
-            if len(self.in_progress_syncs) == 0:
-                self.mass.metadata.start_scan()
 
         task.add_done_callback(on_sync_task_done)
 

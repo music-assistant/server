@@ -44,9 +44,10 @@ class ThrottlerManager(Throttler):
             except ResourceTemporarilyUnavailable as e:
                 if e.backoff_time:
                     backoff_time = e.backoff_time
-                LOGGER.warning(f"Attempt {attempt + 1}/{self.retry_attempts} failed: {e}")
+                level = logging.DEBUG if attempt > 1 else logging.INFO
+                LOGGER.log(level, f"Attempt {attempt + 1}/{self.retry_attempts} failed: {e}")
                 if attempt < self.retry_attempts - 1:
-                    LOGGER.warning(f"Retrying in {backoff_time} seconds...")
+                    LOGGER.log(level, f"Retrying in {backoff_time} seconds...")
                     await asyncio.sleep(backoff_time)
                     backoff_time *= 2
         else:  # noqa: PLW0120
@@ -71,11 +72,11 @@ def throttle_with_retries(
                     return await func(self, *args, **kwargs)
                 except ResourceTemporarilyUnavailable as e:
                     backoff_time += e.backoff_time
-                    self.logger.warning(
+                    self.logger.info(
                         f"Attempt {attempt + 1}/{throttler.retry_attempts} failed: {e}"
                     )
                     if attempt < throttler.retry_attempts - 1:
-                        self.logger.warning(f"Retrying in {backoff_time} seconds...")
+                        self.logger.info(f"Retrying in {backoff_time} seconds...")
                         await asyncio.sleep(backoff_time)
                         backoff_time *= 2
             else:  # noqa: PLW0120

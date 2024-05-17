@@ -278,20 +278,7 @@ class ChromecastProvider(PlayerProvider):
         )
 
     async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates.
-
-        This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
-        """
+        """Poll player for state updates."""
         castplayer = self.castplayers[player_id]
         # only update status of media controller if player is on
         if not castplayer.player.powered:
@@ -300,7 +287,7 @@ class ChromecastProvider(PlayerProvider):
             return
         try:
             now = time.time()
-            if (now - castplayer.last_poll) >= 30:
+            if (now - castplayer.last_poll) >= 60:
                 castplayer.last_poll = now
                 await asyncio.to_thread(castplayer.cc.media_controller.update_status)
             await self.update_flow_metadata(castplayer)
@@ -389,6 +376,7 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.PAUSE,
                     ),
                     enabled_by_default=enabled_by_default,
+                    needs_poll=True,
                 ),
             )
             self.castplayers[player_id] = castplayer
@@ -458,6 +446,12 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.display_name,
             status.player_state,
         )
+        # handle castplayer playing from a group
+        if castplayer.active_group is not None:
+            if not (group_player := self.castplayers.get(castplayer.active_group)):
+                return
+            status = group_player.cc.media_controller.status
+
         # player state
         castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
@@ -567,7 +561,7 @@ class ChromecastProvider(PlayerProvider):
             "metadataType": 3,
             "albumName": media.album or "",
             "songName": media.title or "",
-            "artist": media.title or "",
+            "artist": media.artist or "",
             "title": media.title or "",
             "images": [{"url": media.image_url}] if media.image_url else None,
         }
@@ -587,8 +581,11 @@ class ChromecastProvider(PlayerProvider):
     async def update_flow_metadata(self, castplayer: CastPlayer) -> None:
         """Update the metadata of a cast player running the flow stream."""
         if not castplayer.player.powered:
+            castplayer.player.poll_interval = 300
             return
         if not castplayer.cc.media_controller.status.player_is_playing:
+            return
+        if castplayer.active_group:
             return
         if castplayer.player.state != PlayerState.PLAYING:
             return
@@ -600,6 +597,7 @@ class ChromecastProvider(PlayerProvider):
             return
         if not (queue.flow_mode or current_item.media_type == MediaType.RADIO):
             return
+        castplayer.player.poll_interval = 10
         media_controller = castplayer.cc.media_controller
         # update metadata of current item chromecast
         if media_controller.status.media_custom_data["queue_item_id"] != current_item.queue_item_id:

@@ -6,7 +6,7 @@
   "codeowners": [
     "@music-assistant"
   ],
-  "documentation": "",
+  "documentation": "https://music-assistant.io/player-support/ha/",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": false,

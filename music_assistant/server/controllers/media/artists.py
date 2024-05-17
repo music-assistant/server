@@ -14,6 +14,7 @@ from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
     Artist,
+    ItemMapping,
     MediaType,
     PagedItems,
     Track,
@@ -290,8 +291,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         query = f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = {item_id}"
         return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
 
-    async def _add_library_item(self, item: Artist) -> int:
+    async def _add_library_item(self, item: Artist | ItemMapping) -> int:
         """Add a new item record to the database."""
+        if isinstance(item, ItemMapping):
+            item = self._artist_from_item_mapping(item)
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
             item.mbid = VARIOUS_ARTISTS_ID_MBID
@@ -315,12 +318,18 @@ class ArtistsController(MediaControllerBase[Artist]):
         return db_id
 
     async def _update_library_item(
-        self, item_id: str | int, update: Artist, overwrite: bool = False
+        self, item_id: str | int, update: Artist | ItemMapping, overwrite: bool = False
     ) -> None:
         """Update existing record in the database."""
         db_id = int(item_id)  # ensure integer
         cur_item = await self.get_library_item(db_id)
-        metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
+        if isinstance(update, ItemMapping):
+            # NOTE that artist is the only mediatype where its accepted we
+            # receive an itemmapping from streaming providers
+            update = self._artist_from_item_mapping(update)
+            metadata = cur_item.metadata
+        else:
+            metadata = update.metadata if overwrite else cur_item.metadata.update(update.metadata)
         cur_item.external_ids.update(update.external_ids)
         # enforce various artists name + id
         mbid = cur_item.mbid
@@ -499,3 +508,22 @@ class ArtistsController(MediaControllerBase[Artist]):
                     await self._update_library_item(db_artist.item_id, prov_artist)
                     return True
         return False
+
+    def _artist_from_item_mapping(self, item: ItemMapping) -> Artist:
+        domain, instance_id = None, None
+        if prov := self.mass.get_provider(item.provider):
+            domain = prov.domain
+            instance_id = prov.instance_id
+        return Artist.from_dict(
+            {
+                **item.to_dict(),
+                "provider_mappings": [
+                    {
+                        "item_id": item.item_id,
+                        "provider_domain": domain,
+                        "provider_instance": instance_id,
+                        "available": item.available,
+                    }
+                ],
+            }
+        )

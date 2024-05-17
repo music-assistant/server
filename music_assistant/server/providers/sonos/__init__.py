@@ -269,7 +269,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        await self.mass.create_task(sonos_player.soco.stop)
+        await asyncio.to_thread(sonos_player.soco.stop)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
@@ -280,7 +280,7 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
-        await self.mass.create_task(sonos_player.soco.play)
+        await asyncio.to_thread(sonos_player.soco.play)
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
@@ -295,7 +295,7 @@ class SonosPlayerProvider(PlayerProvider):
             # pause not possible
             await self.cmd_stop(player_id)
             return
-        await self.mass.create_task(sonos_player.soco.pause)
+        await asyncio.to_thread(sonos_player.soco.pause)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
@@ -304,7 +304,7 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player = self.sonosplayers[player_id]
             sonos_player.soco.volume = volume_level
 
-        await self.mass.create_task(set_volume_level, player_id, volume_level)
+        await asyncio.to_thread(set_volume_level, player_id, volume_level)
 
     async def cmd_volume_mute(self, player_id: str, muted: bool) -> None:
         """Send VOLUME MUTE command to given player."""
@@ -313,7 +313,7 @@ class SonosPlayerProvider(PlayerProvider):
             sonos_player = self.sonosplayers[player_id]
             sonos_player.soco.mute = muted
 
-        await self.mass.create_task(set_volume_mute, player_id, muted)
+        await asyncio.to_thread(set_volume_mute, player_id, muted)
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
@@ -354,7 +354,7 @@ class SonosPlayerProvider(PlayerProvider):
             raise PlayerCommandFailed(msg)
 
         didl_metadata = create_didl_metadata(media)
-        self.mass.create_task(sonos_player.soco.play_uri, media.uri, meta=didl_metadata)
+        await asyncio.to_thread(sonos_player.soco.play_uri, media.uri, meta=didl_metadata)
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
@@ -424,20 +424,7 @@ class SonosPlayerProvider(PlayerProvider):
             return
 
     async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates.
-
-        This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
-        """
+        """Poll player for state updates."""
         if player_id not in self.sonosplayers:
             return
         sonos_player = self.sonosplayers[player_id]
@@ -524,6 +511,8 @@ class SonosPlayerProvider(PlayerProvider):
                     address=soco.ip_address,
                     manufacturer="SONOS",
                 ),
+                needs_poll=True,
+                poll_interval=120,
             )
         self.sonosplayers[player_id] = sonos_player = SonosPlayer(
             self,

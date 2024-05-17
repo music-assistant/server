@@ -212,7 +212,7 @@ class YoutubeMusicProvider(MusicProvider):
         return SUPPORTED_FEATURES
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
+        self, search_query: str, media_types=list[MediaType], limit: int = 5
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -220,6 +220,7 @@ class YoutubeMusicProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
+        parsed_results = SearchResults()
         ytm_filter = None
         if len(media_types) == 1:
             # YTM does not support multiple searchtypes, falls back to all if no type given
@@ -231,20 +232,25 @@ class YoutubeMusicProvider(MusicProvider):
                 ytm_filter = "songs"
             if media_types[0] == MediaType.PLAYLIST:
                 ytm_filter = "playlists"
+            if media_types[0] == MediaType.RADIO:
+                # bit of an edge case but still good to handle
+                return parsed_results
         results = await search(
             query=search_query, ytm_filter=ytm_filter, limit=limit, language=self.language
         )
         parsed_results = SearchResults()
         for result in results:
             try:
-                if result["resultType"] == "artist":
+                if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
                     parsed_results.artists.append(await self._parse_artist(result))
-                elif result["resultType"] == "album":
+                elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
                     parsed_results.albums.append(await self._parse_album(result))
-                elif result["resultType"] == "playlist":
+                elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
                     parsed_results.playlists.append(await self._parse_playlist(result))
-                elif result["resultType"] in ("song", "video") and (
-                    track := await self._parse_track(result)
+                elif (
+                    result["resultType"] in ("song", "video")
+                    and MediaType.TRACK in media_types
+                    and (track := await self._parse_track(result))
                 ):
                     parsed_results.tracks.append(track)
             except InvalidDataError:
@@ -346,8 +352,10 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Return playlist tracks for the given provider playlist id."""
         await self._check_oauth_token()
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
@@ -359,9 +367,10 @@ class YoutubeMusicProvider(MusicProvider):
             )
         except KeyError as ke:
             self.logger.warning("Could not load playlist: %s: %s", prov_playlist_id, ke)
-            return
+            return None
         if "tracks" not in playlist_obj:
-            return
+            return None
+        result = []
         for index, track_obj in enumerate(playlist_obj["tracks"]):
             if track_obj["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
@@ -369,11 +378,13 @@ class YoutubeMusicProvider(MusicProvider):
                 try:
                     if track := await self._parse_track(track_obj):
                         track.position = index + 1
-                        yield track
+                        result.append(track)
                 except InvalidDataError:
                     if track := await self.get_track(track_obj["videoId"]):
                         track.position = index + 1
-                        yield track
+                        result.append(track)
+        # YTM doesn't seem to support paging so we ignore offset and limit
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -396,9 +407,7 @@ class YoutubeMusicProvider(MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
-            playlist_tracks = [
-                x async for x in self.get_playlist_tracks(prov_playlist_id=prov_playlist_id)
-            ]
+            playlist_tracks = await self.get_playlist_tracks(prov_playlist_id, 0, 0)
             return playlist_tracks[:25]
         return []
 

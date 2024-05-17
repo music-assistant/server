@@ -84,6 +84,7 @@ from .const import (
     ITEM_TYPE_ALBUM,
     ITEM_TYPE_ARTIST,
     ITEM_TYPE_AUDIO,
+    ITEM_TYPE_MUSICARTISTS,
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
     USER_APP_NAME,
@@ -139,7 +140,7 @@ async def get_config_entries(
             key=CONF_PASSWORD,
             type=ConfigEntryType.SECURE_STRING,
             label="Password",
-            required=True,
+            required=False,
             description="The password to authenticate to the remote server.",
         ),
     )
@@ -309,7 +310,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         if ITEM_KEY_OVERVIEW in current_jellyfin_album:
@@ -373,7 +374,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         return artist
@@ -420,7 +421,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         if len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]) >= 1:
@@ -444,20 +445,16 @@ class JellyfinProvider(MusicProvider):
             parent_album = API.get_item(
                 self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
             )
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    parent_album[ITEM_KEY_PARENT_ID],
-                    parent_album[ITEM_KEY_ALBUM_ARTIST],
+            if ITEM_KEY_PARENT_ID in parent_album and ITEM_KEY_ALBUM_ARTIST in parent_album:
+                track.artists.append(
+                    self._get_item_mapping(
+                        MediaType.ARTIST,
+                        parent_album[ITEM_KEY_PARENT_ID],
+                        parent_album[ITEM_KEY_ALBUM_ARTIST],
+                    )
                 )
-            )
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    parent_album[ITEM_KEY_PARENT_ID],
-                    parent_album[ITEM_KEY_ALBUM_ARTIST],
-                )
-            )
+            else:
+                track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
         else:
             track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
         if (
@@ -468,6 +465,15 @@ class JellyfinProvider(MusicProvider):
                 MediaType.ALBUM,
                 current_jellyfin_track[ITEM_KEY_PARENT_ID],
                 current_jellyfin_track[ITEM_KEY_ALBUM],
+            )
+        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+            parent_album = API.get_item(
+                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
+            )
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM,
+                parent_album[ITEM_KEY_ID],
+                parent_album[ITEM_KEY_NAME],
             )
         if ITEM_KEY_PARENT_INDEX_NUM in current_jellyfin_track:
             track.disc_number = current_jellyfin_track[ITEM_KEY_PARENT_INDEX_NUM]
@@ -503,7 +509,7 @@ class JellyfinProvider(MusicProvider):
                     type=ImageType.THUMB,
                     path=thumb,
                     provider=self.instance_id,
-                    remotely_accessible=True,
+                    remotely_accessible=False,
                 )
             ]
         playlist.is_editable = False
@@ -512,7 +518,7 @@ class JellyfinProvider(MusicProvider):
     async def search(
         self,
         search_query: str,
-        media_types: list[MediaType] | None = None,
+        media_types: list[MediaType],
         limit: int = 20,
     ) -> SearchResults:
         """Perform search on the plex library.
@@ -521,9 +527,6 @@ class JellyfinProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        if not media_types:
-            media_types = [MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST]
-
         tasks = {}
 
         async with TaskGroup() as tg:
@@ -669,20 +672,29 @@ class JellyfinProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_playlist_tracks(  # type: ignore[return]
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[Track, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(
+        self, prov_playlist_id: str, offset: int, limit: int
+    ) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        # TODO: Does Jellyfin support paging here?
         jellyfin_playlist = API.get_item(self._jellyfin_server.jellyfin, prov_playlist_id)
-
         playlist_items = await self._get_children(
             self._jellyfin_server, jellyfin_playlist[ITEM_KEY_ID], ITEM_TYPE_AUDIO
         )
-        for index, jellyfin_track in enumerate(playlist_items or [], 1):
-            if track := await self._parse_track(jellyfin_track):
-                if not track.position:
-                    track.position = index
-                yield track
+        if not playlist_items:
+            return result
+        for index, jellyfin_track in enumerate(playlist_items):
+            try:
+                if track := await self._parse_track(jellyfin_track):
+                    if not track.position:
+                        track.position = index
+                    result.append(track)
+            except (KeyError, ValueError) as err:
+                self.logger.error(
+                    "Skipping track %s: %s", jellyfin_track.get(ITEM_KEY_NAME, index), str(err)
+                )
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of albums for the given artist."""
@@ -748,8 +760,11 @@ class JellyfinProvider(MusicProvider):
         params = {
             "Recursive": "true",
             ITEM_KEY_PARENT_ID: parent_id,
-            "IncludeItemTypes": item_type,
         }
+        if item_type in ITEM_TYPE_ARTIST:
+            params["IncludeItemTypes"] = [ITEM_TYPE_MUSICARTISTS, ITEM_TYPE_ARTIST]
+        else:
+            params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
             params["Fields"] = ITEM_KEY_MEDIA_SOURCES
 

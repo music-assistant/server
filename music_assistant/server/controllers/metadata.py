@@ -28,7 +28,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, ProviderUnavailableError
+from music_assistant.common.models.errors import ProviderUnavailableError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -102,7 +102,6 @@ class MetaDataController(CoreController):
         super().__init__(*args, **kwargs)
         self.cache = self.mass.cache
         self._pref_lang: str | None = None
-        self.scan_busy: bool = False
         self.manifest.name = "Metadata controller"
         self.manifest.description = (
             "Music Assistant's core controller which handles all metadata for music."
@@ -186,42 +185,17 @@ class MetaDataController(CoreController):
             if lang in (locale_code.lower(), lang_name.lower()):
                 self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
                 return
-        # attempt loose match on either language or country code
-        for locale_code in tuple(LOCALES):
-            language_code, region_code = locale_code.lower().split("_", 1)
-            if lang in (language_code, region_code):
-                self.mass.config.set_raw_core_config_value(self.domain, CONF_LANGUAGE, locale_code)
-                return
+        # attempt loose match on language code or region code
+        for lang_part in (lang[:2], lang[:-2]):
+            for locale_code in tuple(LOCALES):
+                language_code, region_code = locale_code.lower().split("_", 1)
+                if lang_part in (language_code, region_code):
+                    self.mass.config.set_raw_core_config_value(
+                        self.domain, CONF_LANGUAGE, locale_code
+                    )
+                    return
         # if we reach this point, we couldn't match the language
         self.logger.warning("%s is not a valid language", lang)
-
-    def start_scan(self) -> None:
-        """Start background scan for missing metadata."""
-
-        async def scan_artist_metadata() -> None:
-            """Background task that scans for artists missing metadata on filesystem providers."""
-            if self.scan_busy:
-                return
-
-            self.logger.debug("Start scan for missing artist metadata")
-            self.scan_busy = True
-            async for artist in self.mass.music.artists.iter_library_items():
-                if artist.metadata.last_refresh is not None:
-                    continue
-                # most important is to see artist thumb in listings
-                # so if that is already present, move on
-                # full details can be grabbed later
-                if artist.image:
-                    continue
-                # simply grabbing the full artist will trigger a full fetch
-                with suppress(MediaNotFoundError):
-                    await self.mass.music.artists.get(artist.item_id, artist.provider, lazy=False)
-                # this is slow on purpose to not cause stress on the metadata providers
-                await asyncio.sleep(30)
-            self.scan_busy = False
-            self.logger.debug("Finished scan for missing artist metadata")
-
-        self.mass.create_task(scan_artist_metadata)
 
     async def get_artist_metadata(self, artist: Artist) -> None:
         """Get/update rich metadata for an artist."""
@@ -288,7 +262,8 @@ class MetaDataController(CoreController):
         playlist_genres: dict[str, int] = {}
         # retrieve metedata for the playlist from the tracks (such as genres etc.)
         # TODO: retrieve style/mood ?
-        async for track in self.mass.music.playlists.tracks(playlist.item_id, playlist.provider):
+        playlist_items = await self.mass.music.playlists.tracks(playlist.item_id, playlist.provider)
+        for track in playlist_items.items:
             if track.image:
                 all_playlist_tracks_images.add(track.image)
             if track.metadata.genres:
@@ -308,6 +283,7 @@ class MetaDataController(CoreController):
         # create collage images
         cur_images = playlist.metadata.images or []
         new_images = []
+        # thumb image
         thumb_image = next((x for x in cur_images if x.type == ImageType.THUMB), None)
         if not thumb_image or self._collage_images_dir in thumb_image.path:
             thumb_image_path = (
@@ -319,9 +295,10 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images, thumb_image_path
             ):
                 new_images.append(collage_thumb_image)
-            elif thumb_image:
-                # just use old image
-                new_images.append(thumb_image)
+        elif thumb_image:
+            # just use old image
+            new_images.append(thumb_image)
+        # fanart image
         fanart_image = next((x for x in cur_images if x.type == ImageType.FANART), None)
         if not fanart_image or self._collage_images_dir in fanart_image.path:
             fanart_image_path = (
@@ -333,9 +310,9 @@ class MetaDataController(CoreController):
                 all_playlist_tracks_images, fanart_image_path, fanart=True
             ):
                 new_images.append(collage_fanart_image)
-            elif fanart_image:
-                # just use old image
-                new_images.append(fanart_image)
+        elif fanart_image:
+            # just use old image
+            new_images.append(fanart_image)
         playlist.metadata.images = new_images
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())
@@ -362,24 +339,12 @@ class MetaDataController(CoreController):
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
             return VARIOUS_ARTISTS_ID_MBID
-        ref_albums = await self.mass.music.artists.albums(artist.item_id, artist.provider)
-        if len(ref_albums) < 10:
-            # fetch reference albums from provider(s) attached to the artist
-            for provider_mapping in artist.provider_mappings:
-                if provider_mapping.provider_instance == artist.provider:
-                    continue
-                ref_albums += await self.mass.music.artists.albums(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
-        ref_tracks = await self.mass.music.artists.tracks(artist.item_id, artist.provider)
-        if len(ref_tracks) < 10:
-            # fetch reference tracks from provider(s) attached to the artist
-            for provider_mapping in artist.provider_mappings:
-                if provider_mapping.provider_instance == artist.provider:
-                    continue
-                ref_tracks += await self.mass.music.artists.tracks(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
+        ref_albums = await self.mass.music.artists.albums(
+            artist.item_id, artist.provider, in_library_only=False
+        )
+        ref_tracks = await self.mass.music.artists.tracks(
+            artist.item_id, artist.provider, in_library_only=False
+        )
         # start lookup of musicbrainz id
         musicbrainz: MusicbrainzProvider = self.mass.get_provider("musicbrainz")
         assert musicbrainz
@@ -508,7 +473,7 @@ class MetaDataController(CoreController):
             # assuming that images do not/rarely change
             return web.Response(
                 body=image_data,
-                headers={"Cache-Control": "max-age=31536000"},
+                headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
                 content_type=f"image/{image_format}",
             )
         return web.Response(status=404)

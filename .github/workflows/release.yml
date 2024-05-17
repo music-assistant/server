@@ -3,6 +3,8 @@ name: Publish releases
 on:
   release:
     types: [published]
+env:
+  PYTHON_VERSION: "3.11"
 
 jobs:
   build-and-publish-pypi:
@@ -11,14 +13,27 @@ jobs:
     outputs:
       version: ${{ steps.vars.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.4
       - name: Get tag
         id: vars
         run: echo "tag=${GITHUB_REF#refs/*/}" >> $GITHUB_OUTPUT
-      - name: Set up Python 3.11
+      - name: Validate version number
+        run: >-
+          if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
+            if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" ]]; then
+            echo "Pre-release: Tag is missing beta suffix (${{ steps.vars.outputs.tag }})"
+              exit 1
+            fi
+          else
+            if [[ "${{ steps.vars.outputs.tag }}" =~ "b" ]]; then
+              echo "Release: Tag must not have a beta suffix (${{ steps.vars.outputs.tag }})"
+              exit 1
+            fi
+          fi
+      - name: Set up Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5.1.0
         with:
-          python-version: "3.11"
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Install build
         run: >-
           pip install build tomli tomli-w
@@ -35,7 +50,7 @@ jobs:
 
           with open("pyproject.toml", "wb") as f:
             tomli_w.dump(pyproject, f)
-      - name: Build
+      - name: Build python package
         run: >-
           python3 -m build
       - name: Publish release to PyPI
@@ -53,7 +68,7 @@ jobs:
       packages: write
     needs: build-and-publish-pypi
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4.1.4
       - name: Log in to the GitHub container registry
         uses: docker/login-action@v3.1.0
         with:
@@ -70,21 +85,9 @@ jobs:
           echo "patch=${patch}" >> $GITHUB_OUTPUT
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
-          if [[ $patch =~ "b" ]]; then
-            echo "channel=beta" >> $GITHUB_OUTPUT
-          else
-            echo "channel=stable" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Docker meta
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: |
-            ghcr.io/${{ github.repository_owner }}/server
-
-      - name: Build and Push images
+      - name: Build and Push release
         uses: docker/build-push-action@v5.3.0
+        if: github.event.release.prerelease == false
         with:
           context: .
           platforms: linux/amd64,linux/arm64
@@ -93,16 +96,26 @@ jobs:
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.minor }},
             ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.major }},
-            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.channel }},
+            ghcr.io/${{ github.repository_owner }}/server:stable,
             ghcr.io/${{ github.repository_owner }}/server:latest
           push: true
-          labels: ${{ steps.meta.outputs.labels }}
-          build-args: |
-            "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
+          build-args: "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
+      - name: Build and Push pre-release
+        uses: docker/build-push-action@v5.3.0
+        if: github.event.release.prerelease == true
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          file: Dockerfile
+          tags: |-
+            ghcr.io/${{ github.repository_owner }}/server:${{ steps.tags.outputs.patch }},
+            ghcr.io/${{ github.repository_owner }}/server:beta
+          push: true
+          build-args: "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
 
   release-notes-update:
     name: Updates the release notes and changelog
-    needs: [ build-and-publish-pypi, build-and-push-container-image ]
+    needs: [build-and-publish-pypi, build-and-push-container-image]
     runs-on: ubuntu-latest
     steps:
       - name: Update changelog and release notes including frontend notes
@@ -110,10 +123,16 @@ jobs:
         with:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           release_tag: ${{ needs.build-and-publish-pypi.outputs.version }}
+          pre_release: ${{ github.event.release.prerelease }}
 
   addon-version-update:
     name: Updates the Addon repository with the new version
-    needs: [ build-and-publish-pypi, build-and-push-container-image, release-notes-update ]
+    needs:
+      [
+        build-and-publish-pypi,
+        build-and-push-container-image,
+        release-notes-update,
+      ]
     runs-on: ubuntu-latest
     steps:
       - name: Push new version number to addon config
@@ -121,3 +140,4 @@ jobs:
         with:
           github_token: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
           new_server_version: ${{ needs.build-and-publish-pypi.outputs.version }}
+          pre_release: ${{ github.event.release.prerelease }}
