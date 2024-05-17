@@ -410,7 +410,7 @@ class MusicProvider(Provider):
                         # create full db item
                         # note that we skip the metadata lookup purely to speed up the sync
                         # the additional metadata is then lazy retrieved afterwards
-                        if (self.is_streaming_provider):
+                        if self.is_streaming_provider:
                             prov_item.favorite = True
                         library_item = await controller.add_item_to_library(
                             prov_item, metadata_lookup=False
