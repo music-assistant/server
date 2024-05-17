@@ -72,6 +72,8 @@ CONF_LOCAL_SERVER_SSL = "local_server_ssl"
 CONF_LOCAL_SERVER_VERIFY_CERT = "local_server_verify_cert"
 CONF_USE_GDM = "use_gdm"
 CONF_ACTION_GDM = "gdm"
+CONF_ACTION_CONNECT_UNAUTH = "connect_unauth"
+CONF_USING_UNAUTH = "unauth"
 FAKE_ARTIST_PREFIX = "_fake://"
 
 
@@ -79,7 +81,7 @@ async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_AUTH_TOKEN):
+    if not config.get_value(CONF_AUTH_TOKEN) and not config.get_value(CONF_USING_UNAUTH):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
 
@@ -125,6 +127,8 @@ async def get_config_entries(
             values[CONF_LOCAL_SERVER_VERIFY_CERT] = False
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
+        values[CONF_USING_UNAUTH] = None
+        values[CONF_AUTH_TOKEN] = None
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
             plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
             auth_url = plex_auth.oauthUrl(auth_helper.callback_url)
@@ -134,6 +138,9 @@ async def get_config_entries(
                 raise LoginFailed(msg)
             # set the retrieved token on the values object to pass along
             values[CONF_AUTH_TOKEN] = plex_auth.token
+    if action == CONF_ACTION_CONNECT_UNAUTH:
+        values[CONF_USING_UNAUTH] = "trying"
+        #values[CONF_AUTH_TOKEN] = "dummy"
 
     # config flow auth action/step to pick the library to use
     # because this call is very slow, we only show/calculate the dropdown if we do
@@ -144,11 +151,12 @@ async def get_config_entries(
         label="Library",
         required=True,
         description="The library to connect to (e.g. Music)",
-        depends_on=CONF_AUTH_TOKEN,
+        # We don't need a token if connecting locally
+        #depends_on=CONF_AUTH_TOKEN,
         action=CONF_ACTION_LIBRARY,
         action_label="Select Plex Music Library",
     )
-    if action in (CONF_ACTION_LIBRARY, CONF_ACTION_AUTH):
+    if action in (CONF_ACTION_LIBRARY, CONF_ACTION_AUTH, CONF_ACTION_CONNECT_UNAUTH):
         token = mass.config.decrypt_string(values.get(CONF_AUTH_TOKEN))
         server_http_ip = values.get(CONF_LOCAL_SERVER_IP)
         server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
@@ -221,6 +229,28 @@ async def get_config_entries(
             action=CONF_ACTION_AUTH,
             action_label="Authenticate on MyPlex.tv",
             value=values.get(CONF_AUTH_TOKEN) if values else None,
+            required=values.get(CONF_USING_UNAUTH) is None
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_CONNECT_UNAUTH,
+            type=ConfigEntryType.ACTION,
+            label="Connect locally",
+            description="Connect locally without a MyPlex account.",
+            action=CONF_ACTION_CONNECT_UNAUTH,
+            action_label="Connect locally",
+            required=False
+        ),
+        # This is just a flag for this file to know whether or not we're connecting locally.
+        # It doesn't appear on the GUI.
+        # I couldn't figure out how to make a class var work in the places it's needed.
+        ConfigEntry(
+            key=CONF_USING_UNAUTH,
+            type=ConfigEntryType.STRING,
+            label="nolabel",
+            description="",
+            value=values.get(CONF_USING_UNAUTH) if values else None,
+            hidden=True,
+            required=False
         ),
         conf_libraries,
     )
@@ -232,6 +262,7 @@ class PlexProvider(MusicProvider):
     _plex_server: PlexServer = None
     _plex_library: PlexMusicSection = None
     _myplex_account: MyPlexAccount = None
+    _baseURL: str = None
 
     async def handle_async_init(self) -> None:
         """Set up the music provider by connecting to the server."""
@@ -250,11 +281,21 @@ class PlexProvider(MusicProvider):
                 local_server_protocol = (
                     "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
                 )
-                plex_server = PlexServer(
-                    f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}",
-                    token=self.config.get_value(CONF_AUTH_TOKEN),
-                    session=session,
-                )
+                token=self.config.get_value(CONF_AUTH_TOKEN)
+                if not self.config.get_value(CONF_USING_UNAUTH) is None:
+                    # Doing local connection, not via plex.tv.
+                    plex_server = PlexServer(
+                        f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
+                    )
+                    # I don't think PlexAPI intends for this to be accessible, but we need it.
+                    self._baseURL = plex_server._baseurl
+                else:
+                    plex_server = PlexServer(
+                        f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}",
+                        token,
+                        session=session,
+                    )
+                
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
                     # token invalid, invalidate the config
@@ -413,10 +454,14 @@ class PlexProvider(MusicProvider):
                     item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=plex_album.getWebURL(),
+                    url=plex_album.getWebURL(self._baseURL),
                 )
             },
         )
+        # Only add 5-star rated albums to Favorites. rating will be 10.0 for those.
+        #TODO: Let user set threshold?
+        #album.favorite = True if plex_album._data.attrib['rating'] == "10.0" else False
+            
         if plex_album.year:
             album.year = plex_album.year
         if thumb := plex_album.firstAttr("thumb", "parentThumb", "grandparentThumb"):
@@ -455,7 +500,7 @@ class PlexProvider(MusicProvider):
                     item_id=str(artist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=plex_artist.getWebURL(),
+                    url=plex_artist.getWebURL(self._baseURL),
                 )
             },
         )
@@ -483,7 +528,7 @@ class PlexProvider(MusicProvider):
                     item_id=plex_playlist.key,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=plex_playlist.getWebURL(),
+                    url=plex_playlist.getWebURL(self._baseURL),
                 )
             },
         )
@@ -526,11 +571,14 @@ class PlexProvider(MusicProvider):
                             ContentType.try_parse(content) if content else ContentType.UNKNOWN
                         ),
                     ),
-                    url=plex_track.getWebURL(),
+                    url=plex_track.getWebURL(self._baseURL),
                 )
             },
         )
-
+        # Only add 5-star rated tracks to Favorites. userRating will be 10.0 for those.
+        #TODO: Let user set threshold?
+        track.favorite = True if plex_track._data.attrib['userRating'] == "10.0" else False
+            
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.
             # For this kind of artist, we just know the name, so we create a fake artist,
@@ -796,10 +844,11 @@ class PlexProvider(MusicProvider):
         """Get a MyPlexAccount object and refresh the token if needed."""
 
         def _refresh_plex_token():
-            if self._myplex_account is None:
-                myplex_account = MyPlexAccount(token=auth_token)
-                self._myplex_account = myplex_account
-            self._myplex_account.ping()
+            if self.config.values.get(CONF_USING_UNAUTH) is None:
+                if self._myplex_account is None:
+                    myplex_account = MyPlexAccount(token=auth_token)
+                    self._myplex_account = myplex_account
+                self._myplex_account.ping()
             return self._myplex_account
 
         return await asyncio.to_thread(_refresh_plex_token)

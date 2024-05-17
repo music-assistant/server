@@ -36,11 +36,16 @@ async def get_libraries(
         session = requests.Session()
         session.verify = local_server_verify_cert
         local_server_protocol = "https" if local_server_ssl else "http"
-        plex_server: PlexServer = PlexServer(
-            f"{local_server_protocol}://{local_server_ip}:{local_server_port}",
-            auth_token,
-            session=session,
-        )
+        if auth_token is None:
+            plex_server: PlexServer = PlexServer(
+                f"{local_server_protocol}://{local_server_ip}:{local_server_port}"
+            )
+        else:
+            plex_server: PlexServer = PlexServer(
+                f"{local_server_protocol}://{local_server_ip}:{local_server_port}",
+                auth_token,
+                session=session,
+            )
         for media_section in plex_server.library.sections():
             media_section: PlexLibrarySection
             if media_section.type != PlexMusicSection.TYPE:
