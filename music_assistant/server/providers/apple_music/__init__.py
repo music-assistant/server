@@ -28,6 +28,7 @@ from music_assistant.common.models.media_items import (
     AudioFormat,
     ContentType,
     ImageType,
+    ItemMapping,
     MediaItemImage,
     MediaItemType,
     MediaType,
@@ -251,9 +252,22 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        # endpoint = f"catalog/{self._storefront}/songs?filter[equivalents]={prov_track_id}"
-        # response = await self._get_data(endpoint)
-        return []
+        # Note, Apple music does not have an official endpoint for similar tracks.
+        # We will use the next-tracks endpoint to get a list of tracks that are similar to the
+        # provided track. However, Apple music only provides 2 tracks at a time, so we will
+        # need to call the endpoint multiple times. Therefore, set a limit to 6 to prevent
+        # flooding the apple music api.
+        limit = 6
+        endpoint = f"me/stations/next-tracks/ra.{prov_track_id}"
+        found_tracks = []
+        while len(found_tracks) < limit:
+            response = await self._post_data(endpoint, include="artists")
+            if not response or "data" not in response:
+                break
+            for track in response["data"]:
+                if track and track["id"]:
+                    found_tracks.append(self._parse_track(track))
+        return found_tracks
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -410,6 +424,16 @@ class AppleMusicProvider(MusicProvider):
             track.track_number = track_number
         if artists := relationships.get("artists"):
             track.artists = [self._parse_artist(artist) for artist in artists["data"]]
+        # 'Similar tracks' do not provide full artist details
+        elif artist := attributes.get("artistName"):
+            track.artists = [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    item_id=artist,
+                    provider=self.instance_id,
+                    name=artist,
+                )
+            ]
         if albums := relationships.get("albums"):
             track.album = self._parse_album(albums["data"][0])
         if artwork := attributes.get("artwork"):
@@ -505,7 +529,19 @@ class AppleMusicProvider(MusicProvider):
 
     async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
-        raise NotImplementedError("Not implemented!")
+        url = f"https://api.music.apple.com/v1/{endpoint}"
+        headers = {"Authorization": f"Bearer {DEVELOPER_TOKEN}"}
+        headers["Music-User-Token"] = self._music_user_token
+        async with (
+            self.mass.http_session.post(
+                url, headers=headers, params=kwargs, json=data, ssl=True, timeout=120
+            ) as response,
+        ):
+            # handle 404 not found, convert to MediaNotFoundError
+            if response.status == 404:
+                raise MediaNotFoundError(f"{endpoint} not found")
+            response.raise_for_status()
+            return await response.json(loads=json_loads)
 
     async def _get_user_storefront(self) -> str:
         """Get the user's storefront."""
