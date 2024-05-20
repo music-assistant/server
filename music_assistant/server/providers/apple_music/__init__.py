@@ -139,7 +139,40 @@ class AppleMusicProvider(MusicProvider):
         :param media_types: A list of media_types to include. All types if None.
         :param limit: Number of items to return in the search (per type).
         """
-        return SearchResults()
+        endpoint = f"catalog/{self._storefront}/search"
+        limit = min(limit, 25)
+        searchresult = SearchResults()
+        searchtypes = []
+        if MediaType.ARTIST in media_types:
+            searchtypes.append("artists")
+        if MediaType.ALBUM in media_types:
+            searchtypes.append("albums")
+        if MediaType.TRACK in media_types:
+            searchtypes.append("songs")
+        if MediaType.PLAYLIST in media_types:
+            searchtypes.append("playlists")
+        if not searchtypes:
+            return searchresult
+        searchtype = ",".join(searchtypes)
+        search_query = search_query.replace("'", "")
+        response = await self._get_data(endpoint, term=search_query, types=searchtype, limit=limit)
+        if "artists" in response["results"]:
+            searchresult.artists += [
+                self._parse_artist(item) for item in response["results"]["artists"]["data"]
+            ]
+        if "albums" in response["results"]:
+            searchresult.albums += [
+                self._parse_album(item) for item in response["results"]["albums"]["data"]
+            ]
+        if "songs" in response["results"]:
+            searchresult.tracks += [
+                self._parse_track(item) for item in response["results"]["songs"]["data"]
+            ]
+        if "playlists" in response["results"]:
+            searchresult.playlists += [
+                self._parse_playlist(item) for item in response["results"]["playlists"]["data"]
+            ]
+        return searchresult
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
         """Retrieve library artists from spotify."""
@@ -279,7 +312,7 @@ class AppleMusicProvider(MusicProvider):
             item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=ContentType.AAC,
+                content_type=ContentType.MP4,
             ),
             stream_type=StreamType.ENCRYPTED_HTTP,
             path=stream_url,
