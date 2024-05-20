@@ -399,6 +399,7 @@ class SpotifyProvider(MusicProvider):
         """Create a new playlist on provider with given name."""
         data = {"name": name, "public": False}
         new_playlist = await self._post_data(f"users/{self._sp_user['id']}/playlists", data=data)
+        self._fix_create_playlist_api_bug(new_playlist)
         return self._parse_playlist(new_playlist)
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
@@ -890,3 +891,13 @@ class SpotifyProvider(MusicProvider):
 
         msg = f"Unable to locate Librespot for {system}/{architecture}"
         raise RuntimeError(msg)
+
+    def _fix_create_playlist_api_bug(self, playlist_obj: dict[str, Any]) -> None:
+        """Fix spotify API bug where incorrect owner id is returned from Create Playlist."""
+        if playlist_obj["owner"]["id"] != self._sp_user["id"]:
+            playlist_obj["owner"]["id"] = self._sp_user["id"]
+            playlist_obj["owner"]["display_name"] = self._sp_user["display_name"]
+        else:
+            self.logger.warning(
+                "FIXME: Spotify have fixed their Create Playlist API, this fix can be removed."
+            )
