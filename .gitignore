@@ -17,5 +17,3 @@ venv/
 .history
 .idea
 .coverage
-music_assistant/server/providers/apple_music/bin/client_id.bin
-music_assistant/server/providers/apple_music/bin/private_key.pem
