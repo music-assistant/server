@@ -13,32 +13,21 @@ from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
 from music_assistant.common.helpers.json import json_loads
-from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import (
-    ConfigEntryType,
-    ExternalID,
-    ProviderFeature,
-    StreamType,
-)
+from music_assistant.common.models.config_entries import (ConfigEntry,
+                                                          ConfigValueType)
+from music_assistant.common.models.enums import (ConfigEntryType, ExternalID,
+                                                 ProviderFeature, StreamType)
 from music_assistant.common.models.errors import MediaNotFoundError
-from music_assistant.common.models.media_items import (
-    Album,
-    AlbumType,
-    Artist,
-    AudioFormat,
-    ContentType,
-    ImageType,
-    MediaItemImage,
-    MediaItemType,
-    MediaType,
-    Playlist,
-    ProviderMapping,
-    SearchResults,
-    Track,
-)
+from music_assistant.common.models.media_items import (Album, AlbumType,
+                                                       Artist, AudioFormat,
+                                                       ContentType, ImageType,
+                                                       MediaItemImage,
+                                                       MediaItemType,
+                                                       MediaType, Playlist,
+                                                       ProviderMapping,
+                                                       SearchResults, Track)
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD
-
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.models.music_provider import MusicProvider
@@ -57,11 +46,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ALBUMS,
     ProviderFeature.LIBRARY_TRACKS,
     ProviderFeature.LIBRARY_PLAYLISTS,
-    # ProviderFeature.LIBRARY_ARTISTS_EDIT,
-    # ProviderFeature.LIBRARY_ALBUMS_EDIT,
-    # ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-    # ProviderFeature.LIBRARY_TRACKS_EDIT,
-    # ProviderFeature.PLAYLIST_TRACKS_EDIT,
     ProviderFeature.BROWSE,
     ProviderFeature.SEARCH,
     ProviderFeature.ARTIST_ALBUMS,
@@ -70,6 +54,7 @@ SUPPORTED_FEATURES = (
 )
 
 DEVELOPER_TOKEN = app_var(8)
+WIDEVINE_BASE_PATH = "/usr/local/bin/widevine_cdm"
 DECRYPT_CLIENT_ID_FILENAME = "client_id.bin"
 DECRYPT_PRIVATE_KEY_FILENAME = "private_key.pem"
 
@@ -119,35 +104,19 @@ class AppleMusicProvider(MusicProvider):
         """Handle async initialization of the provider."""
         self._music_user_token = self.config.get_value(CONF_PASSWORD)
         self._storefront = await self._get_user_storefront()
-        base_path = os.path.join(os.path.dirname(__file__), "bin")
         async with aiofiles.open(
-            os.path.join(base_path, DECRYPT_CLIENT_ID_FILENAME), "rb"
+            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_CLIENT_ID_FILENAME), "rb"
         ) as _file:
             self._decrypt_client_id = await _file.read()
         async with aiofiles.open(
-            os.path.join(base_path, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
+            os.path.join(WIDEVINE_BASE_PATH, DECRYPT_PRIVATE_KEY_FILENAME), "rb"
         ) as _file:
             self._decrypt_private_key = await _file.read()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (
-            ProviderFeature.LIBRARY_ARTISTS,
-            ProviderFeature.LIBRARY_ALBUMS,
-            ProviderFeature.LIBRARY_TRACKS,
-            ProviderFeature.LIBRARY_PLAYLISTS,
-            ProviderFeature.LIBRARY_ARTISTS_EDIT,
-            ProviderFeature.LIBRARY_ALBUMS_EDIT,
-            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
-            ProviderFeature.LIBRARY_TRACKS_EDIT,
-            ProviderFeature.PLAYLIST_TRACKS_EDIT,
-            ProviderFeature.BROWSE,
-            ProviderFeature.SEARCH,
-            ProviderFeature.ARTIST_ALBUMS,
-            ProviderFeature.ARTIST_TOPTRACKS,
-            # ProviderFeature.SIMILAR_TRACKS,
-        )
+        return SUPPORTED_FEATURES
 
     async def search(
         self, search_query: str, media_types=list[MediaType] | None, limit: int = 5
@@ -220,19 +189,22 @@ class AppleMusicProvider(MusicProvider):
         response = await self._get_data(endpoint, include="artists")
         return [self._parse_track(track) for track in response["data"] if track["id"]]
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(self, prov_playlist_id, offset, limit) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
+        # TODO: Import paging
         if self._is_catalog_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}/tracks"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}/tracks"
         count = 1
+        result = []
         for track in await self._get_all_items(endpoint, include="artists,catalog"):
             if track and track["id"]:
                 parsed_track = self._parse_track(track)
                 parsed_track.position = count
-                yield parsed_track
+                result.append(parsed_track)
                 count += 1
+        return result
 
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
@@ -266,7 +238,7 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        endpoint = f"catalog/{self._storefront}/songs/{prov_track_id}/relationships/station"
+        endpoint = f"catalog/{self._storefront}/songs?filter[equivalents]={prov_track_id}"
         response = await self._get_data(endpoint)
         return []
 
