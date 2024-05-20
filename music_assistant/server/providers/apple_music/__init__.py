@@ -140,6 +140,7 @@ class AppleMusicProvider(MusicProvider):
         :param limit: Number of items to return in the search (per type).
         """
         endpoint = f"catalog/{self._storefront}/search"
+        # Apple music has a limit of 25 items for the search endpoint
         limit = min(limit, 25)
         searchresult = SearchResults()
         searchtypes = []
