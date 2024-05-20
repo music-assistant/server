@@ -13,21 +13,32 @@ from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
 from music_assistant.common.helpers.json import json_loads
-from music_assistant.common.models.config_entries import (ConfigEntry,
-                                                          ConfigValueType)
-from music_assistant.common.models.enums import (ConfigEntryType, ExternalID,
-                                                 ProviderFeature, StreamType)
+from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ExternalID,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant.common.models.errors import MediaNotFoundError
-from music_assistant.common.models.media_items import (Album, AlbumType,
-                                                       Artist, AudioFormat,
-                                                       ContentType, ImageType,
-                                                       MediaItemImage,
-                                                       MediaItemType,
-                                                       MediaType, Playlist,
-                                                       ProviderMapping,
-                                                       SearchResults, Track)
+from music_assistant.common.models.media_items import (
+    Album,
+    AlbumType,
+    Artist,
+    AudioFormat,
+    ContentType,
+    ImageType,
+    MediaItemImage,
+    MediaItemType,
+    MediaType,
+    Playlist,
+    ProviderMapping,
+    SearchResults,
+    Track,
+)
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD
+
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.models.music_provider import MusicProvider
@@ -189,7 +200,9 @@ class AppleMusicProvider(MusicProvider):
         response = await self._get_data(endpoint, include="artists")
         return [self._parse_track(track) for track in response["data"] if track["id"]]
 
-    async def get_playlist_tracks(self, prov_playlist_id, offset, limit) -> AsyncGenerator[Track, None]:
+    async def get_playlist_tracks(
+        self, prov_playlist_id, offset, limit
+    ) -> AsyncGenerator[Track, None]:
         """Get all playlist tracks for given playlist id."""
         # TODO: Import paging
         if self._is_catalog_id(prov_playlist_id):
@@ -238,8 +251,8 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        endpoint = f"catalog/{self._storefront}/songs?filter[equivalents]={prov_track_id}"
-        response = await self._get_data(endpoint)
+        # endpoint = f"catalog/{self._storefront}/songs?filter[equivalents]={prov_track_id}"
+        # response = await self._get_data(endpoint)
         return []
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
@@ -566,7 +579,7 @@ class AppleMusicProvider(MusicProvider):
         challenge = cdm.get_license_challenge(session_id, pssh)
         track_license = await self._get_license(challenge, license_url, uri, item_id)
         cdm.parse_license(session_id, track_license)
-        key = [key for key in cdm.get_keys(session_id) if key.type == "CONTENT"][0]
+        key = next(key for key in cdm.get_keys(session_id) if key.type == "CONTENT")
         if not key:
             raise MediaNotFoundError("Unable to get decryption key for song %s.", item_id)
         cdm.close(session_id)
