@@ -19,6 +19,6 @@ jobs:
           TOKEN: ${{ secrets.PRIVILEGED_GITHUB_TOKEN }}
         run: |
           mkdir -p widevine_cdm && cd widevine_cdm
-          curl -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/private_key.pem
-          curl -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/client_id.bin
-          ls -ll widevine_cdm
+          curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/private_key.pem
+          curl -OJ -H "Authorization: token ${TOKEN}" https://raw.githubusercontent.com/music-assistant/appvars/main/widevine_cdm_client/client_id.bin
+          ls -ll .
