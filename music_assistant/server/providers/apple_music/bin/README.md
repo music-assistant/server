@@ -4,4 +4,4 @@ You need a custom CDM if you would like to playback Apple music on your local ma
 1. client_id.bin
 2. private_key.pem
 
-These two files allow Music Assistant to decrypt Widevine protected songs. More info on how you can obtain your own CDM files can be found [here](https://www.ismailzai.com/blog/picking-the-widevine-locks).
+These two files allow Music Assistant to decrypt Widevine protected songs. More info on how you can obtain your own CDM files can be found [here](https://www.ismailzai.com/blog/picking-the-widevine-locks). Make sure to put these files under `/usr/local/bin/widevine_cdm`.
