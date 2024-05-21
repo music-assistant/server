@@ -313,7 +313,7 @@ class AppleMusicProvider(MusicProvider):
             item_id=item_id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=ContentType.MP4,
+                content_type=ContentType.UNKNOWN,
             ),
             stream_type=StreamType.ENCRYPTED_HTTP,
             path=stream_url,
@@ -321,7 +321,7 @@ class AppleMusicProvider(MusicProvider):
         )
 
     def _parse_artist(self, artist_obj):
-        """Parse spotify artist object to generic layout."""
+        """Parse artist object to generic layout."""
         relationships = artist_obj.get("relationships", {})
         if artist_obj.get("type") == "library-artists" and relationships["catalog"]["data"] != []:
             artist_id = relationships["catalog"]["data"][0]["id"]
@@ -361,7 +361,7 @@ class AppleMusicProvider(MusicProvider):
         return artist
 
     def _parse_album(self, album_obj: dict):
-        """Parse spotify album object to generic layout."""
+        """Parse album object to generic layout."""
         relationships = album_obj.get("relationships", {})
         response_type = album_obj.get("type")
         if response_type == "library-albums" and relationships["catalog"]["data"] != []:
@@ -382,7 +382,6 @@ class AppleMusicProvider(MusicProvider):
                     item_id=album_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    audio_format=AudioFormat(content_type=ContentType.AAC),
                     url=attributes.get("url"),
                     available=attributes.get("playParams", {}).get("id") is not None,
                 )
@@ -595,7 +594,7 @@ class AppleMusicProvider(MusicProvider):
             "salableAdamId": song_id,
         }
         async with self.mass.http_session.post(
-            playback_url, headers=self._get_decryption_headers(), json=data, ssl=False
+            playback_url, headers=self._get_decryption_headers(), json=data, ssl=True
         ) as response:
             response.raise_for_status()
             content = await response.json(loads=json_loads)
