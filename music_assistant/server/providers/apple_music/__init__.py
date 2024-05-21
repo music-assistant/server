@@ -488,7 +488,7 @@ class AppleMusicProvider(MusicProvider):
         return track
 
     def _parse_playlist(self, playlist_obj):
-        """Parse spotify playlist object to generic layout."""
+        """Parse Apple Music playlist object to generic layout."""
         attributes = playlist_obj["attributes"]
         playlist = Playlist(
             item_id=playlist_obj["id"],
