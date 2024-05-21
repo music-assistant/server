@@ -19,7 +19,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError
+from music_assistant.common.models.errors import MediaNotFoundError, ResourceTemporarilyUnavailable
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -42,6 +42,7 @@ from music_assistant.constants import CONF_PASSWORD
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
 from music_assistant.server.helpers.audio import get_hls_substream
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -111,6 +112,9 @@ class AppleMusicProvider(MusicProvider):
     _storefront: str | None = None
     _decrypt_client_id: bytes | None = None
     _decrypt_private_key: bytes | None = None
+    # rate limiter needs to be specified on provider-level,
+    # so make it an instance attribute
+    throttler = ThrottlerManager(rate_limit=1, period=2)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -536,6 +540,7 @@ class AppleMusicProvider(MusicProvider):
                 break
         return all_items
 
+    @throttle_with_retries
     async def _get_data(self, endpoint, **kwargs) -> dict[str, Any]:
         """Get data from api."""
         url = f"https://api.music.apple.com/v1/{endpoint}"
@@ -546,9 +551,14 @@ class AppleMusicProvider(MusicProvider):
                 url, headers=headers, params=kwargs, ssl=True, timeout=120
             ) as response,
         ):
-            # handle 404 not found, convert to MediaNotFoundError
+            # Convert HTTP errors to exceptions
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
+            if response.status == 429:
+                # Debug this for now to see if the response headers give us info about the
+                # backoff time. There is no documentation on this.
+                self.logger.debug("Apple Music Rate Limiter. Headers: %s", response.headers)
+                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
             response.raise_for_status()
             return await response.json(loads=json_loads)
 
@@ -560,6 +570,7 @@ class AppleMusicProvider(MusicProvider):
         """Put data on api."""
         raise NotImplementedError("Not implemented!")
 
+    @throttle_with_retries
     async def _post_data(self, endpoint, data=None, **kwargs) -> str:
         """Post data on api."""
         url = f"https://api.music.apple.com/v1/{endpoint}"
@@ -570,9 +581,14 @@ class AppleMusicProvider(MusicProvider):
                 url, headers=headers, params=kwargs, json=data, ssl=True, timeout=120
             ) as response,
         ):
-            # handle 404 not found, convert to MediaNotFoundError
+            # Convert HTTP errors to exceptions
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
+            if response.status == 429:
+                # Debug this for now to see if the response headers give us info about the
+                # backoff time. There is no documentation on this.
+                self.logger.debug("Apple Music Rate Limiter. Headers: %s", response.headers)
+                raise ResourceTemporarilyUnavailable("Apple Music Rate Limiter")
             response.raise_for_status()
             return await response.json(loads=json_loads)
 
