@@ -8,7 +8,6 @@ import os
 from typing import TYPE_CHECKING, Any
 
 import aiofiles
-import m3u8
 from pywidevine import PSSH, Cdm, Device, DeviceTypes
 from pywidevine.license_protocol_pb2 import WidevinePsshData
 
@@ -42,6 +41,7 @@ from music_assistant.constants import CONF_PASSWORD
 
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
+from music_assistant.server.helpers.audio import get_hls_substream
 from music_assistant.server.models.music_provider import MusicProvider
 
 if TYPE_CHECKING:
@@ -307,7 +307,7 @@ class AppleMusicProvider(MusicProvider):
         """Return the content details for the given track when it will be streamed."""
         stream_metadata = await self._fetch_song_stream_metadata(item_id)
         license_url = stream_metadata["hls-key-server-url"]
-        stream_url, uri = self._parse_stream_url_and_uri(stream_metadata["assets"])
+        stream_url, uri = await self._parse_stream_url_and_uri(stream_metadata["assets"])
         key_id = base64.b64decode(uri.split(",")[1])
         return StreamDetails(
             item_id=item_id,
@@ -600,15 +600,15 @@ class AppleMusicProvider(MusicProvider):
             content = await response.json(loads=json_loads)
             return content["songList"][0]
 
-    def _parse_stream_url_and_uri(self, stream_assets: list[dict]) -> str:
+    async def _parse_stream_url_and_uri(self, stream_assets: list[dict]) -> str:
         """Parse the Stream URL and Key URI from the song."""
         ctrp256_urls = [asset["URL"] for asset in stream_assets if asset["flavor"] == "28:ctrp256"]
         if len(ctrp256_urls) == 0:
             raise MediaNotFoundError("No ctrp256 URL found for song.")
-        m3u8_playlist = m3u8.load(ctrp256_urls[0])
-        track_url = m3u8_playlist.base_uri + m3u8_playlist.segments[0].uri
-        uri = m3u8_playlist.keys[0].uri
-        return (track_url, uri)
+        playlist_item = await get_hls_substream(self.mass, ctrp256_urls[0])
+        track_url = playlist_item.path
+        key = playlist_item.key
+        return (track_url, key)
 
     def _get_decryption_headers(self):
         """Get headers for decryption requests."""
