@@ -107,7 +107,7 @@ CONF_VISUALIZATION = "visualization"
 
 DEFAULT_PLAYER_VOLUME = 20
 DEFAULT_SLIMPROTO_PORT = 3483
-DEFAULT_VISUALIZATION = SlimVisualisationType.SPECTRUM_ANALYZER.value
+DEFAULT_VISUALIZATION = SlimVisualisationType.NONE.value
 
 
 CONF_ENTRY_DISPLAY = ConfigEntry(
@@ -905,10 +905,10 @@ class SlimprotoProvider(PlayerProvider):
     async def _set_display(self, slimplayer: SlimClient) -> None:
         """Set the display config for a player."""
         display_enabled = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_DISPLAY, True
+            slimplayer.player_id, CONF_ENTRY_DISPLAY.key, CONF_ENTRY_DISPLAY.default_value
         )
         visualization = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_VISUALIZATION, DEFAULT_VISUALIZATION
+            slimplayer.player_id, CONF_ENTRY_VISUALIZATION.key, CONF_ENTRY_VISUALIZATION.default_value
         )
         await slimplayer.configure_display(
             visualisation=SlimVisualisationType(visualization), disabled=not display_enabled
