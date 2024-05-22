@@ -742,6 +742,9 @@ class StreamsController(CoreController):
             audio_source = get_hls_stream(
                 self.mass, streamdetails.path, streamdetails, streamdetails.seek_position
             )
+        elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
+            audio_source = streamdetails.path
+            extra_input_args += ["-decryption_key", streamdetails.decryption_key]
         else:
             audio_source = streamdetails.path
             if streamdetails.seek_position:
