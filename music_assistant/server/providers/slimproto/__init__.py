@@ -905,10 +905,14 @@ class SlimprotoProvider(PlayerProvider):
     async def _set_display(self, slimplayer: SlimClient) -> None:
         """Set the display config for a player."""
         display_enabled = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_ENTRY_DISPLAY.key, CONF_ENTRY_DISPLAY.default_value
+            slimplayer.player_id,
+            CONF_ENTRY_DISPLAY.key,
+            CONF_ENTRY_DISPLAY.default_value
         )
         visualization = self.mass.config.get_raw_player_config_value(
-            slimplayer.player_id, CONF_ENTRY_VISUALIZATION.key, CONF_ENTRY_VISUALIZATION.default_value
+            slimplayer.player_id,
+            CONF_ENTRY_VISUALIZATION.key,
+            CONF_ENTRY_VISUALIZATION.default_value
         )
         await slimplayer.configure_display(
             visualisation=SlimVisualisationType(visualization), disabled=not display_enabled
