@@ -261,13 +261,23 @@ class AppleMusicProvider(MusicProvider):
     async def get_artist_albums(self, prov_artist_id) -> list[Album]:
         """Get a list of all albums for the given artist."""
         endpoint = f"catalog/{self._storefront}/artists/{prov_artist_id}/albums"
-        response = await self._get_data(endpoint)
+        try:
+            response = await self._get_data(endpoint)
+        except MediaNotFoundError:
+            # Some artists do not have albums, return empty list
+            self.logger.info("No albums found for artist %s", prov_artist_id)
+            return []
         return [self._parse_album(album) for album in response["data"] if album["id"]]
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         endpoint = f"catalog/{self._storefront}/artists/{prov_artist_id}/view/top-songs"
-        response = await self._get_data(endpoint)
+        try:
+            response = await self._get_data(endpoint)
+        except MediaNotFoundError:
+            # Some artists do not have top tracks, return empty list
+            self.logger.info("No top tracks found for artist %s", prov_artist_id)
+            return []
         return [self._parse_track(track) for track in response["data"] if track["id"]]
 
     async def library_add(self, item: MediaItemType):
@@ -327,7 +337,10 @@ class AppleMusicProvider(MusicProvider):
     def _parse_artist(self, artist_obj):
         """Parse artist object to generic layout."""
         relationships = artist_obj.get("relationships", {})
-        if artist_obj.get("type") == "library-artists" and relationships["catalog"]["data"] != []:
+        if (
+            artist_obj.get("type") == "library-artists"
+            and relationships.get("catalog", {}).get("data", []) != []
+        ):
             artist_id = relationships["catalog"]["data"][0]["id"]
             attributes = relationships["catalog"]["data"][0]["attributes"]
         elif "attributes" in artist_obj:
