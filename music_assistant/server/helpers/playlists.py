@@ -37,6 +37,7 @@ class PlaylistItem:
     length: str | None = None
     title: str | None = None
     stream_info: dict[str, str] | None = None
+    key: str | None = None
 
     @property
     def is_url(self) -> bool:
@@ -59,6 +60,7 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
     length = None
     title = None
     stream_info = None
+    key = None
 
     for line in m3u_lines:
         line = line.strip()  # noqa: PLW2901
@@ -78,16 +80,19 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
                     continue
                 kev_value_parts = part.strip().split("=")
                 stream_info[kev_value_parts[0]] = kev_value_parts[1]
+        elif line.startswith("#EXT-X-KEY:"):
+            key = line.split(",URI=")[1].strip('"')
         elif line.startswith("#"):
             # Ignore other extensions
             continue
         elif len(line) != 0:
-            # Get song path from all other, non-blank lines
             if "%20" in line:
                 # apparently VLC manages to encode spaces in filenames
                 line = line.replace("%20", " ")  # noqa: PLW2901
             playlist.append(
-                PlaylistItem(path=line, length=length, title=title, stream_info=stream_info)
+                PlaylistItem(
+                    path=line, length=length, title=title, stream_info=stream_info, key=key
+                )
             )
             # reset the song variables so it doesn't use the same EXTINF more than once
             length = None

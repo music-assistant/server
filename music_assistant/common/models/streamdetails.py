@@ -38,6 +38,7 @@ class StreamDetails(DataClassDictMixin):
     media_type: MediaType = MediaType.TRACK
     stream_type: StreamType = StreamType.CUSTOM
     path: str | None = None
+    decryption_key: str | None = None
 
     # stream_title: radio streams can optionally set this field
     stream_title: str | None = None

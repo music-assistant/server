@@ -30,6 +30,7 @@ PyChromecast==14.0.1
 pycryptodome==3.20.0
 python-fullykiosk==0.0.12
 python-slugify==8.0.4
+pywidevine==1.8.0
 radios==0.3.1
 shortuuid==1.0.13
 snapcast==2.3.6

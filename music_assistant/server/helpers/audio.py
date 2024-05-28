@@ -46,6 +46,7 @@ from music_assistant.constants import (
 from music_assistant.server.helpers.playlists import (
     HLS_CONTENT_TYPES,
     IsHLSPlaylist,
+    PlaylistItem,
     fetch_playlist,
     parse_m3u,
 )
@@ -495,15 +496,17 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
             or headers.get("content-type") == "audio/x-mpegurl"
         ):
             # url is playlist, we need to unfold it
-            try:
-                for line in await fetch_playlist(mass, resolved_url):
-                    if not line.is_url:
-                        continue
-                    # unfold first url of playlist
-                    return await resolve_radio_stream(mass, line.path)
-                raise InvalidDataError("No content found in playlist")
-            except IsHLSPlaylist:
-                is_hls = True
+            substreams = await fetch_playlist(mass, resolved_url)
+            if not any(x for x in substreams if x.length):
+                try:
+                    for line in substreams:
+                        if not line.is_url:
+                            continue
+                        # unfold first url of playlist
+                        return await resolve_radio_stream(mass, line.path)
+                    raise InvalidDataError("No content found in playlist")
+                except IsHLSPlaylist:
+                    is_hls = True
 
     except Exception as err:
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
@@ -569,7 +572,8 @@ async def get_hls_stream(
     # we need to move the substream selection into the loop below and make it
     # bandwidth aware. For now we just assume domestic high bandwidth where
     # the user wants the best quality possible at all times.
-    substream_url = await get_hls_substream(mass, url)
+    playlist_item = await get_hls_substream(mass, url)
+    substream_url = playlist_item.path
     seconds_skipped = 0
     empty_loops = 0
     while True:
@@ -651,7 +655,7 @@ async def get_hls_stream(
 async def get_hls_substream(
     mass: MusicAssistant,
     url: str,
-) -> str:
+) -> PlaylistItem:
     """Select the (highest quality) HLS substream for given HLS playlist/URL."""
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     # fetch master playlist and select (best) child playlist
@@ -661,18 +665,15 @@ async def get_hls_substream(
         charset = resp.charset or "utf-8"
         master_m3u_data = await resp.text(charset)
     substreams = parse_m3u(master_m3u_data)
-    if any(x for x in substreams if x.length):
-        # the url we got is already a substream
-        return url
-    # sort substreams on best quality (highest bandwidth)
-    substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
+    # sort substreams on best quality (highest bandwidth) when available
+    if any(x for x in substreams if x.stream_info):
+        substreams.sort(key=lambda x: int(x.stream_info.get("BANDWIDTH", "0")), reverse=True)
     substream = substreams[0]
-    substream_url = substream.path
-    if not substream_url.startswith("http"):
+    if not substream.path.startswith("http"):
         # path is relative, stitch it together
         base_path = url.rsplit("/", 1)[0]
-        substream_url = base_path + "/" + substream.path
-    return substream_url
+        substream.path = base_path + "/" + substream.path
+    return substream
 
 
 async def get_http_stream(
