@@ -147,21 +147,18 @@ class SnapCastProvider(PlayerProvider):
     _use_builtin_server: bool
     _snapserver_runner: asyncio.Task | None
     _snapserver_started = asyncio.Event | None
-    _ids_map = dict[str, str]  # ma_id / snapclient_id
+    _ids_map = bidict  # ma_id / snapclient_id
 
     def _get_snapclient_id(self, player_id: str) -> str:
-        search_dict = self._get_search_dict()
+        search_dict = self._ids_map
         return search_dict.get(player_id)
 
     def _get_ma_id(self, snap_client_id: str) -> str:
-        search_dict = self._get_search_dict().inverse
+        search_dict = self._ids_map.inverse
         return search_dict.get(snap_client_id)
 
-    def _get_search_dict(self) -> bidict:
-        return bidict(self._ids_map)
-
     def _generate_and_register_id(self, snap_client_id) -> str:
-        search_dict = self._get_search_dict().inverse
+        search_dict = self._ids_map.inverse
         if snap_client_id not in search_dict:
             new_id = "ma_" + str(re.sub(r"\W+", "", snap_client_id))
             self._ids_map[new_id] = snap_client_id
@@ -194,7 +191,7 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
 
         self._stream_tasks = {}
-        self._ids_map = {}
+        self._ids_map = bidict({})
 
         if self._use_builtin_server:
             # start our own builtin snapserver
@@ -239,7 +236,9 @@ class SnapCastProvider(PlayerProvider):
         """Call (by config manager) when the configuration of a player is removed."""
         super().on_player_config_removed(player_id)
         if self._use_builtin_server:
-            self.mass.create_task(self._snapserver.delete_client(player_id))
+            self.mass.create_task(
+                self._snapserver.delete_client(self._get_snapclient_id(player_id))
+            )
 
     def _handle_update(self) -> None:
         """Process Snapcast init Player/Group and set callback ."""
