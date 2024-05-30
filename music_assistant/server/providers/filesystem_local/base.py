@@ -49,6 +49,15 @@ from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import get_parentdir
 
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_TRACK_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_PLAYLOG,
+)
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
@@ -387,6 +396,50 @@ class FileSystemProviderBase(MusicProvider):
         # work out deletions
         deleted_files = prev_filenames - cur_filenames
         await self._process_deletions(deleted_files)
+
+        # process orphaned albums and artists
+        await self._process_orphaned_albums_and_artists()
+
+    async def _process_orphaned_albums_and_artists(self) -> None:
+        """Process deletion of orphaned albums and artists."""
+        # process orphaned albums and artists
+
+        # Remove albums without any tracks
+        query = f"SELECT item_id FROM {DB_TABLE_ALBUMS} WHERE item_id not in (select album_id from {DB_TABLE_ALBUM_TRACKS})"
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            query,
+            limit=100000,
+        ):        
+            await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
+
+        # Remove artists without any tracks or albums
+        query = f"SELECT item_id FROM {DB_TABLE_ARTISTS} WHERE item_id not in (select artist_id from {DB_TABLE_TRACK_ARTISTS} UNION select artist_id from {DB_TABLE_ALBUM_ARTISTS})"
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            query,
+            limit=100000,
+        ): 
+            await self.mass.music.artists.remove_item_from_library(db_row["item_id"])
+
+        # Provider mappings where the album is removed
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE media_type = 'album' "
+            f"and item_id not in (select item_id from {DB_TABLE_ALBUMS})"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
+            await self.mass.music.albums.remove_provider_mappings(db_row["item_id"], self.instance_id)
+
+        # Provider mappings where the artist is removed
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE media_type = 'artist' "
+            f"and item_id not in (select item_id from {DB_TABLE_ARTISTS})"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
+            await self.mass.music.artists.remove_provider_mappings(db_row["item_id"], self.instance_id)          
+
+        # Remove albums that are removed from the playlog
+        await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, f"media_type = 'album' and provider = '{self.instance_id}' and item_id not in (select item_id from albums)")
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
