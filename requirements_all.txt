@@ -9,6 +9,7 @@ aioslimproto==3.0.1
 aiosqlite==0.20.0
 async-upnp-client==0.38.3
 asyncio-throttle==1.0.2
+bidict==0.23.1
 certifi==2024.2.2
 colorlog==6.8.2
 cryptography==42.0.7
