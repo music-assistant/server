@@ -4,7 +4,7 @@ Brotli>=1.0.9
 aiodns>=3.0.0
 aiofiles==23.2.1
 aiohttp==3.9.5
-aiorun==2023.7.2
+aiorun==2024.5.1
 aioslimproto==3.0.1
 aiosqlite==0.20.0
 async-upnp-client==0.38.3
