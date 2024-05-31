@@ -20,7 +20,7 @@ git+https://github.com/MarvinSchenkel/pytube.git
 hass-client==1.0.1
 ifaddr==0.2.0
 jellyfin_apiclient_python==1.9.2
-mashumaro==3.12
+mashumaro==3.13
 memory-tempfile==2.2.3
 music-assistant-frontend==2.5.10
 orjson==3.10.3
