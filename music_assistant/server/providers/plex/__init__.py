@@ -285,6 +285,7 @@ async def get_config_entries(  # noqa: PLR0915
                 description="Clear the current authentication details.",
                 action=CONF_ACTION_CLEAR_AUTH,
                 action_label="Clear authentication",
+                required=False,
             )
         )
 
