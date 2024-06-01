@@ -499,7 +499,6 @@ class AirplayProvider(PlayerProvider):
 
     cliraop_bin: str | None = None
     _players: dict[str, AirPlayPlayer]
-    _discovery_running: bool = False
     _dacp_server: asyncio.Server = None
     _dacp_info: AsyncServiceInfo = None
     _play_media_lock: asyncio.Lock = asyncio.Lock()
