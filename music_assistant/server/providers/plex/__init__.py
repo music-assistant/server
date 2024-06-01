@@ -499,7 +499,11 @@ class PlexProvider(MusicProvider):
         )
         # Only add 5-star rated albums to Favorites. rating will be 10.0 for those.
         # TODO: Let user set threshold?
-        # album.favorite = True if plex_album._data.attrib['rating'] == "10.0" else False
+        try:
+            album.favorite = plex_album._data.attrib["userRating"] == "10.0"
+        except KeyError:
+            # Log but suppress exception, allow sync to continue
+            self.logger.error(f"ERROR {plex_album.title} has no rating")
 
         if plex_album.year:
             album.year = plex_album.year
