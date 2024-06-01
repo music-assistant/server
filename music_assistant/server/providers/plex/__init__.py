@@ -62,26 +62,29 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
-CONF_ACTION_AUTH = "auth"
+CONF_ACTION_AUTH_MYPLEX = "auth_myplex"
+CONF_ACTION_AUTH_LOCAL = "auth_local"
+CONF_ACTION_CLEAR_AUTH = "auth"
 CONF_ACTION_LIBRARY = "library"
+CONF_ACTION_GDM = "gdm"
+
 CONF_AUTH_TOKEN = "token"
 CONF_LIBRARY_ID = "library_id"
 CONF_LOCAL_SERVER_IP = "local_server_ip"
 CONF_LOCAL_SERVER_PORT = "local_server_port"
 CONF_LOCAL_SERVER_SSL = "local_server_ssl"
 CONF_LOCAL_SERVER_VERIFY_CERT = "local_server_verify_cert"
-CONF_USE_GDM = "use_gdm"
-CONF_ACTION_GDM = "gdm"
-CONF_ACTION_CONNECT_UNAUTH = "connect_unauth"
-CONF_USING_UNAUTH = "unauth"
+
 FAKE_ARTIST_PREFIX = "_fake://"
+
+AUTH_TOKEN_UNAUTH = "local_auth"
 
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
-    if not config.get_value(CONF_AUTH_TOKEN) and not config.get_value(CONF_USING_UNAUTH):
+    if not config.get_value(CONF_AUTH_TOKEN):
         msg = "Invalid login credentials"
         raise LoginFailed(msg)
 
@@ -90,7 +93,7 @@ async def setup(
     return prov
 
 
-async def get_config_entries(
+async def get_config_entries(  # noqa: PLR0915
     mass: MusicAssistant,
     instance_id: str | None = None,  # noqa: ARG001
     action: str | None = None,
@@ -103,31 +106,30 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    conf_gdm = ConfigEntry(
-        key=CONF_USE_GDM,
-        type=ConfigEntryType.BOOLEAN,
-        label="GDM",
-        default_value=False,
-        description='Enable "GDM" to discover local Plex servers automatically.',
-        action=CONF_ACTION_GDM,
-        action_label="Use Plex GDM to discover local servers",
-    )
-    if action == CONF_ACTION_GDM and (server_details := await discover_local_servers()):
-        if server_details[0] is None and server_details[1] is None:
-            values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
-            values[CONF_LOCAL_SERVER_PORT] = "Discovery failed, please add Port manually"
-            values[CONF_LOCAL_SERVER_SSL] = "Discovery failed, please set SSL manually"
-            values[CONF_LOCAL_SERVER_VERIFY_CERT] = (
-                "Discovery failed, please set " "Verify certificate manually"
-            )
-        else:
+    # handle action GDM discovery
+    if action == CONF_ACTION_GDM:
+        server_details = await discover_local_servers()
+        if server_details and server_details[0] and server_details[1]:
             values[CONF_LOCAL_SERVER_IP] = server_details[0]
             values[CONF_LOCAL_SERVER_PORT] = server_details[1]
             values[CONF_LOCAL_SERVER_SSL] = False
             values[CONF_LOCAL_SERVER_VERIFY_CERT] = False
-    # config flow auth action/step (authenticate button clicked)
-    if action == CONF_ACTION_AUTH:
-        values[CONF_USING_UNAUTH] = None
+        else:
+            values[CONF_LOCAL_SERVER_IP] = "Discovery failed, please add IP manually"
+            values[CONF_LOCAL_SERVER_PORT] = 32400
+            values[CONF_LOCAL_SERVER_SSL] = False
+            values[CONF_LOCAL_SERVER_VERIFY_CERT] = True
+
+    # handle action clear authentication
+    if action == CONF_ACTION_CLEAR_AUTH:
+        values[CONF_AUTH_TOKEN] = None
+        values[CONF_LOCAL_SERVER_IP] = None
+        values[CONF_LOCAL_SERVER_PORT] = 32400
+        values[CONF_LOCAL_SERVER_SSL] = False
+        values[CONF_LOCAL_SERVER_VERIFY_CERT] = True
+
+    # handle action MyPlex auth
+    if action == CONF_ACTION_AUTH_MYPLEX:
         values[CONF_AUTH_TOKEN] = None
         async with AuthenticationHelper(mass, values["session_id"]) as auth_helper:
             plex_auth = MyPlexPinLogin(headers={"X-Plex-Product": "Music Assistant"}, oauth=True)
@@ -138,57 +140,63 @@ async def get_config_entries(
                 raise LoginFailed(msg)
             # set the retrieved token on the values object to pass along
             values[CONF_AUTH_TOKEN] = plex_auth.token
-    if action == CONF_ACTION_CONNECT_UNAUTH:
-        values[CONF_USING_UNAUTH] = "trying"
-        # values[CONF_AUTH_TOKEN] = "dummy"
 
-    # config flow auth action/step to pick the library to use
-    # because this call is very slow, we only show/calculate the dropdown if we do
-    # not yet have this info or we/user invalidated it.
-    conf_libraries = ConfigEntry(
-        key=CONF_LIBRARY_ID,
-        type=ConfigEntryType.STRING,
-        label="Library",
-        required=True,
-        description="The library to connect to (e.g. Music)",
-        # We don't need a token if connecting locally
-        # depends_on=CONF_AUTH_TOKEN,
-        action=CONF_ACTION_LIBRARY,
-        action_label="Select Plex Music Library",
-    )
-    if action in (CONF_ACTION_LIBRARY, CONF_ACTION_AUTH, CONF_ACTION_CONNECT_UNAUTH):
-        token = mass.config.decrypt_string(values.get(CONF_AUTH_TOKEN))
-        server_http_ip = values.get(CONF_LOCAL_SERVER_IP)
-        server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
-        server_http_ssl = values.get(CONF_LOCAL_SERVER_SSL)
-        server_http_verify_cert = values.get(CONF_LOCAL_SERVER_VERIFY_CERT)
-        if not (
-            libraries := await get_libraries(
-                mass,
-                token,
-                server_http_ssl,
-                server_http_ip,
-                server_http_port,
-                server_http_verify_cert,
+    # handle action Local auth (no MyPlex)
+    if action == CONF_ACTION_AUTH_LOCAL:
+        values[CONF_AUTH_TOKEN] = AUTH_TOKEN_UNAUTH
+
+    # collect all config entries to show
+    entries: list[ConfigEntry] = []
+
+    # show GDM discovery (if we do not yet have any server details)
+    if values is None or not values.get(CONF_LOCAL_SERVER_IP):
+        entries.append(
+            ConfigEntry(
+                key=CONF_ACTION_GDM,
+                type=ConfigEntryType.ACTION,
+                label="Use Plex GDM to discover local servers",
+                description='Enable "GDM" to discover local Plex servers automatically.',
+                action=CONF_ACTION_GDM,
+                action_label="Use Plex GDM to discover local servers",
             )
-        ):
-            msg = "Unable to retrieve Servers and/or Music Libraries"
-            raise LoginFailed(msg)
-        conf_libraries.options = tuple(
-            # use the same value for both the value and the title
-            # until we find out what plex uses as stable identifiers
-            ConfigValueOption(
-                title=x,
-                value=x,
-            )
-            for x in libraries
         )
-        # select first library as (default) value
-        conf_libraries.default_value = libraries[0]
-        conf_libraries.value = libraries[0]
-    # return the collected config entries
-    return (
-        conf_gdm,
+
+    # show authentication options
+    if values is None or not values.get(CONF_AUTH_TOKEN):
+        entries.append(
+            ConfigEntry(
+                key=CONF_ACTION_AUTH_MYPLEX,
+                type=ConfigEntryType.ACTION,
+                label="Authenticate with MyPlex",
+                description="Authenticate with MyPlex to access your library.",
+                action=CONF_ACTION_AUTH_MYPLEX,
+                action_label="Authenticate with MyPlex",
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_ACTION_AUTH_LOCAL,
+                type=ConfigEntryType.ACTION,
+                label="Authenticate locally",
+                description="Authenticate locally to access your library.",
+                action=CONF_ACTION_AUTH_LOCAL,
+                action_label="Authenticate locally",
+            )
+        )
+    else:
+        entries.append(
+            ConfigEntry(
+                key=CONF_ACTION_CLEAR_AUTH,
+                type=ConfigEntryType.ACTION,
+                label="Clear authentication",
+                description="Clear the current authentication details.",
+                action=CONF_ACTION_CLEAR_AUTH,
+                action_label="Clear authentication",
+            )
+        )
+
+    # server details config entries (IP, port etc.)
+    entries += [
         ConfigEntry(
             key=CONF_LOCAL_SERVER_IP,
             type=ConfigEntryType.STRING,
@@ -203,6 +211,7 @@ async def get_config_entries(
             label="Local server port",
             description="The local server port (e.g. 32400)",
             required=True,
+            default_value=32400,
             value=values.get(CONF_LOCAL_SERVER_PORT) if values else None,
         ),
         ConfigEntry(
@@ -220,40 +229,66 @@ async def get_config_entries(
             description="Verify local server SSL certificate",
             required=True,
             default_value=True,
+            depends_on=CONF_LOCAL_SERVER_SSL,
         ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
-            label="Authentication token for MyPlex.tv",
-            description="You need to link Music Assistant to your MyPlex account.",
-            action=CONF_ACTION_AUTH,
-            action_label="Authenticate on MyPlex.tv",
+            label=CONF_AUTH_TOKEN,
+            action=CONF_AUTH_TOKEN,
             value=values.get(CONF_AUTH_TOKEN) if values else None,
-            required=values.get(CONF_USING_UNAUTH) is None,
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_CONNECT_UNAUTH,
-            type=ConfigEntryType.ACTION,
-            label="Connect locally",
-            description="Connect locally without a MyPlex account.",
-            action=CONF_ACTION_CONNECT_UNAUTH,
-            action_label="Connect locally",
-            required=False,
-        ),
-        # This is just a flag for this file to know whether or not we're connecting locally.
-        # It doesn't appear on the GUI.
-        # I couldn't figure out how to make a class var work in the places it's needed.
-        ConfigEntry(
-            key=CONF_USING_UNAUTH,
-            type=ConfigEntryType.STRING,
-            label="nolabel",
-            description="",
-            value=values.get(CONF_USING_UNAUTH) if values else None,
             hidden=True,
-            required=False,
         ),
-        conf_libraries,
-    )
+    ]
+
+    # config flow auth action/step to pick the library to use
+    # because this call is very slow, we only show/calculate the dropdown if we do
+    # not yet have this info or we/user invalidated it.
+    if values and values.get(CONF_AUTH_TOKEN):
+        conf_libraries = ConfigEntry(
+            key=CONF_LIBRARY_ID,
+            type=ConfigEntryType.STRING,
+            label="Library",
+            required=True,
+            description="The library to connect to (e.g. Music)",
+            depends_on=CONF_AUTH_TOKEN,
+            action=CONF_ACTION_LIBRARY,
+            action_label="Select Plex Music Library",
+        )
+        if action in (CONF_ACTION_LIBRARY, CONF_ACTION_AUTH_MYPLEX, CONF_ACTION_AUTH_LOCAL):
+            token = mass.config.decrypt_string(values.get(CONF_AUTH_TOKEN))
+            server_http_ip = values.get(CONF_LOCAL_SERVER_IP)
+            server_http_port = values.get(CONF_LOCAL_SERVER_PORT)
+            server_http_ssl = values.get(CONF_LOCAL_SERVER_SSL)
+            server_http_verify_cert = values.get(CONF_LOCAL_SERVER_VERIFY_CERT)
+            if not (
+                libraries := await get_libraries(
+                    mass,
+                    token,
+                    server_http_ssl,
+                    server_http_ip,
+                    server_http_port,
+                    server_http_verify_cert,
+                )
+            ):
+                msg = "Unable to retrieve Servers and/or Music Libraries"
+                raise LoginFailed(msg)
+            conf_libraries.options = tuple(
+                # use the same value for both the value and the title
+                # until we find out what plex uses as stable identifiers
+                ConfigValueOption(
+                    title=x,
+                    value=x,
+                )
+                for x in libraries
+            )
+            # select first library as (default) value
+            conf_libraries.default_value = libraries[0]
+            conf_libraries.value = libraries[0]
+        entries.append(conf_libraries)
+
+    # return all config entries
+    return tuple(entries)
 
 
 class PlexProvider(MusicProvider):
@@ -282,16 +317,18 @@ class PlexProvider(MusicProvider):
                     "https" if self.config.get_value(CONF_LOCAL_SERVER_SSL) else "http"
                 )
                 token = self.config.get_value(CONF_AUTH_TOKEN)
-                if self.config.get_value(CONF_USING_UNAUTH) is not None:
+                plex_url = (
+                    f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}"
+                    f":{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
+                )
+                if token == AUTH_TOKEN_UNAUTH:
                     # Doing local connection, not via plex.tv.
-                    plex_server = PlexServer(
-                        f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}"
-                    )
+                    plex_server = PlexServer(plex_url)
                     # I don't think PlexAPI intends for this to be accessible, but we need it.
                     self._baseurl = plex_server._baseurl
                 else:
                     plex_server = PlexServer(
-                        f"{local_server_protocol}://{self.config.get_value(CONF_LOCAL_SERVER_IP)}:{self.config.get_value(CONF_LOCAL_SERVER_PORT)}",
+                        plex_url,
                         token,
                         session=session,
                     )
@@ -842,13 +879,14 @@ class PlexProvider(MusicProvider):
 
     async def get_myplex_account_and_refresh_token(self, auth_token: str) -> MyPlexAccount:
         """Get a MyPlexAccount object and refresh the token if needed."""
+        if auth_token == AUTH_TOKEN_UNAUTH:
+            return self._myplex_account
 
         def _refresh_plex_token():
-            if self.config.values.get(CONF_USING_UNAUTH) is None:
-                if self._myplex_account is None:
-                    myplex_account = MyPlexAccount(token=auth_token)
-                    self._myplex_account = myplex_account
-                self._myplex_account.ping()
+            if self._myplex_account is None:
+                myplex_account = MyPlexAccount(token=auth_token)
+                self._myplex_account = myplex_account
+            self._myplex_account.ping()
             return self._myplex_account
 
         return await asyncio.to_thread(_refresh_plex_token)
