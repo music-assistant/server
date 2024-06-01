@@ -39,7 +39,16 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, VARIOUS_ARTISTS_NAME
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
+    VARIOUS_ARTISTS_NAME,
+)
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
@@ -387,6 +396,69 @@ class FileSystemProviderBase(MusicProvider):
         # work out deletions
         deleted_files = prev_filenames - cur_filenames
         await self._process_deletions(deleted_files)
+
+        # process orphaned albums and artists
+        await self._process_orphaned_albums_and_artists()
+
+    async def _process_orphaned_albums_and_artists(self) -> None:
+        """Process deletion of orphaned albums and artists."""
+        # process orphaned albums and artists
+
+        # Remove albums without any tracks
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_ALBUMS} "
+            f"WHERE item_id not in (select album_id from {DB_TABLE_ALBUM_TRACKS})"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            query,
+            limit=100000,
+        ):
+            await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
+
+        # Remove artists without any tracks or albums
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
+            f"WHERE item_id not in ("
+            f"select artist_id from {DB_TABLE_TRACK_ARTISTS} "
+            f"UNION "
+            f"select artist_id from {DB_TABLE_ALBUM_ARTISTS}"
+            ")"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(
+            query,
+            limit=100000,
+        ):
+            await self.mass.music.artists.remove_item_from_library(db_row["item_id"])
+
+        # Provider mappings where the album is removed
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE media_type = 'album' "
+            f"and item_id not in (select item_id from {DB_TABLE_ALBUMS})"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
+            await self.mass.music.albums.remove_provider_mappings(
+                db_row["item_id"], self.instance_id
+            )
+
+        # Provider mappings where the artist is removed
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE media_type = 'artist' "
+            f"and item_id not in (select item_id from {DB_TABLE_ARTISTS})"
+        )
+        for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
+            await self.mass.music.artists.remove_provider_mappings(
+                db_row["item_id"], self.instance_id
+            )
+
+        # Remove albums that are removed from the playlog
+        where_clause = (
+            f"media_type = 'album' "
+            f"and provider = '{self.instance_id}' "
+            f"and item_id not in (select item_id from albums)"
+        )
+        await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
