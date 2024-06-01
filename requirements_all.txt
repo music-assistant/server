@@ -4,11 +4,12 @@ Brotli>=1.0.9
 aiodns>=3.0.0
 aiofiles==23.2.1
 aiohttp==3.9.5
-aiorun==2023.7.2
+aiorun==2024.5.1
 aioslimproto==3.0.1
 aiosqlite==0.20.0
 async-upnp-client==0.38.3
 asyncio-throttle==1.0.2
+bidict==0.23.1
 certifi==2024.2.2
 colorlog==6.8.2
 cryptography==42.0.7
@@ -19,7 +20,7 @@ git+https://github.com/MarvinSchenkel/pytube.git
 hass-client==1.0.1
 ifaddr==0.2.0
 jellyfin_apiclient_python==1.9.2
-mashumaro==3.12
+mashumaro==3.13
 memory-tempfile==2.2.3
 music-assistant-frontend==2.5.10
 orjson==3.10.3
