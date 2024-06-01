@@ -615,7 +615,11 @@ class PlexProvider(MusicProvider):
         )
         # Only add 5-star rated tracks to Favorites. userRating will be 10.0 for those.
         # TODO: Let user set threshold?
-        track.favorite = plex_track._data.attrib["userRating"] == "10.0"
+        try:
+            track.favorite = plex_track._data.attrib["userRating"] == "10.0"
+        except KeyError:
+            # Log but suppress exception, allow sync to continue
+            self.logger.error(f"ERROR {plex_track.title} has no userRating")
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.
