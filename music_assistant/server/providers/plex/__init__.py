@@ -161,40 +161,6 @@ async def get_config_entries(  # noqa: PLR0915
             )
         )
 
-    # show authentication options
-    if values is None or not values.get(CONF_AUTH_TOKEN):
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_AUTH_MYPLEX,
-                type=ConfigEntryType.ACTION,
-                label="Authenticate with MyPlex",
-                description="Authenticate with MyPlex to access your library.",
-                action=CONF_ACTION_AUTH_MYPLEX,
-                action_label="Authenticate with MyPlex",
-            )
-        )
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_AUTH_LOCAL,
-                type=ConfigEntryType.ACTION,
-                label="Authenticate locally",
-                description="Authenticate locally to access your library.",
-                action=CONF_ACTION_AUTH_LOCAL,
-                action_label="Authenticate locally",
-            )
-        )
-    else:
-        entries.append(
-            ConfigEntry(
-                key=CONF_ACTION_CLEAR_AUTH,
-                type=ConfigEntryType.ACTION,
-                label="Clear authentication",
-                description="Clear the current authentication details.",
-                action=CONF_ACTION_CLEAR_AUTH,
-                action_label="Clear authentication",
-            )
-        )
-
     # server details config entries (IP, port etc.)
     entries += [
         ConfigEntry(
@@ -230,6 +196,7 @@ async def get_config_entries(  # noqa: PLR0915
             required=True,
             default_value=True,
             depends_on=CONF_LOCAL_SERVER_SSL,
+            category="advanced",
         ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
@@ -286,6 +253,40 @@ async def get_config_entries(  # noqa: PLR0915
             conf_libraries.default_value = libraries[0]
             conf_libraries.value = libraries[0]
         entries.append(conf_libraries)
+
+    # show authentication options
+    if values is None or not values.get(CONF_AUTH_TOKEN):
+        entries.append(
+            ConfigEntry(
+                key=CONF_ACTION_AUTH_MYPLEX,
+                type=ConfigEntryType.ACTION,
+                label="Authenticate with MyPlex",
+                description="Authenticate with MyPlex to access your library.",
+                action=CONF_ACTION_AUTH_MYPLEX,
+                action_label="Authenticate with MyPlex",
+            )
+        )
+        entries.append(
+            ConfigEntry(
+                key=CONF_ACTION_AUTH_LOCAL,
+                type=ConfigEntryType.ACTION,
+                label="Authenticate locally",
+                description="Authenticate locally to access your library.",
+                action=CONF_ACTION_AUTH_LOCAL,
+                action_label="Authenticate locally",
+            )
+        )
+    else:
+        entries.append(
+            ConfigEntry(
+                key=CONF_ACTION_CLEAR_AUTH,
+                type=ConfigEntryType.ACTION,
+                label="Clear authentication",
+                description="Clear the current authentication details.",
+                action=CONF_ACTION_CLEAR_AUTH,
+                action_label="Clear authentication",
+            )
+        )
 
     # return all config entries
     return tuple(entries)
