@@ -39,7 +39,16 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import DB_TABLE_PROVIDER_MAPPINGS, VARIOUS_ARTISTS_NAME
+from music_assistant.constants import (
+    DB_TABLE_ALBUM_ARTISTS,
+    DB_TABLE_ALBUM_TRACKS,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PLAYLOG,
+    DB_TABLE_PROVIDER_MAPPINGS,
+    DB_TABLE_TRACK_ARTISTS,
+    VARIOUS_ARTISTS_NAME,
+)
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
@@ -48,15 +57,6 @@ from music_assistant.server.helpers.tags import parse_tags, split_items
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import get_parentdir
-
-from music_assistant.constants import (
-    DB_TABLE_ALBUM_ARTISTS,
-    DB_TABLE_ALBUMS,
-    DB_TABLE_ARTISTS,
-    DB_TABLE_TRACK_ARTISTS,
-    DB_TABLE_ALBUM_TRACKS,
-    DB_TABLE_PLAYLOG,
-)
 
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
@@ -405,19 +405,29 @@ class FileSystemProviderBase(MusicProvider):
         # process orphaned albums and artists
 
         # Remove albums without any tracks
-        query = f"SELECT item_id FROM {DB_TABLE_ALBUMS} WHERE item_id not in (select album_id from {DB_TABLE_ALBUM_TRACKS})"
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_ALBUMS} "
+            f"WHERE item_id not in (select album_id from {DB_TABLE_ALBUM_TRACKS})"
+        )
         for db_row in await self.mass.music.database.get_rows_from_query(
             query,
             limit=100000,
-        ):        
+        ):
             await self.mass.music.albums.remove_item_from_library(db_row["item_id"])
 
         # Remove artists without any tracks or albums
-        query = f"SELECT item_id FROM {DB_TABLE_ARTISTS} WHERE item_id not in (select artist_id from {DB_TABLE_TRACK_ARTISTS} UNION select artist_id from {DB_TABLE_ALBUM_ARTISTS})"
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
+            f"WHERE item_id not in ("
+            f"select artist_id from {DB_TABLE_TRACK_ARTISTS} "
+            f"UNION "
+            f"select artist_id from {DB_TABLE_ALBUM_ARTISTS}"
+            ")"
+        )
         for db_row in await self.mass.music.database.get_rows_from_query(
             query,
             limit=100000,
-        ): 
+        ):
             await self.mass.music.artists.remove_item_from_library(db_row["item_id"])
 
         # Provider mappings where the album is removed
@@ -427,7 +437,9 @@ class FileSystemProviderBase(MusicProvider):
             f"and item_id not in (select item_id from {DB_TABLE_ALBUMS})"
         )
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
-            await self.mass.music.albums.remove_provider_mappings(db_row["item_id"], self.instance_id)
+            await self.mass.music.albums.remove_provider_mappings(
+                db_row["item_id"], self.instance_id
+            )
 
         # Provider mappings where the artist is removed
         query = (
@@ -436,10 +448,17 @@ class FileSystemProviderBase(MusicProvider):
             f"and item_id not in (select item_id from {DB_TABLE_ARTISTS})"
         )
         for db_row in await self.mass.music.database.get_rows_from_query(query, limit=100000):
-            await self.mass.music.artists.remove_provider_mappings(db_row["item_id"], self.instance_id)          
+            await self.mass.music.artists.remove_provider_mappings(
+                db_row["item_id"], self.instance_id
+            )
 
         # Remove albums that are removed from the playlog
-        await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, f"media_type = 'album' and provider = '{self.instance_id}' and item_id not in (select item_id from albums)")
+        where_clause = (
+            f"media_type = 'album' "
+            f"and provider = '{self.instance_id}' "
+            f"and item_id not in (select item_id from albums)"
+        )
+        await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
 
     async def _process_deletions(self, deleted_files: set[str]) -> None:
         """Process all deletions."""
