@@ -616,7 +616,10 @@ class JellyfinProvider(MusicProvider):
                 self._jellyfin_server, playlist_library[ITEM_KEY_ID], "Playlist"
             )
             for playlist in playlists_obj:
-                if playlist["MediaType"] == "Audio":
+                if "MediaType" in playlist:  # Only jellyfin has this property
+                    if playlist["MediaType"] == "Audio":
+                        yield await self._parse_playlist(playlist)
+                else:  # emby playlists are only audio type
                     yield await self._parse_playlist(playlist)
 
     async def get_album(self, prov_album_id) -> Album:
