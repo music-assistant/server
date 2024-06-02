@@ -60,6 +60,8 @@ from .const import (
     CLIENT_VERSION,
     ITEM_KEY_ALBUM,
     ITEM_KEY_ALBUM_ARTIST,
+    ITEM_KEY_ALBUM_ARTISTS,
+    ITEM_KEY_ALBUM_ID,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CAN_DOWNLOAD,
     ITEM_KEY_COLLECTION_TYPE,
@@ -327,7 +329,7 @@ class JellyfinProvider(MusicProvider):
             album.artists.append(
                 self._get_item_mapping(
                     MediaType.ARTIST,
-                    current_jellyfin_album[ITEM_KEY_PARENT_ID],
+                    current_jellyfin_album[ITEM_KEY_ALBUM_ARTISTS][0].get(ITEM_KEY_ID),
                     current_jellyfin_album[ITEM_KEY_ALBUM_ARTIST],
                 )
             )
@@ -433,15 +435,15 @@ class JellyfinProvider(MusicProvider):
                         artist_item[ITEM_KEY_NAME],
                     )
                 )
-        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+        elif ITEM_KEY_ALBUM_ID in current_jellyfin_track:
             parent_album = API.get_item(
-                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
+                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_ALBUM_ID]
             )
-            if ITEM_KEY_PARENT_ID in parent_album and ITEM_KEY_ALBUM_ARTIST in parent_album:
+            if ITEM_KEY_ALBUM_ID in parent_album and ITEM_KEY_ALBUM_ARTIST in parent_album:
                 track.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
-                        parent_album[ITEM_KEY_PARENT_ID],
+                        parent_album[ITEM_KEY_ALBUM_ID],
                         parent_album[ITEM_KEY_ALBUM_ARTIST],
                     )
                 )
@@ -449,18 +451,15 @@ class JellyfinProvider(MusicProvider):
                 track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
         else:
             track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
-        if (
-            ITEM_KEY_PARENT_ID in current_jellyfin_track
-            and ITEM_KEY_ALBUM in current_jellyfin_track
-        ):
+        if ITEM_KEY_ALBUM_ID in current_jellyfin_track and ITEM_KEY_ALBUM in current_jellyfin_track:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM,
-                current_jellyfin_track[ITEM_KEY_PARENT_ID],
+                current_jellyfin_track[ITEM_KEY_ALBUM_ID],
                 current_jellyfin_track[ITEM_KEY_ALBUM],
             )
-        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+        elif ITEM_KEY_ALBUM_ID in current_jellyfin_track:
             parent_album = API.get_item(
-                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
+                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_ALBUM_ID]
             )
             track.album = self._get_item_mapping(
                 MediaType.ALBUM,
