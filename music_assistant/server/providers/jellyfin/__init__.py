@@ -332,13 +332,12 @@ class JellyfinProvider(MusicProvider):
                 )
             )
         elif len(current_jellyfin_album.get(ITEM_KEY_ARTIST_ITEMS, [])) >= 1:
-            num_artists = len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS])
-            for i in range(num_artists):
+            for artist_item in current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]:
                 album.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
-                        current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_ID],
-                        current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_NAME],
+                        artist_item[ITEM_KEY_ID],
+                        artist_item[ITEM_KEY_NAME],
                     )
                 )
         return album
@@ -424,21 +423,14 @@ class JellyfinProvider(MusicProvider):
                     remotely_accessible=False,
                 )
             ]
-        if len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]) >= 1:
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][0][ITEM_KEY_ID],
-                    current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][0][ITEM_KEY_NAME],
-                )
-            )
-            num_artists = len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS])
-            for i in range(num_artists):
+
+        if current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
+            for artist_item in current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
                 track.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
-                        current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_ID],
-                        current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_NAME],
+                        artist_item[ITEM_KEY_ID],
+                        artist_item[ITEM_KEY_NAME],
                     )
                 )
         elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
