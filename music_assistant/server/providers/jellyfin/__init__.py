@@ -566,9 +566,12 @@ class JellyfinProvider(MusicProvider):
         """Retrieve all library artists from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries(self._jellyfin_server)
         for jellyfin_library in jellyfin_libraries:
-            artists_obj = await self._get_children(
-                self._jellyfin_server, jellyfin_library[ITEM_KEY_ID], ITEM_TYPE_ARTIST
+            response = API._get(
+                self._jellyfin_server.jellyfin,
+                "Artists",
+                {ITEM_KEY_PARENT_ID: jellyfin_library[ITEM_KEY_ID]},
             )
+            artists_obj = response["Items"]
             for artist in artists_obj:
                 yield await self._parse_artist(artist)
 
