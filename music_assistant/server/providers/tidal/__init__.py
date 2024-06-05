@@ -360,7 +360,7 @@ class TidalProvider(MusicProvider):
             await get_playlist_tracks(tidal_session, prov_playlist_id, limit=limit, offset=offset)
         ):
             track = self._parse_track(track_obj=track_obj)
-            track.position = offset + index + 1
+            track.position = offset + index
             result.append(track)
         return result
 
