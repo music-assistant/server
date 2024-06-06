@@ -568,7 +568,10 @@ class JellyfinProvider(MusicProvider):
             response = API._get(
                 self._jellyfin_server.jellyfin,
                 "Artists",
-                {ITEM_KEY_PARENT_ID: jellyfin_library[ITEM_KEY_ID]},
+                {
+                    ITEM_KEY_PARENT_ID: jellyfin_library[ITEM_KEY_ID],
+                    "ArtistType": "Artist,AlbumArtist",
+                },
             )
             artists_obj = response["Items"]
             for artist in artists_obj:
