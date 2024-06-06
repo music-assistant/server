@@ -762,7 +762,7 @@ class JellyfinProvider(MusicProvider):
             ITEM_KEY_PARENT_ID: parent_id,
         }
         if item_type in ITEM_TYPE_ARTIST:
-            params["IncludeItemTypes"] = [ITEM_TYPE_MUSICARTISTS, ITEM_TYPE_ARTIST]
+            params["IncludeItemTypes"] = f"{ITEM_TYPE_MUSICARTISTS},{ITEM_TYPE_ARTIST}"
         else:
             params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
