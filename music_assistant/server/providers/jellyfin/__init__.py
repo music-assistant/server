@@ -365,7 +365,14 @@ class JellyfinProvider(MusicProvider):
         if ITEM_KEY_OVERVIEW in current_artist:
             artist.metadata.description = current_artist[ITEM_KEY_OVERVIEW]
         if ITEM_KEY_MUSICBRAINZ_ARTIST in current_artist[ITEM_KEY_PROVIDER_IDS]:
-            artist.mbid = current_artist[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ARTIST]
+            try:
+                artist.mbid = current_artist[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ARTIST]
+            except InvalidDataError as error:
+                self.logger.warning(
+                    "Jellyfin reports an invalid id for artist_id: %s",
+                    artist_id,
+                    exc_info=error if self.logger.isEnabledFor(10) else None,
+                )
         if ITEM_KEY_SORT_NAME in current_artist:
             artist.sort_name = current_artist[ITEM_KEY_SORT_NAME]
         if thumb := self._get_thumbnail_url(self._jellyfin_server, jellyfin_artist):
