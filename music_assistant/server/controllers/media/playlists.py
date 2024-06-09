@@ -298,7 +298,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 prefer_library_items=prefer_library_items,
             )
             result += paged_items.items
-            if paged_items.count != limit:
+            if paged_items.total is not None and len(result) >= paged_items.total:
+                break
+            if paged_items.count == 0:
                 break
             offset += paged_items.count
         return result
