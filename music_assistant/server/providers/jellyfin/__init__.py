@@ -369,7 +369,7 @@ class JellyfinProvider(MusicProvider):
                 artist.mbid = current_artist[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ARTIST]
             except InvalidDataError as error:
                 self.logger.warning(
-                    "Jellyfin has an invalid musicbrainz id for artist %r",
+                    "Jellyfin has an invalid musicbrainz id for artist %s",
                     artist.name,
                     exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
