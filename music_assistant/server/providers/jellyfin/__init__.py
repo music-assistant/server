@@ -60,6 +60,8 @@ from .const import (
     CLIENT_VERSION,
     ITEM_KEY_ALBUM,
     ITEM_KEY_ALBUM_ARTIST,
+    ITEM_KEY_ALBUM_ARTISTS,
+    ITEM_KEY_ALBUM_ID,
     ITEM_KEY_ARTIST_ITEMS,
     ITEM_KEY_CAN_DOWNLOAD,
     ITEM_KEY_COLLECTION_TYPE,
@@ -327,18 +329,17 @@ class JellyfinProvider(MusicProvider):
             album.artists.append(
                 self._get_item_mapping(
                     MediaType.ARTIST,
-                    current_jellyfin_album[ITEM_KEY_PARENT_ID],
+                    current_jellyfin_album[ITEM_KEY_ALBUM_ARTISTS][0].get(ITEM_KEY_ID),
                     current_jellyfin_album[ITEM_KEY_ALBUM_ARTIST],
                 )
             )
         elif len(current_jellyfin_album.get(ITEM_KEY_ARTIST_ITEMS, [])) >= 1:
-            num_artists = len(current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS])
-            for i in range(num_artists):
+            for artist_item in current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]:
                 album.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
-                        current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_ID],
-                        current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_NAME],
+                        artist_item[ITEM_KEY_ID],
+                        artist_item[ITEM_KEY_NAME],
                     )
                 )
         return album
@@ -431,32 +432,25 @@ class JellyfinProvider(MusicProvider):
                     remotely_accessible=False,
                 )
             ]
-        if len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]) >= 1:
-            track.artists.append(
-                self._get_item_mapping(
-                    MediaType.ARTIST,
-                    current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][0][ITEM_KEY_ID],
-                    current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][0][ITEM_KEY_NAME],
-                )
-            )
-            num_artists = len(current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS])
-            for i in range(num_artists):
+
+        if current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
+            for artist_item in current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
                 track.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
-                        current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_ID],
-                        current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS][i][ITEM_KEY_NAME],
+                        artist_item[ITEM_KEY_ID],
+                        artist_item[ITEM_KEY_NAME],
                     )
                 )
-        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+        elif ITEM_KEY_ALBUM_ID in current_jellyfin_track:
             parent_album = API.get_item(
-                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
+                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_ALBUM_ID]
             )
-            if ITEM_KEY_PARENT_ID in parent_album and ITEM_KEY_ALBUM_ARTIST in parent_album:
+            if ITEM_KEY_ALBUM_ID in parent_album and ITEM_KEY_ALBUM_ARTIST in parent_album:
                 track.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
-                        parent_album[ITEM_KEY_PARENT_ID],
+                        parent_album[ITEM_KEY_ALBUM_ID],
                         parent_album[ITEM_KEY_ALBUM_ARTIST],
                     )
                 )
@@ -464,18 +458,15 @@ class JellyfinProvider(MusicProvider):
                 track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
         else:
             track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
-        if (
-            ITEM_KEY_PARENT_ID in current_jellyfin_track
-            and ITEM_KEY_ALBUM in current_jellyfin_track
-        ):
+        if ITEM_KEY_ALBUM_ID in current_jellyfin_track and ITEM_KEY_ALBUM in current_jellyfin_track:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM,
-                current_jellyfin_track[ITEM_KEY_PARENT_ID],
+                current_jellyfin_track[ITEM_KEY_ALBUM_ID],
                 current_jellyfin_track[ITEM_KEY_ALBUM],
             )
-        elif ITEM_KEY_PARENT_ID in current_jellyfin_track:
+        elif ITEM_KEY_ALBUM_ID in current_jellyfin_track:
             parent_album = API.get_item(
-                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_PARENT_ID]
+                self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_ALBUM_ID]
             )
             track.album = self._get_item_mapping(
                 MediaType.ALBUM,
@@ -581,9 +572,15 @@ class JellyfinProvider(MusicProvider):
         """Retrieve all library artists from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries(self._jellyfin_server)
         for jellyfin_library in jellyfin_libraries:
-            artists_obj = await self._get_children(
-                self._jellyfin_server, jellyfin_library[ITEM_KEY_ID], ITEM_TYPE_ARTIST
+            response = API._get(
+                self._jellyfin_server.jellyfin,
+                "Artists",
+                {
+                    ITEM_KEY_PARENT_ID: jellyfin_library[ITEM_KEY_ID],
+                    "ArtistType": "Artist,AlbumArtist",
+                },
             )
+            artists_obj = response["Items"]
             for artist in artists_obj:
                 yield await self._parse_artist(artist)
 
@@ -628,7 +625,10 @@ class JellyfinProvider(MusicProvider):
                 self._jellyfin_server, playlist_library[ITEM_KEY_ID], "Playlist"
             )
             for playlist in playlists_obj:
-                if playlist["MediaType"] == "Audio":
+                if "MediaType" in playlist:  # Only jellyfin has this property
+                    if playlist["MediaType"] == "Audio":
+                        yield await self._parse_playlist(playlist)
+                else:  # emby playlists are only audio type
                     yield await self._parse_playlist(playlist)
 
     async def get_album(self, prov_album_id) -> Album:
@@ -769,7 +769,7 @@ class JellyfinProvider(MusicProvider):
             ITEM_KEY_PARENT_ID: parent_id,
         }
         if item_type in ITEM_TYPE_ARTIST:
-            params["IncludeItemTypes"] = [ITEM_TYPE_MUSICARTISTS, ITEM_TYPE_ARTIST]
+            params["IncludeItemTypes"] = f"{ITEM_TYPE_MUSICARTISTS},{ITEM_TYPE_ARTIST}"
         else:
             params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
