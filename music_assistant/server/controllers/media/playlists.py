@@ -84,7 +84,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     final_tracks.append(track)
         else:
             final_tracks = tracks
-        return PagedItems(items=final_tracks, limit=limit, offset=offset)
+        return PagedItems(items=final_tracks, limit=limit, offset=offset, total=None)
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
