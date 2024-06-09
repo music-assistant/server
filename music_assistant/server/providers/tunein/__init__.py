@@ -20,7 +20,6 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (
@@ -110,8 +109,7 @@ class TuneInProvider(MusicProvider):
                         continue
                     # each radio station can have multiple streams add each one as different quality
                     stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
-                    for stream in stream_info["body"]:
-                        yield await self._parse_radio(item, stream, folder)
+                    yield await self._parse_radio(item, stream_info, folder)
                 elif item_type == "link" and item.get("item") == "url":
                     # custom url
                     try:
@@ -146,7 +144,7 @@ class TuneInProvider(MusicProvider):
                 for stream in stream_info["body"]:
                     if stream["media_type"] != media_type:
                         continue
-                    return await self._parse_radio(item, stream)
+                    return await self._parse_radio(item, [stream])
         # fallback - e.g. for handle custom urls ...
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
@@ -155,7 +153,7 @@ class TuneInProvider(MusicProvider):
         raise MediaNotFoundError(msg)
 
     async def _parse_radio(
-        self, details: dict, stream: dict | None = None, folder: str | None = None
+        self, details: dict, stream_info: list[dict] | None = None, folder: str | None = None
     ) -> Radio:
         """Parse Radio object from json obj returned from api."""
         if "name" in details:
@@ -167,37 +165,47 @@ class TuneInProvider(MusicProvider):
                 name = name.split(" | ")[1]
             name = name.split(" (")[0]
 
-        if stream is None:
-            # custom url (no stream object present)
-            url = details["URL"]
-            item_id = url
-            media_info = await parse_tags(url)
-            content_type = ContentType.try_parse(media_info.format)
-            bit_rate = media_info.bit_rate
+        if stream_info is not None:
+            # stream info is provided: parse stream objects into provider mappings
+            radio = Radio(
+                item_id=details["preset_id"],
+                provider=self.lookup_key,
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f'{details["preset_id"]}--{stream["media_type"]}',
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        audio_format=AudioFormat(
+                            content_type=ContentType.try_parse(stream["media_type"]),
+                            bit_rate=stream.get("bitrate", 128),  # TODO !
+                        ),
+                        details=stream["url"],
+                        available=details.get("is_available", True),
+                    )
+                    for stream in stream_info
+                },
+            )
         else:
-            url = stream["url"]
-            item_id = f'{details["preset_id"]}--{stream["media_type"]}'
-            content_type = ContentType.try_parse(stream["media_type"])
-            bit_rate = stream.get("bitrate", 128)  # TODO !
+            # custom url (no stream object present)
+            radio = Radio(
+                item_id=details["URL"],
+                provider=self.lookup_key,
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=details["URL"],
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        audio_format=AudioFormat(
+                            content_type=ContentType.UNKNOWN,
+                        ),
+                        details=details["URL"],
+                        available=details.get("is_available", True),
+                    )
+                },
+            )
 
-        radio = Radio(
-            item_id=item_id,
-            provider=self.domain,
-            name=name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=item_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=AudioFormat(
-                        content_type=content_type,
-                        bit_rate=bit_rate,
-                    ),
-                    details=url,
-                    available=details.get("is_available", True),
-                )
-            },
-        )
         # preset number is used for sorting (not present at stream time)
         preset_number = details.get("preset_number", 0)
         radio.position = preset_number

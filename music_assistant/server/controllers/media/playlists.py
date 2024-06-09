@@ -293,7 +293,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             playlist.name,
         )
         while True:
-            paged_items = await self.mass.music.playlists.tracks(
+            paged_items = await self.tracks(
                 item_id=playlist.item_id,
                 provider_instance_id_or_domain=playlist.provider,
                 offset=offset,
