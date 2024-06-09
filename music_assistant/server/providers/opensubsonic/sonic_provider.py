@@ -244,6 +244,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=sonic_artist.id,
             name=sonic_artist.name,
             provider=self.domain,
+            favorite=bool(sonic_artist.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_artist.id,
@@ -285,6 +286,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=album_id,
             provider=self.domain,
             name=sonic_album.name,
+            favorite=bool(sonic_album.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=album_id,
