@@ -503,7 +503,7 @@ class PlexProvider(MusicProvider):
             album.favorite = plex_album._data.attrib["userRating"] == "10.0"
         except KeyError:
             # Log but suppress exception, allow sync to continue
-            self.logger.error(f"ERROR {plex_album.title} has no rating")
+            self.logger.error("ERROR: %s has no rating", plex_album.title)
 
         if plex_album.year:
             album.year = plex_album.year
