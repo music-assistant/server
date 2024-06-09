@@ -186,7 +186,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         if platform.system() == "Darwin":
             password_str = f":{password}" if password else ""
-            mount_cmd = f"mount -t smbfs //{username}{password_str}@{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
+            mount_cmd = f'mount -t smbfs "//{username}{password_str}@{server}/{share}{subfolder}" "{self.base_path}"'  # noqa: E501
 
         elif platform.system() == "Linux":
             options = [
@@ -197,7 +197,11 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 options.append(f'password="{password}"')
             if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
                 options += mount_options.split(",")
-            mount_cmd = f"mount -t cifs -o {','.join(options)} //{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
+
+            mount_cmd = (
+                f'mount -t cifs -o {','.join(options)} '
+                f'"//{server}/{share}{subfolder}" "{self.base_path}"'
+            )
 
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
