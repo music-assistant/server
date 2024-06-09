@@ -624,7 +624,7 @@ class PlexProvider(MusicProvider):
             track.favorite = plex_track._data.attrib["userRating"] == "10.0"
         except KeyError:
             # Log but suppress exception, allow sync to continue
-            self.logger.error(f"ERROR {plex_track.title} has no userRating")
+            self.logger.error("ERROR: %s has no userRating", plex_track.title)
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.
