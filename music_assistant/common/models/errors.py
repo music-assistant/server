@@ -121,3 +121,9 @@ class ResourceTemporarilyUnavailable(MusicAssistantError):
         self.backoff_time = backoff_time
 
     error_code = 17
+
+
+class ProviderPermissionDenied(MusicAssistantError):
+    """Error thrown when a provider action is denied because of permissions."""
+
+    error_code = 18

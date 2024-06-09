@@ -22,7 +22,11 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -123,11 +127,14 @@ class OpenSonicProvider(MusicProvider):
             ProviderFeature.LIBRARY_ALBUMS,
             ProviderFeature.LIBRARY_TRACKS,
             ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
             ProviderFeature.ARTIST_TOPTRACKS,
             ProviderFeature.SIMILAR_TRACKS,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_CREATE,
         )
 
     @property
@@ -237,6 +244,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=sonic_artist.id,
             name=sonic_artist.name,
             provider=self.domain,
+            favorite=bool(sonic_artist.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_artist.id,
@@ -278,6 +286,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=album_id,
             provider=self.domain,
             name=sonic_album.name,
+            favorite=bool(sonic_album.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=album_id,
@@ -674,6 +683,38 @@ class OpenSonicProvider(MusicProvider):
             self._conn.getSimilarSongs2, iid=prov_track_id, count=limit
         )
         return [self._parse_track(entry) for entry in songs]
+
+    async def create_playlist(self, name: str) -> Playlist:
+        """Create a new empty playlist on the server."""
+        playlist: SonicPlaylist = await self._run_async(self._conn.createPlaylist, name=name)
+        return self._parse_playlist(playlist)
+
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
+        """Append the listed tracks to the selected playlist.
+
+        Note that the configured user must own the playlist to edit this way.
+        """
+        try:
+            await self._run_async(
+                self._conn.updatePlaylist, lid=prov_playlist_id, songIdsToAdd=prov_track_ids
+            )
+        except SonicError:
+            msg = f"Failed to add songs to {prov_playlist_id}, check your permissions."
+            raise ProviderPermissionDenied(msg)
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
+        """Remove selected positions from the playlist."""
+        try:
+            await self._run_async(
+                self._conn.updatePlaylist,
+                lid=prov_playlist_id,
+                songIndexesToRemove=list(positions_to_remove),
+            )
+        except SonicError:
+            msg = f"Failed to remove songs from {prov_playlist_id}, check your permissions."
+            raise ProviderPermissionDenied(msg)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get the details needed to process a specified track."""
