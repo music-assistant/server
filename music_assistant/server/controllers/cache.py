@@ -153,7 +153,7 @@ class CacheController(CoreController):
         self.logger.info("Clearing database DONE")
 
     async def auto_cleanup(self) -> None:
-        """Sceduled auto cleanup task."""
+        """Run scheduled auto cleanup task."""
         self.logger.debug("Running automatic cleanup...")
         # for now we simply reset the memory cache
         self._mem_cache = {}
