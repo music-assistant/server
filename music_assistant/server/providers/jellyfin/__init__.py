@@ -371,7 +371,7 @@ class JellyfinProvider(MusicProvider):
                 self.logger.warning(
                     "Jellyfin has an invalid musicbrainz id for artist %r",
                     artist.name,
-                    exc_info=error if self.logger.isEnabledFor(10) else None,
+                    exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
         if ITEM_KEY_SORT_NAME in current_artist:
             artist.sort_name = current_artist[ITEM_KEY_SORT_NAME]
