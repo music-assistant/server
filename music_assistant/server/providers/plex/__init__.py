@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from asyncio import TaskGroup
+from contextlib import suppress
 from typing import TYPE_CHECKING
 
 import plexapi.exceptions
@@ -499,11 +500,10 @@ class PlexProvider(MusicProvider):
         )
         # Only add 5-star rated albums to Favorites. rating will be 10.0 for those.
         # TODO: Let user set threshold?
-        try:
+        with suppress(KeyError):
+            # suppress KeyError (as it doesn't exist for items without rating),
+            # allow sync to continue
             album.favorite = plex_album._data.attrib["userRating"] == "10.0"
-        except KeyError:
-            # Log but suppress exception, allow sync to continue
-            self.logger.error("ERROR: %s has no rating", plex_album.title)
 
         if plex_album.year:
             album.year = plex_album.year
@@ -620,11 +620,10 @@ class PlexProvider(MusicProvider):
         )
         # Only add 5-star rated tracks to Favorites. userRating will be 10.0 for those.
         # TODO: Let user set threshold?
-        try:
+        with suppress(KeyError):
+            # suppress KeyError (as it doesn't exist for items without rating),
+            # allow sync to continue
             track.favorite = plex_track._data.attrib["userRating"] == "10.0"
-        except KeyError:
-            # Log but suppress exception, allow sync to continue
-            self.logger.error("ERROR: %s has no userRating", plex_track.title)
 
         if plex_track.originalTitle and plex_track.originalTitle != plex_track.grandparentTitle:
             # The artist of the track if different from the album's artist.

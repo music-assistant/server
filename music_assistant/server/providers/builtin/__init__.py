@@ -374,7 +374,9 @@ class BuiltinProvider(MusicProvider):
                 track.position = offset + index
                 result.append(track)
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
-                self.logger.warning("Skipping item in playlist: %s:%s", uri, str(err))
+                self.logger.warning(
+                    "Skipping %s in playlist %s: %s", uri, prov_playlist_id, str(err)
+                )
         return result
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
