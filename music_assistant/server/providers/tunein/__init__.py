@@ -108,12 +108,12 @@ class TuneInProvider(MusicProvider):
                     if "preset_id" not in item:
                         continue
                     # each radio station can have multiple streams add each one as different quality
-                    stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
-                    yield await self._parse_radio(item, stream_info, folder)
+                    stream_info = await self._get_stream_info(item["preset_id"])
+                    yield self._parse_radio(item, stream_info, folder)
                 elif item_type == "link" and item.get("item") == "url":
                     # custom url
                     try:
-                        yield await self._parse_radio(item)
+                        yield self._parse_radio(item)
                     except InvalidDataError as err:
                         # there may be invalid custom urls, ignore those
                         self.logger.warning(str(err))
@@ -135,16 +135,19 @@ class TuneInProvider(MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         if not prov_radio_id.startswith("http"):
-            prov_radio_id, media_type = prov_radio_id.split("--", 1)
+            if "--" in prov_radio_id:
+                prov_radio_id, media_type = prov_radio_id.split("--", 1)
+            else:
+                media_type = None
             params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
             result = await self.__get_data("Describe.ashx", **params)
             if result and result.get("body") and result["body"][0].get("children"):
                 item = result["body"][0]["children"][0]
-                stream_info = await self.__get_data("Tune.ashx", id=prov_radio_id)
-                for stream in stream_info["body"]:
-                    if stream["media_type"] != media_type:
+                stream_info = await self._get_stream_info(prov_radio_id)
+                for stream in stream_info:
+                    if media_type and stream["media_type"] != media_type:
                         continue
-                    return await self._parse_radio(item, [stream])
+                    return self._parse_radio(item, [stream])
         # fallback - e.g. for handle custom urls ...
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
@@ -152,7 +155,7 @@ class TuneInProvider(MusicProvider):
         msg = f"Item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def _parse_radio(
+    def _parse_radio(
         self, details: dict, stream_info: list[dict] | None = None, folder: str | None = None
     ) -> Radio:
         """Parse Radio object from json obj returned from api."""
@@ -178,7 +181,7 @@ class TuneInProvider(MusicProvider):
                         provider_instance=self.instance_id,
                         audio_format=AudioFormat(
                             content_type=ContentType.try_parse(stream["media_type"]),
-                            bit_rate=stream.get("bitrate", 128),  # TODO !
+                            bit_rate=stream.get("bitrate", 128),
                         ),
                         details=stream["url"],
                         available=details.get("is_available", True),
@@ -223,6 +226,15 @@ class TuneInProvider(MusicProvider):
             ]
         return radio
 
+    async def _get_stream_info(self, preset_id: str) -> list[dict]:
+        """Get stream info for a radio station."""
+        cache_key = f"tunein_stream_{preset_id}"
+        if cache := await self.mass.cache.get(cache_key):
+            return cache
+        result = (await self.__get_data("Tune.ashx", id=preset_id))["body"]
+        await self.mass.cache.set(cache_key, result)
+        return result
+
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         if item_id.startswith("http"):
@@ -238,10 +250,13 @@ class TuneInProvider(MusicProvider):
                 path=item_id,
                 can_seek=False,
             )
-        stream_item_id, media_type = item_id.split("--", 1)
-        stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
-        for stream in stream_info["body"]:
-            if stream["media_type"] != media_type:
+        if "--" in item_id:
+            stream_item_id, media_type = item_id.split("--", 1)
+        else:
+            media_type = None
+            stream_item_id = item_id
+        for stream in await self._get_stream_info(stream_item_id):
+            if media_type and stream["media_type"] != media_type:
                 continue
             return StreamDetails(
                 provider=self.domain,
