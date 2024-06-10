@@ -486,8 +486,9 @@ class JellyfinProvider(MusicProvider):
             )  # 10000000 ticks per millisecond
         track.track_number = current_jellyfin_track.get(ITEM_KEY_INDEX_NUMBER, 99)
         if ITEM_KEY_MUSICBRAINZ_TRACK in current_jellyfin_track[ITEM_KEY_PROVIDER_IDS]:
+            track_mbid = current_jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
             try:
-                track.mbid = current_jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
+                track.mbid = track_mbid
             except InvalidDataError as error:
                 self.logger.warning(
                     "Jellyfin has an invalid musicbrainz id for track %s",
