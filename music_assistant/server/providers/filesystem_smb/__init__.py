@@ -198,8 +198,9 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
                 options += mount_options.split(",")
 
+            options_str = ",".join(options)
             mount_cmd = (
-                f'mount -t cifs -o {','.join(options)} '
+                f"mount -t cifs -o {options_str} "
                 f'"//{server}/{share}{subfolder}" "{self.base_path}"'
             )
 
