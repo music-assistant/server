@@ -25,7 +25,7 @@ server = [
   "asyncio-throttle==1.0.2",
   "aiofiles==23.2.1",
   "aiorun==2024.5.1",
-  "certifi==2024.2.2",
+  "certifi==2024.6.2",
   "colorlog==6.8.2",
   "aiosqlite==0.20.0",
   "python-slugify==8.0.4",
