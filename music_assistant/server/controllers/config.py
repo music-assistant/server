@@ -339,12 +339,17 @@ class ConfigController:
     async def get_player_config(self, player_id: str) -> PlayerConfig:
         """Return (full) configuration for a single player."""
         if raw_conf := self.get(f"{CONF_PLAYERS}/{player_id}"):
-            if prov := self.mass.get_provider(raw_conf["provider"]):
+            if player := self.mass.players.get(player_id, False):
+                raw_conf["default_name"] = player.display_name
+                raw_conf["provider"] = player.provider
+                prov = self.mass.get_provider(player.provider)
                 conf_entries = await prov.get_player_config_entries(player_id)
-                if player := self.mass.players.get(player_id, False):
-                    raw_conf["default_name"] = player.display_name
             else:
-                conf_entries = ()
+                # handle unavailable player and/or provider
+                if prov := self.mass.get_provider(raw_conf["provider"]):
+                    conf_entries = await prov.get_player_config_entries(player_id)
+                else:
+                    conf_entries = ()
                 raw_conf["available"] = False
                 raw_conf["name"] = raw_conf.get("name")
                 raw_conf["default_name"] = raw_conf.get("default_name") or raw_conf["player_id"]
