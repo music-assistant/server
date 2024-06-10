@@ -25,6 +25,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.constants import (
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
     MASS_LOGGER_NAME,
 )
@@ -167,6 +168,24 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             DB_TABLE_PROVIDER_MAPPINGS,
             {"media_type": self.media_type.value, "item_id": db_id},
         )
+        # cleanup playlog table
+        await self.mass.music.database.delete(
+            DB_TABLE_PLAYLOG,
+            {
+                "media_type": self.media_type.value,
+                "item_id": db_id,
+                "provider": "library",
+            },
+        )
+        for prov_mapping in library_item.provider_mappings:
+            await self.mass.music.database.delete(
+                DB_TABLE_PLAYLOG,
+                {
+                    "media_type": self.media_type.value,
+                    "item_id": prov_mapping.item_id,
+                    "provider": prov_mapping.provider_instance,
+                },
+            )
         # NOTE: this does not delete any references to this item in other records,
         # this is handled/overridden in the mediatype specific controllers
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
@@ -596,6 +615,15 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                 "item_id": db_id,
                 "provider_instance": provider_instance_id,
                 "provider_item_id": provider_item_id,
+            },
+        )
+        # cleanup playlog table
+        await self.mass.music.database.delete(
+            DB_TABLE_PLAYLOG,
+            {
+                "media_type": self.media_type.value,
+                "item_id": provider_item_id,
+                "provider": provider_instance_id,
             },
         )
         if library_item.provider_mappings:

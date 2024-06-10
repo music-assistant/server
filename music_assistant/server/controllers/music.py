@@ -610,7 +610,7 @@ class MusicController(CoreController):
             prov_key = provider_instance_id_or_domain
 
         # do not try to store dynamic urls (e.g. with auth token etc.),
-        # stick with plaun uri/urls only
+        # stick with plain uri/urls only
         if "http" in item_id and "?" in item_id:
             return
 
@@ -730,6 +730,9 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s completed", provider.name)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
+            # schedule db cleanup after sync
+            if not self.in_progress_syncs:
+                self.mass.create_task(self._cleanup_database())
 
         task.add_done_callback(on_sync_task_done)
 
@@ -794,6 +797,14 @@ class MusicController(CoreController):
         if remaining_items_count := await self.database.get_count_from_query(query):
             errors += remaining_items_count
 
+        # cleanup playlog table
+        await self.mass.music.database.delete(
+            DB_TABLE_PLAYLOG,
+            {
+                "provider": provider_instance,
+            },
+        )
+
         if errors == 0:
             # cleanup successful, remove from the deleted_providers setting
             self.logger.info("Provider %s removed from library", provider_instance)
@@ -813,6 +824,35 @@ class MusicController(CoreController):
         # we reschedule ourselves right after execution
         # NOTE: sync_interval is stored in minutes, we need seconds
         self.mass.loop.call_later(sync_interval * 60, self._schedule_sync)
+
+    async def _cleanup_database(self) -> None:
+        """Perform database cleanup/maintenance."""
+        self.logger.debug("Performing database cleanup...")
+        # Remove playlog entries older than 90 days
+        await self.database.delete_where_query(
+            DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24  * 90}"
+        )
+        # db tables cleanup
+        for ctrl in (self.albums, self.artists, self.tracks, self.playlists, self.radio):
+            # Provider mappings where the db item is removed
+            query = (
+                f"item_id not in (SELECT item_id from {ctrl.db_table}) "
+                f"AND media_type = '{ctrl.media_type}'"
+            )
+            await self.database.delete_where_query(DB_TABLE_PROVIDER_MAPPINGS, query)
+            # Orphaned db items
+            query = (
+                f"item_id not in (SELECT item_id from {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = '{ctrl.media_type}')"
+            )
+            await self.database.delete_where_query(ctrl.db_table, query)
+            # Cleanup removed db items from the playlog
+            where_clause = (
+                f"media_type = '{ctrl.media_type}' AND provider = 'library' "
+                f"AND item_id not in (select item_id from {ctrl.db_table})"
+            )
+            await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+        self.logger.debug("Database cleanup done")
 
     async def _setup_database(self) -> None:
         """Initialize database."""
