@@ -446,14 +446,15 @@ class JellyfinProvider(MusicProvider):
             parent_album = API.get_item(
                 self._jellyfin_server.jellyfin, current_jellyfin_track[ITEM_KEY_ALBUM_ID]
             )
-            if ITEM_KEY_ALBUM_ID in parent_album and ITEM_KEY_ALBUM_ARTIST in parent_album:
-                track.artists.append(
-                    self._get_item_mapping(
-                        MediaType.ARTIST,
-                        parent_album[ITEM_KEY_ALBUM_ID],
-                        parent_album[ITEM_KEY_ALBUM_ARTIST],
+            if ITEM_KEY_ALBUM_ARTISTS in parent_album:
+                for artist_item in parent_album[ITEM_KEY_ALBUM_ARTISTS]:
+                    track.artists.append(
+                        self._get_item_mapping(
+                            MediaType.ARTIST,
+                            artist_item[ITEM_KEY_ID],
+                            artist_item[ITEM_KEY_NAME],
+                        )
                     )
-                )
             else:
                 track.artists.append(await self._parse_artist(name=VARIOUS_ARTISTS_NAME))
         else:
