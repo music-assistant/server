@@ -320,6 +320,8 @@ class MusicProvider(Provider):
                 items.append(item)
                 if len(items) >= limit:
                     break
+            # explicitly set total to None as we don't know the total count
+            total = None
         else:
             # no subpath: return main listing
             if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
@@ -372,7 +374,8 @@ class MusicProvider(Provider):
                         label="radios",
                     )
                 )
-        return PagedItems(items=items, limit=limit, offset=offset)
+            total = len(items)
+        return PagedItems(items=items, limit=limit, offset=offset, total=total)
 
     async def recommendations(self) -> list[MediaItemType]:
         """Get this provider's recommendations.

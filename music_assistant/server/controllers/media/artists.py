@@ -9,7 +9,11 @@ from typing import TYPE_CHECKING, Any
 
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import ProviderFeature
-from music_assistant.common.models.errors import MediaNotFoundError, UnsupportedFeaturedException
+from music_assistant.common.models.errors import (
+    MediaNotFoundError,
+    ProviderUnavailableError,
+    UnsupportedFeaturedException,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -441,9 +445,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_tracks) < 10:
             # fetch reference tracks from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
-                ref_tracks += await self.mass.music.artists.tracks(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
+                with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
+                    ref_tracks += await self.mass.music.artists.tracks(
+                        provider_mapping.item_id, provider_mapping.provider_instance
+                    )
         for ref_track in ref_tracks:
             for search_str in (
                 f"{db_artist.name} - {ref_track.name}",
@@ -476,9 +481,10 @@ class ArtistsController(MediaControllerBase[Artist]):
         if len(ref_albums) < 10:
             # fetch reference albums from provider(s) attached to the artist
             for provider_mapping in db_artist.provider_mappings:
-                ref_albums += await self.mass.music.artists.albums(
-                    provider_mapping.item_id, provider_mapping.provider_instance
-                )
+                with contextlib.suppress(ProviderUnavailableError, MediaNotFoundError):
+                    ref_albums += await self.mass.music.artists.albums(
+                        provider_mapping.item_id, provider_mapping.provider_instance
+                    )
         for ref_album in ref_albums:
             if ref_album.album_type == AlbumType.COMPILATION:
                 continue

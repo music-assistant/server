@@ -138,12 +138,13 @@ class RadioBrowserProvider(MusicProvider):
             ]
 
         if subpath == "popular":
-            items = await self.get_by_popularity()
+            items = await self.get_by_popularity(limit=limit, offset=offset)
 
         if subpath == "tag":
             tags = await self.radios.tags(
                 hide_broken=True,
-                limit=100,
+                limit=limit,
+                offset=offset,
                 order=Order.STATION_COUNT,
                 reverse=True,
             )
@@ -159,7 +160,9 @@ class RadioBrowserProvider(MusicProvider):
             ]
 
         if subpath == "country":
-            for country in await self.radios.countries(order=Order.NAME):
+            for country in await self.radios.countries(
+                order=Order.NAME, hide_broken=True, limit=limit, offset=offset
+            ):
                 folder = BrowseFolder(
                     item_id=country.code.lower(),
                     provider=self.domain,
@@ -176,18 +179,20 @@ class RadioBrowserProvider(MusicProvider):
                 ]
                 items.append(folder)
 
-        if subsubpath in await self.get_tag_names():
+        if subsubpath in await self.get_tag_names(limit=limit, offset=offset):
             items = await self.get_by_tag(subsubpath)
 
-        if subsubpath in await self.get_country_codes():
+        if subsubpath in await self.get_country_codes(limit=limit, offset=offset):
             items = await self.get_by_country(subsubpath)
-        return PagedItems(items=items, limit=limit, offset=offset)
+        total = len(items) if len(items) < limit else None
+        return PagedItems(items=items, limit=limit, offset=offset, total=total)
 
-    async def get_tag_names(self):
+    async def get_tag_names(self, limit: int, offset: int):
         """Get a list of tag names."""
         tags = await self.radios.tags(
             hide_broken=True,
-            limit=100,
+            limit=limit,
+            offset=offset,
             order=Order.STATION_COUNT,
             reverse=True,
         )
@@ -197,19 +202,22 @@ class RadioBrowserProvider(MusicProvider):
             tag_names.append(tag.name.lower())
         return tag_names
 
-    async def get_country_codes(self):
+    async def get_country_codes(self, limit: int, offset: int):
         """Get a list of country names."""
-        countries = await self.radios.countries(order=Order.NAME)
+        countries = await self.radios.countries(
+            order=Order.NAME, hide_broken=True, limit=limit, offset=offset
+        )
         country_codes = []
         for country in countries:
             country_codes.append(country.code.lower())
         return country_codes
 
-    async def get_by_popularity(self):
+    async def get_by_popularity(self, limit: int, offset: int):
         """Get radio stations by popularity."""
         stations = await self.radios.stations(
             hide_broken=True,
-            limit=250,
+            limit=limit,
+            offset=offset,
             order=Order.CLICK_COUNT,
             reverse=True,
         )

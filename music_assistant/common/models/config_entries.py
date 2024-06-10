@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterable
 from dataclasses import dataclass
+from enum import Enum
 from types import NoneType
 from typing import Any
 
@@ -194,6 +195,9 @@ class Config(DataClassDictMixin):
         """Parse Config from the raw values (as stored in persistent storage)."""
         conf = cls.from_dict({**raw, "values": {}})
         for entry in config_entries:
+            # unpack Enum value in default_value
+            if isinstance(entry.default_value, Enum):
+                entry.default_value = entry.default_value.value
             # create a copy of the entry
             conf.values[entry.key] = ConfigEntry.from_dict(entry.to_dict())
             conf.values[entry.key].parse_value(

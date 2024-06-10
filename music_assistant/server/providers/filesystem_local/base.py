@@ -336,7 +336,8 @@ class FileSystemProviderBase(MusicProvider):
             index += 1
             if len(items) >= limit:
                 break
-        return PagedItems(items=items, limit=limit, offset=offset)
+        total = len(items) if len(items) < limit else None
+        return PagedItems(items=items, limit=limit, offset=offset, total=total)
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
