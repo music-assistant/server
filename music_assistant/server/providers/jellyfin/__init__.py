@@ -318,11 +318,16 @@ class JellyfinProvider(MusicProvider):
         if ITEM_KEY_OVERVIEW in current_jellyfin_album:
             album.metadata.description = current_jellyfin_album[ITEM_KEY_OVERVIEW]
         if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in current_jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
-            musicbrainzid = current_jellyfin_album[ITEM_KEY_PROVIDER_IDS][
-                ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP
-            ]
-            if len(musicbrainzid.split("-")) == 5:
-                album.mbid = musicbrainzid
+            try:
+                album.mbid = current_jellyfin_album[ITEM_KEY_PROVIDER_IDS][
+                    ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP
+                ]
+            except InvalidDataError as error:
+                self.logger.warning(
+                    "Jellyfin has an invalid musicbrainz id for album %s",
+                    album.name,
+                    exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
         if ITEM_KEY_SORT_NAME in current_jellyfin_album:
             album.sort_name = current_jellyfin_album[ITEM_KEY_SORT_NAME]
         if ITEM_KEY_ALBUM_ARTIST in current_jellyfin_album:
@@ -481,7 +486,14 @@ class JellyfinProvider(MusicProvider):
             )  # 10000000 ticks per millisecond
         track.track_number = current_jellyfin_track.get(ITEM_KEY_INDEX_NUMBER, 99)
         if ITEM_KEY_MUSICBRAINZ_TRACK in current_jellyfin_track[ITEM_KEY_PROVIDER_IDS]:
-            track.mbid = current_jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
+            try:
+                track.mbid = current_jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
+            except InvalidDataError as error:
+                self.logger.warning(
+                    "Jellyfin has an invalid musicbrainz id for track %s",
+                    track.name,
+                    exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
+                )
         return track
 
     async def _parse_playlist(self, jellyfin_playlist: dict[str, Any]) -> Playlist:
