@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import warnings
 from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
@@ -38,6 +39,10 @@ from music_assistant.constants import (
 )
 
 from .enums import ConfigEntryType
+
+# TEMP: ignore UserWarnings from mashumaro
+# https://github.com/Fatal1ty/mashumaro/issues/221
+warnings.filterwarnings("ignore", category=UserWarning, module="mashumaro")
 
 LOGGER = logging.getLogger(__name__)
 
