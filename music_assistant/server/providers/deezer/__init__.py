@@ -325,9 +325,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
     ) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
-        # TODO: implement pagination!
+        # TODO: access the underlying paging on the deezer api instead of this hack
         playlist = await self.client.get_playlist(int(prov_playlist_id))
-        for index, deezer_track in enumerate(await playlist.get_tracks(offset=offset, limit=limit)):
+        playlist_tracks = (await playlist.get_tracks())[offset : offset + limit]
+        for index, deezer_track in enumerate(playlist_tracks, 1):
             result.append(
                 self.parse_track(
                     track=deezer_track,
