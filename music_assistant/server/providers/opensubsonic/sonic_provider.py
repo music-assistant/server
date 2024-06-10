@@ -665,7 +665,7 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from e
-        for index, sonic_song in enumerate(sonic_playlist.songs):
+        for index, sonic_song in enumerate(sonic_playlist.songs[offset : offset + limit]):
             track = self._parse_track(sonic_song)
             track.position = index
             result.append(track)

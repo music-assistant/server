@@ -58,11 +58,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
             force_refresh=force_refresh,
             lazy=not force_refresh,
         )
-        prov = next(x for x in playlist.provider_mappings)
+        prov_map = next(x for x in playlist.provider_mappings)
+        cache_checksum = playlist.metadata.cache_checksum
         tracks = await self._get_provider_playlist_tracks(
-            prov.item_id,
-            prov.provider_instance,
-            cache_checksum=playlist.metadata.cache_checksum,
+            prov_map.item_id,
+            prov_map.provider_instance,
+            cache_checksum=cache_checksum,
             offset=offset,
             limit=limit,
         )
@@ -84,7 +85,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     final_tracks.append(track)
         else:
             final_tracks = tracks
-        return PagedItems(items=final_tracks, limit=limit, offset=offset)
+        # we set total to None as we have no idea how many tracks there are
+        # the frontend can figure this out and stop paging when it gets an empty list
+        return PagedItems(items=final_tracks, limit=limit, offset=offset, total=None)
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
@@ -290,7 +293,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             playlist.name,
         )
         while True:
-            paged_items = await self.mass.music.playlists.tracks(
+            paged_items = await self.tracks(
                 item_id=playlist.item_id,
                 provider_instance_id_or_domain=playlist.provider,
                 offset=offset,
@@ -298,7 +301,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 prefer_library_items=prefer_library_items,
             )
             result += paged_items.items
-            if paged_items.count != limit:
+            if paged_items.total is not None and len(result) >= paged_items.total:
+                break
+            if paged_items.count == 0:
                 break
             offset += paged_items.count
         return result

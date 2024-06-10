@@ -568,8 +568,8 @@ class PagedItems(Generic[_T]):
         items: list[_T],
         limit: int,
         offset: int,
+        total: int | None,
         count: int | None = None,
-        total: int | None = None,
     ):
         """Initialize PagedItems."""
         self.items = items
@@ -577,9 +577,6 @@ class PagedItems(Generic[_T]):
         self.limit = limit
         self.offset = offset
         self.total = total
-        if total is None and count != limit:
-            # total is important so always calculate it from count if omitted
-            self.total = offset + count
 
     def to_dict(self, *args, **kwargs) -> dict[str, Any]:
         """Return PagedItems as serializable dict."""

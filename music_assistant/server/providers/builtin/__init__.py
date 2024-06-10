@@ -352,7 +352,8 @@ class BuiltinProvider(MusicProvider):
     ) -> list[Track]:
         """Get playlist tracks."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            return await self._get_builtin_playlist_tracks(prov_playlist_id)
+            result = await self._get_builtin_playlist_tracks(prov_playlist_id)
+            return result[offset : offset + limit]
         # user created universal playlist
         result: list[Track] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id, offset, limit)

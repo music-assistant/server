@@ -335,7 +335,7 @@ class MusicController(CoreController):
                         name=prov.name,
                     )
                 )
-            return PagedItems(items=root_items, limit=limit, offset=offset)
+            return PagedItems(items=root_items, limit=limit, offset=offset, total=len(root_items))
 
         # provider level
         prepend_items: list[MediaItemType] = []
@@ -347,7 +347,9 @@ class MusicController(CoreController):
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
             if not prov:
-                return PagedItems(items=prepend_items, limit=limit, offset=offset)
+                return PagedItems(
+                    items=prepend_items, limit=limit, offset=offset, total=len(prepend_items)
+                )
         elif offset == 0:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
@@ -356,6 +358,8 @@ class MusicController(CoreController):
         # limit -1 to account for the prepended items
         prov_items = await prov.browse(path, offset=offset, limit=limit)
         prov_items.items = prepend_items + prov_items.items
+        if prov_items.total is not None:
+            prov_items.total += len(prepend_items)
         return prov_items
 
     @api_command("music/recently_played_items")
