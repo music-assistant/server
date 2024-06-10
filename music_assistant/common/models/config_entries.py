@@ -343,6 +343,7 @@ CONF_ENTRY_FLOW_MODE_ENFORCED = ConfigEntry(
     label=CONF_FLOW_MODE,
     default_value=True,
     value=True,
+    hidden=True,
 )
 
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(
@@ -385,7 +386,7 @@ CONF_ENTRY_VOLUME_NORMALIZATION_TARGET = ConfigEntry(
     label="Target level for volume normalization",
     description="Adjust average (perceived) loudness to this target level",
     depends_on=CONF_VOLUME_NORMALIZATION,
-    category="audio",
+    category="advanced",
 )
 
 CONF_ENTRY_EQ_BASS = ConfigEntry(
@@ -447,7 +448,7 @@ CONF_ENTRY_CROSSFADE_DURATION = ConfigEntry(
     label="Crossfade duration",
     description="Duration in seconds of the crossfade between tracks (if enabled)",
     depends_on=CONF_CROSSFADE,
-    category="audio",
+    category="advanced",
 )
 
 CONF_ENTRY_HIDE_PLAYER = ConfigEntry(
