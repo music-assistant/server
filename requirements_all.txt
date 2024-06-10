@@ -12,7 +12,7 @@ asyncio-throttle==1.0.2
 bidict==0.23.1
 certifi==2024.2.2
 colorlog==6.8.2
-cryptography==42.0.7
+cryptography==42.0.8
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 faust-cchardet>=2.1.18
