@@ -598,7 +598,7 @@ class AirplayProvider(PlayerProvider):
                     # prefer interactive command to our streamer
                     tg.create_task(airplay_player.active_stream.send_cli_command("ACTION=PAUSE"))
 
-    async def play_media(
+    async def play_media(  # noqa: PLR0915
         self,
         player_id: str,
         media: PlayerMedia,
@@ -628,8 +628,16 @@ class AirplayProvider(PlayerProvider):
             ugp_stream = ugp_provider.streams[media.queue_id]
             input_format = ugp_stream.audio_format
             audio_source = ugp_stream.subscribe_raw()
+        elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
+            # radio stream - consume media stream directly
+            input_format = AIRPLAY_PCM_FORMAT
+            queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            audio_source = self.mass.streams.get_media_stream(
+                streamdetails=queue_item.streamdetails,
+                pcm_format=AIRPLAY_PCM_FORMAT,
+            )
         elif media.queue_id and media.queue_item_id:
-            # regular queue stream request
+            # regular queue (flow) stream request
             input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_flow_stream(
                 queue=self.mass.player_queues.get(media.queue_id),
