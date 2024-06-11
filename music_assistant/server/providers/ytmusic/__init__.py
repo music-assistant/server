@@ -371,7 +371,8 @@ class YoutubeMusicProvider(MusicProvider):
         if "tracks" not in playlist_obj:
             return None
         result = []
-        for index, track_obj in enumerate(playlist_obj["tracks"]):
+        # TODO: figure out how to handle paging in YTM
+        for index, track_obj in enumerate(playlist_obj["tracks"][offset : offset + limit]):
             if track_obj["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id
@@ -407,8 +408,7 @@ class YoutubeMusicProvider(MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
-            playlist_tracks = await self.get_playlist_tracks(prov_playlist_id, 0, 0)
-            return playlist_tracks[:25]
+            return await self.get_playlist_tracks(prov_playlist_id, 0, 25)
         return []
 
     async def library_add(self, item: MediaItemType) -> bool:

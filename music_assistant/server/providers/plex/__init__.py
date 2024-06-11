@@ -813,7 +813,7 @@ class PlexProvider(MusicProvider):
         plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)
         if not (playlist_items := await self._run_async(plex_playlist.items)):
             return result
-        for index, plex_track in enumerate(playlist_items[offset : offset + limit]):
+        for index, plex_track in enumerate(playlist_items[offset : offset + limit], 1):
             if track := await self._parse_track(plex_track):
                 track.position = index
                 result.append(track)

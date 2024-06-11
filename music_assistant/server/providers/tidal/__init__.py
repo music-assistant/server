@@ -356,9 +356,10 @@ class TidalProvider(MusicProvider):
         tidal_session = await self._get_tidal_session()
         result: list[Track] = []
         track_obj: TidalTrack  # satisfy the type checker
-        for index, track_obj in enumerate(
-            await get_playlist_tracks(tidal_session, prov_playlist_id, limit=limit, offset=offset)
-        ):
+        tidal_tracks = await get_playlist_tracks(
+            tidal_session, prov_playlist_id, limit=limit, offset=offset
+        )
+        for index, track_obj in enumerate(tidal_tracks, 1):
             track = self._parse_track(track_obj=track_obj)
             track.position = offset + index
             result.append(track)
