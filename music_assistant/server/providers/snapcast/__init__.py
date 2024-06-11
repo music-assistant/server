@@ -343,6 +343,9 @@ class SnapCastProvider(PlayerProvider):
         """Sync Snapcast player."""
         group = self._get_snapgroup(target_player)
         await group.add_client(self._get_snapclient_id(player_id))
+        target = self.mass.players.get(target_player)
+        target.synced_to = self._synced_to(target_player)
+        self.mass.players.update(target_player)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
