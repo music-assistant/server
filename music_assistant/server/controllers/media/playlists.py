@@ -91,7 +91,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # or smaller than the limit - in that case we consider the list final.
         total = None
         count = len(final_tracks)
-        if count < (limit - 10) or count > (limit + 10):
+        if count and (count < (limit - 10) or count > (limit + 10)):
             total = offset + len(final_tracks)
         return PagedItems(items=final_tracks, limit=limit, offset=offset, total=total, count=count)
 
