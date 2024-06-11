@@ -146,8 +146,8 @@ class SnapCastProvider(PlayerProvider):
     _stream_tasks: dict[str, asyncio.Task]
     _use_builtin_server: bool
     _snapserver_runner: asyncio.Task | None
-    _snapserver_started = asyncio.Event | None
-    _ids_map = bidict  # ma_id / snapclient_id
+    _snapserver_started: asyncio.Event | None
+    _ids_map: bidict  # ma_id / snapclient_id
 
     def _get_snapclient_id(self, player_id: str) -> str:
         search_dict = self._ids_map
