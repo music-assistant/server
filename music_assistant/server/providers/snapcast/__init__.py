@@ -318,9 +318,8 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
         snap_client_id = self._get_snapclient_id(player_id)
-        await self._snapserver.client_volume(
-            snap_client_id, {"percent": volume_level, "muted": volume_level == 0}
-        )
+        await self._snapserver.client(snap_client_id).set_volume(volume_level)
+        self.mass.players.update(snap_client_id)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
