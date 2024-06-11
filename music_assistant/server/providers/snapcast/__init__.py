@@ -279,6 +279,7 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.SYNC,
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.VOLUME_MUTE,
+                    PlayerFeature.POWER,
                 ),
             )
         self.mass.players.register_or_update(player)
@@ -314,6 +315,16 @@ class SnapCastProvider(PlayerProvider):
             CONF_ENTRY_CROSSFADE_DURATION,
             CONF_ENTRY_SAMPLE_RATES_SNAPCAST,
         )
+
+    async def cmd_power(self, player_id: str, powered: bool) -> None:
+        """Send POWER command to given player.
+
+        - player_id: player_id of the player to handle the command.
+        - powered: bool if player should be powered on or off.
+        """
+        if not powered:
+            for child_id in self.mass.players.get(player_id).group_childs:
+                await self.cmd_unsync(child_id)
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
