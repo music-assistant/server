@@ -620,6 +620,8 @@ class PlayerController(CoreController):
                 continue
             # if we reach here, all checks passed
             final_player_ids.append(child_player_id)
+            # set active source if player is synced
+            child_player.active_source = parent_player.active_source
 
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
@@ -645,6 +647,8 @@ class PlayerController(CoreController):
                 )
                 continue
             final_player_ids.append(player_id)
+            # reset active source player if is unsynced
+            child_player.active_source = None
 
         if not final_player_ids:
             return
