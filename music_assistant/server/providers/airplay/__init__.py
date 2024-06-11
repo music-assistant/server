@@ -61,7 +61,7 @@ CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
 CONF_VOLUME_START = "volume_start"
 CONF_PASSWORD = "password"
-
+CONF_BIND_INTERFACE = "bind_interface"
 
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_FLOW_MODE_ENFORCED,
@@ -138,7 +138,16 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            key=CONF_BIND_INTERFACE,
+            type=ConfigEntryType.STRING,
+            default_value=mass.streams.publish_ip,
+            label="Bind interface",
+            description="Interface to bind to for Airplay streaming.",
+            category="advanced",
+        ),
+    )
 
 
 def convert_airplay_volume(value: float) -> int:
@@ -216,6 +225,10 @@ class AirplayStream:
         extra_args = []
         player_id = self.airplay_player.player_id
         mass_player = self.mass.players.get(player_id)
+        bind_ip = await self.mass.config.get_provider_config_value(
+            self.prov.instance_id, CONF_BIND_INTERFACE
+        )
+        extra_args += ["-if", bind_ip]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENCRYPTION, False):
             extra_args += ["-encrypt"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
@@ -282,19 +295,20 @@ class AirplayStream:
         """Stop playback and cleanup."""
         if self._stopped:
             return
-        if not self._cliraop_proc.closed:
+        if self._cliraop_proc.proc and not self._cliraop_proc.closed:
             await self.send_cli_command("ACTION=STOP")
         self._stopped = True  # set after send_cli command!
         if self.audio_source_task and not self.audio_source_task.done():
             self.audio_source_task.cancel()
-        try:
-            await asyncio.wait_for(self._cliraop_proc.wait(), 5)
-        except TimeoutError:
-            self.prov.logger.warning(
-                "Raop process for %s did not stop in time, is the player offline?",
-                self.airplay_player.player_id,
-            )
-            await self._cliraop_proc.close(True)
+        if self._cliraop_proc.proc:
+            try:
+                await asyncio.wait_for(self._cliraop_proc.wait(), 5)
+            except TimeoutError:
+                self.prov.logger.warning(
+                    "Raop process for %s did not stop in time, is the player offline?",
+                    self.airplay_player.player_id,
+                )
+                await self._cliraop_proc.close(True)
 
         # ffmpeg can sometimes hang due to the connected pipes
         # we handle closing it but it can be a bit slow so do that in the background
