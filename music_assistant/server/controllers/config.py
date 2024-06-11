@@ -196,7 +196,7 @@ class ConfigController:
     async def get_provider_config_value(self, instance_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a provider."""
         cache_key = f"prov_conf_value_{instance_id}.{key}"
-        if cached_value := self._value_cache.get(cache_key) is not None:
+        if (cached_value := self._value_cache.get(cache_key)) is not None:
             return cached_value
         conf = await self.get_provider_config(instance_id)
         val = (
