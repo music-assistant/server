@@ -567,6 +567,10 @@ class AppleMusicProvider(MusicProvider):
             # Convert HTTP errors to exceptions
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
+            if response.status == 504:
+                # See if we can get more info from the response on occasional timeouts
+                self.logger.debug("Apple Music API Timeout: %s", response.json(loads=json_loads))
+                raise ResourceTemporarilyUnavailable("Apple Music API Timeout")
             if response.status == 429:
                 # Debug this for now to see if the response headers give us info about the
                 # backoff time. There is no documentation on this.
