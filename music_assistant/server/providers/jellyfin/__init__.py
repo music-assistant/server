@@ -83,6 +83,7 @@ from .const import (
     ITEM_KEY_PROVIDER_IDS,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_SORT_NAME,
+    ITEM_KEY_USER_DATA,
     ITEM_TYPE_ALBUM,
     ITEM_TYPE_ARTIST,
     ITEM_TYPE_AUDIO,
@@ -90,6 +91,7 @@ from .const import (
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
     USER_APP_NAME,
+    USER_DATA_KEY_IS_FAVORITE,
 )
 
 CONF_URL = "url"
@@ -347,6 +349,8 @@ class JellyfinProvider(MusicProvider):
                         artist_item[ITEM_KEY_NAME],
                     )
                 )
+        user_data = current_jellyfin_album.get(ITEM_KEY_USER_DATA, {})
+        album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return album
 
     async def _parse_artist(self, jellyfin_artist: dict[str, Any]) -> Artist:
@@ -390,6 +394,8 @@ class JellyfinProvider(MusicProvider):
                     remotely_accessible=False,
                 )
             ]
+        user_data = current_artist.get(ITEM_KEY_USER_DATA, {})
+        artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return artist
 
     async def _parse_track(self, jellyfin_track: dict[str, Any]) -> Track:
@@ -496,6 +502,8 @@ class JellyfinProvider(MusicProvider):
                     track.name,
                     exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
+        user_data = current_jellyfin_track.get(ITEM_KEY_USER_DATA, {})
+        track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return track
 
     async def _parse_playlist(self, jellyfin_playlist: dict[str, Any]) -> Playlist:
@@ -524,6 +532,8 @@ class JellyfinProvider(MusicProvider):
                     remotely_accessible=False,
                 )
             ]
+        user_data = jellyfin_playlist.get(ITEM_KEY_USER_DATA, {})
+        playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         playlist.is_editable = False
         return playlist
 
