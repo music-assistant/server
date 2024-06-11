@@ -315,6 +315,13 @@ class SonosPlayerProvider(PlayerProvider):
 
         await asyncio.to_thread(set_volume_mute, player_id, muted)
 
+    async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
+        """Create temporary sync group by joining given players to target player."""
+        sonos_master_player = self.sonosplayers[target_player]
+        await sonos_master_player.join(
+            [self.sonosplayers[player_id] for player_id in child_player_ids]
+        )
+
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Handle SYNC command for given player.
 

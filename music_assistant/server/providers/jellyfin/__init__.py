@@ -705,11 +705,11 @@ class JellyfinProvider(MusicProvider):
         )
         if not playlist_items:
             return result
-        for index, jellyfin_track in enumerate(playlist_items[offset : offset + limit]):
+        for index, jellyfin_track in enumerate(playlist_items[offset : offset + limit], 1):
             try:
                 if track := await self._parse_track(jellyfin_track):
                     if not track.position:
-                        track.position = index
+                        track.position = offset + index
                     result.append(track)
             except (KeyError, ValueError) as err:
                 self.logger.error(

@@ -137,6 +137,7 @@ class UniversalGroupProvider(PlayerProvider):
                 label="Please note that although the universal group "
                 "allows you to group any player, it will not enable audio sync "
                 "between players of different ecosystems.",
+                required=False,
             ),
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,

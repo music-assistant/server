@@ -604,6 +604,8 @@ class PlayerController(CoreController):
                     "Player %s does not support (un)sync commands", child_player.name
                 )
                 continue
+            if child_player.synced_to and child_player.synced_to == target_player:
+                continue  # already synced to this target
             if child_player.synced_to and child_player.synced_to != target_player:
                 # player already synced to another player, unsync first
                 self.logger.warning(
@@ -620,6 +622,8 @@ class PlayerController(CoreController):
                 continue
             # if we reach here, all checks passed
             final_player_ids.append(child_player_id)
+            # set active source if player is synced
+            child_player.active_source = parent_player.active_source
 
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
@@ -627,12 +631,7 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/unsync_many")
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:
-        """Handle UNSYNC command for all the given players.
-
-        Remove the given player from any syncgroups it currently is synced to.
-
-            - player_id: player_id of the player to handle the command.
-        """
+        """Handle UNSYNC command for all the given players."""
         # filter all player ids on compatibility and availability
         final_player_ids: UniqueList[str] = UniqueList()
         for player_id in player_ids:
@@ -645,6 +644,8 @@ class PlayerController(CoreController):
                 )
                 continue
             final_player_ids.append(player_id)
+            # reset active source player if is unsynced
+            child_player.active_source = None
 
         if not final_player_ids:
             return

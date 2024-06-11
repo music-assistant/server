@@ -324,7 +324,7 @@ class SpotifyProvider(MusicProvider):
             else f"playlists/{prov_playlist_id}/tracks"
         )
         spotify_result = await self._get_data(uri, limit=limit, offset=offset)
-        for index, item in enumerate(spotify_result["items"]):
+        for index, item in enumerate(spotify_result["items"], 1):
             if not (item and item["track"] and item["track"]["id"]):
                 continue
             # use count as position
