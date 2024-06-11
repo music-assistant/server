@@ -49,6 +49,7 @@ from music_assistant.server.helpers.audio import (
     get_hls_stream,
     get_icy_stream,
     get_player_filter_params,
+    get_silence,
     parse_loudnorm,
     strip_silence,
 )
@@ -738,6 +739,11 @@ class StreamsController(CoreController):
             )
         elif streamdetails.stream_type == StreamType.ICY:
             audio_source = get_icy_stream(self.mass, streamdetails.path, streamdetails)
+            # pad some silence before the radio stream starts to create some headroom
+            # for radio stations that do not provide any look ahead buffer
+            # without this, some radio streams jitter a lot
+            async for chunk in get_silence(2, pcm_format):
+                yield chunk
         elif streamdetails.stream_type == StreamType.HLS:
             audio_source = get_hls_stream(
                 self.mass, streamdetails.path, streamdetails, streamdetails.seek_position

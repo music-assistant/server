@@ -85,9 +85,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     final_tracks.append(track)
         else:
             final_tracks = tracks
-        # we set total to None as we have no idea how many tracks there are
-        # the frontend can figure this out and stop paging when it gets an empty list
-        return PagedItems(items=final_tracks, limit=limit, offset=offset, total=None)
+        # We set total to None as we have no idea how many tracks there are.
+        # The frontend can figure this out and stop paging when it gets an empty list.
+        # Exception is when we receive a result that is either much higher
+        # or smaller than the limit - in that case we consider the list final.
+        total = None
+        count = len(final_tracks)
+        if count and (count < (limit - 10) or count > (limit + 10)):
+            total = offset + len(final_tracks)
+        return PagedItems(items=final_tracks, limit=limit, offset=offset, total=total, count=count)
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
@@ -304,6 +310,9 @@ class PlaylistController(MediaControllerBase[Playlist]):
             if paged_items.total is not None and len(result) >= paged_items.total:
                 break
             if paged_items.count == 0:
+                break
+            if paged_items.total is None and paged_items.items == result:
+                # safety guard for malfunctioning provider
                 break
             offset += paged_items.count
         return result
