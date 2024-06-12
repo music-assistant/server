@@ -198,15 +198,29 @@ class AppleMusicProvider(MusicProvider):
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
         endpoint = "me/library/songs"
-        for item in await self._get_all_items(endpoint, include="artists,albums,catalog"):
-            if item and item["id"]:
+        song_catalog_ids = []
+        for item in await self._get_all_items(endpoint, include="catalog"):
+            if item and "catalog" in item["relationships"]:
+                song_catalog_ids.append(item["relationships"]["catalog"]["data"][0]["id"])
+        # Obtain catalog info per 300 songs
+        max_limit = 300
+        for i in range(0, len(song_catalog_ids), max_limit):
+            catalog_ids = song_catalog_ids[i : i + max_limit]
+            catalog_endpoint = f"catalog/{self._storefront}/songs"
+            response = await self._get_data(
+                catalog_endpoint, ids=",".join(catalog_ids), include="artists,albums"
+            )
+            for item in response["data"]:
                 yield self._parse_track(item)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve playlists from the provider."""
         endpoint = "me/library/playlists"
         for item in await self._get_all_items(endpoint):
-            if item and item["id"]:
+            # Prefer catalog information over library information in case of public playlists
+            if item["attributes"]["hasCatalog"]:
+                yield await self.get_playlist(item["attributes"]["playParams"]["globalId"])
+            elif item and item["id"]:
                 yield self._parse_playlist(item)
 
     async def get_artist(self, prov_artist_id) -> Artist:
@@ -217,18 +231,24 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
+        # Debug issue https://github.com/music-assistant/hass-music-assistant/issues/2431
+        self.logger.debug("Get album %s", prov_album_id)
         endpoint = f"catalog/{self._storefront}/albums/{prov_album_id}"
-        response = await self._get_data(endpoint)
+        response = await self._get_data(endpoint, include="artists")
         return self._parse_album(response["data"][0])
 
     async def get_track(self, prov_track_id) -> Track:
         """Get full track details by id."""
         endpoint = f"catalog/{self._storefront}/songs/{prov_track_id}"
-        response = await self._get_data(endpoint, include="artists")
+        response = await self._get_data(endpoint, include="artists,albums")
         return self._parse_track(response["data"][0])
 
     async def get_playlist(self, prov_playlist_id) -> Playlist:
         """Get full playlist details by id."""
+        if self._is_catalog_id(prov_playlist_id):
+            endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
+        else:
+            endpoint = f"me/library/playlists/{prov_playlist_id}"
         endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}"
         response = await self._get_data(endpoint)
         return self._parse_playlist(response["data"][0])
@@ -237,7 +257,16 @@ class AppleMusicProvider(MusicProvider):
         """Get all album tracks for given album id."""
         endpoint = f"catalog/{self._storefront}/albums/{prov_album_id}/tracks"
         response = await self._get_data(endpoint, include="artists")
-        return [self._parse_track(track) for track in response["data"] if track["id"]]
+        # Including albums results in a 504 error, so we need to fetch the album separately
+        album = await self.get_album(prov_album_id)
+        tracks = []
+        for track_obj in response["data"]:
+            if "id" not in track_obj:
+                continue
+            track = self._parse_track(track_obj)
+            track.album = album
+            tracks.append(track)
+        return tracks
 
     async def get_playlist_tracks(self, prov_playlist_id, offset, limit) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
@@ -249,6 +278,8 @@ class AppleMusicProvider(MusicProvider):
         response = await self._get_data(
             endpoint, include="artists,catalog", limit=limit, offset=offset
         )
+        if not response or "data" not in response:
+            return result
         for index, track in enumerate(response["data"]):
             if track and track["id"]:
                 parsed_track = self._parse_track(track)
@@ -470,7 +501,10 @@ class AppleMusicProvider(MusicProvider):
             track.disc_number = disc_number
         if track_number := attributes.get("trackNumber"):
             track.track_number = track_number
-        if artists := relationships.get("artists"):
+        # Prefer catalog information over library information for artists.
+        # For compilations it picks the wrong artists
+        if "artists" in relationships:
+            artists = relationships["artists"]
             track.artists = [self._parse_artist(artist) for artist in artists["data"]]
         # 'Similar tracks' do not provide full artist details
         elif artist := attributes.get("artistName"):
@@ -564,12 +598,14 @@ class AppleMusicProvider(MusicProvider):
                 url, headers=headers, params=kwargs, ssl=True, timeout=120
             ) as response,
         ):
+            if response.status == 404 and "limit" in kwargs and "offset" in kwargs:
+                return {}
             # Convert HTTP errors to exceptions
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 504:
                 # See if we can get more info from the response on occasional timeouts
-                self.logger.debug("Apple Music API Timeout: %s", response.json(loads=json_loads))
+                self.logger.debug("Apple Music API Timeout: %s", await response.text())
                 raise ResourceTemporarilyUnavailable("Apple Music API Timeout")
             if response.status == 429:
                 # Debug this for now to see if the response headers give us info about the
