@@ -165,6 +165,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=sonic_channel.id,
             name=sonic_channel.title,
             provider=self.instance_id,
+            favorite=bool(sonic_channel.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_channel.id,
@@ -212,6 +213,7 @@ class OpenSonicProvider(MusicProvider):
             album=self._parse_podcast_album(sonic_channel=sonic_channel),
             artists=[self._parse_podcast_artist(sonic_channel=sonic_channel)],
             duration=sonic_episode.duration if sonic_episode.duration is not None else 0,
+            favorite=bool(sonic_episode.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_episode.id,
@@ -363,6 +365,7 @@ class OpenSonicProvider(MusicProvider):
             # a Open Subsonic Song is not yet set and the implementations I have checked
             # do not contain this field. We should revisit this when the spec is finished
             disc_number=0,
+            favorite=bool(sonic_song.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_song.id,
@@ -419,6 +422,7 @@ class OpenSonicProvider(MusicProvider):
             provider=self.domain,
             name=sonic_playlist.name,
             is_editable=True,
+            favorite=bool(sonic_playlist.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_playlist.id,
