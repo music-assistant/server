@@ -29,12 +29,7 @@ from music_assistant.common.models.errors import (
     PlayerUnavailableError,
     QueueEmpty,
 )
-from music_assistant.common.models.media_items import (
-    AlbumTrack,
-    MediaItemType,
-    PagedItems,
-    media_from_dict,
-)
+from music_assistant.common.models.media_items import AlbumTrack, MediaItemType, media_from_dict
 from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -206,17 +201,12 @@ class PlayerQueuesController(CoreController):
         return self._queues.get(queue_id)
 
     @api_command("player_queues/items")
-    def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> PagedItems[QueueItem]:
+    def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
         if queue_id not in self._queue_items:
-            return PagedItems(items=[], limit=limit, offset=offset, total=0)
+            return []
 
-        return PagedItems(
-            items=self._queue_items[queue_id][offset : offset + limit],
-            limit=limit,
-            offset=offset,
-            total=len(self._queue_items[queue_id]),
-        )
+        return self._queue_items[queue_id][offset : offset + limit]
 
     @api_command("player_queues/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue:
@@ -553,8 +543,9 @@ class PlayerQueuesController(CoreController):
             return
         if queue := self.get(queue_id):
             queue.stream_finished = None
-        # simply forward the command to underlying player
-        await self.mass.players.cmd_stop(queue_id)
+        # forward the actual stop command to the player provider
+        if player_provider := self.mass.players.get_player_provider(queue_id):
+            await player_provider.cmd_stop(queue_id)
 
     @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
@@ -569,8 +560,9 @@ class PlayerQueuesController(CoreController):
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if self._queues[queue_id].state == PlayerState.PAUSED:
-            # simply forward the command to underlying player
-            await self.mass.players.cmd_play(queue_id)
+            # forward the actual stop command to the player provider
+            if player_provider := self.mass.players.get_player_provider(queue_id):
+                await player_provider.cmd_play(queue_id)
         else:
             await self.resume(queue_id)
 
@@ -589,8 +581,9 @@ class PlayerQueuesController(CoreController):
             # if player does not support pause, we need to send stop
             await self.stop(queue_id)
             return
-        # simply forward the command to underlying player
-        await self.mass.players.cmd_pause(queue_id)
+        # forward the actual stop command to the player provider
+        if player_provider := self.mass.players.get_player_provider(queue_id):
+            await player_provider.cmd_pause(queue_id)
 
     @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
@@ -725,8 +718,8 @@ class PlayerQueuesController(CoreController):
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
-        player_needs_flow_mode = self.mass.config.get_raw_player_config_value(
-            queue_id, CONF_FLOW_MODE, False
+        player_needs_flow_mode = await self.mass.config.get_player_config_value(
+            queue_id, CONF_FLOW_MODE
         )
         next_index = self._get_next_index(queue_id, index, allow_repeat=False)
         queue.flow_mode = player_needs_flow_mode and next_index is not None
@@ -1173,7 +1166,11 @@ class PlayerQueuesController(CoreController):
 
         # player does not support enqueue next feature.
         # we wait for the player to stop after it reaches the end of the track
-        if queue.stream_finished and queue.state == PlayerState.IDLE:
+        if (
+            (not queue.flow_mode or queue.repeat_mode == RepeatMode.ALL)
+            and queue.stream_finished
+            and queue.state == PlayerState.IDLE
+        ):
             queue.stream_finished = None
             self.mass.create_task(_enqueue_next(queue.current_index, False))
             return

@@ -665,8 +665,11 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from e
+        if offset:
+            # paging not supported, we always return the whole list at once
+            return []
         # TODO: figure out if subsonic supports paging here
-        for index, sonic_song in enumerate(sonic_playlist.songs[offset : offset + limit], 1):
+        for index, sonic_song in enumerate(sonic_playlist.songs, 1):
             track = self._parse_track(sonic_song)
             track.position = offset + index
             result.append(track)

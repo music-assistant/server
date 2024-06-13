@@ -264,7 +264,10 @@ class SoundcloudMusicProvider(MusicProvider):
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
             return result
-        for index, item in enumerate(playlist_obj["tracks"][offset : offset + limit], 1):
+        if offset:
+            # paging not supported, we always return the whole list at once
+            return []
+        for index, item in enumerate(playlist_obj["tracks"], 1):
             song = await self._soundcloud.get_track_details(item["id"])
             try:
                 # TODO: is it really needed to grab the entire track with an api call ?

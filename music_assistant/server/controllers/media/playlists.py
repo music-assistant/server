@@ -14,7 +14,7 @@ from music_assistant.common.models.errors import (
     ProviderUnavailableError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import PagedItems, Playlist, PlaylistTrack, Track
+from music_assistant.common.models.media_items import Playlist, PlaylistTrack, Track
 from music_assistant.constants import DB_TABLE_PLAYLISTS
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -50,7 +50,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         offset: int = 0,
         limit: int = 50,
         prefer_library_items: bool = True,
-    ) -> PagedItems[PlaylistTrack]:
+    ) -> list[PlaylistTrack]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(
             item_id,
@@ -85,15 +85,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     final_tracks.append(track)
         else:
             final_tracks = tracks
-        # We set total to None as we have no idea how many tracks there are.
-        # The frontend can figure this out and stop paging when it gets an empty list.
-        # Exception is when we receive a result that is either much higher
-        # or smaller than the limit - in that case we consider the list final.
-        total = None
-        count = len(final_tracks)
-        if count and (count < (limit - 10) or count > (limit + 10)):
-            total = offset + len(final_tracks)
-        return PagedItems(items=final_tracks, limit=limit, offset=offset, total=total, count=count)
+        return final_tracks
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
@@ -306,15 +298,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 limit=limit,
                 prefer_library_items=prefer_library_items,
             )
-            result += paged_items.items
-            if paged_items.total is not None and len(result) >= paged_items.total:
+            result += paged_items
+            if len(paged_items) > limit:
+                # this happens if the provider doesn't support paging
+                # and it does simply return all items in one call
                 break
-            if paged_items.count == 0:
+            if len(paged_items) == 0:
                 break
-            if paged_items.total is None and paged_items.items == result:
+            if len(paged_items) < (limit - 20):
+                # if get get less than 30 items, we assume this is the end
+                # note that we account for the fact that the provider might
+                # return less than the limit (e.g. 20 items) due to track unavailability
+                break
+            if paged_items == result:
                 # safety guard for malfunctioning provider
                 break
-            offset += paged_items.count
+            offset += limit
         return result
 
     async def _add_library_item(self, item: Playlist) -> int:

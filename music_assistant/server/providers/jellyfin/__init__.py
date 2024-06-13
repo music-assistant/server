@@ -696,6 +696,9 @@ class JellyfinProvider(MusicProvider):
     ) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
+        if offset:
+            # paging not supported, we always return the whole list at once
+            return []
         # TODO: Does Jellyfin support paging here?
         jellyfin_playlist = API.get_item(self._jellyfin_server.jellyfin, prov_playlist_id)
         playlist_items = await self._get_children(
@@ -703,7 +706,7 @@ class JellyfinProvider(MusicProvider):
         )
         if not playlist_items:
             return result
-        for index, jellyfin_track in enumerate(playlist_items[offset : offset + limit], 1):
+        for index, jellyfin_track in enumerate(playlist_items, 1):
             try:
                 if track := await self._parse_track(jellyfin_track):
                     if not track.position:
