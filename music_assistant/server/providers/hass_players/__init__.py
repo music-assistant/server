@@ -34,9 +34,10 @@ from music_assistant.server.providers.hass import DOMAIN as HASS_DOMAIN
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from hass_client.models import CompressedState, EntityStateEvent
+    from hass_client.models import CompressedState
     from hass_client.models import Device as HassDevice
     from hass_client.models import Entity as HassEntity
+    from hass_client.models import EntityStateEvent
     from hass_client.models import State as HassState
 
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -87,6 +88,10 @@ class MediaPlayerEntityFeature(IntFlag):
 
 
 CONF_ENFORCE_MP3 = "enforce_mp3"
+
+CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_ENFORCE_MP3.to_dict(), "default_value": True}
+)
 
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
@@ -233,6 +238,18 @@ class HomeAssistantPlayers(PlayerProvider):
                 "media_content_id": media.uri,
                 "media_content_type": "music",
                 "enqueue": "replace",
+                "extra": {
+                    "metadata": {
+                        "title": media.title,
+                        "artist": media.artist,
+                        "metadataType": 3,
+                        "album": media.album,
+                        "albumName": media.album,
+                        "duration": media.duration,
+                        "images": [{"url": media.image_url}] if media.image_url else None,
+                        "imageUrl": media.image_url,
+                    }
+                },
             },
             target={"entity_id": player_id},
         )
@@ -338,6 +355,7 @@ class HomeAssistantPlayers(PlayerProvider):
                 entity_id
                 for entity_id, entity in entity_registry.items()
                 if entity["platform"] == entity_registry_entry["platform"]
+                and state["entity_id"].startswith("media_player")
                 and entity_id != state["entity_id"]
             ]
             hass_device = device_registry.get(entity_registry_entry["device_id"])
