@@ -14,7 +14,6 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     MediaItemMetadata,
     MediaItemType,
-    PagedItems,
     Playlist,
     PlaylistTrack,
     Radio,
@@ -44,19 +43,19 @@ class Music:
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
-    ) -> PagedItems[Track]:
+    ) -> list[Track]:
         """Get Track listing from the server."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            Track.from_dict(obj)
+            for obj in await self.client.send_command(
                 "music/tracks/library_items",
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-            ),
-            Track,
-        )
+            )
+        ]
 
     async def get_track(
         self,
@@ -124,19 +123,19 @@ class Music:
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
-    ) -> PagedItems[Album]:
+    ) -> list[Album]:
         """Get Albums listing from the server."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            Album.from_dict(obj)
+            for obj in await self.client.send_command(
                 "music/albums/library_items",
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-            ),
-            Album,
-        )
+            )
+        ]
 
     async def get_album(
         self,
@@ -194,10 +193,11 @@ class Music:
         offset: int | None = None,
         order_by: str | None = None,
         album_artists_only: bool = False,
-    ) -> PagedItems[Artist]:
+    ) -> list[Artist]:
         """Get Artists listing from the server."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            Artist.from_dict(obj)
+            for obj in await self.client.send_command(
                 "music/artists/library_items",
                 favorite=favorite,
                 search=search,
@@ -205,9 +205,8 @@ class Music:
                 offset=offset,
                 order_by=order_by,
                 album_artists_only=album_artists_only,
-            ),
-            Artist,
-        )
+            )
+        ]
 
     async def get_artist(
         self,
@@ -266,19 +265,19 @@ class Music:
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
-    ) -> PagedItems[Playlist]:
+    ) -> list[Playlist]:
         """Get Playlists listing from the server."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            Playlist.from_dict(obj)
+            for obj in await self.client.send_command(
                 "music/playlists/library_items",
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-            ),
-            Playlist,
-        )
+            )
+        ]
 
     async def get_playlist(
         self,
@@ -300,18 +299,18 @@ class Music:
         provider_instance_id_or_domain: str,
         limit: int | None = None,
         offset: int | None = None,
-    ) -> PagedItems[PlaylistTrack]:
+    ) -> list[PlaylistTrack]:
         """Get tracks for given playlist."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            PlaylistTrack.from_dict(obj)
+            for obj in await self.client.send_command(
                 "music/playlists/playlist_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
                 limit=limit,
                 offset=offset,
-            ),
-            PlaylistTrack,
-        )
+            )
+        ]
 
     async def add_playlist_tracks(self, db_playlist_id: str | int, uris: list[str]) -> None:
         """Add multiple tracks to playlist. Creates background tasks to process the action."""
@@ -352,19 +351,19 @@ class Music:
         limit: int | None = None,
         offset: int | None = None,
         order_by: str | None = None,
-    ) -> PagedItems[Radio]:
+    ) -> list[Radio]:
         """Get Radio listing from the server."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            Radio.from_dict(obj)
+            for obj in await self.client.send_command(
                 "music/radios/library_items",
                 favorite=favorite,
                 search=search,
                 limit=limit,
                 offset=offset,
                 order_by=order_by,
-            ),
-            Radio,
-        )
+            )
+        ]
 
     async def get_radio(
         self,
@@ -439,17 +438,17 @@ class Music:
         path: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
-    ) -> PagedItems[MediaItemType]:
+    ) -> list[MediaItemType]:
         """Browse Music providers."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            media_from_dict(obj)
+            for obj in await self.client.send_command(
                 "music/browse",
                 path=path,
                 limit=limit,
                 offset=offset,
-            ),
-            MediaItemType,
-        )
+            )
+        ]
 
     async def recently_played(
         self, limit: int = 10, media_types: list[MediaType] | None = None

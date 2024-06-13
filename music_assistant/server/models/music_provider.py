@@ -12,7 +12,6 @@ from music_assistant.common.models.media_items import (
     Artist,
     BrowseFolder,
     MediaItemType,
-    PagedItems,
     Playlist,
     Radio,
     SearchResults,
@@ -283,7 +282,7 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str, offset: int, limit: int) -> PagedItems[MediaItemType]:
+    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -320,8 +319,6 @@ class MusicProvider(Provider):
                 items.append(item)
                 if len(items) >= limit:
                     break
-            # explicitly set total to None as we don't know the total count
-            total = None
         else:
             # no subpath: return main listing
             if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
@@ -374,8 +371,7 @@ class MusicProvider(Provider):
                         label="radios",
                     )
                 )
-            total = len(items)
-        return PagedItems(items=items, limit=limit, offset=offset, total=total)
+        return items
 
     async def recommendations(self) -> list[MediaItemType]:
         """Get this provider's recommendations.

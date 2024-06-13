@@ -16,7 +16,6 @@ from music_assistant.common.models.media_items import (
     MediaItemLink,
     MediaItemType,
     MediaType,
-    PagedItems,
     ProviderMapping,
     Radio,
     SearchResults,
@@ -102,18 +101,17 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
-    async def browse(self, path: str, offset: int, limit: int) -> PagedItems[MediaItemType]:
+    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        items: list[BrowseFolder | Radio] = []
         subpath = path.split("://", 1)[1]
         subsubpath = "" if "/" not in subpath else subpath.split("/")[-1]
 
         if not subpath:
             # return main listing
-            items = [
+            return [
                 BrowseFolder(
                     item_id="popular",
                     provider=self.domain,
@@ -138,7 +136,7 @@ class RadioBrowserProvider(MusicProvider):
             ]
 
         if subpath == "popular":
-            items = await self.get_by_popularity(limit=limit, offset=offset)
+            return await self.get_by_popularity(limit=limit, offset=offset)
 
         if subpath == "tag":
             tags = await self.radios.tags(
@@ -149,7 +147,7 @@ class RadioBrowserProvider(MusicProvider):
                 reverse=True,
             )
             tags.sort(key=lambda tag: tag.name)
-            items = [
+            return [
                 BrowseFolder(
                     item_id=tag.name.lower(),
                     provider=self.domain,
@@ -160,6 +158,7 @@ class RadioBrowserProvider(MusicProvider):
             ]
 
         if subpath == "country":
+            items: list[BrowseFolder | Radio] = []
             for country in await self.radios.countries(
                 order=Order.NAME, hide_broken=True, limit=limit, offset=offset
             ):
@@ -178,14 +177,14 @@ class RadioBrowserProvider(MusicProvider):
                     )
                 ]
                 items.append(folder)
+            return items
 
         if subsubpath in await self.get_tag_names(limit=limit, offset=offset):
-            items = await self.get_by_tag(subsubpath)
+            return await self.get_by_tag(subsubpath)
 
         if subsubpath in await self.get_country_codes(limit=limit, offset=offset):
-            items = await self.get_by_country(subsubpath)
-        total = len(items) if len(items) < limit else None
-        return PagedItems(items=items, limit=limit, offset=offset, total=total)
+            return await self.get_by_country(subsubpath)
+        return []
 
     async def get_tag_names(self, limit: int, offset: int):
         """Get a list of tag names."""

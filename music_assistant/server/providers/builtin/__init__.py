@@ -352,8 +352,10 @@ class BuiltinProvider(MusicProvider):
     ) -> list[Track]:
         """Get playlist tracks."""
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            result = await self._get_builtin_playlist_tracks(prov_playlist_id)
-            return result[offset : offset + limit]
+            if offset:
+                # paging not supported, we always return the whole list at once
+                return []
+            return await self._get_builtin_playlist_tracks(prov_playlist_id)
         # user created universal playlist
         result: list[Track] = []
         playlist_items = await self._read_playlist_file_items(prov_playlist_id, offset, limit)
@@ -514,7 +516,7 @@ class BuiltinProvider(MusicProvider):
             res = await self.mass.music.tracks.library_items(
                 favorite=True, limit=2500, order_by="random_play_count"
             )
-            for idx, item in enumerate(res.items, 1):
+            for idx, item in enumerate(res, 1):
                 item.position = idx
                 result.append(item)
             return result
@@ -522,14 +524,14 @@ class BuiltinProvider(MusicProvider):
             res = await self.mass.music.tracks.library_items(
                 limit=500, order_by="random_play_count"
             )
-            for idx, item in enumerate(res.items, 1):
+            for idx, item in enumerate(res, 1):
                 item.position = idx
                 result.append(item)
             return result
         if builtin_playlist_id == RANDOM_ALBUM:
-            for random_album in (
-                await self.mass.music.albums.library_items(limit=1, order_by="random")
-            ).items:
+            for random_album in await self.mass.music.albums.library_items(
+                limit=1, order_by="random"
+            ):
                 # use the function specified in the queue controller as that
                 # already handles unwrapping an album by user preference
                 tracks = await self.mass.music.albums.tracks(
@@ -540,9 +542,9 @@ class BuiltinProvider(MusicProvider):
                     result.append(track)
                 return result
         if builtin_playlist_id == RANDOM_ARTIST:
-            for random_artist in (
-                await self.mass.music.artists.library_items(limit=1, order_by="random")
-            ).items:
+            for random_artist in await self.mass.music.artists.library_items(
+                limit=1, order_by="random"
+            ):
                 # use the function specified in the queue controller as that
                 # already handles unwrapping an artist by user preference
                 tracks = await self.mass.music.artists.tracks(

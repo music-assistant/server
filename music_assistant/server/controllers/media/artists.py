@@ -20,7 +20,6 @@ from music_assistant.common.models.media_items import (
     Artist,
     ItemMapping,
     MediaType,
-    PagedItems,
     Track,
     UniqueList,
 )
@@ -56,6 +55,21 @@ class ArtistsController(MediaControllerBase[Artist]):
         self.mass.register_api_command(f"music/{api_base}/artist_albums", self.albums)
         self.mass.register_api_command(f"music/{api_base}/artist_tracks", self.tracks)
 
+    async def library_count(
+        self, favorite_only: bool = False, album_artists_only: bool = False
+    ) -> int:
+        """Return the total number of items in the library."""
+        sql_query = self.base_query
+        if favorite_only:
+            sql_query += f" WHERE {self.db_table}.favorite = 1"
+        if album_artists_only:
+            sql_query += " WHERE " if "WHERE" not in sql_query else " AND "
+            sql_query += (
+                f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
+                f"from {DB_TABLE_ALBUM_ARTISTS})"
+            )
+        return await self.mass.music.database.get_count_from_query(sql_query)
+
     async def library_items(
         self,
         favorite: bool | None = None,
@@ -66,7 +80,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
         album_artists_only: bool = False,
-    ) -> PagedItems:
+    ) -> list[Artist]:
         """Get in-database (album) artists."""
         if album_artists_only:
             artist_query = (

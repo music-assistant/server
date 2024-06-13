@@ -372,7 +372,10 @@ class YoutubeMusicProvider(MusicProvider):
             return None
         result = []
         # TODO: figure out how to handle paging in YTM
-        for index, track_obj in enumerate(playlist_obj["tracks"][offset : offset + limit]):
+        if offset:
+            # paging not supported, we always return the whole list at once
+            return []
+        for index, track_obj in enumerate(playlist_obj["tracks"], 1):
             if track_obj["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id

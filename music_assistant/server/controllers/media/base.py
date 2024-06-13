@@ -17,7 +17,6 @@ from music_assistant.common.models.media_items import (
     Album,
     ItemMapping,
     MediaItemType,
-    PagedItems,
     ProviderMapping,
     Track,
     media_from_dict,
@@ -81,6 +80,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
         # register (base) api handlers
         self.api_base = api_base = f"{self.media_type}s"
+        self.mass.register_api_command(f"music/{api_base}/count", self.library_count)
         self.mass.register_api_command(f"music/{api_base}/library_items", self.library_items)
         self.mass.register_api_command(f"music/{api_base}/get", self.get)
         self.mass.register_api_command(f"music/{api_base}/get_{self.media_type}", self.get)
@@ -191,6 +191,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self.mass.signal_event(EventType.MEDIA_ITEM_DELETED, library_item.uri, library_item)
         self.logger.debug("deleted item with id %s from database", db_id)
 
+    async def library_count(self, favorite_only: bool = False) -> int:
+        """Return the total number of items in the library."""
+        sql_query = self.base_query
+        if favorite_only:
+            sql_query += f" WHERE {self.db_table}.favorite = 1"
+        return await self.mass.music.database.get_count_from_query(sql_query)
+
     async def library_items(
         self,
         favorite: bool | None = None,
@@ -200,9 +207,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         order_by: str = "sort_name",
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-    ) -> PagedItems[ItemCls]:
+    ) -> list[ItemCls]:
         """Get in-database items."""
-        items = await self._get_library_items_by_query(
+        return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
             limit=limit,
@@ -211,21 +218,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             extra_query=extra_query,
             extra_query_params=extra_query_params,
         )
-        count = len(items)
-        if 0 < count < limit:
-            total = offset + count
-        else:
-            total = await self._get_library_items_by_query(
-                favorite=favorite,
-                search=search,
-                limit=limit,
-                offset=offset,
-                order_by=order_by,
-                extra_query=extra_query,
-                extra_query_params=extra_query_params,
-                count_only=True,
-            )
-        return PagedItems(items=items, limit=limit, offset=offset, count=count, total=total)
 
     async def iter_library_items(
         self,
@@ -754,7 +746,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         order_by: str | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-        count_only: bool = False,
     ) -> list[ItemCls] | int:
         """Fetch MediaItem records from database given a custom (WHERE) clause."""
         sql_query = self.base_query
@@ -790,8 +781,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if query_parts:
             sql_query += " WHERE " + " AND ".join(query_parts)
         # build final query
-        if count_only:
-            return await self.mass.music.database.get_count_from_query(sql_query, query_params)
         if order_by:
             if sort_key := SORT_KEYS.get(order_by):
                 sql_query += f" ORDER BY {sort_key}"

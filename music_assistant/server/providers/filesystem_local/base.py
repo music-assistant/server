@@ -32,7 +32,6 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     MediaItemType,
     MediaType,
-    PagedItems,
     Playlist,
     ProviderMapping,
     SearchResults,
@@ -287,7 +286,7 @@ class FileSystemProviderBase(MusicProvider):
             )
         return result
 
-    async def browse(self, path: str, offset: int, limit: int) -> PagedItems[MediaItemType]:
+    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
@@ -335,8 +334,7 @@ class FileSystemProviderBase(MusicProvider):
             index += 1
             if len(items) >= limit:
                 break
-        total = len(items) if len(items) < limit else None
-        return PagedItems(items=items, limit=limit, offset=offset, total=total)
+        return items
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Generic, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
 
 from mashumaro import DataClassDictMixin
 
@@ -558,46 +558,6 @@ class BrowseFolder(MediaItem):
 MediaItemType = (
     Artist | Album | PlaylistTrack | AlbumTrack | Track | Radio | Playlist | BrowseFolder
 )
-
-
-class PagedItems(Generic[_T]):
-    """Model for a paged listing."""
-
-    def __init__(
-        self,
-        items: list[_T],
-        limit: int,
-        offset: int,
-        total: int | None,
-        count: int | None = None,
-    ):
-        """Initialize PagedItems."""
-        self.items = items
-        self.count = count = count or len(items)
-        self.limit = limit
-        self.offset = offset
-        self.total = total
-
-    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
-        """Return PagedItems as serializable dict."""
-        return {
-            "items": [x.to_dict() for x in self.items],
-            "count": self.count,
-            "limit": self.limit,
-            "offset": self.offset,
-            "total": self.total,
-        }
-
-    @classmethod
-    def parse(cls, raw: dict[str, Any], item_type: type[MediaItemType]) -> Self[MediaItemType]:
-        """Parse PagedItems object including correct item type."""
-        return PagedItems(
-            items=[item_type.from_dict(x) for x in raw["items"]],
-            count=raw["count"],
-            limit=raw["limit"],
-            offset=raw["offset"],
-            total=raw["total"],
-        )
 
 
 @dataclass(kw_only=True)

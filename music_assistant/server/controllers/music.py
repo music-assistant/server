@@ -29,12 +29,7 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant.common.models.media_items import (
-    BrowseFolder,
-    MediaItemType,
-    PagedItems,
-    SearchResults,
-)
+from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
@@ -316,9 +311,7 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(
-        self, offset: int, limit: int, path: str | None = None
-    ) -> PagedItems[MediaItemType]:
+    async def browse(self, offset: int, limit: int, path: str | None = None) -> list[MediaItemType]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider
@@ -335,7 +328,7 @@ class MusicController(CoreController):
                         name=prov.name,
                     )
                 )
-            return PagedItems(items=root_items, limit=limit, offset=offset, total=len(root_items))
+            return root_items
 
         # provider level
         prepend_items: list[MediaItemType] = []
@@ -347,9 +340,7 @@ class MusicController(CoreController):
                 BrowseFolder(item_id="root", provider="library", path="root", name="..")
             )
             if not prov:
-                return PagedItems(
-                    items=prepend_items, limit=limit, offset=offset, total=len(prepend_items)
-                )
+                return prepend_items
         elif offset == 0:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
@@ -357,10 +348,7 @@ class MusicController(CoreController):
             )
         # limit -1 to account for the prepended items
         prov_items = await prov.browse(path, offset=offset, limit=limit)
-        prov_items.items = prepend_items + prov_items.items
-        if prov_items.total is not None:
-            prov_items.total += len(prepend_items)
-        return prov_items
+        return prepend_items + prov_items
 
     @api_command("music/recently_played_items")
     async def recently_played(
