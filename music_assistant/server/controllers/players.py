@@ -15,7 +15,6 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY,
     CONF_ENTRY_PLAYER_ICON,
     CONF_ENTRY_PLAYER_ICON_GROUP,
-    CONF_ENTRY_TTS_PRE_ANNOUNCE,
 )
 from music_assistant.common.models.enums import (
     EventType,
@@ -40,6 +39,7 @@ from music_assistant.constants import (
     CONF_GROUP_MEMBERS,
     CONF_HIDE_PLAYER,
     CONF_PLAYERS,
+    CONF_TTS_PRE_ANNOUNCE,
     SYNCGROUP_PREFIX,
 )
 from music_assistant.server.helpers.api import api_command
@@ -168,6 +168,12 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
+        player = self.get(player_id, True)
+        # Always prefer queue controller's stop (as it also handles some other logic)
+        if player.active_source == player_id:
+            await self.mass.player_queues.stop(player_id)
+            return
+        # if the player doesn't have our queue controller active, forward the stop command
         player_id = self._check_redirect(player_id)
         if player_provider := self.get_player_provider(player_id):
             await player_provider.cmd_stop(player_id)
@@ -179,6 +185,12 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
+        player = self.get(player_id, True)
+        # Always prefer queue controller's play (as it also handles some other logic)
+        if player.active_source == player_id:
+            await self.mass.player_queues.play(player_id)
+            return
+        # if the player doesn't have our queue controller active, forward the stop command
         player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_play(player_id)
@@ -190,6 +202,11 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
+        player = self.get(player_id, True)
+        # Always prefer queue controller's pause (as it also handles some other logic)
+        if player.active_source == player_id:
+            await self.mass.player_queues.pause(player_id)
+            return
         player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
         if PlayerFeature.PAUSE not in player.supported_features:
@@ -493,10 +510,9 @@ class PlayerController(CoreController):
                     return
             # determine pre-announce from (group)player config
             if use_pre_announce is None and "tts" in url:
-                use_pre_announce = self.mass.config.get_raw_player_config_value(
+                use_pre_announce = await self.mass.config.get_player_config_value(
                     player_id,
-                    CONF_ENTRY_TTS_PRE_ANNOUNCE.key,
-                    CONF_ENTRY_TTS_PRE_ANNOUNCE.default_value,
+                    CONF_TTS_PRE_ANNOUNCE,
                 )
             self.logger.info(
                 "Playback announcement to player %s (with pre-announce: %s): %s",
