@@ -263,7 +263,7 @@ class MetaDataController(CoreController):
         # retrieve metedata for the playlist from the tracks (such as genres etc.)
         # TODO: retrieve style/mood ?
         playlist_items = await self.mass.music.playlists.tracks(playlist.item_id, playlist.provider)
-        for track in playlist_items.items:
+        for track in playlist_items:
             if track.image:
                 all_playlist_tracks_images.add(track.image)
             if track.metadata.genres:

@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import EventType, QueueOption, RepeatMode
-from music_assistant.common.models.media_items import PagedItems
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
 
@@ -52,13 +51,14 @@ class PlayerQueues:
 
     async def get_player_queue_items(
         self, queue_id: str, limit: int = 500, offset: int = 0
-    ) -> PagedItems[QueueItem]:
+    ) -> list[QueueItem]:
         """Get all QueueItems for given PlayerQueue."""
-        return PagedItems.parse(
-            await self.client.send_command(
+        return [
+            QueueItem.from_dict(obj)
+            for obj in await self.client.send_command(
                 "player_queues/items", queue_id=queue_id, limit=limit, offset=offset
             )
-        )
+        ]
 
     async def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
