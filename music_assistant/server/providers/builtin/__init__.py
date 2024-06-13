@@ -555,7 +555,7 @@ class BuiltinProvider(MusicProvider):
                     result.append(track)
                 return result
         if builtin_playlist_id == RECENTLY_PLAYED:
-            tracks = await self.mass.music.recently_played(250, [MediaType.TRACK])
+            tracks = await self.mass.music.recently_played(100, [MediaType.TRACK])
             for idx, track in enumerate(tracks, 1):
                 track.position = idx
                 result.append(track)
