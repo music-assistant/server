@@ -495,8 +495,8 @@ class StreamsController(CoreController):
         last_fadeout_part = b""
         queue.flow_mode = True
         queue.stream_finished = False
-        use_crossfade = self.mass.config.get_raw_player_config_value(
-            queue.queue_id, CONF_CROSSFADE, False
+        use_crossfade = await self.mass.config.get_player_config_value(
+            queue.queue_id, CONF_CROSSFADE
         )
         if start_queue_item.media_type != MediaType.TRACK:
             use_crossfade = False
@@ -540,8 +540,8 @@ class StreamsController(CoreController):
 
             # set some basic vars
             pcm_sample_size = int(pcm_format.sample_rate * (pcm_format.bit_depth / 8) * 2)
-            crossfade_duration = self.mass.config.get_raw_player_config_value(
-                queue.queue_id, CONF_CROSSFADE_DURATION, 8
+            crossfade_duration = await self.mass.config.get_player_config_value(
+                queue.queue_id, CONF_CROSSFADE_DURATION
             )
             crossfade_size = int(pcm_sample_size * crossfade_duration)
             bytes_written = 0
