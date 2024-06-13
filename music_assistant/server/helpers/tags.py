@@ -73,7 +73,7 @@ class AudioTags:
     bits_per_sample: int
     format: str
     bit_rate: int
-    duration: int | None
+    duration: float | None
     tags: dict[str, str]
     has_cover_image: bool
     filename: str
@@ -346,7 +346,7 @@ class AudioTags:
             ),
             format=raw["format"]["format_name"],
             bit_rate=int(raw["format"].get("bit_rate", 320)),
-            duration=int(float(raw["format"].get("duration", 0))) or None,
+            duration=float(raw["format"].get("duration", 0)) or None,
             tags=tags,
             has_cover_image=has_cover_image,
             filename=raw["format"]["filename"],
@@ -422,6 +422,8 @@ async def parse_tags(
         if not tags.duration and file_size and tags.bit_rate:
             # estimate duration from filesize/bitrate
             tags.duration = int((file_size * 8) / tags.bit_rate)
+        if not tags.duration and tags.raw.get("format", {}).get("duration"):
+            tags.duration = float(tags.raw["format"]["duration"])
         return tags
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         msg = f"Unable to retrieve info for {file_path}: {err!s}"
