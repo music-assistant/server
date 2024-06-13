@@ -40,12 +40,15 @@ ITEM_KEY_ARTIST_ITEMS: Final = "ArtistItems"
 ITEM_KEY_CAN_DOWNLOAD: Final = "CanDownload"
 ITEM_KEY_PARENT_INDEX_NUM: Final = "ParentIndexNumber"
 ITEM_KEY_RUNTIME_TICKS: Final = "RunTimeTicks"
+ITEM_KEY_USER_DATA: Final = "UserData"
 
 ITEM_TYPE_ALBUM: Final = "MusicAlbum"
 ITEM_TYPE_ARTIST: Final = "MusicArtist"
 ITEM_TYPE_MUSICARTISTS: Final = "MusicArtists"
 ITEM_TYPE_AUDIO: Final = "Audio"
 ITEM_TYPE_LIBRARY: Final = "CollectionFolder"
+
+USER_DATA_KEY_IS_FAVORITE: Final = "IsFavorite"
 
 MAX_IMAGE_WIDTH: Final = 500
 MAX_STREAMING_BITRATE: Final = "140000000"
