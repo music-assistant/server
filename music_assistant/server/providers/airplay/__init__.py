@@ -605,12 +605,18 @@ class AirplayProvider(PlayerProvider):
 
         - player_id: player_id of the player to handle the command.
         """
-        # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
-            for airplay_player in self._get_sync_clients(player_id):
-                if airplay_player.active_stream and airplay_player.active_stream.running:
-                    # prefer interactive command to our streamer
-                    tg.create_task(airplay_player.active_stream.send_cli_command("ACTION=PAUSE"))
+        player = self.mass.players.get(player_id)
+        if player.synced_to:
+            # should not happen, but just in case
+            raise RuntimeError("Player is synced")
+        if player.group_childs:
+            # pause is not supported while synced, use stop instead
+            await self.cmd_stop(player_id)
+            return
+        airplay_player = self._players[player_id]
+        if airplay_player.active_stream and airplay_player.active_stream.running:
+            # prefer interactive command to our streamer
+            await airplay_player.active_stream.send_cli_command("ACTION=PAUSE")
 
     async def play_media(  # noqa: PLR0915
         self,
