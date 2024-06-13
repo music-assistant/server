@@ -297,7 +297,7 @@ class FileSystemProviderBase(MusicProvider):
             item_path = ""
         index = 0
         async for item in self.listdir(item_path, recursive=False):
-            if not item.is_dir and "." not in item.filename or not item.ext:
+            if not item.is_dir and ("." not in item.filename or not item.ext):
                 # skip system files and files without extension
                 continue
 
