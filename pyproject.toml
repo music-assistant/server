@@ -117,6 +117,10 @@ warn_return_any = true
 warn_unused_configs = true
 warn_unused_ignores = true
 
+[tool.ruff.format]
+# Force Linux/MacOS line endings
+line-ending = "lf"
+
 [tool.pylint.MASTER]
 extension-pkg-whitelist = ["orjson"]
 ignore = ["tests"]
