@@ -70,7 +70,7 @@ async def get_config_entries(
         ),
         ConfigEntry(
             key=CONF_PASSWORD,
-            type=ConfigEntryType.STRING,
+            type=ConfigEntryType.SECURE_STRING,
             label="Password to use to connect to the Fully Kiosk API.",
             required=True,
         ),
@@ -149,7 +149,10 @@ class FullyKioskProvider(PlayerProvider):
                 volume = volume_dict[str(AUDIOMANAGER_STREAM_MUSIC)]
                 player.volume_level = volume
                 break
-        player.current_item_id = self._fully.deviceInfo.get("soundUrlPlaying")
+        current_url = self._fully.deviceInfo.get("soundUrlPlaying")
+        player.current_item_id = current_url
+        if not current_url:
+            player.state = PlayerState.IDLE
         player.available = True
         self.mass.players.update(player_id)
 
