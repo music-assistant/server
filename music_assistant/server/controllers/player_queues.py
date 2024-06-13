@@ -521,6 +521,7 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         queue.radio_source = []
         queue.stream_finished = None
+        queue.end_of_track_reached = None
         if queue.state != PlayerState.IDLE:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -538,6 +539,7 @@ class PlayerQueuesController(CoreController):
         """
         if queue := self.get(queue_id):
             queue.stream_finished = None
+            queue.end_of_track_reached = None
         # forward the actual stop command to the player provider
         if player_provider := self.mass.players.get_player_provider(queue_id):
             await player_provider.cmd_stop(queue_id)
@@ -719,6 +721,7 @@ class PlayerQueuesController(CoreController):
         next_index = self._get_next_index(queue_id, index, allow_repeat=False)
         queue.flow_mode = player_needs_flow_mode and next_index is not None
         queue.stream_finished = False
+        queue.end_of_track_reached = False
         # get streamdetails - do this here to catch unavailable items early
         queue_item.streamdetails = await get_stream_details(
             self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
@@ -848,6 +851,16 @@ class PlayerQueuesController(CoreController):
         # return early if nothing changed
         if len(changed_keys) == 0:
             return
+        # check if we've reached the end of (the current) track
+        if (
+            queue.current_item
+            and (duration := queue.current_item.duration)
+            and (duration - queue.elapsed_time) < 10
+        ):
+            queue.end_of_track_reached = True
+        elif prev_state["current_index"] != new_state["current_index"]:
+            queue.end_of_track_reached = False
+
         # handle enqueuing of next item to play
         if not queue.flow_mode or queue.stream_finished:
             self._check_enqueue_next(player, queue, prev_state, new_state)
@@ -1164,7 +1177,10 @@ class PlayerQueuesController(CoreController):
         # we wait for the player to stop after it reaches the end of the track
         if (
             (not queue.flow_mode or queue.repeat_mode == RepeatMode.ALL)
+            # we have a couple of guards here to prevent the player starting
+            # playback again when its stopped outside of MA's control
             and queue.stream_finished
+            and queue.end_of_track_reached
             and queue.state == PlayerState.IDLE
         ):
             queue.stream_finished = None
