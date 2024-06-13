@@ -463,11 +463,20 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
         chunk_index = 0
         timeout = ClientTimeout(total=0, connect=30, sock_read=600)
         headers = {}
+        # if seek_position and streamdetails.size:
+        #     chunk_count = ceil(streamdetails.size / 2048)
+        #     chunk_index = int(chunk_count / streamdetails.duration) * seek_position
+        #     skip_bytes = chunk_index * 2048
+        #     headers["Range"] = f"bytes={skip_bytes}-"
+
+        # NOTE: Seek with using the Range header is not working properly
+        # causing malformed audio so this is a temporary patch
+        # by just skipping chunks
         if seek_position and streamdetails.size:
             chunk_count = ceil(streamdetails.size / 2048)
-            chunk_index = int(chunk_count / streamdetails.duration) * seek_position
-            skip_bytes = chunk_index * 2048
-            headers["Range"] = f"bytes={skip_bytes}-"
+            skip_chunks = int(chunk_count / streamdetails.duration) * seek_position
+        else:
+            skip_chunks = 0
 
         buffer = bytearray()
         streamdetails.data["start_ts"] = utc_timestamp()
@@ -479,6 +488,8 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             async for chunk in resp.content.iter_chunked(2048):
                 buffer += chunk
                 if len(buffer) >= 2048:
+                    if chunk_index >= skip_chunks:
+                        continue
                     if chunk_index % 3 > 0:
                         yield bytes(buffer[:2048])
                     else:

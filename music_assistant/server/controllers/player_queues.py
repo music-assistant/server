@@ -536,11 +536,6 @@ class PlayerQueuesController(CoreController):
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        # always fetch the underlying player so we can raise early if its not available
-        player = self.mass.players.get(queue_id, True)
-        if player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
         if queue := self.get(queue_id):
             queue.stream_finished = None
         # forward the actual stop command to the player provider
@@ -767,6 +762,7 @@ class PlayerQueuesController(CoreController):
         self._queue_items[queue_id] = queue_items
         # always call update to calculate state etc
         self.on_player_update(player, {})
+        self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=queue)
 
     def on_player_update(
         self,

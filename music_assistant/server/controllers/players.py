@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
-from contextlib import suppress
+import time
 from typing import TYPE_CHECKING, Any, Concatenate, ParamSpec, TypeVar, cast
 
 from music_assistant.common.helpers.util import get_changed_values
@@ -1136,11 +1136,7 @@ class PlayerController(CoreController):
             )
             await self.cmd_stop(player.player_id)
             # wait for the player to stop
-            with suppress(TimeoutError):
-                await self.wait_for_state(player, PlayerState.IDLE, 10)
-            # a small amount of pause before the volume command
-            # prevents that the last piece of music is very loud
-            await asyncio.sleep(0.2)
+            await self.wait_for_state(player, PlayerState.IDLE, 10, 0.4)
         # adjust volume if needed
         # in case of a (sync) group, we need to do this for all child players
         prev_volumes: dict[str, int] = {}
@@ -1175,18 +1171,18 @@ class PlayerController(CoreController):
         )
         await self.play_media(player_id=player.player_id, media=announcement)
         # wait for the player(s) to play
-        with suppress(TimeoutError):
-            await self.wait_for_state(player, PlayerState.PLAYING, 10)
-        self.logger.debug(
-            "Announcement to player %s - waiting on the player to stop playing...",
-            player.display_name,
-        )
+        await self.wait_for_state(player, PlayerState.PLAYING, 10, minimal_time=0.1)
         # wait for the player to stop playing
         if not announcement.duration:
             media_info = await parse_tags(announcement.custom_data["url"])
-            announcement.duration = media_info.duration
-        with suppress(TimeoutError):
-            await self.wait_for_state(player, PlayerState.IDLE, (announcement.duration or 60) + 3)
+            announcement.duration = media_info.duration or 60
+        media_info.duration += 2
+        await self.wait_for_state(
+            player,
+            PlayerState.IDLE,
+            max(announcement.duration * 2, 60),
+            announcement.duration + 2,
+        )
         self.logger.debug(
             "Announcement to player %s - restore previous state...", player.display_name
         )
@@ -1209,9 +1205,43 @@ class PlayerController(CoreController):
             # TODO !!
 
     async def wait_for_state(
-        self, player: Player, wanted_state: PlayerState, timeout: float = 60.0
+        self,
+        player: Player,
+        wanted_state: PlayerState,
+        timeout: float = 60.0,
+        minimal_time: float = 0,
     ) -> None:
         """Wait for the given player to reach the given state."""
-        async with asyncio.timeout(timeout):
-            while player.state != wanted_state:
-                await asyncio.sleep(0.1)
+        start_timestamp = time.time()
+        self.logger.debug(
+            "Waiting for player %s to reach state %s", player.display_name, wanted_state
+        )
+        try:
+            async with asyncio.timeout(timeout):
+                while player.state != wanted_state:
+                    await asyncio.sleep(0.1)
+
+        except TimeoutError:
+            self.logger.debug(
+                "Player %s did not reach state %s within the timeout of %s seconds",
+                player.display_name,
+                wanted_state,
+                timeout,
+            )
+        elapsed_time = round(time.time() - start_timestamp, 2)
+        if elapsed_time < minimal_time:
+            self.logger.debug(
+                "Player %s reached state %s too soon (%s vs %s seconds) - add fallback sleep...",
+                player.display_name,
+                wanted_state,
+                elapsed_time,
+                minimal_time,
+            )
+            await asyncio.sleep(minimal_time - elapsed_time)
+        else:
+            self.logger.debug(
+                "Player %s reached state %s within %s seconds",
+                player.display_name,
+                wanted_state,
+                elapsed_time,
+            )
