@@ -16,6 +16,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENFORCE_MP3,
+    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
@@ -34,10 +35,9 @@ from music_assistant.server.providers.hass import DOMAIN as HASS_DOMAIN
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator
 
-    from hass_client.models import CompressedState
+    from hass_client.models import CompressedState, EntityStateEvent
     from hass_client.models import Device as HassDevice
     from hass_client.models import Entity as HassEntity
-    from hass_client.models import EntityStateEvent
     from hass_client.models import State as HassState
 
     from music_assistant.common.models.config_entries import ProviderConfig
@@ -96,7 +96,7 @@ CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED = ConfigEntry.from_dict(
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_ENFORCE_MP3,
+    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
 )
 
 
@@ -195,8 +195,12 @@ class HomeAssistantPlayers(PlayerProvider):
         player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+        entries = await super().get_player_config_entries(player_id)
+        entries = entries + PLAYER_CONFIG_ENTRIES
+        if player := self.mass.players.get(player_id):
+            if PlayerFeature.ENQUEUE_NEXT not in player.supported_features:
+                entries += (CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,)
+        return entries
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.

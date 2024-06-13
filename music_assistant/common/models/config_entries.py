@@ -342,6 +342,10 @@ CONF_ENTRY_FLOW_MODE = ConfigEntry(
     default_value=False,
 )
 
+CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}
+)
+
 CONF_ENTRY_FLOW_MODE_ENFORCED = ConfigEntry(
     key=CONF_FLOW_MODE,
     type=ConfigEntryType.BOOLEAN,
