@@ -155,8 +155,6 @@ class JellyfinProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Initialize provider(instance) with given configuration."""
-        logging.getLogger("pytube").setLevel(self.logger.level + 10)
-        logging.getLogger("ytmusicapi").setLevel(self.logger.level + 10)
 
         def connect() -> JellyfinClient:
             try:
