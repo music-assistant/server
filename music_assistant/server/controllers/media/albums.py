@@ -151,19 +151,20 @@ class AlbumsController(MediaControllerBase[Album]):
         in_library_only: bool = False,
     ) -> UniqueList[AlbumTrack]:
         """Return album tracks for the given provider album id."""
-        full_album = await self.get(item_id, provider_instance_id_or_domain)
-        db_items = (
-            await self.get_library_album_tracks(full_album.item_id)
-            if full_album.provider == "library"
-            else []
+        # always check if we have a library item for this album
+        library_album = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
         )
-        # return all (unique) items from all providers
+        if not library_album:
+            return await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
+        db_items = await self.get_library_album_tracks(library_album.item_id)
         result: UniqueList[AlbumTrack] = UniqueList(db_items)
-        if full_album.provider == "library" and in_library_only:
+        if in_library_only:
             # return in-library items only
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
+        # return all (unique) items from all providers
         unique_ids: set[str] = {f"{x.disc_number or 1}.{x.track_number}" for x in db_items}
-        for provider_mapping in full_album.provider_mappings:
+        for provider_mapping in library_album.provider_mappings:
             provider_tracks = await self._get_provider_album_tracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
@@ -172,7 +173,7 @@ class AlbumsController(MediaControllerBase[Album]):
                 if unique_id in unique_ids:
                     continue
                 unique_ids.add(unique_id)
-                result.append(AlbumTrack.from_track(provider_track, full_album))
+                result.append(AlbumTrack.from_track(provider_track, library_album))
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))
@@ -183,7 +184,7 @@ class AlbumsController(MediaControllerBase[Album]):
         provider_instance_id_or_domain: str,
     ) -> UniqueList[Album]:
         """Return all versions of an album we can find on all providers."""
-        album = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
+        album = await self.get_provider_item(item_id, provider_instance_id_or_domain)
         search_query = f"{album.artists[0].name} - {album.name}" if album.artists else album.name
         result: UniqueList[Album] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
