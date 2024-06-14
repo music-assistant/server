@@ -61,7 +61,7 @@ class Player(DataClassDictMixin):
     #   returns all child id's of the players in the group.
     # - If this is a syncgroup of players from the same platform (e.g. sonos),
     #   this will return the id's of players synced to this player,
-    #   and this may include the player's own id.
+    #   and this must include the player's own id.
     group_childs: set[str] = field(default_factory=set)
 
     # active_source: return active source for this player
