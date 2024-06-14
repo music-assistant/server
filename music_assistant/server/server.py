@@ -405,7 +405,96 @@ class MusicAssistant:
             raise RuntimeError(msg)
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
-    async def load_provider(self, conf: ProviderConfig) -> None:
+    async def load_provider(
+        self,
+        prov_conf: ProviderConfig,
+        raise_on_error: bool = False,
+        schedule_retry: int | None = 10,
+    ) -> None:
+        """Try to load a provider and catch errors."""
+        try:
+            await self._load_provider(prov_conf)
+        # pylint: disable=broad-except
+        except Exception as exc:
+            LOGGER.exception(
+                "Error loading provider(instance) %s",
+                prov_conf.name or prov_conf.domain,
+            )
+            if raise_on_error:
+                raise
+            # if loading failed, we store the error in the config object
+            # so we can show something useful to the user
+            prov_conf.last_error = str(exc)
+            self.config.set(f"{CONF_PROVIDERS}/{prov_conf.instance_id}/last_error", str(exc))
+            # auto schedule a retry if the (re)load failed
+            if schedule_retry:
+                self.call_later(
+                    schedule_retry,
+                    self.load_provider,
+                    prov_conf,
+                    raise_on_error,
+                    min(schedule_retry + 10, 600),
+                )
+
+    async def unload_provider(self, instance_id: str) -> None:
+        """Unload a provider."""
+        if provider := self._providers.get(instance_id):
+            # remove mdns discovery if needed
+            if provider.manifest.mdns_discovery:
+                for mdns_type in provider.manifest.mdns_discovery:
+                    self._aiobrowser.types.discard(mdns_type)
+            # make sure to stop any running sync tasks first
+            for sync_task in self.music.in_progress_syncs:
+                if sync_task.provider_instance == instance_id:
+                    sync_task.task.cancel()
+            # check if there are no other providers dependent of this provider
+            for dep_prov in self.providers:
+                if dep_prov.manifest.depends_on == provider.domain:
+                    await self.unload_provider(dep_prov.instance_id)
+            try:
+                await provider.unload()
+            except Exception as err:
+                LOGGER.warning("Error while unload provider %s: %s", provider.name, str(err))
+            finally:
+                self._providers.pop(instance_id, None)
+                await self._update_available_providers_cache()
+                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
+
+    def _register_api_commands(self) -> None:
+        """Register all methods decorated as api_command within a class(instance)."""
+        for cls in (
+            self,
+            self.config,
+            self.metadata,
+            self.music,
+            self.players,
+            self.player_queues,
+        ):
+            for attr_name in dir(cls):
+                if attr_name.startswith("__"):
+                    continue
+                obj = getattr(cls, attr_name)
+                if hasattr(obj, "api_cmd"):
+                    # method is decorated with our api decorator
+                    self.register_api_command(obj.api_cmd, obj)
+
+    async def _load_providers(self) -> None:
+        """Load providers from config."""
+        # create default config for any 'builtin' providers (e.g. URL provider)
+        for prov_manifest in self._provider_manifests.values():
+            if not prov_manifest.builtin:
+                continue
+            await self.config.create_builtin_provider_config(prov_manifest.domain)
+
+        # load all configured (and enabled) providers
+        prov_configs = await self.config.get_provider_configs(include_values=True)
+        async with asyncio.TaskGroup() as tg:
+            for prov_conf in prov_configs:
+                if not prov_conf.enabled:
+                    continue
+                tg.create_task(self.load_provider(prov_conf))
+
+    async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""
         # if provider is already loaded, stop and unload it first
         await self.unload_provider(conf.instance_id)
@@ -479,79 +568,6 @@ class MusicAssistant:
         # if this is a music provider, start sync
         if provider.type == ProviderType.MUSIC:
             self.music.start_sync(providers=[provider.instance_id])
-
-    async def unload_provider(self, instance_id: str) -> None:
-        """Unload a provider."""
-        if provider := self._providers.get(instance_id):
-            # remove mdns discovery if needed
-            if provider.manifest.mdns_discovery:
-                for mdns_type in provider.manifest.mdns_discovery:
-                    self._aiobrowser.types.discard(mdns_type)
-            # make sure to stop any running sync tasks first
-            for sync_task in self.music.in_progress_syncs:
-                if sync_task.provider_instance == instance_id:
-                    sync_task.task.cancel()
-            # check if there are no other providers dependent of this provider
-            for dep_prov in self.providers:
-                if dep_prov.manifest.depends_on == provider.domain:
-                    await self.unload_provider(dep_prov.instance_id)
-            try:
-                await provider.unload()
-            except Exception as err:
-                LOGGER.warning("Error while unload provider %s: %s", provider.name, str(err))
-            finally:
-                self._providers.pop(instance_id, None)
-                await self._update_available_providers_cache()
-                self.signal_event(EventType.PROVIDERS_UPDATED, data=self.get_providers())
-
-    def _register_api_commands(self) -> None:
-        """Register all methods decorated as api_command within a class(instance)."""
-        for cls in (
-            self,
-            self.config,
-            self.metadata,
-            self.music,
-            self.players,
-            self.player_queues,
-        ):
-            for attr_name in dir(cls):
-                if attr_name.startswith("__"):
-                    continue
-                obj = getattr(cls, attr_name)
-                if hasattr(obj, "api_cmd"):
-                    # method is decorated with our api decorator
-                    self.register_api_command(obj.api_cmd, obj)
-
-    async def _load_providers(self) -> None:
-        """Load providers from config."""
-        # create default config for any 'builtin' providers (e.g. URL provider)
-        for prov_manifest in self._provider_manifests.values():
-            if not prov_manifest.builtin:
-                continue
-            await self.config.create_builtin_provider_config(prov_manifest.domain)
-
-        async def load_provider(prov_conf: ProviderConfig) -> None:
-            """Try to load a provider and catch errors."""
-            try:
-                await self.load_provider(prov_conf)
-            # pylint: disable=broad-except
-            except Exception as exc:
-                LOGGER.exception(
-                    "Error loading provider(instance) %s",
-                    prov_conf.name or prov_conf.domain,
-                )
-                # if loading failed, we store the error in the config object
-                # so we can show something useful to the user
-                prov_conf.last_error = str(exc)
-                self.config.set(f"{CONF_PROVIDERS}/{prov_conf.instance_id}/last_error", str(exc))
-
-        # load all configured (and enabled) providers
-        prov_configs = await self.config.get_provider_configs(include_values=True)
-        async with asyncio.TaskGroup() as tg:
-            for prov_conf in prov_configs:
-                if not prov_conf.enabled:
-                    continue
-                tg.create_task(load_provider(prov_conf))
 
     async def __load_provider_manifests(self) -> None:
         """Preload all available provider manifest files."""

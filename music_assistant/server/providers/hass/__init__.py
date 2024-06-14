@@ -9,11 +9,13 @@ communication over the HA api for more flexibility as well as security.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 import shortuuid
 from hass_client import HomeAssistantClient
+from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import (
     async_is_supervisor,
     base_url,
@@ -152,6 +154,7 @@ class HomeAssistant(PluginProvider):
     """Home Assistant Plugin for Music Assistant."""
 
     hass: HomeAssistantClient
+    _listen_task: asyncio.Task | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
@@ -160,6 +163,7 @@ class HomeAssistant(PluginProvider):
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
         self.hass = HomeAssistantClient(url, token, self.mass.http_session)
         await self.hass.connect()
+        self._listen_task = self.mass.create_task(self._hass_listener())
 
     async def unload(self) -> None:
         """
@@ -167,4 +171,17 @@ class HomeAssistant(PluginProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
+        if self._listen_task and not self._listen_task.done():
+            self._listen_task.cancel()
         await self.hass.disconnect()
+
+    async def _hass_listener(self) -> None:
+        """Start listening on the HA websockets."""
+        try:
+            # start listening will block until the connection is lost/closed
+            await self.hass.start_listening()
+        except BaseHassClientError as err:
+            self.logger.warning("Connection to HA lost due to error: %s", err)
+        self.logger.info("Connection to HA lost. Reloading provider in 5 seconds.")
+        # schedule a reload of the provider
+        self.mass.call_later(5, self.mass.config.reload_provider(self.instance_id))
