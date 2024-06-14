@@ -352,7 +352,7 @@ class SnapCastProvider(PlayerProvider):
         await group.remove_client(snap_client_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
-        self._handle_update()
+        await self.cmd_stop(player_id=player_id)
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:  # noqa: PLR0915
         """Handle PLAY MEDIA on given player."""
@@ -473,9 +473,9 @@ class SnapCastProvider(PlayerProvider):
         """Return player_ids of the players synced to this player."""
         snap_group = self._get_snapgroup(player_id)
         return {
-            self._get_ma_id(snap_client)
-            for snap_client in snap_group.clients
-            if snap_client != player_id
+            self._get_ma_id(snap_client_id)
+            for snap_client_id in snap_group.clients
+            if len(snap_group.clients) > 1
         }
 
     async def _create_stream(self) -> tuple[Snapstream, int]:
