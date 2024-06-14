@@ -156,14 +156,14 @@ class JellyfinProvider(MusicProvider):
         session_config = SessionConfiguration(
             session=self.mass.http_session,
             url=self.config.get_value(CONF_URL),
-            ssl_verify=False,
+            verify_ssl=False,
             app_name=USER_APP_NAME,
             app_version=CLIENT_VERSION,
             device_name=socket.gethostname(),
             device_id=str(uuid.uuid4()),
         )
 
-        self._client = authenticate_by_name(
+        self._client = await authenticate_by_name(
             session_config,
             self.config.get_value(CONF_USERNAME),
             self.config.get_value(CONF_PASSWORD),
@@ -682,7 +682,7 @@ class JellyfinProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        jellyfin_track = self._client.get_item(item_id)
+        jellyfin_track = await self._client.get_item(item_id)
         mimetype = self._media_mime_type(jellyfin_track)
         media_stream = jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0]
         url = self._client.audio_url(jellyfin_track[ITEM_KEY_ID], SUPPORTED_CONTAINER_FORMATS)
