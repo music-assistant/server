@@ -50,7 +50,7 @@ CONF_PLAYERS = "players"
 
 StateMap = {
     "playing": PlayerState.PLAYING,
-    "paused": PlayerState.PLAYING,
+    "paused": PlayerState.PAUSED,
     "buffering": PlayerState.PLAYING,
     "idle": PlayerState.IDLE,
     "off": PlayerState.IDLE,
@@ -350,7 +350,6 @@ class HomeAssistantPlayers(PlayerProvider):
         device_registry: dict[str, HassDevice],
     ) -> None:
         """Handle setup of a Player from an hass entity."""
-        # fetch the entity registry entry for this entity to obtain more details
         hass_device: HassDevice | None = None
         platform_players: list[str] = []
         if entity_registry_entry := entity_registry.get(state["entity_id"]):
@@ -408,7 +407,13 @@ class HomeAssistantPlayers(PlayerProvider):
             """Handle updating MA player with updated info in a HA CompressedState."""
             player = self.mass.players.get(entity_id)
             if player is None:
-                return  # should not happen, but guard just in case
+                # edge case - one of our subscribed entities was not available at startup
+                # and now came available - we should still set it up
+                player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
+                if entity_id not in player_ids:
+                    return  # should not happen, but guard just in case
+                self.mass.create_task(self._late_add_player(entity_id))
+                return
             if "s" in state:
                 player.state = StateMap.get(state["s"], PlayerState.IDLE)
                 player.powered = state["s"] not in (
@@ -453,3 +458,15 @@ class HomeAssistantPlayers(PlayerProvider):
                 else:
                     player.group_childs = set()
                     player.synced_to = None
+
+    async def _late_add_player(self, entity_id: str) -> None:
+        """Handle setup of Player from HA entity that became available after startup."""
+        # prefetch the device- and entity registry
+        device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
+        entity_registry = {
+            x["entity_id"]: x for x in await self.hass_prov.hass.get_entity_registry()
+        }
+        async for state in _get_hass_media_players(self.hass_prov):
+            if state["entity_id"] != entity_id:
+                continue
+            await self._setup_player(state, entity_registry, device_registry)
