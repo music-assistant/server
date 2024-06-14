@@ -27,7 +27,7 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import InvalidDataError, MediaNotFoundError
+from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -163,11 +163,14 @@ class JellyfinProvider(MusicProvider):
             device_id=str(uuid.uuid4()),
         )
 
-        self._client = await authenticate_by_name(
-            session_config,
-            self.config.get_value(CONF_USERNAME),
-            self.config.get_value(CONF_PASSWORD),
-        )
+        try:
+            self._client = await authenticate_by_name(
+                session_config,
+                self.config.get_value(CONF_USERNAME),
+                self.config.get_value(CONF_PASSWORD),
+            )
+        except Exception as err:
+            raise LoginFailed(f"Authentication failed: {err}") from err
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
