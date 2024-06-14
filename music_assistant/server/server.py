@@ -451,6 +451,11 @@ class MusicAssistant:
             for dep_prov in self.providers:
                 if dep_prov.manifest.depends_on == provider.domain:
                     await self.unload_provider(dep_prov.instance_id)
+            if provider.type == ProviderType.PLAYER:
+                # mark all players of this provider as unavailable
+                for player in provider.players:
+                    player.available = False
+                    self.players.update(player.player_id)
             try:
                 await provider.unload()
             except Exception as err:
