@@ -367,6 +367,8 @@ class PlayerController(CoreController):
         volume_dif = new_volume - cur_volume
         coros = []
         for child_player in self.iter_group_members(group_player, True):
+            if PlayerFeature.VOLUME_SET not in child_player.supported_features:
+                continue
             cur_child_volume = child_player.volume_level
             new_child_volume = int(cur_child_volume + volume_dif)
             new_child_volume = max(0, new_child_volume)
@@ -975,6 +977,8 @@ class PlayerController(CoreController):
         group_volume = 0
         active_players = 0
         for child_player in self.iter_group_members(player, True):
+            if PlayerFeature.VOLUME_SET not in child_player.supported_features:
+                continue
             group_volume += child_player.volume_level or 0
             active_players += 1
         if active_players:
