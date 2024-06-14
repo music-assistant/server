@@ -616,7 +616,7 @@ class JellyfinProvider(MusicProvider):
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
         if jellyfin_album := await self._client.get_item(prov_album_id):
-            return await self._run_async(self._parse_album(jellyfin_album))
+            return await self._parse_album(jellyfin_album)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
