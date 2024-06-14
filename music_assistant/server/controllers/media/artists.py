@@ -105,19 +105,20 @@ class ArtistsController(MediaControllerBase[Artist]):
         in_library_only: bool = False,
     ) -> UniqueList[Track]:
         """Return all/top tracks for an artist."""
-        full_artist = await self.get(item_id, provider_instance_id_or_domain)
-        db_items = (
-            await self.get_library_artist_tracks(full_artist.item_id)
-            if full_artist.provider == "library"
-            else []
+        # always check if we have a library item for this artist
+        library_artist = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
         )
+        if not library_artist:
+            return await self.get_provider_artist_toptracks(item_id, provider_instance_id_or_domain)
+        db_items = await self.get_library_artist_tracks(library_artist.item_id)
         result: UniqueList[Track] = UniqueList(db_items)
-        if full_artist.provider == "library" and in_library_only:
+        if in_library_only:
             # return in-library items only
             return result
         # return all (unique) items from all providers
         unique_ids: set[str] = set()
-        for provider_mapping in full_artist.provider_mappings:
+        for provider_mapping in library_artist.provider_mappings:
             provider_tracks = await self.get_provider_artist_toptracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
@@ -142,19 +143,20 @@ class ArtistsController(MediaControllerBase[Artist]):
         in_library_only: bool = False,
     ) -> UniqueList[Album]:
         """Return (all/most popular) albums for an artist."""
-        full_artist = await self.get(item_id, provider_instance_id_or_domain)
-        db_items = (
-            await self.get_library_artist_albums(full_artist.item_id)
-            if full_artist.provider == "library"
-            else []
+        # always check if we have a library item for this artist
+        library_artist = await self.get_library_item_by_prov_id(
+            item_id, provider_instance_id_or_domain
         )
+        if not library_artist:
+            return await self.get_provider_artist_albums(item_id, provider_instance_id_or_domain)
+        db_items = await self.get_library_artist_albums(library_artist.item_id)
         result: UniqueList[Album] = UniqueList(db_items)
-        if full_artist.provider == "library" and in_library_only:
+        if in_library_only:
             # return in-library items only
             return result
         # return all (unique) items from all providers
         unique_ids: set[str] = set()
-        for provider_mapping in full_artist.provider_mappings:
+        for provider_mapping in library_artist.provider_mappings:
             provider_albums = await self.get_provider_artist_albums(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
