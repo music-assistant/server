@@ -462,11 +462,7 @@ class SnapCastProvider(PlayerProvider):
     def _group_childs(self, player_id: str) -> set[str]:
         """Return player_ids of the players synced to this player."""
         snap_group = self._get_snapgroup(player_id)
-        return {
-            self._get_ma_id(snap_client)
-            for snap_client in snap_group.clients
-            if snap_client != player_id
-        }
+        return {self._get_ma_id(snap_client) for snap_client in snap_group.clients}
 
     async def _create_stream(self) -> tuple[Snapstream, int]:
         """Create new stream on snapcast server."""
