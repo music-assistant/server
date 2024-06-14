@@ -310,9 +310,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 # note that we account for the fact that the provider might
                 # return less than the limit (e.g. 20 items) due to track unavailability
                 break
-            if paged_items == result:
-                # safety guard for malfunctioning provider
-                break
+
             offset += limit
         return result
 
