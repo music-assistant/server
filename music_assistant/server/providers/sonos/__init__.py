@@ -526,6 +526,10 @@ class SonosPlayerProvider(PlayerProvider):
             soco=soco,
             mass_player=mass_player,
         )
+        if soco.fixed_volume:
+            mass_player.supported_features = tuple(
+                x for x in mass_player.supported_features if x != PlayerFeature.VOLUME_SET
+            )
         sonos_player.setup()
         self.mass.loop.call_soon_threadsafe(
             self.mass.players.register_or_update, sonos_player.mass_player
