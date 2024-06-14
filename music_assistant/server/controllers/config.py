@@ -803,7 +803,7 @@ class ConfigController:
         # validate the new config
         config.validate()
         # try to load the provider first to catch errors before we save it.
-        await self.mass.load_provider(config)
+        await self.mass.load_provider(config, raise_on_error=True)
         # the load was a success, store this config
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())

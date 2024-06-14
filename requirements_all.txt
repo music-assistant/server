@@ -17,7 +17,7 @@ deezer-python-async==0.3.0
 defusedxml==0.7.1
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
-hass-client==1.0.1
+hass-client==1.1.0
 ifaddr==0.2.0
 jellyfin_apiclient_python==1.9.2
 mashumaro==3.13
