@@ -261,9 +261,8 @@ class TuneInProvider(MusicProvider):
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType(stream["media_type"]),
-                ),
+                # set contenttype to unknown so ffmpeg can auto detect it
+                audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
                 media_type=MediaType.RADIO,
                 stream_type=StreamType.HTTP,
                 path=stream["url"],
