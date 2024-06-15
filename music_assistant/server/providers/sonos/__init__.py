@@ -266,9 +266,14 @@ class SonosPlayerProvider(PlayerProvider):
         if sonos_player.sync_coordinator:
             self.logger.debug(
                 "Ignore STOP command for %s: Player is synced to another player.",
-                player_id,
+                sonos_player.zone_name,
             )
             return
+        if "Stop" not in sonos_player.soco.available_actions:
+            self.logger.debug(
+                "Ignore STOP command for %s: Player reports this action is not available now.",
+                sonos_player.zone_name,
+            )
         await asyncio.to_thread(sonos_player.soco.stop)
 
     async def cmd_play(self, player_id: str) -> None:
@@ -280,6 +285,11 @@ class SonosPlayerProvider(PlayerProvider):
                 player_id,
             )
             return
+        if "Play" not in sonos_player.soco.available_actions:
+            self.logger.debug(
+                "Ignore STOP command for %s: Player reports this action is not available now.",
+                sonos_player.zone_name,
+            )
         await asyncio.to_thread(sonos_player.soco.play)
 
     async def cmd_pause(self, player_id: str) -> None:
