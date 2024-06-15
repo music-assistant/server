@@ -164,11 +164,15 @@ class AlbumsController(MediaControllerBase[Album]):
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
         # return all (unique) items from all providers
         unique_ids: set[str] = {f"{x.disc_number or 1}.{x.track_number}" for x in db_items}
+        for db_item in db_items:
+            unique_ids.add(x.item_id for x in db_item.provider_mappings)
         for provider_mapping in library_album.provider_mappings:
             provider_tracks = await self._get_provider_album_tracks(
                 provider_mapping.item_id, provider_mapping.provider_instance
             )
             for provider_track in provider_tracks:
+                if provider_track.item_id in unique_ids:
+                    continue
                 unique_id = f"{provider_track.disc_number or 1}.{provider_track.track_number}"
                 if unique_id in unique_ids:
                     continue
