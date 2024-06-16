@@ -89,7 +89,9 @@ class MultiClientStream:
         async for chunk in self.audio_source:
             if len(self.subscribers) == 0:
                 return
-            await asyncio.gather(*[sub.put(chunk) for sub in self.subscribers])
+            await asyncio.gather(
+                *[sub.put(chunk) for sub in self.subscribers], return_exceptions=True
+            )
         # EOF: send empty chunk
         async with asyncio.TaskGroup() as tg:
             for sub in list(self.subscribers):
