@@ -4,6 +4,7 @@ Brotli>=1.0.9
 aiodns>=3.0.0
 aiofiles==23.2.1
 aiohttp==3.9.5
+aiojellyfin==0.0.4
 aiorun==2024.5.1
 aioslimproto==3.0.1
 aiosqlite==0.20.0
@@ -19,7 +20,6 @@ faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
 hass-client==1.1.0
 ifaddr==0.2.0
-jellyfin_apiclient_python==1.9.2
 mashumaro==3.13
 memory-tempfile==2.2.3
 music-assistant-frontend==2.5.14
