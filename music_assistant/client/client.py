@@ -6,7 +6,7 @@ import asyncio
 import logging
 import urllib.parse
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.client.exceptions import (
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.media_items import MediaItemImage
 
-EventCallBackType = Callable[[MassEvent], None]
+EventCallBackType = Callable[[MassEvent], Coroutine[Any, Any, None] | None]
 EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]
@@ -266,7 +266,10 @@ class MusicAssistantClient:
             msg = "Not connected"
             raise InvalidState(msg)
 
-        if require_schema is not None and require_schema > self.server_info.schema_version:
+        if (
+            require_schema is not None
+            and require_schema > self.server_info.schema_version
+        ):
             msg = (
                 "Command not available due to incompatible server version. Update the Music "
                 f"Assistant Server to a version that supports at least api schema {require_schema}."
@@ -361,7 +364,9 @@ class MusicAssistantClient:
             return
 
         if event.event == EventType.PROVIDERS_UPDATED:
-            self._providers = {x["instance_id"]: ProviderInstance.from_dict(x) for x in event.data}
+            self._providers = {
+                x["instance_id"]: ProviderInstance.from_dict(x) for x in event.data
+            }
 
         for cb_func, event_filter, id_filter in self._subscribers:
             if not (event_filter is None or event.event in event_filter):

@@ -2,12 +2,12 @@
 
 import asyncio
 import base64
-from _collections_abc import dict_keys, dict_values
 from types import MethodType
 from typing import Any
 
 import aiofiles
 import orjson
+from _collections_abc import dict_keys, dict_values
 
 JSON_ENCODE_EXCEPTIONS = (TypeError, ValueError)
 JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
