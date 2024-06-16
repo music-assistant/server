@@ -19,7 +19,7 @@ from music_assistant.common.helpers.global_cache import set_global_cache_values
 from music_assistant.common.helpers.util import get_ip_pton
 from music_assistant.common.models.api import ServerInfoMessage
 from music_assistant.common.models.enums import EventType, ProviderType
-from music_assistant.common.models.errors import SetupFailedError
+from music_assistant.common.models.errors import MusicAssistantError, SetupFailedError
 from music_assistant.common.models.event import MassEvent
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.constants import (
@@ -416,10 +416,18 @@ class MusicAssistant:
             await self._load_provider(prov_conf)
         # pylint: disable=broad-except
         except Exception as exc:
-            LOGGER.exception(
-                "Error loading provider(instance) %s",
-                prov_conf.name or prov_conf.domain,
-            )
+            if isinstance(exc, MusicAssistantError):
+                LOGGER.error(
+                    "Error loading provider(instance) %s: %s",
+                    prov_conf.name or prov_conf.domain,
+                    str(exc),
+                )
+            else:
+                # log full stack trace on unhandled/generic exception
+                LOGGER.exception(
+                    "Error loading provider(instance) %s",
+                    prov_conf.name or prov_conf.domain,
+                )
             if raise_on_error:
                 raise
             # if loading failed, we store the error in the config object

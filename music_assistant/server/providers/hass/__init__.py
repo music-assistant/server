@@ -27,7 +27,7 @@ from hass_client.utils import (
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.common.models.errors import LoginFailed
+from music_assistant.common.models.errors import LoginFailed, SetupFailedError
 from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.plugin import PluginProvider
@@ -162,7 +162,10 @@ class HomeAssistant(PluginProvider):
         token = self.config.get_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
         self.hass = HomeAssistantClient(url, token, self.mass.http_session)
-        await self.hass.connect()
+        try:
+            await self.hass.connect()
+        except BaseHassClientError as err:
+            raise SetupFailedError from err
         self._listen_task = self.mass.create_task(self._hass_listener())
 
     async def unload(self) -> None:

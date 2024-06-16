@@ -208,7 +208,7 @@ class JellyfinProvider(MusicProvider):
         return False
 
     async def _run_async(self, call: Callable, *args, **kwargs):
-        return await self.mass.create_task(call, *args, **kwargs)
+        return await asyncio.to_thread(call, *args, **kwargs)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(

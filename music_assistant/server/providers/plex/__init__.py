@@ -31,7 +31,12 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    SetupFailedError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
@@ -348,8 +353,13 @@ class PlexProvider(MusicProvider):
         self._myplex_account = await self.get_myplex_account_and_refresh_token(
             self.config.get_value(CONF_AUTH_TOKEN)
         )
-        self._plex_server = await self._run_async(connect)
-        self._plex_library = await self._run_async(self._plex_server.library.section, library_name)
+        try:
+            self._plex_server = await self._run_async(connect)
+            self._plex_library = await self._run_async(
+                self._plex_server.library.section, library_name
+            )
+        except requests.exceptions.ConnectionError as err:
+            raise SetupFailedError from err
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -385,7 +395,7 @@ class PlexProvider(MusicProvider):
 
     async def _run_async(self, call: Callable, *args, **kwargs):
         await self.get_myplex_account_and_refresh_token(self.config.get_value(CONF_AUTH_TOKEN))
-        return await self.mass.create_task(call, *args, **kwargs)
+        return await asyncio.to_thread(call, *args, **kwargs)
 
     async def _get_data(self, key, cls=None):
         return await self._run_async(self._plex_library.fetchItem, key, cls)
