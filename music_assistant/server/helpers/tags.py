@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
@@ -29,6 +30,11 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 TAG_SPLITTER = ";"
 
 
+def clean_tuple(values: Iterable[str]) -> tuple:
+    """Return a tuple with all empty values removed."""
+    return tuple(x.strip() for x in values if x not in (None, "", " "))
+
+
 def split_items(org_str: str, allow_unsafe_splitters: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if org_str is None:
@@ -37,12 +43,12 @@ def split_items(org_str: str, allow_unsafe_splitters: bool = False) -> tuple[str
         return (x.strip() for x in org_str)
     org_str = org_str.strip()
     if TAG_SPLITTER in org_str:
-        return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
+        return clean_tuple(org_str.split(TAG_SPLITTER))
     if allow_unsafe_splitters and "/" in org_str:
-        return tuple(x.strip() for x in org_str.split("/"))
+        return clean_tuple(org_str.split("/"))
     if allow_unsafe_splitters and ", " in org_str:
-        return tuple(x.strip() for x in org_str.split(", "))
-    return (org_str.strip(),)
+        return clean_tuple(org_str.split(", "))
+    return clean_tuple((org_str,))
 
 
 def split_artists(
