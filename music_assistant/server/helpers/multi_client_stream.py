@@ -58,7 +58,7 @@ class MultiClientStream:
     async def subscribe_raw(self) -> AsyncGenerator[bytes, None]:
         """Subscribe to the raw/unaltered audio stream."""
         try:
-            queue = asyncio.Queue(1)
+            queue = asyncio.Queue(2)
             self.subscribers.append(queue)
             while True:
                 chunk = await queue.get()
@@ -89,9 +89,7 @@ class MultiClientStream:
         async for chunk in self.audio_source:
             if len(self.subscribers) == 0:
                 return
-            async with asyncio.TaskGroup() as tg:
-                for sub in list(self.subscribers):
-                    tg.create_task(sub.put(chunk))
+            await asyncio.gather(*[sub.put(chunk) for sub in self.subscribers])
         # EOF: send empty chunk
         async with asyncio.TaskGroup() as tg:
             for sub in list(self.subscribers):
