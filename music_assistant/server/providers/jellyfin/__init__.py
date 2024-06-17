@@ -426,6 +426,13 @@ class JellyfinProvider(MusicProvider):
                 jellyfin_track[ITEM_KEY_ALBUM_ID],
                 jellyfin_track[ITEM_KEY_ALBUM],
             )
+        elif ITEM_KEY_ALBUM_ID in jellyfin_track:
+            parent_album = await self._client.get_item(jellyfin_track[ITEM_KEY_ALBUM_ID])
+            track.album = self._get_item_mapping(
+                MediaType.ALBUM,
+                parent_album[ITEM_KEY_ID],
+                parent_album[ITEM_KEY_NAME],
+            )
 
         if ITEM_KEY_RUNTIME_TICKS in jellyfin_track:
             track.duration = int(
