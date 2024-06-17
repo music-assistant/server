@@ -112,7 +112,7 @@ def compare_track(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
-    # return early on MBID match to avoid issues with ISRC 
+    # return early on MBID match to avoid issues with ISRC
     # (https://github.com/music-assistant/hass-music-assistant/issues/2316)
     if base_item.mbid and compare_item.mbid:
         return base_item.mbid == compare_item.mbid
