@@ -94,7 +94,7 @@ jobs:
           echo "minor=${patch%.*}" >> $GITHUB_OUTPUT
           echo "major=${patch%.*.*}" >> $GITHUB_OUTPUT
       - name: Build and Push release
-        uses: docker/build-push-action@v5.4.0
+        uses: docker/build-push-action@v6.0.0
         if: github.event.release.prerelease == false
         with:
           context: .
@@ -109,7 +109,7 @@ jobs:
           push: true
           build-args: "MASS_VERSION=${{ needs.build-and-publish-pypi.outputs.version }}"
       - name: Build and Push pre-release
-        uses: docker/build-push-action@v5.4.0
+        uses: docker/build-push-action@v6.0.0
         if: github.event.release.prerelease == true
         with:
           context: .
