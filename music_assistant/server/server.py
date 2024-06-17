@@ -308,9 +308,10 @@ class MusicAssistant:
 
     def create_task(
         self,
-        target: Coroutine | Awaitable | Callable | asyncio.Future,
+        target: Coroutine | Awaitable | Callable,
         *args: Any,
         task_id: str | None = None,
+        eager_start: bool = False,
         **kwargs: Any,
     ) -> asyncio.Task | asyncio.Future:
         """Create Task on (main) event loop from Coroutine(function).
@@ -324,17 +325,26 @@ class MusicAssistant:
             # prevent duplicate tasks if task_id is given and already present
             return existing
         if asyncio.iscoroutinefunction(target):
-            task = self.loop.create_task(target(*args, **kwargs))
+            # coroutine function (with or without eager start)
+            if eager_start:
+                task = asyncio.Task(target(*args, **kwargs), loop=self.loop, eager_start=True)
+            else:
+                task = self.loop.create_task(target(*args, **kwargs))
         elif asyncio.iscoroutine(target):
-            task = self.loop.create_task(target)
-        elif isinstance(target, asyncio.Future):
-            task = target
+            # coroutine (with or without eager start)
+            if eager_start:
+                task = asyncio.Task(target, loop=self.loop, eager_start=True)
+            else:
+                task = self.loop.create_task(target)
+        elif eager_start:
+            # regular callback (non async function)
+            task = asyncio.Task(
+                asyncio.to_thread(target, *args, **kwargs), loop=self.loop, eager_start=True
+            )
         else:
-            # assume normal callable (non coroutine or awaitable)
-            # that needs to be run in the executor
             task = self.loop.create_task(asyncio.to_thread(target, *args, **kwargs))
 
-        def task_done_callback(_task: asyncio.Future | asyncio.Task) -> None:
+        def task_done_callback(_task: asyncio.Task) -> None:
             _task_id = task.task_id
             self._tracked_tasks.pop(_task_id)
             # log unhandled exceptions
@@ -362,7 +372,7 @@ class MusicAssistant:
     def call_later(
         self,
         delay: float,
-        target: Coroutine | Awaitable | Callable | asyncio.Future,
+        target: Coroutine | Awaitable | Callable,
         *args: Any,
         task_id: str | None = None,
         **kwargs: Any,
@@ -386,7 +396,7 @@ class MusicAssistant:
         self._tracked_timers[task_id] = handle
         return handle
 
-    def get_task(self, task_id: str) -> asyncio.Task | asyncio.Future:
+    def get_task(self, task_id: str) -> asyncio.Task:
         """Get existing scheduled task."""
         if existing := self._tracked_tasks.get(task_id):
             # prevent duplicate tasks if task_id is given and already present
