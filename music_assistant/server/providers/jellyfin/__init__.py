@@ -235,7 +235,7 @@ class JellyfinProvider(MusicProvider):
         )
         playlists = []
         for item in resultset["Items"]:
-            playlists.append(await self._parse_playlist(item))
+            playlists.append(self._parse_playlist(item))
         return playlists
 
     async def _parse_album(self, jellyfin_album: JellyMediaItem) -> Album:
@@ -452,7 +452,7 @@ class JellyfinProvider(MusicProvider):
         track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return track
 
-    async def _parse_playlist(self, jellyfin_playlist: JellyMediaItem) -> Playlist:
+    def _parse_playlist(self, jellyfin_playlist: JellyMediaItem) -> Playlist:
         """Parse a Jellyfin Playlist response to a Playlist object."""
         playlistid = jellyfin_playlist[ITEM_KEY_ID]
         playlist = Playlist(
@@ -564,9 +564,9 @@ class JellyfinProvider(MusicProvider):
             for playlist in playlists_obj:
                 if "MediaType" in playlist:  # Only jellyfin has this property
                     if playlist["MediaType"] == "Audio":
-                        yield await self._parse_playlist(playlist)
+                        yield self._parse_playlist(playlist)
                 else:  # emby playlists are only audio type
-                    yield await self._parse_playlist(playlist)
+                    yield self._parse_playlist(playlist)
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
@@ -610,7 +610,7 @@ class JellyfinProvider(MusicProvider):
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if jellyfin_playlist := await self._client.get_item(prov_playlist_id):
-            return await self._parse_playlist(jellyfin_playlist)
+            return self._parse_playlist(jellyfin_playlist)
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
