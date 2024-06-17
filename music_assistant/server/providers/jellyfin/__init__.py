@@ -380,7 +380,8 @@ class JellyfinProvider(MusicProvider):
             },
         )
 
-        track.disc_number = jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM, 1)
+        if disc_number := jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM):
+            track.disc_number = disc_number
         if "IndexNumber" in jellyfin_track:
             if jellyfin_track["IndexNumber"] >= 1:
                 track_idx = jellyfin_track["IndexNumber"]
