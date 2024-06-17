@@ -46,6 +46,7 @@ from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
 
 from .const import (
+    ALBUM_FIELDS,
     ARTIST_FIELDS,
     CLIENT_VERSION,
     ITEM_KEY_ALBUM,
@@ -211,10 +212,12 @@ class JellyfinProvider(MusicProvider):
             term=albumname,
             media=ITEM_TYPE_ALBUM,
             limit=limit,
+            enable_user_data=True,
+            fields=ALBUM_FIELDS,
         )
         albums = []
         for item in resultset["Items"]:
-            albums.append(await self._parse_album(item))
+            albums.append(self._parse_album(item))
         return albums
 
     async def _search_artist(self, search_query: str, limit: int) -> list[Artist]:
@@ -241,7 +244,7 @@ class JellyfinProvider(MusicProvider):
             playlists.append(self._parse_playlist(item))
         return playlists
 
-    async def _parse_album(self, jellyfin_album: JellyMediaItem) -> Album:
+    def _parse_album(self, jellyfin_album: JellyMediaItem) -> Album:
         """Parse a Jellyfin Album response to an Album model object."""
         album_id = jellyfin_album[ITEM_KEY_ID]
         album = Album(
@@ -256,9 +259,8 @@ class JellyfinProvider(MusicProvider):
                 )
             },
         )
-        current_jellyfin_album = await self._client.get_item(album_id)
-        if ITEM_KEY_PRODUCTION_YEAR in current_jellyfin_album:
-            album.year = current_jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
+        if ITEM_KEY_PRODUCTION_YEAR in jellyfin_album:
+            album.year = jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
         if thumb := self._get_thumbnail_url(jellyfin_album):
             album.metadata.images = UniqueList(
                 [
@@ -270,11 +272,11 @@ class JellyfinProvider(MusicProvider):
                     )
                 ]
             )
-        if ITEM_KEY_OVERVIEW in current_jellyfin_album:
-            album.metadata.description = current_jellyfin_album[ITEM_KEY_OVERVIEW]
-        if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in current_jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
+        if ITEM_KEY_OVERVIEW in jellyfin_album:
+            album.metadata.description = jellyfin_album[ITEM_KEY_OVERVIEW]
+        if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
             try:
-                album.mbid = current_jellyfin_album[ITEM_KEY_PROVIDER_IDS][
+                album.mbid = jellyfin_album[ITEM_KEY_PROVIDER_IDS][
                     ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP
                 ]
             except InvalidDataError as error:
@@ -283,10 +285,10 @@ class JellyfinProvider(MusicProvider):
                     album.name,
                     exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
-        if ITEM_KEY_SORT_NAME in current_jellyfin_album:
-            album.sort_name = current_jellyfin_album[ITEM_KEY_SORT_NAME]
-        if ITEM_KEY_ALBUM_ARTIST in current_jellyfin_album:
-            for album_artist in current_jellyfin_album[ITEM_KEY_ALBUM_ARTISTS]:
+        if ITEM_KEY_SORT_NAME in jellyfin_album:
+            album.sort_name = jellyfin_album[ITEM_KEY_SORT_NAME]
+        if ITEM_KEY_ALBUM_ARTIST in jellyfin_album:
+            for album_artist in jellyfin_album[ITEM_KEY_ALBUM_ARTISTS]:
                 album.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
@@ -294,8 +296,8 @@ class JellyfinProvider(MusicProvider):
                         album_artist[ITEM_KEY_NAME],
                     )
                 )
-        elif len(current_jellyfin_album.get(ITEM_KEY_ARTIST_ITEMS, [])) >= 1:
-            for artist_item in current_jellyfin_album[ITEM_KEY_ARTIST_ITEMS]:
+        elif len(jellyfin_album.get(ITEM_KEY_ARTIST_ITEMS, [])) >= 1:
+            for artist_item in jellyfin_album[ITEM_KEY_ARTIST_ITEMS]:
                 album.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
@@ -303,7 +305,7 @@ class JellyfinProvider(MusicProvider):
                         artist_item[ITEM_KEY_NAME],
                     )
                 )
-        user_data = current_jellyfin_album.get(ITEM_KEY_USER_DATA, {})
+        user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
         album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return album
 
@@ -539,23 +541,21 @@ class JellyfinProvider(MusicProvider):
         """Retrieve all library albums from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            artists_obj = await self._get_children(jellyfin_library[ITEM_KEY_ID], ITEM_TYPE_ARTIST)
-            for artist in artists_obj:
-                albums_obj = await self._get_children(artist[ITEM_KEY_ID], ITEM_TYPE_ALBUM)
-                for album in albums_obj:
-                    yield await self._parse_album(album)
+            albums = await self._client.albums(
+                jellyfin_library[ITEM_KEY_ID], fields=ALBUM_FIELDS, enable_user_data=True
+            )
+            for album in albums["Items"]:
+                yield self._parse_album(album)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            artists_obj = await self._get_children(jellyfin_library[ITEM_KEY_ID], ITEM_TYPE_ARTIST)
-            for artist in artists_obj:
-                albums_obj = await self._get_children(artist[ITEM_KEY_ID], ITEM_TYPE_ALBUM)
-                for album in albums_obj:
-                    tracks_obj = await self._get_children(album[ITEM_KEY_ID], ITEM_TYPE_AUDIO)
-                    for track in tracks_obj:
-                        yield await self._parse_track(track)
+            albums = await self._client.albums(jellyfin_library[ITEM_KEY_ID])
+            for album in albums["Items"]:
+                tracks_obj = await self._get_children(album[ITEM_KEY_ID], ITEM_TYPE_AUDIO)
+                for track in tracks_obj:
+                    yield await self._parse_track(track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
@@ -572,7 +572,7 @@ class JellyfinProvider(MusicProvider):
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if jellyfin_album := await self._client.get_item(prov_album_id):
-            return await self._parse_album(jellyfin_album)
+            return self._parse_album(jellyfin_album)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
@@ -643,15 +643,11 @@ class JellyfinProvider(MusicProvider):
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
-            artists_obj = await self._get_children(prov_artist_id, ITEM_TYPE_ARTIST)
-            for artist in artists_obj:
-                jellyfin_albums = await self._get_children(artist[ITEM_KEY_ID], ITEM_TYPE_ALBUM)
-                if jellyfin_albums:
-                    albums = []
-                    for album_obj in jellyfin_albums:
-                        albums.append(await self._parse_album(album_obj))
-                    return albums
-        return []
+            return []
+        albums = await self._client.album(
+            prov_artist_id, fields=ALBUM_FIELDS, enable_user_data=True
+        )
+        return [self._parse_album(album) for album in albums["Items"]]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
