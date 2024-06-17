@@ -4,7 +4,7 @@
   "name": "Jellyfin Media Server Library",
   "description": "Support for the Jellyfin streaming provider in Music Assistant.",
   "codeowners": ["@lokiberra", "@Jc2k"],
-  "requirements": ["aiojellyfin==0.0.6"],
+  "requirements": ["aiojellyfin==0.1.0"],
   "documentation": "https://music-assistant.io/music-providers/jellyfin/",
   "multi_instance": true
 }

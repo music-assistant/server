@@ -46,6 +46,7 @@ from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
 
 from .const import (
+    ARTIST_FIELDS,
     CLIENT_VERSION,
     ITEM_KEY_ALBUM,
     ITEM_KEY_ALBUM_ARTIST,
@@ -221,10 +222,12 @@ class JellyfinProvider(MusicProvider):
             term=search_query,
             media=ITEM_TYPE_ARTIST,
             limit=limit,
+            enable_user_data=True,
+            fields=ARTIST_FIELDS,
         )
         artists = []
         for item in resultset["Items"]:
-            artists.append(await self._parse_artist(item))
+            artists.append(self._parse_artist(item))
         return artists
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[Playlist]:
@@ -304,13 +307,9 @@ class JellyfinProvider(MusicProvider):
         album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return album
 
-    async def _parse_artist(self, jellyfin_artist: JellyMediaItem) -> Artist:
+    def _parse_artist(self, jellyfin_artist: JellyMediaItem) -> Artist:
         """Parse a Jellyfin Artist response to Artist model object."""
         artist_id = jellyfin_artist[ITEM_KEY_ID]
-        current_artist = await self._client.get_item(artist_id)
-        if not artist_id:
-            msg = "Artist does not have a valid ID"
-            raise InvalidDataError(msg)
         artist = Artist(
             item_id=artist_id,
             name=jellyfin_artist[ITEM_KEY_NAME],
@@ -323,19 +322,19 @@ class JellyfinProvider(MusicProvider):
                 )
             },
         )
-        if ITEM_KEY_OVERVIEW in current_artist:
-            artist.metadata.description = current_artist[ITEM_KEY_OVERVIEW]
-        if ITEM_KEY_MUSICBRAINZ_ARTIST in current_artist[ITEM_KEY_PROVIDER_IDS]:
+        if ITEM_KEY_OVERVIEW in jellyfin_artist:
+            artist.metadata.description = jellyfin_artist[ITEM_KEY_OVERVIEW]
+        if ITEM_KEY_MUSICBRAINZ_ARTIST in jellyfin_artist[ITEM_KEY_PROVIDER_IDS]:
             try:
-                artist.mbid = current_artist[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ARTIST]
+                artist.mbid = jellyfin_artist[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ARTIST]
             except InvalidDataError as error:
                 self.logger.warning(
                     "Jellyfin has an invalid musicbrainz id for artist %s",
                     artist.name,
                     exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
-        if ITEM_KEY_SORT_NAME in current_artist:
-            artist.sort_name = current_artist[ITEM_KEY_SORT_NAME]
+        if ITEM_KEY_SORT_NAME in jellyfin_artist:
+            artist.sort_name = jellyfin_artist[ITEM_KEY_SORT_NAME]
         if thumb := self._get_thumbnail_url(jellyfin_artist):
             artist.metadata.images = UniqueList(
                 [
@@ -347,7 +346,7 @@ class JellyfinProvider(MusicProvider):
                     )
                 ]
             )
-        user_data = current_artist.get(ITEM_KEY_USER_DATA, {})
+        user_data = jellyfin_artist.get(ITEM_KEY_USER_DATA, {})
         artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return artist
 
@@ -529,10 +528,12 @@ class JellyfinProvider(MusicProvider):
         """Retrieve all library artists from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            response = await self._client.artists(jellyfin_library[ITEM_KEY_ID])
+            response = await self._client.artists(
+                jellyfin_library[ITEM_KEY_ID], enable_user_data=True, fields=ARTIST_FIELDS
+            )
             artists_obj = response["Items"]
             for artist in artists_obj:
-                yield await self._parse_artist(artist)
+                yield self._parse_artist(artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Jellyfin Music."""
@@ -596,7 +597,7 @@ class JellyfinProvider(MusicProvider):
             raise MediaNotFoundError(msg)
 
         if jellyfin_artist := await self._client.get_item(prov_artist_id):
-            return await self._parse_artist(jellyfin_artist)
+            return self._parse_artist(jellyfin_artist)
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 

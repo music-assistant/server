@@ -64,6 +64,7 @@ SUPPORTED_CONTAINER_FORMATS: Final = "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,m4
 
 PLAYABLE_ITEM_TYPES: Final = [ITEM_TYPE_AUDIO]
 
+ARTIST_FIELDS = ["Overview", "ProviderIds", "SortName"]
 
 USER_APP_NAME: Final = "Music Assistant"
 USER_AGENT: Final = "Music-Assistant-1.0"
