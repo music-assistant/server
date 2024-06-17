@@ -58,7 +58,6 @@ from .const import (
     ITEM_KEY_COLLECTION_TYPE,
     ITEM_KEY_ID,
     ITEM_KEY_IMAGE_TAGS,
-    ITEM_KEY_INDEX_NUMBER,
     ITEM_KEY_MEDIA_CHANNELS,
     ITEM_KEY_MEDIA_CODEC,
     ITEM_KEY_MEDIA_SOURCES,
@@ -81,6 +80,7 @@ from .const import (
     ITEM_TYPE_MUSICARTISTS,
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
+    TRACK_FIELDS,
     USER_APP_NAME,
     USER_DATA_KEY_IS_FAVORITE,
 )
@@ -196,6 +196,8 @@ class JellyfinProvider(MusicProvider):
             term=search_query,
             media=ITEM_TYPE_AUDIO,
             limit=limit,
+            enable_user_data=True,
+            fields=TRACK_FIELDS,
         )
         tracks = []
         for item in resultset["Items"]:
@@ -354,11 +356,10 @@ class JellyfinProvider(MusicProvider):
 
     async def _parse_track(self, jellyfin_track: JellyMediaItem) -> Track:
         """Parse a Jellyfin Track response to a Track model object."""
-        current_jellyfin_track = await self._client.get_item(jellyfin_track[ITEM_KEY_ID])
         available = False
         content = None
-        available = current_jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
-        content = current_jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0][ITEM_KEY_MEDIA_CODEC]
+        available = jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
+        content = jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0][ITEM_KEY_MEDIA_CODEC]
         track = Track(
             item_id=jellyfin_track[ITEM_KEY_ID],
             provider=self.instance_id,
@@ -379,10 +380,10 @@ class JellyfinProvider(MusicProvider):
             },
         )
 
-        track.disc_number = current_jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM, 1)
-        if "IndexNumber" in current_jellyfin_track:
-            if current_jellyfin_track["IndexNumber"] >= 1:
-                track_idx = current_jellyfin_track["IndexNumber"]
+        track.disc_number = jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM, 1)
+        if "IndexNumber" in jellyfin_track:
+            if jellyfin_track["IndexNumber"] >= 1:
+                track_idx = jellyfin_track["IndexNumber"]
                 track.track_number = track_idx
                 track.position = track_idx
 
@@ -398,8 +399,8 @@ class JellyfinProvider(MusicProvider):
                 ]
             )
 
-        if current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
-            for artist_item in current_jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
+        if jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
+            for artist_item in jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
                 track.artists.append(
                     self._get_item_mapping(
                         MediaType.ARTIST,
@@ -407,8 +408,8 @@ class JellyfinProvider(MusicProvider):
                         artist_item[ITEM_KEY_NAME],
                     )
                 )
-        elif ITEM_KEY_ALBUM_ID in current_jellyfin_track:
-            parent_album = await self._client.get_item(current_jellyfin_track[ITEM_KEY_ALBUM_ID])
+        elif ITEM_KEY_ALBUM_ID in jellyfin_track:
+            parent_album = await self._client.get_item(jellyfin_track[ITEM_KEY_ALBUM_ID])
             if ITEM_KEY_ALBUM_ARTISTS in parent_album:
                 for artist_item in parent_album[ITEM_KEY_ALBUM_ARTISTS]:
                     track.artists.append(
@@ -419,28 +420,19 @@ class JellyfinProvider(MusicProvider):
                         )
                     )
 
-        if ITEM_KEY_ALBUM_ID in current_jellyfin_track and ITEM_KEY_ALBUM in current_jellyfin_track:
+        if ITEM_KEY_ALBUM_ID in jellyfin_track and ITEM_KEY_ALBUM in jellyfin_track:
             track.album = self._get_item_mapping(
                 MediaType.ALBUM,
-                current_jellyfin_track[ITEM_KEY_ALBUM_ID],
-                current_jellyfin_track[ITEM_KEY_ALBUM],
+                jellyfin_track[ITEM_KEY_ALBUM_ID],
+                jellyfin_track[ITEM_KEY_ALBUM],
             )
-        elif ITEM_KEY_ALBUM_ID in current_jellyfin_track:
-            parent_album = await self._client.get_item(current_jellyfin_track[ITEM_KEY_ALBUM_ID])
-            track.album = self._get_item_mapping(
-                MediaType.ALBUM,
-                parent_album[ITEM_KEY_ID],
-                parent_album[ITEM_KEY_NAME],
-            )
-        if ITEM_KEY_PARENT_INDEX_NUM in current_jellyfin_track:
-            track.disc_number = current_jellyfin_track[ITEM_KEY_PARENT_INDEX_NUM]
-        if ITEM_KEY_RUNTIME_TICKS in current_jellyfin_track:
+
+        if ITEM_KEY_RUNTIME_TICKS in jellyfin_track:
             track.duration = int(
-                current_jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000
+                jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000
             )  # 10000000 ticks per millisecond
-        track.track_number = current_jellyfin_track.get(ITEM_KEY_INDEX_NUMBER, 99)
-        if ITEM_KEY_MUSICBRAINZ_TRACK in current_jellyfin_track[ITEM_KEY_PROVIDER_IDS]:
-            track_mbid = current_jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
+        if ITEM_KEY_MUSICBRAINZ_TRACK in jellyfin_track[ITEM_KEY_PROVIDER_IDS]:
+            track_mbid = jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
             try:
                 track.mbid = track_mbid
             except InvalidDataError as error:
@@ -449,7 +441,7 @@ class JellyfinProvider(MusicProvider):
                     track.name,
                     exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
-        user_data = current_jellyfin_track.get(ITEM_KEY_USER_DATA, {})
+        user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
         track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return track
 
@@ -698,7 +690,7 @@ class JellyfinProvider(MusicProvider):
         else:
             params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
-            params["Fields"] = ITEM_KEY_MEDIA_SOURCES
+            params["Fields"] = TRACK_FIELDS
 
         result = await self._client.user_items("", params)
         return result["Items"]
