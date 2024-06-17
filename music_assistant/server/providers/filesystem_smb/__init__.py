@@ -186,7 +186,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         if platform.system() == "Darwin":
             password_str = f":{password}" if password else ""
-            mount_cmd = f'mount -t smbfs "//{username}{password_str}@{server}/{share}{subfolder}" "{self.base_path}"'  # noqa: E501
+            mount_cmd = f'mount -t smbfs "//{username}:{password_str}@{server}/{share}{subfolder}" "{self.base_path}"'  # noqa: E501
 
         elif platform.system() == "Linux":
             options = [
