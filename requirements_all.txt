@@ -4,6 +4,7 @@ Brotli>=1.0.9
 aiodns>=3.0.0
 aiofiles==23.2.1
 aiohttp==3.9.5
+aiojellyfin==0.3.0
 aiorun==2024.5.1
 aioslimproto==3.0.1
 aiosqlite==0.20.0
@@ -17,13 +18,12 @@ deezer-python-async==0.3.0
 defusedxml==0.7.1
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
-hass-client==1.1.0
+hass-client==2.0.0
 ifaddr==0.2.0
-jellyfin_apiclient_python==1.9.2
-mashumaro==3.13
+mashumaro==3.13.1
 memory-tempfile==2.2.3
 music-assistant-frontend==2.5.14
-orjson==3.10.4
+orjson==3.10.5
 pillow==10.3.0
 plexapi==4.15.13
 py-opensonic==5.1.0

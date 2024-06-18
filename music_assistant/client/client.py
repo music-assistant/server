@@ -6,7 +6,7 @@ import asyncio
 import logging
 import urllib.parse
 import uuid
-from collections.abc import Callable
+from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
 from music_assistant.client.exceptions import (
@@ -44,7 +44,7 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.media_items import MediaItemImage
 
-EventCallBackType = Callable[[MassEvent], None]
+EventCallBackType = Callable[[MassEvent], Coroutine[Any, Any, None] | None]
 EventSubscriptionType = tuple[
     EventCallBackType, tuple[EventType, ...] | None, tuple[str, ...] | None
 ]

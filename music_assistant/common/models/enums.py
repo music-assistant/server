@@ -142,12 +142,12 @@ class ContentType(StrEnum):
     UNKNOWN = "?"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> Self:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
     @classmethod
-    def try_parse(cls: Self, string: str) -> Self:
+    def try_parse(cls, string: str) -> Self:
         """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
         if "audio/" in tempstr:
