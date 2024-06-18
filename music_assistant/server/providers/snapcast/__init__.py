@@ -347,6 +347,21 @@ class SnapCastProvider(PlayerProvider):
             player.synced_to = self._synced_to(player_id)
             self.mass.players.update(target_player)
 
+    async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
+        """Create temporary sync group by joining given players to target player."""
+        for child_id in child_player_ids:
+            await self.cmd_sync(child_id, target_player)
+
+    async def cmd_unsync_many(self, player_ids: str) -> None:
+        """Handle UNSYNC command for all the given players.
+
+        Remove the given player from any syncgroups it currently is synced to.
+
+            - player_id: player_id of the player to handle the command.
+        """
+        for player_id in player_ids:
+            await self.cmd_unsync(player_id)
+
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
         snap_client_id = self._get_snapclient_id(player_id)
