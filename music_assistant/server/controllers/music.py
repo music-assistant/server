@@ -887,8 +887,12 @@ class MusicController(CoreController):
         await self.__create_database_triggers()
         # compact db
         self.logger.debug("Compacting database...")
-        await self.database.vacuum()
-        self.logger.debug("Compacting database done")
+        try:
+            await self.database.vacuum()
+        except Exception as err:
+            self.logger.warning("Database vacuum failed: %s", str(err))
+        else:
+            self.logger.debug("Compacting database done")
 
     async def __migrate_database(self, prev_version: int) -> None:
         """Perform a database migration."""
