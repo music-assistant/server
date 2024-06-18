@@ -540,22 +540,61 @@ class JellyfinProvider(MusicProvider):
         """Retrieve all library artists from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
+            offset = 0
+            limit = 100
+
             response = await self._client.artists(
-                jellyfin_library[ITEM_KEY_ID], enable_user_data=True, fields=ARTIST_FIELDS
+                jellyfin_library[ITEM_KEY_ID],
+                start_index=offset,
+                limit=limit,
+                enable_user_data=True,
+                fields=ARTIST_FIELDS,
             )
-            artists_obj = response["Items"]
-            for artist in artists_obj:
+            for artist in response["Items"]:
                 yield self._parse_artist(artist)
+
+            while offset < response["TotalRecordCount"]:
+                response = await self._client.artists(
+                    jellyfin_library[ITEM_KEY_ID],
+                    start_index=offset,
+                    limit=limit,
+                    enable_user_data=True,
+                    fields=ARTIST_FIELDS,
+                )
+                for artist in response["Items"]:
+                    yield self._parse_artist(artist)
+
+                offset += limit
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            albums = await self._client.albums(
-                jellyfin_library[ITEM_KEY_ID], fields=ALBUM_FIELDS, enable_user_data=True
+            offset = 0
+            limit = 100
+
+            response = await self._client.albums(
+                jellyfin_library[ITEM_KEY_ID],
+                start_index=offset,
+                limit=limit,
+                enable_user_data=True,
+                fields=ALBUM_FIELDS,
             )
-            for album in albums["Items"]:
-                yield self._parse_album(album)
+            for artist in response["Items"]:
+                yield self._parse_album(artist)
+
+            while offset < response["TotalRecordCount"]:
+                response = await self._client.albums(
+                    jellyfin_library[ITEM_KEY_ID],
+                    start_index=offset,
+                    limit=limit,
+                    enable_user_data=True,
+                    fields=ALBUM_FIELDS,
+                )
+                for artist in response["Items"]:
+                    yield self._parse_album(artist)
+
+                offset += limit
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Jellyfin Music."""
