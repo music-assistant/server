@@ -600,11 +600,31 @@ class JellyfinProvider(MusicProvider):
         """Retrieve library tracks from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            albums = await self._client.albums(jellyfin_library[ITEM_KEY_ID])
-            for album in albums["Items"]:
-                tracks_obj = await self._get_children(album[ITEM_KEY_ID], ITEM_TYPE_AUDIO)
-                for track in tracks_obj:
-                    yield await self._parse_track(track)
+            offset = 0
+            limit = 100
+
+            response = await self._client.tracks(
+                jellyfin_library[ITEM_KEY_ID],
+                start_index=offset,
+                limit=limit,
+                enable_user_data=True,
+                fields=TRACK_FIELDS,
+            )
+            for track in response["Items"]:
+                yield self._parse_track(track)
+
+            while offset < response["TotalRecordCount"]:
+                response = await self._client.tracks(
+                    jellyfin_library[ITEM_KEY_ID],
+                    start_index=offset,
+                    limit=limit,
+                    enable_user_data=True,
+                    fields=TRACK_FIELDS,
+                )
+                for track in response["Items"]:
+                    yield self._parse_track(track)
+
+                offset += limit
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
