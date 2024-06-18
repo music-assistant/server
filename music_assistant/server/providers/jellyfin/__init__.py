@@ -419,31 +419,37 @@ class JellyfinProvider(MusicProvider):
                         artist_item[ITEM_KEY_NAME],
                     )
                 )
-        elif ITEM_KEY_ALBUM_ID in jellyfin_track:
-            parent_album = await self._client.get_item(jellyfin_track[ITEM_KEY_ALBUM_ID])
-            if ITEM_KEY_ALBUM_ARTISTS in parent_album:
-                for artist_item in parent_album[ITEM_KEY_ALBUM_ARTISTS]:
-                    track.artists.append(
-                        self._get_item_mapping(
-                            MediaType.ARTIST,
-                            artist_item[ITEM_KEY_ID],
-                            artist_item[ITEM_KEY_NAME],
-                        )
-                    )
 
-        if ITEM_KEY_ALBUM_ID in jellyfin_track and ITEM_KEY_ALBUM in jellyfin_track:
-            track.album = self._get_item_mapping(
-                MediaType.ALBUM,
-                jellyfin_track[ITEM_KEY_ALBUM_ID],
-                jellyfin_track[ITEM_KEY_ALBUM],
-            )
-        elif ITEM_KEY_ALBUM_ID in jellyfin_track:
-            parent_album = await self._client.get_item(jellyfin_track[ITEM_KEY_ALBUM_ID])
-            track.album = self._get_item_mapping(
-                MediaType.ALBUM,
-                parent_album[ITEM_KEY_ID],
-                parent_album[ITEM_KEY_NAME],
-            )
+        if ITEM_KEY_ALBUM_ID in jellyfin_track:
+            if ITEM_KEY_ALBUM in jellyfin_track:
+                track.album = self._get_item_mapping(
+                    MediaType.ALBUM,
+                    jellyfin_track[ITEM_KEY_ALBUM_ID],
+                    jellyfin_track[ITEM_KEY_ALBUM],
+                )
+
+            # If we have an AlbumID not have not managed to set track.artists or track.album
+            # Let's see if we can pull it from the album
+
+            if not track.album or not track.artists:
+                parent_album = await self._client.get_item(jellyfin_track[ITEM_KEY_ALBUM_ID])
+
+                if not track.artists and ITEM_KEY_ALBUM_ARTISTS in parent_album:
+                    for artist_item in parent_album[ITEM_KEY_ALBUM_ARTISTS]:
+                        track.artists.append(
+                            self._get_item_mapping(
+                                MediaType.ARTIST,
+                                artist_item[ITEM_KEY_ID],
+                                artist_item[ITEM_KEY_NAME],
+                            )
+                        )
+
+                if not track.album:
+                    track.album = self._get_item_mapping(
+                        MediaType.ALBUM,
+                        parent_album[ITEM_KEY_ID],
+                        parent_album[ITEM_KEY_NAME],
+                    )
 
         if ITEM_KEY_RUNTIME_TICKS in jellyfin_track:
             track.duration = int(
@@ -611,7 +617,7 @@ class JellyfinProvider(MusicProvider):
                 fields=TRACK_FIELDS,
             )
             for track in response["Items"]:
-                yield self._parse_track(track)
+                yield await self._parse_track(track)
 
             while offset < response["TotalRecordCount"]:
                 response = await self._client.tracks(
@@ -622,7 +628,7 @@ class JellyfinProvider(MusicProvider):
                     fields=TRACK_FIELDS,
                 )
                 for track in response["Items"]:
-                    yield self._parse_track(track)
+                    yield await self._parse_track(track)
 
                 offset += limit
 
