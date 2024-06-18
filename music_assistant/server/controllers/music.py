@@ -1108,6 +1108,11 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx on {db_table}(external_ids);"  # noqa: E501
             )
+            # index on timestamp_added
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_timestamp_added_idx "
+                f"on {db_table}(timestamp_added);"
+            )
 
         # indexes on provider_mappings table
         await self.database.execute(
