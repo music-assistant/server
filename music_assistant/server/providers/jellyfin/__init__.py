@@ -88,6 +88,7 @@ from .const import (
 CONF_URL = "url"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
+CONF_VERIFY_SSL = "verify_ssl"
 FAKE_ARTIST_PREFIX = "_fake://"
 
 
@@ -138,6 +139,15 @@ async def get_config_entries(
             required=False,
             description="The password to authenticate to the remote server.",
         ),
+        ConfigEntry(
+            key=CONF_VERIFY_SSL,
+            type=ConfigEntryType.BOOLEAN,
+            label="Verify SSL",
+            required=False,
+            description="Whether or not to verify the certificate of SSL/TLS connections.",
+            category="advanced",
+            default_value=True,
+        ),
     )
 
 
@@ -149,7 +159,7 @@ class JellyfinProvider(MusicProvider):
         session_config = SessionConfiguration(
             session=self.mass.http_session,
             url=str(self.config.get_value(CONF_URL)),
-            verify_ssl=False,
+            verify_ssl=bool(self.config.get_value(CONF_VERIFY_SSL)),
             app_name=USER_APP_NAME,
             app_version=CLIENT_VERSION,
             device_name=socket.gethostname(),
