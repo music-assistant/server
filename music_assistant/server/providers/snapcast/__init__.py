@@ -343,7 +343,9 @@ class SnapCastProvider(PlayerProvider):
         group = self._get_snapgroup(target_player)
         if self._get_snapclient_id(player_id) not in group.clients:
             await group.add_client(self._get_snapclient_id(player_id))
-            self._handle_update()
+            player = self.mass.players.get(player_id)
+            player.synced_to = self._synced_to(player_id)
+            self.mass.players.update(target_player)
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
