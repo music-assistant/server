@@ -1110,7 +1110,8 @@ class MusicController(CoreController):
             )
             # index on timestamp_added
             await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_timestamp_added_idx on {db_table}(timestamp_added);"
+                f"CREATE INDEX IF NOT EXISTS {db_table}_timestamp_added_idx "
+                f"on {db_table}(timestamp_added);"
             )
 
         # indexes on provider_mappings table
