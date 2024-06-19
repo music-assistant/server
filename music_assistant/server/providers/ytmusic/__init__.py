@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 import pytube
+import yt_dlp
 from ytmusicapi.constants import SUPPORTED_LANGUAGES
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -73,6 +74,7 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_TOKEN_TYPE = "token_type"
 CONF_EXPIRY_TIME = "expiry_time"
+CONF_USE_YT_DLP = "use_yt_dlp"
 
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
@@ -175,6 +177,14 @@ async def get_config_entries(
             hidden=True,
             value=values.get(CONF_TOKEN_TYPE) if values else None,
         ),
+        ConfigEntry(
+            key=CONF_USE_YT_DLP,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            required=False,
+            label="Use yt_dlp instead of pytube. yt_dlp is much slower but more reliable.",
+            category="advanced",
+        ),
     )
 
 
@@ -190,6 +200,7 @@ class YoutubeMusicProvider(MusicProvider):
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
         logging.getLogger("pytube").setLevel(self.logger.level + 10)
+        logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         if not self.config.get_value(CONF_AUTH_TOKEN):
             msg = "Invalid login credentials"
             raise LoginFailed(msg)
@@ -531,7 +542,10 @@ class YoutubeMusicProvider(MusicProvider):
             msg = f"Item {item_id} not found"
             raise MediaNotFoundError(msg)
         stream_format = await self._parse_stream_format(track_obj)
-        url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
+        if self.config.get_value(CONF_USE_YT_DLP):
+            url = await self._extract_stream_url_using_yt_dlp(item_id)
+        else:
+            url = await self._parse_stream_url(stream_format=stream_format, item_id=item_id)
         if not await self._is_valid_deciphered_url(url=url):
             if retry > 4:
                 self.logger.warning(
@@ -807,6 +821,18 @@ class YoutubeMusicProvider(MusicProvider):
             msg = "Unable to identify the signatureTimestamp."
             raise Exception(msg)  # pylint: disable=broad-exception-raised
         return int(match.group(1))
+
+    async def _extract_stream_url_using_yt_dlp(self, item_id: str) -> str:
+        """Figure out the stream URL to use based on yt-dlp."""
+        def _extract_stream_url():
+            ydl = yt_dlp.YoutubeDL()
+            info = ydl.extract_info(
+                f"https://www.youtube.com/embed/{item_id}", download=False)
+            audio_only_formats = [f for f in info['formats'] if f.get(
+                'audio_ext', 'none') == 'm4a' and f.get('video_ext', 'none') == 'none']
+            # Formats are sorted from worse to better quality. Use the last one.
+            return audio_only_formats[-1]['url']
+        return await asyncio.to_thread(_extract_stream_url)
 
     async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
         """Figure out the stream URL to use based on the YT track object."""
