@@ -571,6 +571,7 @@ class AirplayProvider(PlayerProvider):
                 CONF_ENTRY_CROSSFADE,
                 CONF_ENTRY_CROSSFADE_DURATION,
                 CONF_ENTRY_SAMPLE_RATES_AIRPLAY,
+                CONF_ENTRY_FLOW_MODE_ENFORCED,
             )
         return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_AIRPLAY)
 
