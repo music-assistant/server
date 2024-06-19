@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from abc import abstractmethod
 from collections.abc import Iterable
 
@@ -227,10 +226,9 @@ class PlayerProvider(Provider):
 
     async def cmd_sync_many(self, target_player: str, child_player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
-        # default implementation, simply call the cmd_sync for all child players
-        async with asyncio.TaskGroup() as tg:
-            for child_player_id in child_player_ids:
-                tg.create_task(self.cmd_sync(child_player_id, target_player))
+        for child_id in child_player_ids:
+            # default implementation, simply call the cmd_sync for all child players
+            await self.cmd_sync(child_id, target_player)
 
     async def cmd_unsync_many(self, player_ids: str) -> None:
         """Handle UNSYNC command for all the given players.
@@ -239,10 +237,9 @@ class PlayerProvider(Provider):
 
             - player_id: player_id of the player to handle the command.
         """
-        # default implementation, simply call the cmd_sync for all player_ids
-        async with asyncio.TaskGroup() as tg:
-            for player_id in player_ids:
-                tg.create_task(self.cmd_unsync(player_id))
+        for player_id in player_ids:
+            # default implementation, simply call the cmd_sync for all player_ids
+            await self.cmd_unsync(player_id)
 
     async def create_group(self, name: str, members: list[str]) -> Player:
         """Create new PlayerGroup on this provider.
