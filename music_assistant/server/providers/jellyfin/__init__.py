@@ -719,7 +719,7 @@ class JellyfinProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             return []
-        albums = await self._client.album(
+        albums = await self._client.albums(
             prov_artist_id, fields=ALBUM_FIELDS, enable_user_data=True
         )
         return [self._parse_album(album) for album in albums["Items"]]
@@ -773,7 +773,7 @@ class JellyfinProvider(MusicProvider):
         else:
             params["IncludeItemTypes"] = item_type
         if item_type in ITEM_TYPE_AUDIO:
-            params["Fields"] = TRACK_FIELDS
+            params["Fields"] = ",".join(TRACK_FIELDS)
 
         result = await self._client.user_items("", params)
         return result["Items"]
