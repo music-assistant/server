@@ -410,7 +410,6 @@ class TracksController(MediaControllerBase[Track]):
         For digital releases, the discnumber will be just 0 or 1.
         Track number should start counting at 1.
         """
-        
         db_album: Album | ItemMapping = None
         if album.provider == "library":
             db_album = album
