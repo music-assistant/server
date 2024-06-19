@@ -206,6 +206,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
+        provider: str | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls]:
@@ -222,6 +223,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             limit=limit,
             offset=offset,
             order_by=order_by,
+            provider=provider,
             extra_query=extra_query,
             extra_query_params=extra_query_params,
         )
@@ -747,6 +749,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         limit: int = 500,
         offset: int = 0,
         order_by: str | None = None,
+        provider: str | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls] | int:
@@ -772,6 +775,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if favorite is not None:
             query_parts.append(f"{self.db_table}.favorite = :favorite")
             query_params["favorite"] = favorite
+        # handle provider filter
+        if provider:
+            query_parts.append(f"{DB_TABLE_PROVIDER_MAPPINGS}.provider_instance = :provider")
+            query_params["provider"] = provider
         # handle extra/custom query
         if extra_query:
             # prevent duplicate where statement

@@ -77,6 +77,7 @@ class ArtistsController(MediaControllerBase[Artist]):
         limit: int = 500,
         offset: int = 0,
         order_by: str = "sort_name",
+        provider: str | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
         album_artists_only: bool = False,
@@ -94,6 +95,7 @@ class ArtistsController(MediaControllerBase[Artist]):
             limit=limit,
             offset=offset,
             order_by=order_by,
+            provider=provider,
             extra_query=extra_query,
             extra_query_params=extra_query_params,
         )
