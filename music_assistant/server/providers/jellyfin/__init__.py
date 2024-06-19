@@ -41,6 +41,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.constants import UNKNOWN_ARTIST_ID_MBID
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
 from music_assistant.server.server import MusicAssistant
@@ -81,6 +82,7 @@ from .const import (
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
+    UNKNOWN_ARTIST_MAPPING,
     USER_APP_NAME,
     USER_DATA_KEY_IS_FAVORITE,
 )
@@ -317,6 +319,9 @@ class JellyfinProvider(MusicProvider):
                         artist_item[ITEM_KEY_NAME],
                     )
                 )
+        else:
+            album.artists.append(UNKNOWN_ARTIST_MAPPING)
+
         user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
         album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return album
@@ -419,6 +424,8 @@ class JellyfinProvider(MusicProvider):
                         artist_item[ITEM_KEY_NAME],
                     )
                 )
+        else:
+            track.artists.append(UNKNOWN_ARTIST_MAPPING)
 
         if ITEM_KEY_ALBUM_ID in jellyfin_track:
             if ITEM_KEY_ALBUM in jellyfin_track:
@@ -427,23 +434,8 @@ class JellyfinProvider(MusicProvider):
                     jellyfin_track[ITEM_KEY_ALBUM_ID],
                     jellyfin_track[ITEM_KEY_ALBUM],
                 )
-
-            # If we have an AlbumID not have not managed to set track.artists or track.album
-            # Let's see if we can pull it from the album
-
-            if not track.album or not track.artists:
+            else:
                 parent_album = await self._client.get_item(jellyfin_track[ITEM_KEY_ALBUM_ID])
-
-                if not track.artists and ITEM_KEY_ALBUM_ARTISTS in parent_album:
-                    for artist_item in parent_album[ITEM_KEY_ALBUM_ARTISTS]:
-                        track.artists.append(
-                            self._get_item_mapping(
-                                MediaType.ARTIST,
-                                artist_item[ITEM_KEY_ID],
-                                artist_item[ITEM_KEY_NAME],
-                            )
-                        )
-
                 if not track.album:
                     track.album = self._get_item_mapping(
                         MediaType.ALBUM,
@@ -661,15 +653,21 @@ class JellyfinProvider(MusicProvider):
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
-        if prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
-            # This artist does not exist in jellyfin, so we can just load it from DB.
-
-            if db_artist := await self.mass.music.artists.get_library_item_by_prov_id(
-                prov_artist_id, self.instance_id
-            ):
-                return db_artist
-            msg = f"Artist not found: {prov_artist_id}"
-            raise MediaNotFoundError(msg)
+        if prov_artist_id == UNKNOWN_ARTIST_MAPPING.item_id:
+            artist = Artist(
+                item_id=UNKNOWN_ARTIST_MAPPING.item_id,
+                name=UNKNOWN_ARTIST_MAPPING.name,
+                provider=self.domain,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=UNKNOWN_ARTIST_MAPPING.item_id,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
+            artist.mbid = UNKNOWN_ARTIST_ID_MBID
+            return artist
 
         if jellyfin_artist := await self._client.get_item(prov_artist_id):
             return self._parse_artist(jellyfin_artist)

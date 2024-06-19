@@ -10,6 +10,7 @@ DB_SCHEMA_VERSION: Final[int] = 1
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
 UNKNOWN_ARTIST: Final[str] = "Unknown Artist"
+UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
 VARIOUS_ARTISTS_NAME: Final[str] = "Various Artists"
 VARIOUS_ARTISTS_ID_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 
