@@ -9,9 +9,13 @@ import uuid
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 
+from aiojellyfin import Album as JellyAlbum
+from aiojellyfin import Artist as JellyArtist
 from aiojellyfin import MediaItem as JellyMediaItem
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
+from aiojellyfin import Playlist as JellyPlaylist
 from aiojellyfin import SessionConfiguration, authenticate_by_name
+from aiojellyfin import Track as JellyTrack
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -249,7 +253,7 @@ class JellyfinProvider(MusicProvider):
             playlists.append(self._parse_playlist(item))
         return playlists
 
-    def _parse_album(self, jellyfin_album: JellyMediaItem) -> Album:
+    def _parse_album(self, jellyfin_album: JellyAlbum) -> Album:
         """Parse a Jellyfin Album response to an Album model object."""
         album_id = jellyfin_album[ITEM_KEY_ID]
         album = Album(
@@ -317,7 +321,7 @@ class JellyfinProvider(MusicProvider):
         album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return album
 
-    def _parse_artist(self, jellyfin_artist: JellyMediaItem) -> Artist:
+    def _parse_artist(self, jellyfin_artist: JellyArtist) -> Artist:
         """Parse a Jellyfin Artist response to Artist model object."""
         artist_id = jellyfin_artist[ITEM_KEY_ID]
         artist = Artist(
@@ -360,7 +364,7 @@ class JellyfinProvider(MusicProvider):
         artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return artist
 
-    def _parse_track(self, jellyfin_track: JellyMediaItem) -> Track:
+    def _parse_track(self, jellyfin_track: JellyTrack) -> Track:
         """Parse a Jellyfin Track response to a Track model object."""
         available = False
         content = None
@@ -443,7 +447,7 @@ class JellyfinProvider(MusicProvider):
         track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return track
 
-    def _parse_playlist(self, jellyfin_playlist: JellyMediaItem) -> Playlist:
+    def _parse_playlist(self, jellyfin_playlist: JellyPlaylist) -> Playlist:
         """Parse a Jellyfin Playlist response to a Playlist object."""
         playlistid = jellyfin_playlist[ITEM_KEY_ID]
         playlist = Playlist(
@@ -765,7 +769,7 @@ class JellyfinProvider(MusicProvider):
                 result.append(library)
         return result
 
-    def _media_mime_type(self, media_item: JellyMediaItem) -> str | None:
+    def _media_mime_type(self, media_item: JellyTrack) -> str | None:
         """Return the mime type of a media item."""
         if not media_item.get(ITEM_KEY_MEDIA_SOURCES):
             return None
