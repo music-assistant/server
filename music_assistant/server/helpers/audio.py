@@ -128,11 +128,6 @@ class FFMpeg(AsyncProcess):
         """Close/terminate the process and wait for exit."""
         if self._stdin_task and not self._stdin_task.done():
             self._stdin_task.cancel()
-            # make sure the stdin generator is also properly closed
-            # by propagating a cancellederror within
-            with suppress(RuntimeError):
-                task = asyncio.create_task(self.audio_input.__anext__())
-                task.cancel()
         if not self.collect_log_history:
             await super().close(send_signal)
             return
