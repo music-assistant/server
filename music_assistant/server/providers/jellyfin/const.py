@@ -4,6 +4,7 @@ from typing import Final
 
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.media_items import ItemMapping
+from music_assistant.constants import UNKNOWN_ARTIST
 
 DOMAIN: Final = "jellyfin"
 
@@ -75,5 +76,5 @@ USER_APP_NAME: Final = "Music Assistant"
 USER_AGENT: Final = "Music-Assistant-1.0"
 
 UNKNOWN_ARTIST_MAPPING = ItemMapping(
-    media_type=MediaType.ARTIST, item_id="[unknown]", provider=DOMAIN, name="[unknown]"
+    media_type=MediaType.ARTIST, item_id=UNKNOWN_ARTIST, provider=DOMAIN, name=UNKNOWN_ARTIST
 )
