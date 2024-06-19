@@ -23,7 +23,7 @@ ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
 
 
 @asynccontextmanager
-async def debug_query(sql_query: str):
+async def debug_query(sql_query: str, query_params: dict | None = None):
     """Time the processing time of an sql query."""
     if not ENABLE_DEBUG:
         yield
@@ -37,7 +37,10 @@ async def debug_query(sql_query: str):
     finally:
         process_time = time.time() - time_start
         if process_time > 0.5:
-            LOGGER.warning("SQL Query took %s seconds! (\n%s", process_time, sql_query)
+            # log slow queries
+            for key, value in (query_params or {}).items():
+                sql_query = sql_query.replace(f":{key}", repr(value))
+            LOGGER.warning("SQL Query took %s seconds! (\n%s\n", process_time, sql_query)
 
 
 def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
@@ -117,7 +120,7 @@ class DatabaseConnection:
         if limit:
             query += f" LIMIT {limit} OFFSET {offset}"
         _query, _params = query_params(query, params)
-        async with debug_query(_query):
+        async with debug_query(_query, _params):
             return await self._db.execute_fetchall(_query, _params)
 
     async def get_count_from_query(
@@ -150,14 +153,14 @@ class DatabaseConnection:
         """Search table by column."""
         sql_query = f"SELECT * FROM {table} WHERE {table}.{column} LIKE :search"
         params = {"search": f"%{search}%"}
-        async with debug_query(sql_query):
+        async with debug_query(sql_query, params):
             return await self._db.execute_fetchall(sql_query, params)
 
     async def get_row(self, table: str, match: dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
         sql_query += " AND ".join(f"{table}.{x} = :{x}" for x in match)
-        async with debug_query(sql_query), self._db.execute(sql_query, match) as cursor:
+        async with debug_query(sql_query, match), self._db.execute(sql_query, match) as cursor:
             return await cursor.fetchone()
 
     async def insert(

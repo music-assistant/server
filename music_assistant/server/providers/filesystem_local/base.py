@@ -174,7 +174,8 @@ class FileSystemProviderBase(MusicProvider):
         ----------
             - path: path of the directory (relative or absolute) to list contents of.
               Empty string for provider's root.
-            - recursive: If True will recursively keep unwrapping subdirectories (scandir equivalent).
+            - recursive: If True will recursively keep unwrapping
+              subdirectories (scandir equivalent).
 
         Returns:
         -------
@@ -227,62 +228,28 @@ class FileSystemProviderBase(MusicProvider):
         """Perform search on this file based musicprovider."""
         result = SearchResults()
         # searching the filesystem is slow and unreliable,
-        # instead we make some (slow) freaking queries to the db ;-)
+        # so instead we just query the db...
+        query = "provider_mappings.provider_instance = :provider_instance "
         params = {
-            "name": f"%{search_query}%",
             "provider_instance": self.instance_id,
         }
-        subquery = "WHERE "
-        # ruff: noqa: E501
         if media_types is None or MediaType.TRACK in media_types:
-            subquery = (
-                "WHERE provider_mappings.media_type = 'track' "
-                "AND provider_mappings.provider_instance = :provider_instance"
-            )
-            query = (
-                "WHERE tracks.name LIKE :name AND tracks.item_id in "
-                f"(SELECT item_id FROM provider_mappings {subquery})"
-            )
             result.tracks = await self.mass.music.tracks._get_library_items_by_query(
-                extra_query=query, extra_query_params=params
+                search=search_query, extra_query=query, extra_query_params=params, limit=limit
             )
 
         if media_types is None or MediaType.ALBUM in media_types:
-            subquery = (
-                "WHERE provider_mappings.media_type = 'album' "
-                "AND provider_mappings.provider_instance = :provider_instance"
-            )
-            query = (
-                "WHERE albums.name LIKE :name AND albums.item_id in "
-                f"(SELECT item_id FROM provider_mappings {subquery})"
-            )
             result.albums = await self.mass.music.albums._get_library_items_by_query(
-                extra_query=query, extra_query_params=params
+                search=search_query, extra_query=query, extra_query_params=params, limit=limit
             )
 
         if media_types is None or MediaType.ARTIST in media_types:
-            subquery = (
-                "WHERE provider_mappings.media_type = 'artist' "
-                "AND provider_mappings.provider_instance = :provider_instance"
-            )
-            query = (
-                "WHERE artists.name LIKE :name AND artists.item_id in "
-                f"(SELECT item_id FROM provider_mappings {subquery})"
-            )
             result.artists = await self.mass.music.artists._get_library_items_by_query(
-                extra_query=query, extra_query_params=params
+                search=search_query, extra_query=query, extra_query_params=params, limit=limit
             )
         if media_types is None or MediaType.PLAYLIST in media_types:
-            subquery = (
-                "WHERE provider_mappings.media_type = 'playlist' "
-                "AND provider_mappings.provider_instance = :provider_instance"
-            )
-            query = (
-                "WHERE playlists.name LIKE :name AND playlists.item_id in "
-                f"(SELECT item_id FROM provider_mappings {subquery})"
-            )
             result.playlists = await self.mass.music.playlists._get_library_items_by_query(
-                extra_query=query, extra_query_params=params
+                search=search_query, extra_query=query, extra_query_params=params, limit=limit
             )
         return result
 
@@ -419,8 +386,7 @@ class FileSystemProviderBase(MusicProvider):
             f"WHERE item_id not in "
             f"( select artist_id from {DB_TABLE_TRACK_ARTISTS} "
             f"UNION SELECT artist_id from {DB_TABLE_ALBUM_ARTISTS} )"
-            f"AND item_id in ( SELECT item_id from {DB_TABLE_PROVIDER_MAPPINGS} "
-            f"WHERE provider_instance = '{self.instance_id}' and media_type = 'artist' )"
+            f"AND provider_instance = '{self.instance_id}'"
         )
         for db_row in await self.mass.music.database.get_rows_from_query(
             query,

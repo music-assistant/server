@@ -5,7 +5,7 @@ from typing import Final
 
 API_SCHEMA_VERSION: Final[int] = 24
 MIN_SCHEMA_VERSION: Final[int] = 24
-DB_SCHEMA_VERSION: Final[int] = 1
+DB_SCHEMA_VERSION: Final[int] = 2
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
