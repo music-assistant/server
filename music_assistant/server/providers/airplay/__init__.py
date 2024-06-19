@@ -571,6 +571,7 @@ class AirplayProvider(PlayerProvider):
                 CONF_ENTRY_CROSSFADE,
                 CONF_ENTRY_CROSSFADE_DURATION,
                 CONF_ENTRY_SAMPLE_RATES_AIRPLAY,
+                CONF_ENTRY_FLOW_MODE_ENFORCED,
             )
         return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_AIRPLAY)
 
@@ -618,7 +619,7 @@ class AirplayProvider(PlayerProvider):
             # prefer interactive command to our streamer
             await airplay_player.active_stream.send_cli_command("ACTION=PAUSE")
 
-    async def play_media(  # noqa: PLR0915
+    async def play_media(
         self,
         player_id: str,
         media: PlayerMedia,
@@ -705,29 +706,30 @@ class AirplayProvider(PlayerProvider):
                     chunk = await buffer.get()
                     if chunk == b"EOF":
                         break
-                    async with asyncio.TaskGroup() as tg:
-                        for airplay_player in sync_clients:
-                            tg.create_task(airplay_player.active_stream.write_chunk(chunk))
+                    await asyncio.gather(
+                        *[x.active_stream.write_chunk(chunk) for x in sync_clients],
+                        return_exceptions=True,
+                    )
 
                 # entire stream consumed: send EOF
-                for airplay_player in sync_clients:
-                    self.mass.create_task(airplay_player.active_stream.write_eof())
+                await asyncio.gather(
+                    *[x.active_stream.write_eof() for x in sync_clients],
+                    return_exceptions=True,
+                )
+
             finally:
                 if not fill_buffer_task.done():
                     fill_buffer_task.cancel()
-                    # make sure the stdin generator is also properly closed
-                    # by propagating a cancellederror within
-                    task = asyncio.create_task(audio_source.__anext__())
-                    task.cancel()
                 empty_queue(buffer)
 
         # get current ntp and start cliraop
         _, stdout = await check_output(f"{self.cliraop_bin} -ntp")
         start_ntp = int(stdout.strip())
         wait_start = 1250 + (250 * len(sync_clients))
-        async with asyncio.TaskGroup() as tg:
-            for airplay_player in self._get_sync_clients(player_id):
-                tg.create_task(airplay_player.active_stream.start(start_ntp, wait_start))
+        await asyncio.gather(
+            *[x.active_stream.start(start_ntp, wait_start) for x in sync_clients],
+            return_exceptions=True,
+        )
         self._players[player_id].active_stream.audio_source_task = asyncio.create_task(
             audio_streamer()
         )

@@ -347,7 +347,7 @@ class MusicController(CoreController):
                 BrowseFolder(item_id="back", provider=provider_instance, path=back_path, name="..")
             )
         # limit -1 to account for the prepended items
-        prov_items = await prov.browse(path, offset=offset, limit=limit)
+        prov_items = await prov.browse(path=path, offset=offset, limit=limit)
         return prepend_items + prov_items
 
     @api_command("music/recently_played_items")
@@ -894,8 +894,12 @@ class MusicController(CoreController):
         await self.__create_database_triggers()
         # compact db
         self.logger.debug("Compacting database...")
-        await self.database.vacuum()
-        self.logger.debug("Compacting database done")
+        try:
+            await self.database.vacuum()
+        except Exception as err:
+            self.logger.warning("Database vacuum failed: %s", str(err))
+        else:
+            self.logger.debug("Compacting database done")
 
     async def __migrate_database(self, prev_version: int) -> None:
         """Perform a database migration."""

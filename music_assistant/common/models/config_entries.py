@@ -346,13 +346,12 @@ CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED = ConfigEntry.from_dict(
     {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True}
 )
 
-CONF_ENTRY_FLOW_MODE_ENFORCED = ConfigEntry(
-    key=CONF_FLOW_MODE,
-    type=ConfigEntryType.BOOLEAN,
-    label=CONF_FLOW_MODE,
-    default_value=True,
-    value=True,
-    hidden=True,
+CONF_ENTRY_FLOW_MODE_ENFORCED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": True, "value": True, "hidden": True}
+)
+
+CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_FLOW_MODE.to_dict(), "default_value": False, "value": False, "hidden": True}
 )
 
 CONF_ENTRY_AUTO_PLAY = ConfigEntry(

@@ -21,6 +21,7 @@ from sonos_websocket.exception import SonosWebsocketError
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     ConfigEntry,
     ConfigValueType,
     create_sample_rates_config_entry,
@@ -186,7 +187,7 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if not (sonos_player := self.sonosplayers.get(player_id)):
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE)
+            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED)
         is_s2 = sonos_player.soco.speaker_info["model_name"] in S2_MODELS
         return (
             *base_entries,
@@ -221,6 +222,7 @@ class SonosPlayerProvider(PlayerProvider):
                 category="advanced",
             ),
             CONF_ENTRY_SAMPLE_RATES_SONOS_S2 if is_s2 else CONF_ENTRY_SAMPLE_RATES_SONOS_S1,
+            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
         )
 
     def on_player_config_changed(

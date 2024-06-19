@@ -258,17 +258,16 @@ class FileSystemProviderBase(MusicProvider):
 
         :param path: The path to browse, (e.g. provid://artists).
         """
+        if offset:
+            # we do not support pagination
+            return []
         items: list[MediaItemType] = []
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
-        index = 0
         async for item in self.listdir(item_path, recursive=False):
             if not item.is_dir and ("." not in item.filename or not item.ext):
                 # skip system files and files without extension
-                continue
-
-            if index < offset:
                 continue
 
             if item.is_dir:
@@ -298,9 +297,6 @@ class FileSystemProviderBase(MusicProvider):
                         name=item.filename,
                     )
                 )
-            index += 1
-            if len(items) >= limit:
-                break
         return items
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
@@ -385,8 +381,9 @@ class FileSystemProviderBase(MusicProvider):
             f"SELECT item_id FROM {DB_TABLE_ARTISTS} "
             f"WHERE item_id not in "
             f"( select artist_id from {DB_TABLE_TRACK_ARTISTS} "
-            f"UNION SELECT artist_id from {DB_TABLE_ALBUM_ARTISTS} )"
-            f"AND provider_instance = '{self.instance_id}'"
+            f"UNION SELECT artist_id from {DB_TABLE_ALBUM_ARTISTS} ) "
+            f"AND item_id in ( SELECT item_id from {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{self.instance_id}' and media_type = 'artist' )"
         )
         for db_row in await self.mass.music.database.get_rows_from_query(
             query,
