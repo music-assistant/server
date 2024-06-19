@@ -618,7 +618,7 @@ class AirplayProvider(PlayerProvider):
             # prefer interactive command to our streamer
             await airplay_player.active_stream.send_cli_command("ACTION=PAUSE")
 
-    async def play_media(  # noqa: PLR0915
+    async def play_media(
         self,
         player_id: str,
         media: PlayerMedia,
@@ -719,10 +719,6 @@ class AirplayProvider(PlayerProvider):
             finally:
                 if not fill_buffer_task.done():
                     fill_buffer_task.cancel()
-                    # make sure the stdin generator is also properly closed
-                    # by propagating a cancellederror within
-                    task = asyncio.create_task(audio_source.__anext__())
-                    task.cancel()
                 empty_queue(buffer)
 
         # get current ntp and start cliraop
