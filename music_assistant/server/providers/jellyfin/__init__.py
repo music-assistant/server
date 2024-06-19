@@ -68,17 +68,12 @@ from .const import (
     ITEM_KEY_MUSICBRAINZ_TRACK,
     ITEM_KEY_NAME,
     ITEM_KEY_OVERVIEW,
-    ITEM_KEY_PARENT_ID,
     ITEM_KEY_PARENT_INDEX_NUM,
     ITEM_KEY_PRODUCTION_YEAR,
     ITEM_KEY_PROVIDER_IDS,
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_SORT_NAME,
     ITEM_KEY_USER_DATA,
-    ITEM_TYPE_ALBUM,
-    ITEM_TYPE_ARTIST,
-    ITEM_TYPE_AUDIO,
-    ITEM_TYPE_MUSICARTISTS,
     MAX_IMAGE_WIDTH,
     SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
@@ -204,9 +199,8 @@ class JellyfinProvider(MusicProvider):
         )
 
     async def _search_track(self, search_query: str, limit: int) -> list[Track]:
-        resultset = await self._client.search_media_items(
-            term=search_query,
-            media=ITEM_TYPE_AUDIO,
+        resultset = await self._client.tracks(
+            search_term=search_query,
             limit=limit,
             enable_user_data=True,
             fields=TRACK_FIELDS,
@@ -222,9 +216,8 @@ class JellyfinProvider(MusicProvider):
             albumname = searchterms[1]
         else:
             albumname = search_query
-        resultset = await self._client.search_media_items(
-            term=albumname,
-            media=ITEM_TYPE_ALBUM,
+        resultset = await self._client.albums(
+            search_term=albumname,
             limit=limit,
             enable_user_data=True,
             fields=ALBUM_FIELDS,
@@ -235,9 +228,8 @@ class JellyfinProvider(MusicProvider):
         return albums
 
     async def _search_artist(self, search_query: str, limit: int) -> list[Artist]:
-        resultset = await self._client.search_media_items(
-            term=search_query,
-            media=ITEM_TYPE_ARTIST,
+        resultset = await self._client.artists(
+            search_term=search_query,
             limit=limit,
             enable_user_data=True,
             fields=ARTIST_FIELDS,
@@ -248,9 +240,8 @@ class JellyfinProvider(MusicProvider):
         return artists
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[Playlist]:
-        resultset = await self._client.search_media_items(
-            term=search_query,
-            media="Playlist",
+        resultset = await self._client.playlists(
+            search_term=search_query,
             limit=limit,
         )
         playlists = []
@@ -619,8 +610,8 @@ class JellyfinProvider(MusicProvider):
         """Retrieve all library playlists from the provider."""
         playlist_libraries = await self._get_playlists()
         for playlist_library in playlist_libraries:
-            playlists_obj = await self._get_children(playlist_library[ITEM_KEY_ID], "Playlist")
-            for playlist in playlists_obj:
+            playlists_obj = await self._client.playlists(playlist_library[ITEM_KEY_ID])
+            for playlist in playlists_obj["Items"]:
                 if "MediaType" in playlist:  # Only jellyfin has this property
                     if playlist["MediaType"] == "Audio":
                         yield self._parse_playlist(playlist)
@@ -629,17 +620,17 @@ class JellyfinProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        if jellyfin_album := await self._client.get_item(prov_album_id):
+        if jellyfin_album := await self._client.get_album(prov_album_id):
             return self._parse_album(jellyfin_album)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
-        jellyfin_album_tracks = await self._get_children(prov_album_id, ITEM_TYPE_AUDIO)
+        jellyfin_album_tracks = await self._client.tracks(prov_album_id)
         return [
             self._parse_track(jellyfin_album_track)
-            for jellyfin_album_track in jellyfin_album_tracks
+            for jellyfin_album_track in jellyfin_album_tracks["Items"]
         ]
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
@@ -660,21 +651,21 @@ class JellyfinProvider(MusicProvider):
             artist.mbid = UNKNOWN_ARTIST_ID_MBID
             return artist
 
-        if jellyfin_artist := await self._client.get_item(prov_artist_id):
+        if jellyfin_artist := await self._client.get_artist(prov_artist_id):
             return self._parse_artist(jellyfin_artist)
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        if jellyfin_track := await self._client.get_item(prov_track_id):
+        if jellyfin_track := await self._client.get_track(prov_track_id):
             return self._parse_track(jellyfin_track)
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        if jellyfin_playlist := await self._client.get_item(prov_playlist_id):
+        if jellyfin_playlist := await self._client.get_playlist(prov_playlist_id):
             return self._parse_playlist(jellyfin_playlist)
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
@@ -688,11 +679,11 @@ class JellyfinProvider(MusicProvider):
             # paging not supported, we always return the whole list at once
             return []
         # TODO: Does Jellyfin support paging here?
-        jellyfin_playlist = await self._client.get_item(prov_playlist_id)
-        playlist_items = await self._get_children(jellyfin_playlist[ITEM_KEY_ID], ITEM_TYPE_AUDIO)
+        jellyfin_playlist = await self._client.get_playlist(prov_playlist_id)
+        playlist_items = await self._client.tracks(jellyfin_playlist[ITEM_KEY_ID])
         if not playlist_items:
             return result
-        for index, jellyfin_track in enumerate(playlist_items, 1):
+        for index, jellyfin_track in enumerate(playlist_items["Items"], 1):
             try:
                 if track := self._parse_track(jellyfin_track):
                     if not track.position:
@@ -715,7 +706,7 @@ class JellyfinProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        jellyfin_track = await self._client.get_item(item_id)
+        jellyfin_track = await self._client.get_track(item_id)
         mimetype = self._media_mime_type(jellyfin_track)
         media_stream = jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0]
         url = self._client.audio_url(jellyfin_track[ITEM_KEY_ID], SUPPORTED_CONTAINER_FORMATS)
@@ -750,22 +741,6 @@ class JellyfinProvider(MusicProvider):
     def _get_stream_url(self, media_item: str) -> str:
         """Return the stream URL for a media item."""
         return self._client.audio_url(media_item)
-
-    async def _get_children(self, parent_id: str, item_type: str) -> list[JellyMediaItem]:
-        """Return all children for the parent_id whose item type is item_type."""
-        params: dict[str, str | int] = {
-            "Recursive": "true",
-            ITEM_KEY_PARENT_ID: parent_id,
-        }
-        if item_type in ITEM_TYPE_ARTIST:
-            params["IncludeItemTypes"] = f"{ITEM_TYPE_MUSICARTISTS},{ITEM_TYPE_ARTIST}"
-        else:
-            params["IncludeItemTypes"] = item_type
-        if item_type in ITEM_TYPE_AUDIO:
-            params["Fields"] = ",".join(TRACK_FIELDS)
-
-        result = await self._client.user_items("", params)
-        return result["Items"]
 
     async def _get_music_libraries(self) -> list[JellyMediaLibrary]:
         """Return all supported libraries a user has access to."""
