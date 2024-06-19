@@ -247,6 +247,7 @@ class JellyfinProvider(MusicProvider):
         resultset = await self._client.playlists(
             search_term=search_query,
             limit=limit,
+            enable_user_data=True,
         )
         playlists = []
         for item in resultset["Items"]:
