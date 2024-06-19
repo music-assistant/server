@@ -175,7 +175,7 @@ class MusicController(CoreController):
         self,
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
-        limit: int = 50,
+        limit: int = 25,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
@@ -356,7 +356,7 @@ class MusicController(CoreController):
     ) -> list[MediaItemType]:
         """Return a list of the last played items."""
         if media_types is None:
-            media_types = [MediaType.TRACK, MediaType.RADIO]
+            media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type "
@@ -370,7 +370,13 @@ class MusicController(CoreController):
             with suppress(MediaNotFoundError, ProviderUnavailableError):
                 media_type = MediaType(db_row["media_type"])
                 ctrl = self.get_controller(media_type)
-                item = await ctrl.get_provider_item(db_row["item_id"], db_row["provider"])
+                item = await ctrl.get(
+                    db_row["item_id"],
+                    db_row["provider"],
+                    add_to_library=False,
+                    lazy=True,
+                    force_refresh=False,
+                )
                 result.append(item)
         return result
 
@@ -590,16 +596,17 @@ class MusicController(CoreController):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
 
+        if provider_instance_id_or_domain == "builtin":
+            # we deliberately skip builtin provider items as those are often
+            # one-off items like TTS or some sound effect etc.
+            return
+
         if provider_instance_id_or_domain == "library":
             prov_key = "library"
         elif prov := self.mass.get_provider(provider_instance_id_or_domain):
             prov_key = prov.lookup_key
         else:
             prov_key = provider_instance_id_or_domain
-            # do not try to store dynamic urls (e.g. with auth token etc.),
-            # stick with plain uri/urls only
-            if "http" in item_id and "?" in item_id:
-                return
 
         # update generic playlog table
         await self.database.insert(
@@ -892,6 +899,20 @@ class MusicController(CoreController):
 
     async def __migrate_database(self, prev_version: int) -> None:
         """Perform a database migration."""
+        self.logger.info(
+            "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
+        )
+        if prev_version == 1:
+            # migrate from version 1 to 2
+            await self.database.execute(
+                f"DELETE FROM {DB_TABLE_PLAYLOG} WHERE provider = 'builtin'"
+            )
+            await self.database.commit()
+            return
+
+        # all other versions: reset the database
+        # we only migrate from prtev version to current we do not try to handle
+        # more complex migrations
         self.logger.warning(
             "Database schema too old - Resetting library/database - "
             "a full rescan will be performed, this can take a while!"
@@ -1100,18 +1121,39 @@ class MusicController(CoreController):
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_name_idx on {db_table}(name);"
             )
+            # index on name (without case sensitivity)
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_name_nocase_idx "
+                f"ON {db_table}(name COLLATE NOCASE);"
+            )
             # index on sort_name
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_sort_name_idx on {db_table}(sort_name);"
             )
+            # index on sort_name (without case sensitivity)
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_sort_name_nocase_idx "
+                f"ON {db_table}(sort_name COLLATE NOCASE);"
+            )
             # index on external_ids
             await self.database.execute(
-                f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx on {db_table}(external_ids);"  # noqa: E501
+                f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx "
+                f"ON {db_table}(external_ids);"
             )
             # index on timestamp_added
             await self.database.execute(
                 f"CREATE INDEX IF NOT EXISTS {db_table}_timestamp_added_idx "
                 f"on {db_table}(timestamp_added);"
+            )
+            # index on play_count
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_play_count_idx "
+                f"on {db_table}(play_count);"
+            )
+            # index on last_played
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_last_played_idx "
+                f"on {db_table}(last_played);"
             )
 
         # indexes on provider_mappings table
@@ -1126,6 +1168,16 @@ class MusicController(CoreController):
         await self.database.execute(
             f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_provider_instance_idx "
             f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,provider_item_id);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance);"
+        )
+        await self.database.execute(
+            "CREATE INDEX IF NOT EXISTS "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_domain_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain);"
         )
 
         # indexes on track_artists table

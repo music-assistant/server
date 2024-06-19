@@ -25,10 +25,8 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
-    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
-    DB_TABLE_TRACKS,
     VARIOUS_ARTISTS_ID_MBID,
     VARIOUS_ARTISTS_NAME,
 )
@@ -59,15 +57,17 @@ class ArtistsController(MediaControllerBase[Artist]):
         self, favorite_only: bool = False, album_artists_only: bool = False
     ) -> int:
         """Return the total number of items in the library."""
-        sql_query = self.base_query
+        sql_query = f"SELECT item_id FROM {self.db_table}"
+        query_parts: list[str] = []
         if favorite_only:
-            sql_query += f" WHERE {self.db_table}.favorite = 1"
+            query_parts.append("favorite = 1")
         if album_artists_only:
-            sql_query += " WHERE " if "WHERE" not in sql_query else " AND "
-            sql_query += (
-                f"artists.item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
-                f"from {DB_TABLE_ALBUM_ARTISTS})"
+            query_parts.append(
+                f"item_id in (select {DB_TABLE_ALBUM_ARTISTS}.artist_id "
+                f"FROM {DB_TABLE_ALBUM_ARTISTS})"
             )
+        if query_parts:
+            sql_query += f" WHERE {' AND '.join(query_parts)}"
         return await self.mass.music.database.get_count_from_query(sql_query)
 
     async def library_items(
@@ -223,14 +223,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                subquery = (
-                    "SELECT item_id FROM provider_mappings WHERE "
-                    "media_type = 'track' AND (provider_domain = :prov_id "
-                    "OR provider_instance = :prov_id)"
-                )
                 query = (
-                    f"WHERE {DB_TABLE_TRACKS}.item_id IN ({subquery}) "
-                    f"AND {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id"
+                    f"WHERE {DB_TABLE_TRACK_ARTISTS}.artist_id = :artist_id "
+                    "AND (provider_domain = :prov_id "
+                    "OR provider_instance = :prov_id)"
                 )
                 query_params = {
                     "artist_id": db_artist.item_id,
@@ -281,14 +277,10 @@ class ArtistsController(MediaControllerBase[Artist]):
                 item_id,
                 provider_instance_id_or_domain,
             ):
-                subquery = (
-                    "SELECT item_id FROM provider_mappings WHERE "
-                    "media_type = 'album' AND (provider_domain = :prov_id "
-                    "OR provider_instance = :prov_id)"
-                )
                 query = (
-                    f"WHERE {DB_TABLE_ALBUMS}.item_id IN ({subquery}) "
-                    f"AND {DB_TABLE_ALBUM_ARTISTS}.artist_id = :artist_id"
+                    f"WHERE {DB_TABLE_ALBUM_ARTISTS}.artist_id = :artist_id "
+                    "AND (provider_domain = :prov_id "
+                    "OR provider_instance = :prov_id)"
                 )
                 query_params = {
                     "prov_id": provider_instance_id_or_domain,

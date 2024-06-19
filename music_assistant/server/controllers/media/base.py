@@ -22,7 +22,6 @@ from music_assistant.common.models.media_items import (
     media_from_dict,
 )
 from music_assistant.constants import (
-    DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLOG,
     DB_TABLE_PROVIDER_MAPPINGS,
@@ -43,8 +42,8 @@ JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids"
 SORT_KEYS = {
     "name": "name COLLATE NOCASE ASC",
     "name_desc": "name COLLATE NOCASE DESC",
-    "sort_name": "sort_name ASC",
-    "sort_name_desc": "sort_name DESC",
+    "sort_name": "sort_name COLLATE NOCASE ASC",
+    "sort_name_desc": "sort_name COLLATE NOCASE DESC",
     "timestamp_added": "timestamp_added ASC",
     "timestamp_added_desc": "timestamp_added DESC",
     "timestamp_modified": "timestamp_modified ASC",
@@ -53,16 +52,13 @@ SORT_KEYS = {
     "last_played_desc": "last_played DESC",
     "play_count": "play_count ASC",
     "play_count_desc": "play_count DESC",
-    "artist": "artists.name COLLATE NOCASE ASC",
-    "album": "albums.name COLLATE NOCASE ASC",
-    "sort_artist": "artists.sort_name ASC",
-    "sort_album": "albums.sort_name ASC",
     "year": "year ASC",
     "year_desc": "year DESC",
     "position": "position ASC",
     "position_desc": "position DESC",
     "random": "RANDOM()",
-    "random_play_count": "RANDOM(), play_count",
+    "random_play_count": "random(), play_count ASC",
+    "random_fast": "play_count ASC",  # this one is handled with a special query
 }
 
 
@@ -76,7 +72,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     def __init__(self, mass: MusicAssistant) -> None:
         """Initialize class."""
         self.mass = mass
-        self.base_query = f"SELECT * FROM {self.db_table}"
+        self.base_query = (
+            f"SELECT DISTINCT {self.db_table}.* FROM {self.db_table} "
+            f"LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}.item_id = {self.db_table}.item_id "
+            f"AND media_type = '{self.media_type}'"
+        )
         self.logger = logging.getLogger(f"{MASS_LOGGER_NAME}.music.{self.media_type.value}")
         # register (base) api handlers
         self.api_base = api_base = f"{self.media_type}s"
@@ -193,10 +194,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def library_count(self, favorite_only: bool = False) -> int:
         """Return the total number of items in the library."""
-        sql_query = self.base_query
         if favorite_only:
-            sql_query += f" WHERE {self.db_table}.favorite = 1"
-        return await self.mass.music.database.get_count_from_query(sql_query)
+            sql_query = f"SELECT item_id FROM {self.db_table} WHERE favorite = 1"
+            return await self.mass.music.database.get_count_from_query(sql_query)
+        return await self.mass.music.database.get_count(self.db_table)
 
     async def library_items(
         self,
@@ -209,6 +210,12 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         extra_query_params: dict[str, Any] | None = None,
     ) -> list[ItemCls]:
         """Get in-database items."""
+        # create special performant random query
+        if order_by == "random_fast" and not extra_query:
+            extra_query = (
+                f"{self.db_table}.rowid > (ABS(RANDOM()) % "
+                f"(SELECT max({self.db_table}.rowid) FROM {self.db_table}))"
+            )
         return await self._get_library_items_by_query(
             favorite=favorite,
             search=search,
@@ -478,25 +485,21 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         assert provider_instance_id_or_domain != "library"
         assert provider_domain != "library"
         assert provider_instance != "library"
-        subquery = f"WHERE provider_mappings.media_type = '{self.media_type.value}' "
         if provider_instance:
             query_params = {"prov_id": provider_instance}
-            subquery += "AND provider_mappings.provider_instance = :prov_id"
+            query = "provider_mappings.provider_instance = :prov_id"
         elif provider_domain:
             query_params = {"prov_id": provider_domain}
-            subquery += "AND provider_mappings.provider_domain = :prov_id"
+            query = "provider_mappings.provider_domain = :prov_id"
         else:
             query_params = {"prov_id": provider_instance_id_or_domain}
-            subquery += (
-                "AND (provider_mappings.provider_instance = :prov_id "
-                "OR provider_mappings.provider_domain = :prov_id) "
+            query = (
+                "(provider_mappings.provider_instance = :prov_id "
+                "OR provider_mappings.provider_domain = :prov_id)"
             )
         if provider_item_id:
-            subquery += " AND provider_mappings.provider_item_id = :item_id"
+            query += " AND provider_mappings.provider_item_id = :item_id"
             query_params["item_id"] = provider_item_id
-        query = (
-            f"WHERE {self.db_table}.item_id in (SELECT item_id FROM provider_mappings {subquery})"
-        )
         return await self._get_library_items_by_query(
             limit=limit, offset=offset, extra_query=query, extra_query_params=query_params
         )
@@ -751,32 +754,30 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         sql_query = self.base_query
         query_params = extra_query_params or {}
         query_parts: list[str] = []
+        # handle basic search on name
+        if search:
+            # handle combined artist + title search
+            if self.media_type in (MediaType.ALBUM, MediaType.TRACK) and " - " in search:
+                artist_str, title_str = search.split(" - ", 1)
+                query_parts.append(
+                    f"({self.db_table}.name LIKE :search_title "
+                    f"AND {DB_TABLE_ARTISTS}.name LIKE :search_artist)"
+                )
+                query_params["search_title"] = f"%{title_str}%"
+                query_params["search_artist"] = f"%{artist_str}%"
+            else:
+                query_params["search"] = f"%{search}%"
+                query_parts.append(f"{self.db_table}.name LIKE :search")
+        # handle favorite filter
+        if favorite is not None:
+            query_parts.append(f"{self.db_table}.favorite = :favorite")
+            query_params["favorite"] = favorite
         # handle extra/custom query
         if extra_query:
             # prevent duplicate where statement
             if extra_query.lower().startswith("where "):
                 extra_query = extra_query[5:]
             query_parts.append(extra_query)
-        # handle basic search on name
-        if search:
-            query_params["search"] = f"%{search}%"
-            if self.media_type == MediaType.ALBUM:
-                query_parts.append(
-                    f"({self.db_table}.name LIKE :search "
-                    f"OR {DB_TABLE_ARTISTS}.name LIKE :search)"
-                )
-            elif self.media_type == MediaType.TRACK:
-                query_parts.append(
-                    f"({self.db_table}.name LIKE :search "
-                    f"OR {DB_TABLE_ARTISTS}.name LIKE :search "
-                    f"OR {DB_TABLE_ALBUMS}.name LIKE :search)"
-                )
-            else:
-                query_parts.append(f"{self.db_table}.name LIKE :search")
-        # handle favorite filter
-        if favorite is not None:
-            query_parts.append(f"{self.db_table}.favorite = :favorite")
-            query_params["favorite"] = favorite
         # concetenate all where queries
         if query_parts:
             sql_query += " WHERE " + " AND ".join(query_parts)
@@ -784,9 +785,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if order_by:
             if sort_key := SORT_KEYS.get(order_by):
                 sql_query += f" ORDER BY {sort_key}"
-            else:
-                self.logger.warning("%s is not a valid sort option!", order_by)
-
         # return dbresult parsed to media item model
         return [
             self.item_cls.from_dict(self._parse_db_row(db_row))
