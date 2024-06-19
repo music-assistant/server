@@ -16,6 +16,7 @@ from aiojellyfin import MediaLibrary as JellyMediaLibrary
 from aiojellyfin import Playlist as JellyPlaylist
 from aiojellyfin import SessionConfiguration, authenticate_by_name
 from aiojellyfin import Track as JellyTrack
+from aiojellyfin.const import ImageType as JellyImageType
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -78,7 +79,7 @@ from .const import (
     ITEM_KEY_RUNTIME_TICKS,
     ITEM_KEY_SORT_NAME,
     ITEM_KEY_USER_DATA,
-    MAX_IMAGE_WIDTH,
+    MEDIA_IMAGE_TYPES,
     SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
     UNKNOWN_ARTIST_MAPPING,
@@ -271,17 +272,7 @@ class JellyfinProvider(MusicProvider):
         )
         if ITEM_KEY_PRODUCTION_YEAR in jellyfin_album:
             album.year = jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
-        if thumb := self._get_thumbnail_url(jellyfin_album):
-            album.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        album.metadata.images = self._get_artwork(jellyfin_album)
         if ITEM_KEY_OVERVIEW in jellyfin_album:
             album.metadata.description = jellyfin_album[ITEM_KEY_OVERVIEW]
         if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
@@ -350,17 +341,7 @@ class JellyfinProvider(MusicProvider):
                 )
         if ITEM_KEY_SORT_NAME in jellyfin_artist:
             artist.sort_name = jellyfin_artist[ITEM_KEY_SORT_NAME]
-        if thumb := self._get_thumbnail_url(jellyfin_artist):
-            artist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        artist.metadata.images = self._get_artwork(jellyfin_artist)
         user_data = jellyfin_artist.get(ITEM_KEY_USER_DATA, {})
         artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         return artist
@@ -396,17 +377,7 @@ class JellyfinProvider(MusicProvider):
         if track.track_number >= 0:
             track.position = track.track_number
 
-        if thumb := self._get_thumbnail_url(jellyfin_track):
-            track.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        track.metadata.images = self._get_artwork(jellyfin_track)
 
         if jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
             for artist_item in jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
@@ -465,17 +436,7 @@ class JellyfinProvider(MusicProvider):
         )
         if ITEM_KEY_OVERVIEW in jellyfin_playlist:
             playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]
-        if thumb := self._get_thumbnail_url(jellyfin_playlist):
-            playlist.metadata.images = UniqueList(
-                [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=thumb,
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                ]
-            )
+        playlist.metadata.images = self._get_artwork(jellyfin_playlist)
         user_data = jellyfin_playlist.get(ITEM_KEY_USER_DATA, {})
         playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
         playlist.is_editable = False
@@ -737,15 +698,34 @@ class JellyfinProvider(MusicProvider):
             path=url,
         )
 
-    def _get_thumbnail_url(self, media_item: JellyMediaItem) -> str | None:
-        """Return the URL for the primary image of a media item if available."""
+    def _get_artwork(self, media_item: JellyMediaItem) -> UniqueList[MediaItemImage]:
+        images: UniqueList[MediaItemImage] = UniqueList()
+
+        for i, _ in enumerate(media_item.get("BackdropImageTags", [])):
+            images.append(
+                MediaItemImage(
+                    type=ImageType.FANART,
+                    path=self._client.artwork(
+                        media_item[ITEM_KEY_ID], JellyImageType.Backdrop, index=i
+                    ),
+                    provider=self.instance_id,
+                    remotely_accessible=False,
+                )
+            )
+
         image_tags = media_item[ITEM_KEY_IMAGE_TAGS]
+        for jelly_image_type, image_type in MEDIA_IMAGE_TYPES.items():
+            if jelly_image_type in image_tags:
+                images.append(
+                    MediaItemImage(
+                        type=image_type,
+                        path=self._client.artwork(media_item[ITEM_KEY_ID], jelly_image_type),
+                        provider=self.instance_id,
+                        remotely_accessible=False,
+                    )
+                )
 
-        if "Primary" not in image_tags:
-            return None
-
-        item_id = media_item[ITEM_KEY_ID]
-        return self._client.artwork(item_id, "Primary", MAX_IMAGE_WIDTH)
+        return images
 
     def _get_stream_url(self, media_item: str) -> str:
         """Return the stream URL for a media item."""
