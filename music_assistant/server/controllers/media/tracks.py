@@ -410,16 +410,7 @@ class TracksController(MediaControllerBase[Track]):
         For digital releases, the discnumber will be just 0 or 1.
         Track number should start counting at 1.
         """
-        if overwrite and album.provider.startswith("filesystem"):
-            # on overwrite, clear the album_tracks table first
-            # this is done for filesystem providers only (to account for changing ID3 tags)
-            # TODO: find a better way to deal with this as this doesn't cover all (edge) cases
-            await self.mass.music.database.delete(
-                DB_TABLE_ALBUM_TRACKS,
-                {
-                    "track_id": db_id,
-                },
-            )
+        
         db_album: Album | ItemMapping = None
         if album.provider == "library":
             db_album = album
