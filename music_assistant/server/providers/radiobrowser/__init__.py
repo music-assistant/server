@@ -21,6 +21,7 @@ from music_assistant.common.models.media_items import (
     SearchResults,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
@@ -101,6 +102,7 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
+    @use_cache(86400 * 7)
     async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
         """Browse this provider's items.
 

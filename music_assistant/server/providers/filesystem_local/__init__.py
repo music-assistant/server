@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import os.path
+import re
 from typing import TYPE_CHECKING
 
 import aiofiles
@@ -76,10 +77,15 @@ async def get_config_entries(
     )
 
 
-async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
-    """Create FileSystemItem from os.DirEntry."""
+def sorted_scandir(base_path: str, sub_path: str) -> list[os.DirEntry]:
+    """Implement os.scandir that returns (naturally) sorted entries."""
 
-    def _create_item():
+    def nat_key(name: str) -> tuple[int, str]:
+        """Sort key for natural sorting."""
+        return tuple(int(s) if s.isdigit() else s for s in re.split(r"(\d+)", name))
+
+    def create_item(entry: os.DirEntry):
+        """Create FileSystemItem from os.DirEntry."""
         absolute_path = get_absolute_path(base_path, entry.path)
         stat = entry.stat(follow_symlinks=False)
         return FileSystemItem(
@@ -94,8 +100,16 @@ async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
             local_path=absolute_path,
         )
 
-    # run in thread because strictly taken this may be blocking IO
-    return await asyncio.to_thread(_create_item)
+    return sorted(
+        # filter out invalid dirs and hidden files
+        [
+            create_item(x)
+            for x in os.scandir(sub_path)
+            if x.name not in IGNORE_DIRS and not x.name.startswith(".")
+        ],
+        # sort by (natural) name
+        key=lambda x: nat_key(x.name),
+    )
 
 
 class LocalFileSystemProvider(FileSystemProviderBase):
@@ -132,20 +146,15 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self.base_path, path)
-        entries = await asyncio.to_thread(os.scandir, abs_path)
-        for entry in entries:
-            if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
-                # skip invalid/system files and dirs
-                continue
-            item = await create_item(self.base_path, entry)
-            if recursive and item.is_dir:
+        for entry in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path):
+            if recursive and entry.is_dir:
                 try:
-                    async for subitem in self.listdir(item.absolute_path, True):
+                    async for subitem in self.listdir(entry.absolute_path, True):
                         yield subitem
                 except (OSError, PermissionError) as err:
-                    self.logger.warning("Skip folder %s: %s", item.path, str(err))
+                    self.logger.warning("Skip folder %s: %s", entry.path, str(err))
             else:
-                yield item
+                yield entry
 
     async def resolve(
         self,
