@@ -824,14 +824,18 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def _extract_stream_url_using_yt_dlp(self, item_id: str) -> str:
         """Figure out the stream URL to use based on yt-dlp."""
+
         def _extract_stream_url():
             ydl = yt_dlp.YoutubeDL()
-            info = ydl.extract_info(
-                f"https://www.youtube.com/embed/{item_id}", download=False)
-            audio_only_formats = [f for f in info['formats'] if f.get(
-                'audio_ext', 'none') == 'm4a' and f.get('video_ext', 'none') == 'none']
-            # Formats are sorted from worse to better quality. Use the last one.
-            return audio_only_formats[-1]['url']
+            info = ydl.extract_info(f"https://www.youtube.com/embed/{item_id}", download=False)
+            audio_only_formats = [
+                f
+                for f in info["formats"]
+                if f.get("audio_ext", "none") == "m4a" and f.get("video_ext", "none") == "none"
+            ]
+            # Formats are sorted from worse to better quality. Use the last/best one.
+            return audio_only_formats[-1]["url"]
+
         return await asyncio.to_thread(_extract_stream_url)
 
     async def _parse_stream_url(self, stream_format: dict, item_id: str) -> str:
