@@ -632,7 +632,9 @@ class JellyfinProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
-        jellyfin_album_tracks = await self._client.tracks(prov_album_id)
+        jellyfin_album_tracks = await self._client.tracks(
+            prov_album_id, enable_user_data=True, fields=TRACK_FIELDS
+        )
         return [
             self._parse_track(jellyfin_album_track)
             for jellyfin_album_track in jellyfin_album_tracks["Items"]
@@ -685,7 +687,9 @@ class JellyfinProvider(MusicProvider):
             return []
         # TODO: Does Jellyfin support paging here?
         jellyfin_playlist = await self._client.get_playlist(prov_playlist_id)
-        playlist_items = await self._client.tracks(jellyfin_playlist[ITEM_KEY_ID])
+        playlist_items = await self._client.tracks(
+            jellyfin_playlist[ITEM_KEY_ID], enable_user_data=True, fields=TRACK_FIELDS
+        )
         if not playlist_items:
             return result
         for index, jellyfin_track in enumerate(playlist_items["Items"], 1):
