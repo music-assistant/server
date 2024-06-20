@@ -594,7 +594,7 @@ class SnapCastProvider(PlayerProvider):
             f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp.enabled=true",
             "--tcp.port=1705",
-            f"--buffer={self._snapcast_server_control_port}",
+            f"--stream.buffer={self._snapcast_server_control_port}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
