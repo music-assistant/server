@@ -57,6 +57,7 @@ if TYPE_CHECKING:
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
+CONF_SERVER_BUFFER_SIZE = "snapcast_server_build_in_buffer_size"
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
@@ -133,6 +134,17 @@ async def get_config_entries(
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
             category="advanced" if snapserver_present else "generic",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_BUFFER_SIZE,
+            type=ConfigEntryType.INTEGER,
+            range=(500, 6000),
+            default_value=1000,
+            label="Snapcast server buffer size",
+            required=False,
+            hidden=not snapserver_present,
+            depends_on=not CONF_USE_EXTERNAL_SERVER,
+            category="advanced",
         ),
     )
 
