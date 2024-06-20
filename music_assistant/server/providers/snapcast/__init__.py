@@ -145,8 +145,6 @@ async def get_config_entries(
             "from capturing a sample on the snapserver until"
             "the sample is played-out on the client",
             required=False,
-            hidden=not snapserver_present,
-            depends_on=not CONF_USE_EXTERNAL_SERVER,
             category="advanced",
         ),
     )
@@ -201,6 +199,7 @@ class SnapCastProvider(PlayerProvider):
         if self._use_builtin_server:
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
+            self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
@@ -579,6 +578,7 @@ class SnapCastProvider(PlayerProvider):
             f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp.enabled=true",
             "--tcp.port=1705",
+            f"--buffer={self._snapcast_server_control_port}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
