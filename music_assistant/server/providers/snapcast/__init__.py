@@ -346,6 +346,8 @@ class SnapCastProvider(PlayerProvider):
             player = self.mass.players.get(player_id)
             player.synced_to = self._synced_to(player_id)
             self.mass.players.update(target_player)
+            # update all players
+            self._handle_update()
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
@@ -355,6 +357,8 @@ class SnapCastProvider(PlayerProvider):
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
+        # update all players
+        self._handle_update()
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:  # noqa: PLR0915
         """Handle PLAY MEDIA on given player."""
