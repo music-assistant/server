@@ -467,9 +467,11 @@ class SnapCastProvider(PlayerProvider):
     def _synced_to(self, player_id: str) -> str | None:
         """Return player_id of the player this player is synced to."""
         snap_group = self._get_snapgroup(player_id)
-        if player_id != self._get_ma_id(snap_group.clients[0]):
-            return self._get_ma_id(snap_group.clients[0])
-        return None
+
+        if len(snap_group.clients) < 2:
+            return None
+
+        return self._get_ma_id(snap_group.clients[0])
 
     def _group_childs(self, player_id: str) -> set[str]:
         """Return player_ids of the players synced to this player."""
