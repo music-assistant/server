@@ -58,6 +58,8 @@ CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
 CONF_SERVER_BUFFER_SIZE = "snapcast_server_build_in_buffer_size"
+CONF_SERVER_INITIAL_VOLUME = "snapcast_server_build_in_initial_volume"
+
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
@@ -146,6 +148,18 @@ async def get_config_entries(
             "the sample is played-out on the client",
             required=False,
             category="advanced",
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_INITIAL_VOLUME,
+            type=ConfigEntryType.INTEGER,
+            range=(0, 100),
+            default_value=25,
+            label="Snapserver initial volume",
+            description="Volume assigned to new snapclients [percent]",
+            required=False,
+            category="advanced",
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
     )
 
@@ -200,6 +214,8 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+            self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
+
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
@@ -579,6 +595,7 @@ class SnapCastProvider(PlayerProvider):
             "--tcp.enabled=true",
             "--tcp.port=1705",
             f"--buffer={self._snapcast_server_control_port}",
+            f"--initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
