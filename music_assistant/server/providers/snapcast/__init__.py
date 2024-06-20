@@ -595,7 +595,7 @@ class SnapCastProvider(PlayerProvider):
             "--tcp.enabled=true",
             "--tcp.port=1705",
             f"--buffer={self._snapcast_server_control_port}",
-            f"--initial_volume={self._snapcast_server_initial_volume}",
+            f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
