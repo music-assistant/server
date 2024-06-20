@@ -24,6 +24,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     ConfigEntry,
+    ConfigValueOption,
     ConfigValueType,
     create_sample_rates_config_entry,
 )
@@ -59,6 +60,7 @@ CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
 CONF_SERVER_BUFFER_SIZE = "snapcast_server_build_in_buffer_size"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_build_in_initial_volume"
+CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_build_in_codec"
 
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
@@ -161,6 +163,34 @@ async def get_config_entries(
             category="advanced",
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
+        ConfigEntry(
+            key=CONF_SERVER_TRANSPORT_CODEC,
+            type=ConfigEntryType.STRING,
+            options=(
+                ConfigValueOption(
+                    title="FLAC",
+                    value="flac",
+                ),
+                ConfigValueOption(
+                    title="OGG",
+                    value="ogg",
+                ),
+                ConfigValueOption(
+                    title="OPUS",
+                    value="opus",
+                ),
+                ConfigValueOption(
+                    title="PCM",
+                    value="pcm",
+                ),
+            ),
+            default_value="flac",
+            label="Snapserver default transport codec",
+            description="This is the codec used by snapserver to send audio to clients",
+            required=False,
+            category="advanced",
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
     )
 
 
@@ -215,6 +245,9 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
             self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
+            self._snapcast_server_transport_codec = self.config.get_value(
+                CONF_SERVER_TRANSPORT_CODEC
+            )
 
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
@@ -595,6 +628,7 @@ class SnapCastProvider(PlayerProvider):
             "--tcp.enabled=true",
             "--tcp.port=1705",
             f"--stream.buffer={self._snapcast_server_control_port}",
+            f"--stream.codec={self._snapcast_server_transport_codec}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
