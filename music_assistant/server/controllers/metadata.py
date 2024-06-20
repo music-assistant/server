@@ -75,7 +75,7 @@ LOCALES = {
     "fi_FI": "Finnish",
     "fr_FR": "French",
     "hu_HU": "Hungarian",
-    "is_IS", "Icelandic",
+    "is_IS": "Icelandic",
     "it_IT": "Italian",
     "lt_LT": "Lithuanian",
     "lv_LV": "Latvian",
