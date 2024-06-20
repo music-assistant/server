@@ -18,6 +18,7 @@ from zeroconf import IPVersion, ServiceStateChange
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
+    CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
     ConfigEntry,
     ConfigValueType,
     create_sample_rates_config_entry,
@@ -288,11 +289,12 @@ class SonosPlayerProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if not (sonos_player := self.sonos_players.get(player_id)):
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE)
+            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED)
         sw_gen = sonos_player.discovery_info["device"].get("swGen", 1)
         return (
             *base_entries,
             CONF_ENTRY_CROSSFADE,
+            CONF_ENTRY_FLOW_MODE_HIDDEN_DISABLED,
             CONF_ENTRY_SAMPLE_RATES_SONOS_S1 if sw_gen == 1 else CONF_ENTRY_SAMPLE_RATES_SONOS_S2,
         )
 
