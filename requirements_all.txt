@@ -16,6 +16,7 @@ colorlog==6.8.2
 cryptography==42.0.8
 deezer-python-async==0.3.0
 defusedxml==0.7.1
+eyeD3==0.9.7
 faust-cchardet>=2.1.18
 git+https://github.com/MarvinSchenkel/pytube.git
 hass-client==1.1.1
