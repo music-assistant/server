@@ -1,0 +1,40 @@
+{
+    "Name": "Ash",
+    "ServerId": "58f180d8d2b34927bcfd73eee400ffad",
+    "Id": "dd954bbf54398e247d803186d3585b79",
+    "SortName": "ash",
+    "ChannelId": null,
+    "RunTimeTicks": 509234691363,
+    "ProviderIds": {
+        "MusicBrainzArtist": "99164692-c02d-407c-81c9-25d338dd21f4"
+    },
+    "IsFolder": true,
+    "Type": "MusicArtist",
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Artist-Musicbrainz-99164692-c02d-407c-81c9-25d338dd21f4"
+    },
+    "ImageTags": {
+        "Primary": "8a543e58fda6d2f374263a4dcd0d2fbd",
+        "Logo": "662f82868ad2964190daea171f3fcf08"
+    },
+    "BackdropImageTags": [
+        "8a4c3c67629b28673de7af433a1efd68"
+    ],
+    "ImageBlurHashes": {
+        "Backdrop": {
+            "8a4c3c67629b28673de7af433a1efd68": "WOE2-2Tdahs=KjwJ?w%2NGkBoMkCE%n+j?jErqNwo#Nwsmo1oejF"
+        },
+        "Primary": {
+            "8a543e58fda6d2f374263a4dcd0d2fbd": "eNHd?IWD4;~qI;#5~U-;D*-:^fxUM{xa%K-;RkIW%MWA4:Si%Mngn}"
+        },
+        "Logo": {
+            "662f82868ad2964190daea171f3fcf08": "OXD]o8j[00WBt7t7ayofWBWBt7ofRjayM{ofofRjRjj[t7"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Unknown"
+}
