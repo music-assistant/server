@@ -67,6 +67,7 @@ LOCALES = {
     "da_DK": "Danish",
     "de_DE": "German",
     "el_GR": "Greek",
+    "en_AU": "English (AU)",
     "en_US": "English (US)",
     "en_UK": "English (UK)",
     "es_ES": "Spanish",
@@ -74,6 +75,7 @@ LOCALES = {
     "fi_FI": "Finnish",
     "fr_FR": "French",
     "hu_HU": "Hungarian",
+    "is_IS", "Icelandic",
     "it_IT": "Italian",
     "lt_LT": "Lithuanian",
     "lv_LV": "Latvian",
@@ -85,6 +87,7 @@ LOCALES = {
     "ru_RU": "Russian",
     "sk_SK": "Slovak",
     "sl_SI": "Slovenian",
+    "sr": "Serbian",
     "sv_SE": "Swedish",
     "tr_TR": "Turkish",
 }
