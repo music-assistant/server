@@ -61,6 +61,7 @@ CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
 CONF_SERVER_BUFFER_SIZE = "snapcast_server_build_in_buffer_size"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_build_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_build_in_codec"
+CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_build_in_send_muted"
 
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
@@ -164,6 +165,15 @@ async def get_config_entries(
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
+            key=CONF_SERVER_SEND_AUDIO_TO_MUTED,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Send audio to muted clients",
+            required=False,
+            category="advanced",
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
+        ConfigEntry(
             key=CONF_SERVER_TRANSPORT_CODEC,
             type=ConfigEntryType.STRING,
             options=(
@@ -245,6 +255,9 @@ class SnapCastProvider(PlayerProvider):
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
             self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
             self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
+            self._snapcast_server_send_to_muted = self.config.get_value(
+                CONF_SERVER_SEND_AUDIO_TO_MUTED
+            )
             self._snapcast_server_transport_codec = self.config.get_value(
                 CONF_SERVER_TRANSPORT_CODEC
             )
@@ -629,6 +642,7 @@ class SnapCastProvider(PlayerProvider):
             "--tcp.port=1705",
             f"--stream.buffer={self._snapcast_server_control_port}",
             f"--stream.codec={self._snapcast_server_transport_codec}",
+            f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
             f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
