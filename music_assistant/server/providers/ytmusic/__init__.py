@@ -91,6 +91,7 @@ YT_PERSONAL_PLAYLISTS = (
     "RDTMAK5uy_nilrsVWxrKskY0ZUpVZ3zpB0u4LwWTVJ4",  # Replay Mix
     "RDTMAK5uy_mZtXeU08kxXJOUhL0ETdAuZTh1z7aAFAo",  # Archive Mix
 )
+YTM_PREMIUM_CHECK_TRACK_ID = "dQw4w9WgXcQ"
 
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
@@ -199,6 +200,8 @@ class YoutubeMusicProvider(MusicProvider):
                 break
         else:
             self.language = "en"
+        if not await self._user_has_ytm_premium():
+            raise LoginFailed("User does not have Youtube Music Premium")
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -807,6 +810,12 @@ class YoutubeMusicProvider(MusicProvider):
         if not artist_id and artist_obj["name"] == "Various Artists":
             artist_id = VARIOUS_ARTISTS_YTM_ID
         return self._get_item_mapping(MediaType.ARTIST, artist_id, artist_obj.get("name"))
+
+    async def _user_has_ytm_premium(self) -> bool:
+        """Check if the user has Youtube Music Premium."""
+        stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
+        # Only premium users can stream the HQ stream of this song
+        return stream_format["format"] == "141 - audio only (high)"
 
     async def _parse_thumbnails(self, thumbnails_obj: dict) -> list[MediaItemImage]:
         """Parse and YTM thumbnails to MediaItemImage."""
