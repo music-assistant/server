@@ -184,7 +184,6 @@ class YoutubeMusicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Set up the YTMusic provider."""
-        logging.getLogger("pytube").setLevel(self.logger.level + 10)
         logging.getLogger("yt_dlp").setLevel(self.logger.level + 10)
         if not self.config.get_value(CONF_AUTH_TOKEN):
             msg = "Invalid login credentials"
