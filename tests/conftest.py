@@ -7,6 +7,7 @@ from collections.abc import AsyncGenerator
 import pytest
 
 from music_assistant.server.server import MusicAssistant
+from tests.common import wait_for_sync_completion
 
 
 @pytest.fixture(name="caplog")
@@ -22,8 +23,13 @@ async def mass(tmp_path: pathlib.Path) -> AsyncGenerator[MusicAssistant, None]:
     storage_path = tmp_path / "root"
     storage_path.mkdir(parents=True)
 
-    mass = MusicAssistant(storage_path)
-    await mass.start()
+    logging.getLogger("aiosqlite").level = logging.INFO
+
+    mass = MusicAssistant(str(storage_path))
+
+    async with wait_for_sync_completion(mass):
+        await mass.start()
+
     try:
         yield mass
     finally:
