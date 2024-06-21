@@ -151,6 +151,7 @@ async def get_config_entries(
             "the sample is played-out on the client",
             required=False,
             category="advanced",
+            hidden=not snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -162,6 +163,7 @@ async def get_config_entries(
             description="Volume assigned to new snapclients [percent]",
             required=False,
             category="advanced",
+            hidden=not snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -171,6 +173,7 @@ async def get_config_entries(
             label="Send audio to muted clients",
             required=False,
             category="advanced",
+            hidden=not snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -199,6 +202,7 @@ async def get_config_entries(
             description="This is the codec used by snapserver to send audio to clients",
             required=False,
             category="advanced",
+            hidden=not snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
     )
