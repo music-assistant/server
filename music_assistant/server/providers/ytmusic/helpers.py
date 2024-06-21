@@ -67,13 +67,13 @@ async def get_playlist(
 
 
 async def get_track(
-    prov_track_id: str, headers: dict[str, str], signature_timestamp: str, language: str = "en"
+    prov_track_id: str, headers: dict[str, str], language: str = "en"
 ) -> dict[str, str] | None:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_song():
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
-        track_obj = ytm.get_song(videoId=prov_track_id, signatureTimestamp=signature_timestamp)
+        track_obj = ytm.get_song(videoId=prov_track_id)
         track = {}
         if "videoDetails" not in track_obj:
             # video that no longer exists
