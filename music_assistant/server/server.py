@@ -284,8 +284,8 @@ class MusicAssistant:
     def subscribe(
         self,
         cb_func: EventCallBackType,
-        event_filter: EventType | tuple[EventType] | None = None,
-        id_filter: str | tuple[str] | None = None,
+        event_filter: EventType | tuple[EventType, ...] | None = None,
+        id_filter: str | tuple[str, ...] | None = None,
     ) -> Callable:
         """Add callback to event listeners.
 
