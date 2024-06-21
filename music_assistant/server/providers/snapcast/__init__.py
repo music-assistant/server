@@ -58,7 +58,7 @@ if TYPE_CHECKING:
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
-CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
+CONF_SERVER_BUFFER_SIZE = "snapcast_server_build_in_buffer_size"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_build_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_build_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_build_in_send_muted"
