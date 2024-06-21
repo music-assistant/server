@@ -112,35 +112,6 @@ async def get_config_entries(
     snapserver_present = returncode == 0 and "snapserver v0.27.0" in output.decode()
     return (
         ConfigEntry(
-            key=CONF_USE_EXTERNAL_SERVER,
-            type=ConfigEntryType.BOOLEAN,
-            default_value=not snapserver_present,
-            label="Use existing Snapserver",
-            required=False,
-            description="Music Assistant by default already includes a Snapserver. \n\n"
-            "Checking this option allows you to connect to your own/external existing Snapserver "
-            "and not use the builtin one provided by Music Assistant.",
-            category="advanced" if snapserver_present else "generic",
-        ),
-        ConfigEntry(
-            key=CONF_SERVER_HOST,
-            type=ConfigEntryType.STRING,
-            default_value="127.0.0.1",
-            label="Snapcast server ip",
-            required=False,
-            depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if snapserver_present else "generic",
-        ),
-        ConfigEntry(
-            key=CONF_SERVER_CONTROL_PORT,
-            type=ConfigEntryType.INTEGER,
-            default_value=DEFAULT_SNAPSERVER_PORT,
-            label="Snapcast control port",
-            required=False,
-            depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if snapserver_present else "generic",
-        ),
-        ConfigEntry(
             key=CONF_SERVER_BUFFER_SIZE,
             type=ConfigEntryType.INTEGER,
             range=(500, 6000),
@@ -204,6 +175,35 @@ async def get_config_entries(
             category="Built-in Snapserver Settings",
             hidden=not snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
+        ConfigEntry(
+            key=CONF_USE_EXTERNAL_SERVER,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=not snapserver_present,
+            label="Use existing Snapserver",
+            required=False,
+            description="Music Assistant by default already includes a Snapserver. \n\n"
+            "Checking this option allows you to connect to your own/external existing Snapserver "
+            "and not use the builtin one provided by Music Assistant.",
+            category="advanced" if snapserver_present else "generic",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_HOST,
+            type=ConfigEntryType.STRING,
+            default_value="127.0.0.1",
+            label="Snapcast server ip",
+            required=False,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            category="advanced" if snapserver_present else "generic",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_CONTROL_PORT,
+            type=ConfigEntryType.INTEGER,
+            default_value=DEFAULT_SNAPSERVER_PORT,
+            label="Snapcast control port",
+            required=False,
+            depends_on=CONF_USE_EXTERNAL_SERVER,
+            category="advanced" if snapserver_present else "generic",
         ),
     )
 
