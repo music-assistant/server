@@ -75,7 +75,7 @@ DEFAULT_SNAPCAST_FORMAT = AudioFormat(
     content_type=ContentType.PCM_S16LE,
     sample_rate=48000,
     # TODO: can we handle 24 bits bit depth ?
-    bit_depth=16,
+    bit_depth=32,
     channels=2,
 )
 
@@ -137,6 +137,56 @@ async def get_config_entries(
     )
 
 
+class StreamPool:
+    """Stream pool to manage snapcast streams."""
+
+    async def __init__(self, snapserver: Snapserver, init_streams: int):
+        """Handle async initialization of the Stream Pool."""
+        self._snapserver = snapserver
+        self.pool: list[tuple[Snapstream, int]] = [
+            await self._create_stream() for i in range(init_streams)
+        ]
+
+    async def borrow_stream(self):
+        """Borrow from pool."""
+        if self.pool:
+            return self.pool.pop()
+        else:
+            return await self._create_stream()
+
+    def return_object(self, obj):
+        """Return to pool."""
+        self.pool.append(obj)
+
+    async def close(self):
+        """Remove all Streams from snapserver."""
+        for stream, _ in self.pool:
+            with suppress(TypeError, KeyError, AttributeError):
+                await self._snapserver.stream_remove_stream(stream.identifier)
+
+    async def _create_stream(self) -> tuple[Snapstream, int]:
+        """Create new stream on snapcast server."""
+        attempts = 50
+        while attempts:
+            attempts -= 1
+            # pick a random port
+            port = random.randint(4953, 4953 + 200)
+            name = f"MusicAssistant--{port}"
+            result = await self._snapserver.stream_add_stream(
+                # NOTE: setting the sampleformat to something else
+                # (like 24 bits bit depth) does not seem to work at all!
+                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:32:2",
+            )
+            if "id" not in result:
+                # if the port is already taken, the result will be an error
+                # self.logger.warning(result)
+                continue
+            stream = self._snapserver.stream(result["id"])
+            return (stream, port)
+        msg = "Unable to create stream - No free port found?"
+        raise RuntimeError(msg)
+
+
 class SnapCastProvider(PlayerProvider):
     """Player provider for Snapcast based players."""
 
@@ -148,6 +198,7 @@ class SnapCastProvider(PlayerProvider):
     _snapserver_runner: asyncio.Task | None
     _snapserver_started: asyncio.Event | None
     _ids_map: bidict  # ma_id / snapclient_id
+    _stream_pool: StreamPool
 
     def _get_snapclient_id(self, player_id: str) -> str:
         search_dict = self._ids_map
@@ -217,6 +268,8 @@ class SnapCastProvider(PlayerProvider):
             msg = "Unable to start the Snapserver connection ?"
             raise SetupFailedError(msg) from err
 
+        self._stream_pool = StreamPool(self._snapserver, 10)
+
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
         # initial load of players
@@ -224,6 +277,13 @@ class SnapCastProvider(PlayerProvider):
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
+        for player in self.mass.players:
+            if player.provider == "snapcast" and "stream" in player.extra_data:
+                stream = player.extra_data.pop("stream")
+                port = player.extra_data.pop("port")
+                self._stream_pool.return_object((stream, port))
+        self._stream_pool.close()
+
         for client in self._snapserver.clients:
             await self.cmd_stop(client.identifier)
         self._snapserver.stop()
@@ -364,7 +424,11 @@ class SnapCastProvider(PlayerProvider):
             raise RuntimeError(msg)
         # stop any existing streams first
         await self.cmd_stop(player_id)
-        stream, port = await self._create_stream()
+        if "stream" not in player.extra_data:
+            stream, port = await self._stream_pool.borrow_stream()
+            player.extra_data.update({"stream": stream, "port": port})
+        stream = player.extra_data.get("stream")
+        port = player.extra_data.get("port")
         snap_group = self._get_snapgroup(player_id)
         await snap_group.set_stream(stream.identifier)
 
@@ -445,8 +509,6 @@ class SnapCastProvider(PlayerProvider):
                 self.logger.debug("Finished streaming to %s", stream_path)
                 # there is no way to unsub the callback to we do this nasty
                 stream._callback_func = None
-                with suppress(TypeError, KeyError, AttributeError):
-                    await self._snapserver.stream_remove_stream(stream.identifier)
 
         # start streaming the queue (pcm) audio in a background task
         self._stream_tasks[player_id] = asyncio.create_task(_streamer())
@@ -479,28 +541,6 @@ class SnapCastProvider(PlayerProvider):
             for snap_client_id in snap_group.clients
             if len(snap_group.clients) > 1
         }
-
-    async def _create_stream(self) -> tuple[Snapstream, int]:
-        """Create new stream on snapcast server."""
-        attempts = 50
-        while attempts:
-            attempts -= 1
-            # pick a random port
-            port = random.randint(4953, 4953 + 200)
-            name = f"MusicAssistant--{port}"
-            result = await self._snapserver.stream_add_stream(
-                # NOTE: setting the sampleformat to something else
-                # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
-            )
-            if "id" not in result:
-                # if the port is already taken, the result will be an error
-                self.logger.warning(result)
-                continue
-            stream = self._snapserver.stream(result["id"])
-            return (stream, port)
-        msg = "Unable to create stream - No free port found?"
-        raise RuntimeError(msg)
 
     def _get_player_state(self, player_id: str) -> PlayerState:
         """Return the state of the player."""
