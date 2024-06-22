@@ -24,6 +24,7 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     ConfigEntry,
+    ConfigValueOption,
     ConfigValueType,
     create_sample_rates_config_entry,
 )
@@ -57,6 +58,11 @@ if TYPE_CHECKING:
 CONF_SERVER_HOST = "snapcast_server_host"
 CONF_SERVER_CONTROL_PORT = "snapcast_server_control_port"
 CONF_USE_EXTERNAL_SERVER = "snapcast_use_external_server"
+CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
+CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
+CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
+CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
+
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
@@ -105,6 +111,71 @@ async def get_config_entries(
     returncode, output = await check_output("snapserver -v")
     snapserver_present = returncode == 0 and "snapserver v0.27.0" in output.decode()
     return (
+        ConfigEntry(
+            key=CONF_SERVER_BUFFER_SIZE,
+            type=ConfigEntryType.INTEGER,
+            range=(500, 6000),
+            default_value=1000,
+            label="Snapserver buffer size",
+            description="Buffer[ms].The end-to-end latency,"
+            "from capturing a sample on the snapserver until"
+            "the sample is played-out on the client",
+            required=False,
+            category="Built-in Snapserver Settings",
+            hidden=not snapserver_present,
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_INITIAL_VOLUME,
+            type=ConfigEntryType.INTEGER,
+            range=(0, 100),
+            default_value=25,
+            label="Snapserver initial volume",
+            description="Volume assigned to new snapclients [percent]",
+            required=False,
+            category="Built-in Snapserver Settings",
+            hidden=not snapserver_present,
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_SEND_AUDIO_TO_MUTED,
+            type=ConfigEntryType.BOOLEAN,
+            default_value=False,
+            label="Send audio to muted clients",
+            required=False,
+            category="Built-in Snapserver Settings",
+            hidden=not snapserver_present,
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
+        ConfigEntry(
+            key=CONF_SERVER_TRANSPORT_CODEC,
+            type=ConfigEntryType.STRING,
+            options=(
+                ConfigValueOption(
+                    title="FLAC",
+                    value="flac",
+                ),
+                ConfigValueOption(
+                    title="OGG",
+                    value="ogg",
+                ),
+                ConfigValueOption(
+                    title="OPUS",
+                    value="opus",
+                ),
+                ConfigValueOption(
+                    title="PCM",
+                    value="pcm",
+                ),
+            ),
+            default_value="flac",
+            label="Snapserver default transport codec",
+            description="This is the codec used by snapserver to send audio to clients",
+            required=False,
+            category="Built-in Snapserver Settings",
+            hidden=not snapserver_present,
+            help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
+        ),
         ConfigEntry(
             key=CONF_USE_EXTERNAL_SERVER,
             type=ConfigEntryType.BOOLEAN,
@@ -186,6 +257,15 @@ class SnapCastProvider(PlayerProvider):
         if self._use_builtin_server:
             self._snapcast_server_host = "127.0.0.1"
             self._snapcast_server_control_port = DEFAULT_SNAPSERVER_PORT
+            self._snapcast_server_buffer_size = self.config.get_value(CONF_SERVER_BUFFER_SIZE)
+            self._snapcast_server_initial_volume = self.config.get_value(CONF_SERVER_INITIAL_VOLUME)
+            self._snapcast_server_send_to_muted = self.config.get_value(
+                CONF_SERVER_SEND_AUDIO_TO_MUTED
+            )
+            self._snapcast_server_transport_codec = self.config.get_value(
+                CONF_SERVER_TRANSPORT_CODEC
+            )
+
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
@@ -470,10 +550,12 @@ class SnapCastProvider(PlayerProvider):
 
     def _synced_to(self, player_id: str) -> str | None:
         """Return player_id of the player this player is synced to."""
-        snap_group = self._get_snapgroup(player_id)
-        if player_id != self._get_ma_id(snap_group.clients[0]):
-            return self._get_ma_id(snap_group.clients[0])
-        return None
+        snap_group: Snapgroup = self._get_snapgroup(player_id)
+        master_id: str = self._get_ma_id(player_id)
+
+        if len(snap_group.clients) < 2 or player_id == master_id:
+            return None
+        return master_id
 
     def _group_childs(self, player_id: str) -> set[str]:
         """Return player_ids of the players synced to this player."""
@@ -566,6 +648,10 @@ class SnapCastProvider(PlayerProvider):
             f"--http.doc_root={SNAPWEB_DIR}",
             "--tcp.enabled=true",
             "--tcp.port=1705",
+            f"--stream.buffer={self._snapcast_server_control_port}",
+            f"--stream.codec={self._snapcast_server_transport_codec}",
+            f"--stream.send_to_muted={str(self._snapcast_server_send_to_muted).lower()}",
+            f"--streaming_client.initial_volume={self._snapcast_server_initial_volume}",
         ]
         async with AsyncProcess(args, stdout=True, name="snapserver") as snapserver_proc:
             # keep reading from stdout until exit
