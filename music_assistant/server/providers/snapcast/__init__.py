@@ -140,11 +140,15 @@ async def get_config_entries(
 class StreamPool:
     """Stream pool to manage snapcast streams."""
 
-    async def __init__(self, snapserver: Snapserver, init_streams: int):
+    def __init__(self, snapserver: Snapserver, init_streams: int):
         """Handle async initialization of the Stream Pool."""
         self._snapserver = snapserver
+        self.init_streams = init_streams
+
+    async def init(self):
+        """Initialize the Stream Pool."""
         self.pool: list[tuple[Snapstream, int]] = [
-            await self._create_stream() for i in range(init_streams)
+            await self._create_stream() for i in range(self.init_streams)
         ]
 
     async def borrow_stream(self):
@@ -269,6 +273,7 @@ class SnapCastProvider(PlayerProvider):
             raise SetupFailedError(msg) from err
 
         self._stream_pool = StreamPool(self._snapserver, 10)
+        self._stream_pool.init()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
