@@ -2,21 +2,15 @@
 
 from __future__ import annotations
 
-import logging
 import mimetypes
 import socket
 import uuid
 from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 
-from aiojellyfin import Album as JellyAlbum
-from aiojellyfin import Artist as JellyArtist
-from aiojellyfin import MediaItem as JellyMediaItem
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
-from aiojellyfin import Playlist as JellyPlaylist
 from aiojellyfin import SessionConfiguration, authenticate_by_name
 from aiojellyfin import Track as JellyTrack
-from aiojellyfin.const import ImageType as JellyImageType
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -26,65 +20,49 @@ from music_assistant.common.models.config_entries import (
 from music_assistant.common.models.enums import (
     ConfigEntryType,
     ContentType,
-    ImageType,
     MediaType,
     ProviderFeature,
     StreamType,
 )
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
     Artist,
     AudioFormat,
-    ItemMapping,
-    MediaItemImage,
     Playlist,
     ProviderMapping,
     SearchResults,
     Track,
-    UniqueList,
 )
 from music_assistant.common.models.provider import ProviderManifest
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import UNKNOWN_ARTIST_ID_MBID
 from music_assistant.server.models import ProviderInstanceType
 from music_assistant.server.models.music_provider import MusicProvider
+from music_assistant.server.providers.jellyfin.parsers import (
+    parse_album,
+    parse_artist,
+    parse_playlist,
+    parse_track,
+)
 from music_assistant.server.server import MusicAssistant
 
 from .const import (
     ALBUM_FIELDS,
     ARTIST_FIELDS,
     CLIENT_VERSION,
-    ITEM_KEY_ALBUM,
-    ITEM_KEY_ALBUM_ARTIST,
-    ITEM_KEY_ALBUM_ARTISTS,
-    ITEM_KEY_ALBUM_ID,
-    ITEM_KEY_ARTIST_ITEMS,
-    ITEM_KEY_CAN_DOWNLOAD,
     ITEM_KEY_COLLECTION_TYPE,
     ITEM_KEY_ID,
-    ITEM_KEY_IMAGE_TAGS,
     ITEM_KEY_MEDIA_CHANNELS,
     ITEM_KEY_MEDIA_CODEC,
     ITEM_KEY_MEDIA_SOURCES,
     ITEM_KEY_MEDIA_STREAMS,
-    ITEM_KEY_MUSICBRAINZ_ARTIST,
-    ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP,
-    ITEM_KEY_MUSICBRAINZ_TRACK,
     ITEM_KEY_NAME,
-    ITEM_KEY_OVERVIEW,
-    ITEM_KEY_PARENT_INDEX_NUM,
-    ITEM_KEY_PRODUCTION_YEAR,
-    ITEM_KEY_PROVIDER_IDS,
     ITEM_KEY_RUNTIME_TICKS,
-    ITEM_KEY_SORT_NAME,
-    ITEM_KEY_USER_DATA,
-    MEDIA_IMAGE_TYPES,
     SUPPORTED_CONTAINER_FORMATS,
     TRACK_FIELDS,
     UNKNOWN_ARTIST_MAPPING,
     USER_APP_NAME,
-    USER_DATA_KEY_IS_FAVORITE,
 )
 
 CONF_URL = "url"
@@ -195,14 +173,6 @@ class JellyfinProvider(MusicProvider):
         """Return True if the provider is a streaming provider."""
         return False
 
-    def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
-        return ItemMapping(
-            media_type=media_type,
-            item_id=key,
-            provider=self.instance_id,
-            name=name,
-        )
-
     async def _search_track(self, search_query: str, limit: int) -> list[Track]:
         resultset = await self._client.tracks(
             search_term=search_query,
@@ -212,7 +182,7 @@ class JellyfinProvider(MusicProvider):
         )
         tracks = []
         for item in resultset["Items"]:
-            tracks.append(self._parse_track(item))
+            tracks.append(parse_track(self.logger, self.instance_id, self._client, item))
         return tracks
 
     async def _search_album(self, search_query: str, limit: int) -> list[Album]:
@@ -229,7 +199,7 @@ class JellyfinProvider(MusicProvider):
         )
         albums = []
         for item in resultset["Items"]:
-            albums.append(self._parse_album(item))
+            albums.append(parse_album(self.logger, self.instance_id, self._client, item))
         return albums
 
     async def _search_artist(self, search_query: str, limit: int) -> list[Artist]:
@@ -241,7 +211,7 @@ class JellyfinProvider(MusicProvider):
         )
         artists = []
         for item in resultset["Items"]:
-            artists.append(self._parse_artist(item))
+            artists.append(parse_artist(self.logger, self.instance_id, self._client, item))
         return artists
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[Playlist]:
@@ -252,195 +222,8 @@ class JellyfinProvider(MusicProvider):
         )
         playlists = []
         for item in resultset["Items"]:
-            playlists.append(self._parse_playlist(item))
+            playlists.append(parse_playlist(self.instance_id, self._client, item))
         return playlists
-
-    def _parse_album(self, jellyfin_album: JellyAlbum) -> Album:
-        """Parse a Jellyfin Album response to an Album model object."""
-        album_id = jellyfin_album[ITEM_KEY_ID]
-        album = Album(
-            item_id=album_id,
-            provider=self.domain,
-            name=jellyfin_album[ITEM_KEY_NAME],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=str(album_id),
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        if ITEM_KEY_PRODUCTION_YEAR in jellyfin_album:
-            album.year = jellyfin_album[ITEM_KEY_PRODUCTION_YEAR]
-        album.metadata.images = self._get_artwork(jellyfin_album)
-        if ITEM_KEY_OVERVIEW in jellyfin_album:
-            album.metadata.description = jellyfin_album[ITEM_KEY_OVERVIEW]
-        if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
-            try:
-                album.mbid = jellyfin_album[ITEM_KEY_PROVIDER_IDS][
-                    ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP
-                ]
-            except InvalidDataError as error:
-                self.logger.warning(
-                    "Jellyfin has an invalid musicbrainz id for album %s",
-                    album.name,
-                    exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
-                )
-        if ITEM_KEY_SORT_NAME in jellyfin_album:
-            album.sort_name = jellyfin_album[ITEM_KEY_SORT_NAME]
-        if ITEM_KEY_ALBUM_ARTIST in jellyfin_album:
-            for album_artist in jellyfin_album[ITEM_KEY_ALBUM_ARTISTS]:
-                album.artists.append(
-                    self._get_item_mapping(
-                        MediaType.ARTIST,
-                        album_artist[ITEM_KEY_ID],
-                        album_artist[ITEM_KEY_NAME],
-                    )
-                )
-        elif len(jellyfin_album.get(ITEM_KEY_ARTIST_ITEMS, [])) >= 1:
-            for artist_item in jellyfin_album[ITEM_KEY_ARTIST_ITEMS]:
-                album.artists.append(
-                    self._get_item_mapping(
-                        MediaType.ARTIST,
-                        artist_item[ITEM_KEY_ID],
-                        artist_item[ITEM_KEY_NAME],
-                    )
-                )
-        else:
-            album.artists.append(UNKNOWN_ARTIST_MAPPING)
-
-        user_data = jellyfin_album.get(ITEM_KEY_USER_DATA, {})
-        album.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
-        return album
-
-    def _parse_artist(self, jellyfin_artist: JellyArtist) -> Artist:
-        """Parse a Jellyfin Artist response to Artist model object."""
-        artist_id = jellyfin_artist[ITEM_KEY_ID]
-        artist = Artist(
-            item_id=artist_id,
-            name=jellyfin_artist[ITEM_KEY_NAME],
-            provider=self.domain,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=str(artist_id),
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        if ITEM_KEY_OVERVIEW in jellyfin_artist:
-            artist.metadata.description = jellyfin_artist[ITEM_KEY_OVERVIEW]
-        if ITEM_KEY_MUSICBRAINZ_ARTIST in jellyfin_artist[ITEM_KEY_PROVIDER_IDS]:
-            try:
-                artist.mbid = jellyfin_artist[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ARTIST]
-            except InvalidDataError as error:
-                self.logger.warning(
-                    "Jellyfin has an invalid musicbrainz id for artist %s",
-                    artist.name,
-                    exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
-                )
-        if ITEM_KEY_SORT_NAME in jellyfin_artist:
-            artist.sort_name = jellyfin_artist[ITEM_KEY_SORT_NAME]
-        artist.metadata.images = self._get_artwork(jellyfin_artist)
-        user_data = jellyfin_artist.get(ITEM_KEY_USER_DATA, {})
-        artist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
-        return artist
-
-    def _parse_track(self, jellyfin_track: JellyTrack) -> Track:
-        """Parse a Jellyfin Track response to a Track model object."""
-        available = False
-        content = None
-        available = jellyfin_track[ITEM_KEY_CAN_DOWNLOAD]
-        content = jellyfin_track[ITEM_KEY_MEDIA_STREAMS][0][ITEM_KEY_MEDIA_CODEC]
-        track = Track(
-            item_id=jellyfin_track[ITEM_KEY_ID],
-            provider=self.instance_id,
-            name=jellyfin_track[ITEM_KEY_NAME],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=jellyfin_track[ITEM_KEY_ID],
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    available=available,
-                    audio_format=AudioFormat(
-                        content_type=(
-                            ContentType.try_parse(content) if content else ContentType.UNKNOWN
-                        ),
-                    ),
-                    url=self._get_stream_url(jellyfin_track[ITEM_KEY_ID]),
-                )
-            },
-        )
-
-        track.disc_number = jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM, 0)
-        track.track_number = jellyfin_track.get("IndexNumber", 0)
-        if track.track_number >= 0:
-            track.position = track.track_number
-
-        track.metadata.images = self._get_artwork(jellyfin_track)
-
-        if jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
-            for artist_item in jellyfin_track[ITEM_KEY_ARTIST_ITEMS]:
-                track.artists.append(
-                    self._get_item_mapping(
-                        MediaType.ARTIST,
-                        artist_item[ITEM_KEY_ID],
-                        artist_item[ITEM_KEY_NAME],
-                    )
-                )
-        else:
-            track.artists.append(UNKNOWN_ARTIST_MAPPING)
-
-        if ITEM_KEY_ALBUM_ID in jellyfin_track:
-            if not (album_name := jellyfin_track.get(ITEM_KEY_ALBUM)):
-                self.logger.debug("Track %s has AlbumID but no AlbumName", track.name)
-                album_name = f"Unknown Album ({jellyfin_track[ITEM_KEY_ALBUM_ID]})"
-            track.album = self._get_item_mapping(
-                MediaType.ALBUM,
-                jellyfin_track[ITEM_KEY_ALBUM_ID],
-                album_name,
-            )
-
-        if ITEM_KEY_RUNTIME_TICKS in jellyfin_track:
-            track.duration = int(
-                jellyfin_track[ITEM_KEY_RUNTIME_TICKS] / 10000000
-            )  # 10000000 ticks per millisecond
-        if ITEM_KEY_MUSICBRAINZ_TRACK in jellyfin_track[ITEM_KEY_PROVIDER_IDS]:
-            track_mbid = jellyfin_track[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_TRACK]
-            try:
-                track.mbid = track_mbid
-            except InvalidDataError as error:
-                self.logger.warning(
-                    "Jellyfin has an invalid musicbrainz id for track %s",
-                    track.name,
-                    exc_info=error if self.logger.isEnabledFor(logging.DEBUG) else None,
-                )
-        user_data = jellyfin_track.get(ITEM_KEY_USER_DATA, {})
-        track.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
-        return track
-
-    def _parse_playlist(self, jellyfin_playlist: JellyPlaylist) -> Playlist:
-        """Parse a Jellyfin Playlist response to a Playlist object."""
-        playlistid = jellyfin_playlist[ITEM_KEY_ID]
-        playlist = Playlist(
-            item_id=playlistid,
-            provider=self.domain,
-            name=jellyfin_playlist[ITEM_KEY_NAME],
-            provider_mappings={
-                ProviderMapping(
-                    item_id=playlistid,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                )
-            },
-        )
-        if ITEM_KEY_OVERVIEW in jellyfin_playlist:
-            playlist.metadata.description = jellyfin_playlist[ITEM_KEY_OVERVIEW]
-        playlist.metadata.images = self._get_artwork(jellyfin_playlist)
-        user_data = jellyfin_playlist.get(ITEM_KEY_USER_DATA, {})
-        playlist.favorite = user_data.get(USER_DATA_KEY_IS_FAVORITE, False)
-        playlist.is_editable = False
-        return playlist
 
     async def search(
         self,
@@ -497,7 +280,7 @@ class JellyfinProvider(MusicProvider):
                 fields=ARTIST_FIELDS,
             )
             for artist in response["Items"]:
-                yield self._parse_artist(artist)
+                yield parse_artist(self.logger, self.instance_id, self._client, artist)
 
             while offset < response["TotalRecordCount"]:
                 response = await self._client.artists(
@@ -508,7 +291,7 @@ class JellyfinProvider(MusicProvider):
                     fields=ARTIST_FIELDS,
                 )
                 for artist in response["Items"]:
-                    yield self._parse_artist(artist)
+                    yield parse_artist(self.logger, self.instance_id, self._client, artist)
 
                 offset += limit
 
@@ -527,7 +310,7 @@ class JellyfinProvider(MusicProvider):
                 fields=ALBUM_FIELDS,
             )
             for artist in response["Items"]:
-                yield self._parse_album(artist)
+                yield parse_album(self.logger, self.instance_id, self._client, artist)
 
             while offset < response["TotalRecordCount"]:
                 response = await self._client.albums(
@@ -538,7 +321,7 @@ class JellyfinProvider(MusicProvider):
                     fields=ALBUM_FIELDS,
                 )
                 for artist in response["Items"]:
-                    yield self._parse_album(artist)
+                    yield parse_album(self.logger, self.instance_id, self._client, artist)
 
                 offset += limit
 
@@ -557,7 +340,7 @@ class JellyfinProvider(MusicProvider):
                 fields=TRACK_FIELDS,
             )
             for track in response["Items"]:
-                yield self._parse_track(track)
+                yield parse_track(self.logger, self.instance_id, self._client, track)
 
             while offset < response["TotalRecordCount"]:
                 response = await self._client.tracks(
@@ -568,7 +351,7 @@ class JellyfinProvider(MusicProvider):
                     fields=TRACK_FIELDS,
                 )
                 for track in response["Items"]:
-                    yield self._parse_track(track)
+                    yield parse_track(self.logger, self.instance_id, self._client, track)
 
                 offset += limit
 
@@ -580,14 +363,14 @@ class JellyfinProvider(MusicProvider):
             for playlist in playlists_obj["Items"]:
                 if "MediaType" in playlist:  # Only jellyfin has this property
                     if playlist["MediaType"] == "Audio":
-                        yield self._parse_playlist(playlist)
+                        yield parse_playlist(self.instance_id, self._client, playlist)
                 else:  # emby playlists are only audio type
-                    yield self._parse_playlist(playlist)
+                    yield parse_playlist(self.instance_id, self._client, playlist)
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
         if jellyfin_album := await self._client.get_album(prov_album_id):
-            return self._parse_album(jellyfin_album)
+            return parse_album(self.logger, self.instance_id, self._client, jellyfin_album)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
@@ -597,7 +380,7 @@ class JellyfinProvider(MusicProvider):
             prov_album_id, enable_user_data=True, fields=TRACK_FIELDS
         )
         return [
-            self._parse_track(jellyfin_album_track)
+            parse_track(self.logger, self.instance_id, self._client, jellyfin_album_track)
             for jellyfin_album_track in jellyfin_album_tracks["Items"]
         ]
 
@@ -620,21 +403,21 @@ class JellyfinProvider(MusicProvider):
             return artist
 
         if jellyfin_artist := await self._client.get_artist(prov_artist_id):
-            return self._parse_artist(jellyfin_artist)
+            return parse_artist(self.logger, self.instance_id, self._client, jellyfin_artist)
         msg = f"Item {prov_artist_id} not found"
         raise MediaNotFoundError(msg)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
         if jellyfin_track := await self._client.get_track(prov_track_id):
-            return self._parse_track(jellyfin_track)
+            return parse_track(self.logger, self.instance_id, self._client, jellyfin_track)
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
         if jellyfin_playlist := await self._client.get_playlist(prov_playlist_id):
-            return self._parse_playlist(jellyfin_playlist)
+            return parse_playlist(self.instance_id, self._client, jellyfin_playlist)
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
@@ -655,7 +438,9 @@ class JellyfinProvider(MusicProvider):
             return result
         for index, jellyfin_track in enumerate(playlist_items["Items"], 1):
             try:
-                if track := self._parse_track(jellyfin_track):
+                if track := parse_track(
+                    self.logger, self.instance_id, self._client, jellyfin_track
+                ):
                     if not track.position:
                         track.position = offset + index
                     result.append(track)
@@ -672,7 +457,10 @@ class JellyfinProvider(MusicProvider):
         albums = await self._client.albums(
             prov_artist_id, fields=ALBUM_FIELDS, enable_user_data=True
         )
-        return [self._parse_album(album) for album in albums["Items"]]
+        return [
+            parse_album(self.logger, self.instance_id, self._client, album)
+            for album in albums["Items"]
+        ]
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
@@ -697,39 +485,6 @@ class JellyfinProvider(MusicProvider):
             ),  # 10000000 ticks per millisecond)
             path=url,
         )
-
-    def _get_artwork(self, media_item: JellyMediaItem) -> UniqueList[MediaItemImage]:
-        images: UniqueList[MediaItemImage] = UniqueList()
-
-        for i, _ in enumerate(media_item.get("BackdropImageTags", [])):
-            images.append(
-                MediaItemImage(
-                    type=ImageType.FANART,
-                    path=self._client.artwork(
-                        media_item[ITEM_KEY_ID], JellyImageType.Backdrop, index=i
-                    ),
-                    provider=self.instance_id,
-                    remotely_accessible=False,
-                )
-            )
-
-        image_tags = media_item[ITEM_KEY_IMAGE_TAGS]
-        for jelly_image_type, image_type in MEDIA_IMAGE_TYPES.items():
-            if jelly_image_type in image_tags:
-                images.append(
-                    MediaItemImage(
-                        type=image_type,
-                        path=self._client.artwork(media_item[ITEM_KEY_ID], jelly_image_type),
-                        provider=self.instance_id,
-                        remotely_accessible=False,
-                    )
-                )
-
-        return images
-
-    def _get_stream_url(self, media_item: str) -> str:
-        """Return the stream URL for a media item."""
-        return self._client.audio_url(media_item)
 
     async def _get_music_libraries(self) -> list[JellyMediaLibrary]:
         """Return all supported libraries a user has access to."""

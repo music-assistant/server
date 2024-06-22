@@ -1,0 +1,39 @@
+{
+    "Name": "Yesterday, When I Was Mad [Disc 2]",
+    "ServerId": "58f180d8d2b34927bcfd73eee400ffad",
+    "Id": "7c8d0bd55291c7fc0451d17ebef30017",
+    "SortName": "yesterday when i was mad [disc 0000000002]",
+    "ChannelId": null,
+    "RunTimeTicks": 0,
+    "ProviderIds": {},
+    "IsFolder": true,
+    "Type": "MusicAlbum",
+    "ParentLogoItemId": "87dff4e376665b79ff3fb0e3e69594e4",
+    "ParentBackdropItemId": "87dff4e376665b79ff3fb0e3e69594e4",
+    "ParentBackdropImageTags": [
+        "c8d58817f36f1a3337d14307e9b22ef3"
+    ],
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "7c8d0bd5-5291-c7fc-0451-d17ebef30017"
+    },
+    "Artists": [],
+    "ArtistItems": [],
+    "AlbumArtists": [],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "ParentLogoImageTag": "ef313161af6195475d4ba26b245640b0",
+    "ImageBlurHashes": {
+        "Logo": {
+            "ef313161af6195475d4ba26b245640b0": "OmPGZ|R+Xlo{oNxve.x]4mNFbIf5s;t8t,tQDiM_tRoMbI"
+        },
+        "Backdrop": {
+            "c8d58817f36f1a3337d14307e9b22ef3": "W$Pi;m?b_Noeofx]~CRjNvxuofozs;ofRjRjofof-;xuoyRjWBoJ"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Unknown"
+}

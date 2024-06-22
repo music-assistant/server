@@ -1,0 +1,131 @@
+{
+    "Name": "11 Thrown Away",
+    "ServerId": "58f180d8d2b34927bcfd73eee400ffad",
+    "Id": "b5319fb11cde39fca2023184fcfa9862",
+    "CanDownload": true,
+    "HasLyrics": false,
+    "Container": "mp3",
+    "SortName": "0000 - 0000 - 11 Thrown Away",
+    "MediaSources": [
+        {
+            "Protocol": "File",
+            "Id": "b5319fb11cde39fca2023184fcfa9862",
+            "Path": "/media/music/Papa Roach/Infest/11 Thrown Away.m4a",
+            "Type": "Default",
+            "Container": "mp3",
+            "Size": 11283443,
+            "Name": "11 Thrown Away",
+            "IsRemote": false,
+            "ETag": "d76cb3d88267e21a9a5a7b43e5981c99",
+            "RunTimeTicks": 5777763270,
+            "ReadAtNativeFramerate": false,
+            "IgnoreDts": false,
+            "IgnoreIndex": false,
+            "GenPtsInput": false,
+            "SupportsTranscoding": true,
+            "SupportsDirectStream": true,
+            "SupportsDirectPlay": true,
+            "IsInfiniteStream": false,
+            "RequiresOpening": false,
+            "RequiresClosing": false,
+            "RequiresLooping": false,
+            "SupportsProbing": true,
+            "MediaStreams": [
+                {
+                    "Codec": "mp3",
+                    "TimeBase": "1/14112000",
+                    "VideoRange": "Unknown",
+                    "VideoRangeType": "Unknown",
+                    "AudioSpatialFormat": "None",
+                    "DisplayTitle": "MP3 - Stereo",
+                    "IsInterlaced": false,
+                    "IsAVC": false,
+                    "ChannelLayout": "stereo",
+                    "BitRate": 156231,
+                    "Channels": 2,
+                    "SampleRate": 44100,
+                    "IsDefault": false,
+                    "IsForced": false,
+                    "IsHearingImpaired": false,
+                    "Type": "Audio",
+                    "Index": 0,
+                    "IsExternal": false,
+                    "IsTextSubtitleStream": false,
+                    "SupportsExternalStream": false,
+                    "Level": 0
+                }
+            ],
+            "MediaAttachments": [],
+            "Formats": [],
+            "Bitrate": 156232,
+            "RequiredHttpHeaders": {},
+            "TranscodingSubProtocol": "http",
+            "DefaultAudioStreamIndex": 0
+        }
+    ],
+    "ChannelId": null,
+    "RunTimeTicks": 5777763270,
+    "IndexNumber": 0,
+    "ParentIndexNumber": 0,
+    "ProviderIds": {},
+    "IsFolder": false,
+    "Type": "Audio",
+    "ParentLogoItemId": "e439648e08ade14e27d5de48fa97c88e",
+    "ParentBackdropItemId": "e439648e08ade14e27d5de48fa97c88e",
+    "ParentBackdropImageTags": [
+        "c3d584db117d4c2bba5a975f391a965e"
+    ],
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "0000-000011 Thrown Away"
+    },
+    "Artists": [],
+    "ArtistItems": [],
+    "AlbumId": "70b7288088b42d318f75dbcc41fd0091",
+    "AlbumPrimaryImageTag": "bcbe1ac159b0522743c9a0fe5401f948",
+    "AlbumArtists": [],
+    "MediaStreams": [
+        {
+            "Codec": "mp3",
+            "TimeBase": "1/14112000",
+            "VideoRange": "Unknown",
+            "VideoRangeType": "Unknown",
+            "AudioSpatialFormat": "None",
+            "DisplayTitle": "MP3 - Stereo",
+            "IsInterlaced": false,
+            "IsAVC": false,
+            "ChannelLayout": "stereo",
+            "BitRate": 156231,
+            "Channels": 2,
+            "SampleRate": 44100,
+            "IsDefault": false,
+            "IsForced": false,
+            "IsHearingImpaired": false,
+            "Type": "Audio",
+            "Index": 0,
+            "IsExternal": false,
+            "IsTextSubtitleStream": false,
+            "SupportsExternalStream": false,
+            "Level": 0
+        }
+    ],
+    "ImageTags": {},
+    "BackdropImageTags": [],
+    "ParentLogoImageTag": "d58ea3bfadfb34e66033f55b8b2198c4",
+    "ImageBlurHashes": {
+        "Logo": {
+            "d58ea3bfadfb34e66033f55b8b2198c4": "OQBftnWXD%WBNHoft7xaWBaej[fkoLay0Lax-:ofxZazRj"
+        },
+        "Backdrop": {
+            "c3d584db117d4c2bba5a975f391a965e": "W%F~5FodtRNGkCt6~Woet8Rkazs:-;j@ofoLWBkCxuWBays:axof"
+        },
+        "Primary": {
+            "bcbe1ac159b0522743c9a0fe5401f948": "ecQb^8vf.S_2xY*0%hxDV[kXyYx^IUNGxt=ZsSNGV@njxuxuaKayS2"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Audio"
+}

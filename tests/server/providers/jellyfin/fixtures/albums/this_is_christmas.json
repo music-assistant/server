@@ -1,0 +1,57 @@
+{
+    "Name": "This Is Christmas",
+    "ServerId": "58f180d8d2b34927bcfd73eee400ffad",
+    "Id": "32ed6a0091733dcff57eae67010f3d4b",
+    "SortName": "this is christmas",
+    "PremiereDate": "2011-11-21T00:00:00.0000000Z",
+    "ChannelId": null,
+    "RunTimeTicks": 18722017229,
+    "ProductionYear": 2011,
+    "ProviderIds": {
+        "MusicBrainzAlbum": "b13a174d-527d-44a1-b8f8-a4c78b03b7d9",
+        "MusicBrainzReleaseGroup": "f002d6b7-17af-4f9e-8d30-5486548ffe6f",
+        "MusicBrainzAlbumArtist": "60bbceb2-0ddc-403b-970b-b4e9c3b2de5c/827b9ff1-56f8-4614-9261-a08de5fc1be0"
+    },
+    "IsFolder": true,
+    "Type": "MusicAlbum",
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "MusicAlbum-MusicBrainzReleaseGroup-f002d6b7-17af-4f9e-8d30-5486548ffe6f"
+    },
+    "Artists": [
+        "Emmy the Great",
+        "Tim Wheeler"
+    ],
+    "ArtistItems": [
+        {
+            "Name": "Emmy the Great",
+            "Id": "a0c459294295710546c81c20a8d9abfc"
+        },
+        {
+            "Name": "Tim Wheeler",
+            "Id": "1952db245ddef4e41dcd016475379190"
+        }
+    ],
+    "AlbumArtist": "Emmy the Great & Tim Wheeler",
+    "AlbumArtists": [
+        {
+            "Name": "Emmy the Great & Tim Wheeler",
+            "Id": "555b36f7d310d1b7405557a8775c6878"
+        }
+    ],
+    "ImageTags": {
+        "Primary": "b685ba2b9247aca1ea66dda557bb8f54"
+    },
+    "BackdropImageTags": [],
+    "ImageBlurHashes": {
+        "Primary": {
+            "b685ba2b9247aca1ea66dda557bb8f54": "VGEB:8ogOrxt9G_MkC-AxaR*w1xaI:oe?GS~%1ixs:kC"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Unknown",
+    "NormalizationGain": -12.3
+}
