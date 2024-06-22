@@ -35,8 +35,11 @@ async def get_artist(
             # ChannelId can sometimes be different and original ID is not part of the response
             artist["channelId"] = prov_artist_id
         except KeyError:
-            user = ytm.get_user(channelId=prov_artist_id)
-            artist = {"channelId": prov_artist_id, "name": user["name"]}
+            try:
+                user = ytm.get_user(channelId=prov_artist_id)
+                artist = {"channelId": prov_artist_id, "name": user["name"]}
+            except KeyError:
+                artist = {"channelId": prov_artist_id, "name": "Unknown"}
         return artist
 
     return await asyncio.to_thread(_get_artist)
