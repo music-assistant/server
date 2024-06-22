@@ -51,6 +51,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install ffmpeg
           python -m pip install --upgrade pip build setuptools
-          pip install .[server] .[test]
+          pip install .[server] .[test] -r requirements_all.txt
       - name: Pytest
         run: pytest --durations 10 --cov-report term-missing --cov=music_assistant --cov-report=xml tests/
