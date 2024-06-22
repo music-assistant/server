@@ -273,7 +273,7 @@ class SnapCastProvider(PlayerProvider):
             raise SetupFailedError(msg) from err
 
         self._stream_pool = StreamPool(self._snapserver, 10)
-        self._stream_pool.init()
+        await self._stream_pool.init()
 
     async def loaded_in_mass(self) -> None:
         """Call after the provider has been loaded."""
