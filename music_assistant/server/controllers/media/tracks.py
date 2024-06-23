@@ -19,6 +19,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACKS,
 )
@@ -60,6 +61,8 @@ class TracksController(MediaControllerBase[Track]):
         LEFT JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
         LEFT JOIN {DB_TABLE_TRACK_ARTISTS} on {DB_TABLE_TRACK_ARTISTS}.track_id = {self.db_table}.item_id
         LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_TRACK_ARTISTS}.artist_id
+        LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON
+            {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {self.db_table}.item_id AND media_type = '{self.media_type}'
         """  # noqa: E501
         # register (extra) api handlers
         api_base = self.api_base
@@ -410,16 +413,6 @@ class TracksController(MediaControllerBase[Track]):
         For digital releases, the discnumber will be just 0 or 1.
         Track number should start counting at 1.
         """
-        if overwrite and album.provider.startswith("filesystem"):
-            # on overwrite, clear the album_tracks table first
-            # this is done for filesystem providers only (to account for changing ID3 tags)
-            # TODO: find a better way to deal with this as this doesn't cover all (edge) cases
-            await self.mass.music.database.delete(
-                DB_TABLE_ALBUM_TRACKS,
-                {
-                    "track_id": db_id,
-                },
-            )
         db_album: Album | ItemMapping = None
         if album.provider == "library":
             db_album = album

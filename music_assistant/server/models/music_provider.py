@@ -290,87 +290,86 @@ class MusicProvider(Provider):
         if ProviderFeature.BROWSE not in self.supported_features:
             # we may NOT use the default implementation if the provider does not support browse
             raise NotImplementedError
-        items: list[MediaItemType] = []
-        index = -1
+
         subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
-        generator: AsyncGenerator[MediaItemType, None] | None = None
         if subpath == "artists":
-            generator = self.get_library_artists()
-        elif subpath == "albums":
-            generator = self.get_library_albums()
-        elif subpath == "tracks":
-            generator = self.get_library_tracks()
-        elif subpath == "radios":
-            generator = self.get_library_radios()
-        elif subpath == "playlists":
-            generator = self.get_library_playlists()
-        elif subpath:
+            return await self.mass.music.artists.library_items(
+                limit=limit, offset=offset, provider=self.instance_id
+            )
+        if subpath == "albums":
+            return await self.mass.music.albums.library_items(
+                limit=limit, offset=offset, provider=self.instance_id
+            )
+        if subpath == "tracks":
+            return await self.mass.music.tracks.library_items(
+                limit=limit, offset=offset, provider=self.instance_id
+            )
+        if subpath == "radios":
+            return await self.mass.music.radio.library_items(
+                limit=limit, offset=offset, provider=self.instance_id
+            )
+        if subpath == "playlists":
+            return await self.mass.music.playlists.library_items(
+                limit=limit, offset=offset, provider=self.instance_id
+            )
+        if subpath:
             # unknown path
             msg = "Invalid subpath"
             raise KeyError(msg)
 
-        if generator:
-            # grab items from library generator
-            async for item in generator:
-                index += 1
-                if index < offset:
-                    continue
-                items.append(item)
-                if len(items) >= limit:
-                    break
-        else:
-            # no subpath: return main listing
-            if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-                items.append(
-                    BrowseFolder(
-                        item_id="artists",
-                        provider=self.domain,
-                        path=path + "artists",
-                        name="",
-                        label="artists",
-                    )
+        # no subpath: return main listing
+        items: list[MediaItemType] = []
+        if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
+            items.append(
+                BrowseFolder(
+                    item_id="artists",
+                    provider=self.domain,
+                    path=path + "artists",
+                    name="",
+                    label="artists",
                 )
-            if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-                items.append(
-                    BrowseFolder(
-                        item_id="albums",
-                        provider=self.domain,
-                        path=path + "albums",
-                        name="",
-                        label="albums",
-                    )
+            )
+        if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
+            items.append(
+                BrowseFolder(
+                    item_id="albums",
+                    provider=self.domain,
+                    path=path + "albums",
+                    name="",
+                    label="albums",
                 )
-            if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-                items.append(
-                    BrowseFolder(
-                        item_id="tracks",
-                        provider=self.domain,
-                        path=path + "tracks",
-                        name="",
-                        label="tracks",
-                    )
+            )
+        if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
+            items.append(
+                BrowseFolder(
+                    item_id="tracks",
+                    provider=self.domain,
+                    path=path + "tracks",
+                    name="",
+                    label="tracks",
                 )
-            if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-                items.append(
-                    BrowseFolder(
-                        item_id="playlists",
-                        provider=self.domain,
-                        path=path + "playlists",
-                        name="",
-                        label="playlists",
-                    )
+            )
+        if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
+            items.append(
+                BrowseFolder(
+                    item_id="playlists",
+                    provider=self.domain,
+                    path=path + "playlists",
+                    name="",
+                    label="playlists",
                 )
-            if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-                items.append(
-                    BrowseFolder(
-                        item_id="radios",
-                        provider=self.domain,
-                        path=path + "radios",
-                        name="",
-                        label="radios",
-                    )
+            )
+        if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
+            items.append(
+                BrowseFolder(
+                    item_id="radios",
+                    provider=self.domain,
+                    path=path + "radios",
+                    name="",
+                    label="radios",
                 )
+            )
         return items
 
     async def recommendations(self) -> list[MediaItemType]:

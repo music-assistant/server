@@ -6,9 +6,12 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
+
+import eyed3
 
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
@@ -29,6 +32,11 @@ LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 TAG_SPLITTER = ";"
 
 
+def clean_tuple(values: Iterable[str]) -> tuple:
+    """Return a tuple with all empty values removed."""
+    return tuple(x.strip() for x in values if x not in (None, "", " "))
+
+
 def split_items(org_str: str, allow_unsafe_splitters: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if org_str is None:
@@ -37,12 +45,12 @@ def split_items(org_str: str, allow_unsafe_splitters: bool = False) -> tuple[str
         return (x.strip() for x in org_str)
     org_str = org_str.strip()
     if TAG_SPLITTER in org_str:
-        return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
+        return clean_tuple(org_str.split(TAG_SPLITTER))
     if allow_unsafe_splitters and "/" in org_str:
-        return tuple(x.strip() for x in org_str.split("/"))
+        return clean_tuple(org_str.split("/"))
     if allow_unsafe_splitters and ", " in org_str:
-        return tuple(x.strip() for x in org_str.split(", "))
-    return (org_str.strip(),)
+        return clean_tuple(org_str.split(", "))
+    return clean_tuple((org_str,))
 
 
 def split_artists(
@@ -212,8 +220,6 @@ class AudioTags:
         if tag := self.tags.get("musicbrainz.org"):
             return tag
         if tag := self.tags.get("musicbrainzrecordingid"):
-            return tag
-        if tag := self.tags.get("musicbrainzreleasetrackid"):
             return tag
         return self.tags.get("musicbrainztrackid")
 
@@ -424,6 +430,17 @@ async def parse_tags(
             tags.duration = int((file_size * 8) / tags.bit_rate)
         if not tags.duration and tags.raw.get("format", {}).get("duration"):
             tags.duration = float(tags.raw["format"]["duration"])
+
+        if file_path.endswith(".mp3") and "musicbrainzrecordingid" not in tags.tags:
+            # eyed3 is able to extract the musicbrainzrecordingid from the unique file id
+            # this is actually a bug in ffmpeg/ffprobe which does not expose this tag
+            # so we use this as alternative approach for mp3 files
+            audiofile = await asyncio.to_thread(eyed3.load, file_path)
+            for uf_id in audiofile.tag.unique_file_ids:
+                if uf_id.owner_id == b"http://musicbrainz.org" and uf_id.uniq_id:
+                    tags.tags["musicbrainzrecordingid"] = uf_id.uniq_id.decode()
+                    break
+
         return tags
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         msg = f"Unable to retrieve info for {file_path}: {err!s}"

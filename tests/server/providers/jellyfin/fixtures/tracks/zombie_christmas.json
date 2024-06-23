@@ -1,0 +1,212 @@
+{
+    "Name": "Zombie Christmas",
+    "ServerId": "58f180d8d2b34927bcfd73eee400ffad",
+    "Id": "fb12a77f49616a9fc56a6fab2b94174c",
+    "CanDownload": true,
+    "HasLyrics": false,
+    "Container": "mov,mp4,m4a,3gp,3g2,mj2",
+    "SortName": "0001 - 0008 - Zombie Christmas",
+    "PremiereDate": "2011-11-21T00:00:00.0000000Z",
+    "MediaSources": [
+        {
+            "Protocol": "File",
+            "Id": "fb12a77f49616a9fc56a6fab2b94174c",
+            "Path": "/media/music/Emmy the Great & Tim Wheeler/This Is Christmas/8. Zombie Christmas.m4a",
+            "Type": "Default",
+            "Container": "m4a",
+            "Size": 8225981,
+            "Name": "8. Zombie Christmas",
+            "IsRemote": false,
+            "ETag": "0185e75e1fdad95cb227ce8d815d8cb5",
+            "RunTimeTicks": 2249317010,
+            "ReadAtNativeFramerate": false,
+            "IgnoreDts": false,
+            "IgnoreIndex": false,
+            "GenPtsInput": false,
+            "SupportsTranscoding": true,
+            "SupportsDirectStream": true,
+            "SupportsDirectPlay": true,
+            "IsInfiniteStream": false,
+            "RequiresOpening": false,
+            "RequiresClosing": false,
+            "RequiresLooping": false,
+            "SupportsProbing": true,
+            "MediaStreams": [
+                {
+                    "Codec": "aac",
+                    "CodecTag": "mp4a",
+                    "Language": "eng",
+                    "TimeBase": "1/44100",
+                    "VideoRange": "Unknown",
+                    "VideoRangeType": "Unknown",
+                    "AudioSpatialFormat": "None",
+                    "DisplayTitle": "English - AAC - Stereo - Default",
+                    "IsInterlaced": false,
+                    "IsAVC": false,
+                    "ChannelLayout": "stereo",
+                    "BitRate": 267933,
+                    "Channels": 2,
+                    "SampleRate": 44100,
+                    "IsDefault": true,
+                    "IsForced": false,
+                    "IsHearingImpaired": false,
+                    "Profile": "LC",
+                    "Type": "Audio",
+                    "Index": 0,
+                    "IsExternal": false,
+                    "IsTextSubtitleStream": false,
+                    "SupportsExternalStream": false,
+                    "Level": 0
+                },
+                {
+                    "Codec": "mjpeg",
+                    "ColorSpace": "bt470bg",
+                    "TimeBase": "1/90000",
+                    "VideoRange": "Unknown",
+                    "VideoRangeType": "Unknown",
+                    "AudioSpatialFormat": "None",
+                    "IsInterlaced": false,
+                    "IsAVC": false,
+                    "BitDepth": 8,
+                    "RefFrames": 1,
+                    "IsDefault": false,
+                    "IsForced": false,
+                    "IsHearingImpaired": false,
+                    "Height": 449,
+                    "Width": 500,
+                    "RealFrameRate": 90000,
+                    "Profile": "Baseline",
+                    "Type": "EmbeddedImage",
+                    "AspectRatio": "500:449",
+                    "Index": 1,
+                    "IsExternal": false,
+                    "IsTextSubtitleStream": false,
+                    "SupportsExternalStream": false,
+                    "PixelFormat": "yuvj420p",
+                    "Level": -99,
+                    "IsAnamorphic": false
+                }
+            ],
+            "MediaAttachments": [],
+            "Formats": [],
+            "Bitrate": 292568,
+            "RequiredHttpHeaders": {},
+            "TranscodingSubProtocol": "http",
+            "DefaultAudioStreamIndex": 0
+        }
+    ],
+    "ChannelId": null,
+    "RunTimeTicks": 2249317010,
+    "ProductionYear": 2011,
+    "IndexNumber": 8,
+    "ParentIndexNumber": 1,
+    "ProviderIds": {
+        "MusicBrainzArtist": "60bbceb2-0ddc-403b-970b-b4e9c3b2de5c/827b9ff1-56f8-4614-9261-a08de5fc1be0",
+        "MusicBrainzAlbumArtist": "60bbceb2-0ddc-403b-970b-b4e9c3b2de5c/827b9ff1-56f8-4614-9261-a08de5fc1be0",
+        "MusicBrainzAlbum": "b13a174d-527d-44a1-b8f8-a4c78b03b7d9",
+        "MusicBrainzReleaseGroup": "f002d6b7-17af-4f9e-8d30-5486548ffe6f",
+        "MusicBrainzTrack": "17d1019d-d4f4-326c-b4bb-d8aec2607bd7"
+    },
+    "IsFolder": false,
+    "Type": "Audio",
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "Emmy the Great & Tim Wheeler-This Is Christmas-0001-0008Zombie Christmas"
+    },
+    "Artists": [
+        "Emmy the Great",
+        "Tim Wheeler"
+    ],
+    "ArtistItems": [
+        {
+            "Name": "Emmy the Great",
+            "Id": "a0c459294295710546c81c20a8d9abfc"
+        },
+        {
+            "Name": "Tim Wheeler",
+            "Id": "1952db245ddef4e41dcd016475379190"
+        }
+    ],
+    "Album": "This Is Christmas",
+    "AlbumId": "32ed6a0091733dcff57eae67010f3d4b",
+    "AlbumPrimaryImageTag": "b685ba2b9247aca1ea66dda557bb8f54",
+    "AlbumArtist": "Emmy the Great & Tim Wheeler",
+    "AlbumArtists": [
+        {
+            "Name": "Emmy the Great & Tim Wheeler",
+            "Id": "555b36f7d310d1b7405557a8775c6878"
+        }
+    ],
+    "MediaStreams": [
+        {
+            "Codec": "aac",
+            "CodecTag": "mp4a",
+            "Language": "eng",
+            "TimeBase": "1/44100",
+            "VideoRange": "Unknown",
+            "VideoRangeType": "Unknown",
+            "AudioSpatialFormat": "None",
+            "DisplayTitle": "English - AAC - Stereo - Default",
+            "IsInterlaced": false,
+            "IsAVC": false,
+            "ChannelLayout": "stereo",
+            "BitRate": 267933,
+            "Channels": 2,
+            "SampleRate": 44100,
+            "IsDefault": true,
+            "IsForced": false,
+            "IsHearingImpaired": false,
+            "Profile": "LC",
+            "Type": "Audio",
+            "Index": 0,
+            "IsExternal": false,
+            "IsTextSubtitleStream": false,
+            "SupportsExternalStream": false,
+            "Level": 0
+        },
+        {
+            "Codec": "mjpeg",
+            "ColorSpace": "bt470bg",
+            "TimeBase": "1/90000",
+            "VideoRange": "Unknown",
+            "VideoRangeType": "Unknown",
+            "AudioSpatialFormat": "None",
+            "IsInterlaced": false,
+            "IsAVC": false,
+            "BitDepth": 8,
+            "RefFrames": 1,
+            "IsDefault": false,
+            "IsForced": false,
+            "IsHearingImpaired": false,
+            "Height": 449,
+            "Width": 500,
+            "RealFrameRate": 90000,
+            "Profile": "Baseline",
+            "Type": "EmbeddedImage",
+            "AspectRatio": "500:449",
+            "Index": 1,
+            "IsExternal": false,
+            "IsTextSubtitleStream": false,
+            "SupportsExternalStream": false,
+            "PixelFormat": "yuvj420p",
+            "Level": -99,
+            "IsAnamorphic": false
+        }
+    ],
+    "ImageTags": {
+        "Primary": "c8e39ff125c3ba39a5791570dffa4b83"
+    },
+    "BackdropImageTags": [],
+    "ImageBlurHashes": {
+        "Primary": {
+            "c8e39ff125c3ba39a5791570dffa4b83": "VGEB:8ogOrxt9G_MkC-AxaR*w1xaI:oe?GS~%1ixs:kC",
+            "b685ba2b9247aca1ea66dda557bb8f54": "VGEB:8ogOrxt9G_MkC-AxaR*w1xaI:oe?GS~%1ixs:kC"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Audio",
+    "NormalizationGain": -11.9
+}

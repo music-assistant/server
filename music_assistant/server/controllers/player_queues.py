@@ -693,7 +693,7 @@ class PlayerQueuesController(CoreController):
                 resume_pos = 0
             await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
-            msg = f"Resume queue requested but queue {queue_id} is empty"
+            msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 
     @api_command("player_queues/play_index")

@@ -2,6 +2,12 @@
 
 from typing import Final
 
+from aiojellyfin.const import ImageType as JellyImageType
+
+from music_assistant.common.models.enums import ImageType, MediaType
+from music_assistant.common.models.media_items import ItemMapping
+from music_assistant.constants import UNKNOWN_ARTIST
+
 DOMAIN: Final = "jellyfin"
 
 CLIENT_VERSION: Final = "0.1"
@@ -35,16 +41,12 @@ ITEM_KEY_ALBUM_ARTIST: Final = "AlbumArtist"
 ITEM_KEY_ALBUM_ARTISTS: Final = "AlbumArtists"
 ITEM_KEY_ALBUM: Final = "Album"
 ITEM_KEY_ALBUM_ID: Final = "AlbumId"
-ITEM_KEY_PARENT_ID: Final = "ParentId"
 ITEM_KEY_ARTIST_ITEMS: Final = "ArtistItems"
 ITEM_KEY_CAN_DOWNLOAD: Final = "CanDownload"
 ITEM_KEY_PARENT_INDEX_NUM: Final = "ParentIndexNumber"
 ITEM_KEY_RUNTIME_TICKS: Final = "RunTimeTicks"
 ITEM_KEY_USER_DATA: Final = "UserData"
 
-ITEM_TYPE_ALBUM: Final = "MusicAlbum"
-ITEM_TYPE_ARTIST: Final = "MusicArtist"
-ITEM_TYPE_MUSICARTISTS: Final = "MusicArtists"
 ITEM_TYPE_AUDIO: Final = "Audio"
 ITEM_TYPE_LIBRARY: Final = "CollectionFolder"
 
@@ -70,3 +72,12 @@ TRACK_FIELDS = ["ProviderIds", "CanDownload", "SortName", "MediaSources", "Media
 
 USER_APP_NAME: Final = "Music Assistant"
 USER_AGENT: Final = "Music-Assistant-1.0"
+
+UNKNOWN_ARTIST_MAPPING: Final = ItemMapping(
+    media_type=MediaType.ARTIST, item_id=UNKNOWN_ARTIST, provider=DOMAIN, name=UNKNOWN_ARTIST
+)
+
+MEDIA_IMAGE_TYPES: Final = {
+    JellyImageType.Primary: ImageType.THUMB,
+    JellyImageType.Logo: ImageType.LOGO,
+}

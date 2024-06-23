@@ -30,6 +30,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
+    DB_TABLE_PROVIDER_MAPPINGS,
 )
 from music_assistant.server.controllers.media.base import MediaControllerBase
 from music_assistant.server.helpers.compare import (
@@ -53,11 +54,11 @@ class AlbumsController(MediaControllerBase[Album]):
         """Initialize class."""
         super().__init__(*args, **kwargs)
         self.base_query = f"""
-        SELECT DISTINCT
-            {self.db_table}.*
-        FROM {self.db_table}
+        SELECT DISTINCT {self.db_table}.* FROM {self.db_table}
         LEFT JOIN {DB_TABLE_ALBUM_ARTISTS} on {DB_TABLE_ALBUM_ARTISTS}.album_id = {self.db_table}.item_id
         LEFT JOIN {DB_TABLE_ARTISTS} on {DB_TABLE_ARTISTS}.item_id = {DB_TABLE_ALBUM_ARTISTS}.artist_id
+        LEFT JOIN {DB_TABLE_PROVIDER_MAPPINGS} ON
+            {DB_TABLE_PROVIDER_MAPPINGS}.item_id = {self.db_table}.item_id AND media_type = '{self.media_type}'
         """  # noqa: E501
         # register (extra) api handlers
         api_base = self.api_base

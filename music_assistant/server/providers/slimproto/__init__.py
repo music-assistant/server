@@ -961,7 +961,7 @@ class SlimprotoProvider(PlayerProvider):
         ):
             try:
                 await resp.write(chunk)
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionError):
                 # race condition
                 break
 

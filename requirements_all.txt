@@ -4,7 +4,7 @@ Brotli>=1.0.9
 aiodns>=3.0.0
 aiofiles==23.2.1
 aiohttp==3.9.5
-aiojellyfin==0.3.0
+aiojellyfin==0.7.0
 aiorun==2024.5.1
 aioslimproto==3.0.1
 aiosqlite==0.20.0
@@ -16,13 +16,14 @@ colorlog==6.8.2
 cryptography==42.0.8
 deezer-python-async==0.3.0
 defusedxml==0.7.1
+eyeD3==0.9.7
 faust-cchardet>=2.1.18
 git+https://github.com/coletdjnz/yt-dlp-youtube-oauth2/archive/refs/heads/master.zip
-hass-client==2.0.0
+hass-client==1.1.1
 ifaddr==0.2.0
 mashumaro==3.13.1
 memory-tempfile==2.2.3
-music-assistant-frontend==2.5.14
+music-assistant-frontend==2.5.15
 orjson==3.10.5
 pillow==10.3.0
 plexapi==4.15.13

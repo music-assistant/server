@@ -60,9 +60,12 @@ def compare_artist(
     if compare_item_ids(base_item, compare_item):
         return True
     # return early on (un)matched external id
-    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
-    if external_id_match is not None:
-        return external_id_match
+    for ext_id in (ExternalID.DISCOGS, ExternalID.MUSICBRAINZ, ExternalID.TADB):
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, ext_id
+        )
+        if external_id_match is not None:
+            return external_id_match
     # finally comparing on (exact) name match
     return compare_strings(base_item.name, compare_item.name, strict=strict)
 
@@ -78,10 +81,21 @@ def compare_album(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
+
     # return early on (un)matched external id
-    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
-    if external_id_match is not None:
-        return external_id_match
+    for ext_id in (
+        ExternalID.DISCOGS,
+        ExternalID.MUSICBRAINZ,
+        ExternalID.TADB,
+        ExternalID.ASIN,
+        ExternalID.BARCODE,
+    ):
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, ext_id
+        )
+        if external_id_match is not None:
+            return external_id_match
+
     # compare version
     if not compare_version(base_item.version, compare_item.version):
         return False
@@ -112,15 +126,22 @@ def compare_track(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
-    # return early on MBID match to avoid issues with ISRC
-    # (https://github.com/music-assistant/hass-music-assistant/issues/2316)
-    if base_item.mbid and compare_item.mbid:
-        return base_item.mbid == compare_item.mbid
     # return early on (un)matched external id
-    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
-    if external_id_match is not None:
-        return external_id_match
-
+    for ext_id in (
+        ExternalID.MUSICBRAINZ,
+        ExternalID.DISCOGS,
+        ExternalID.ACOUSTID,
+        ExternalID.TADB,
+        # make sure to check isrc before musicbrainz
+        # https://github.com/music-assistant/hass-music-assistant/issues/2316
+        ExternalID.ISRC,
+        ExternalID.ASIN,
+    ):
+        external_id_match = compare_external_ids(
+            base_item.external_ids, compare_item.external_ids, ext_id
+        )
+        if external_id_match is not None:
+            return external_id_match
     ## fallback to comparing on attributes
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
@@ -194,10 +215,6 @@ def compare_playlist(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
-    # return early on (un)matched external id
-    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
-    if external_id_match is not None:
-        return external_id_match
     # compare owner (if not ItemMapping)
     if isinstance(base_item, Playlist) and isinstance(compare_item, Playlist):
         if not compare_strings(base_item.owner, compare_item.owner):
@@ -220,10 +237,6 @@ def compare_radio(
     # return early on exact item_id match
     if compare_item_ids(base_item, compare_item):
         return True
-    # return early on (un)matched external id
-    external_id_match = compare_external_ids(base_item.external_ids, compare_item.external_ids)
-    if external_id_match is not None:
-        return external_id_match
     # compare version
     if not compare_version(base_item.version, compare_item.version):
         return False
@@ -325,32 +338,31 @@ def compare_item_ids(
 def compare_external_ids(
     external_ids_base: set[tuple[ExternalID, str]],
     external_ids_compare: set[tuple[ExternalID, str]],
+    external_id_type: ExternalID,
 ) -> bool | None:
     """Compare external ids and return True if a match was found."""
-    for external_id_base in external_ids_base:
-        for external_id_compare in external_ids_compare:
-            external_id_base_type, external_id_base_value = external_id_base
-            external_id_compare_type, external_id_compare_value = external_id_compare
-            if external_id_compare_type != external_id_base_type:
-                continue
-            # handle upc stored as EAN-13 barcode
-            if external_id_base_type == ExternalID.BARCODE and len(external_id_base_value) == 12:
-                external_id_base_value = f"0{external_id_base_value}"
-            if (
-                external_id_compare_value == ExternalID.BARCODE
-                and len(external_id_compare_value) == 12
-            ):
-                external_id_compare_value = f"0{external_id_compare_value}"
-            if external_id_base_type in (ExternalID.ISRC, ExternalID.BARCODE):
-                if external_id_compare_value == external_id_base_value:
-                    # barcode and isrc can be multiple per media item
-                    # so we only return early on match as there might be
-                    # another entry for this ExternalID type.
-                    return True
-                continue
-            # other ExternalID types: external id must be exact match.
-            return external_id_compare_value == external_id_base_value
-    # return None to define we did not find the same external id type in both sets
+    base_ids = {x[1] for x in external_ids_base if x[0] == external_id_type}
+    if not base_ids:
+        # return early if the requested external id type is not present in the base set
+        return None
+    compare_ids = {x[1] for x in external_ids_compare if x[0] == external_id_type}
+    if not compare_ids:
+        # return early if the requested external id type is not present in the compare set
+        return None
+    for base_id in base_ids:
+        if base_id in compare_ids:
+            return True
+        # handle upc stored as EAN-13 barcode
+        if external_id_type == ExternalID.BARCODE and len(base_id) == 12:
+            if f"0{base_id}" in compare_ids:
+                return True
+        # handle EAN-13 stored as UPC barcode
+        if external_id_type == ExternalID.BARCODE and len(base_id) == 13:
+            if base_id[1:] in compare_ids:
+                return True
+        # return false if the identifier is unique (e.g. musicbrainz id)
+        if external_id_type in (ExternalID.DISCOGS, ExternalID.MUSICBRAINZ, ExternalID.TADB):
+            return False
     return None
 
 

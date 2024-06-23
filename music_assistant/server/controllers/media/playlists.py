@@ -427,9 +427,10 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # to account for playlists with mixed content we grab suggestions from a few
         # random playlist tracks to prevent getting too many tracks of one of the
         # source playlist's genres.
+        sample_size = min(len(playlist_tracks), 5)
         while len(final_items) < limit:
             # grab 5 random tracks from the playlist
-            base_tracks = random.sample(playlist_tracks, 5)
+            base_tracks = random.sample(playlist_tracks, sample_size)
             # add the source/base playlist tracks to the final list...
             final_items.extend(base_tracks)
             # get 5 suggestions for one of the base tracks

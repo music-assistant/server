@@ -346,8 +346,12 @@ class TidalProvider(MusicProvider):
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
-        return [self._parse_track(track) for track in artist_toptracks_obj]
+        try:
+            artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
+            return [self._parse_track(track) for track in artist_toptracks_obj]
+        except tidal_exceptions.ObjectNotFound as err:
+            self.logger.warning(f"Failed to get toptracks for artist {prov_artist_id}: {err}")
+            return []
 
     async def get_playlist_tracks(
         self, prov_playlist_id: str, offset: int, limit: int
@@ -451,27 +455,36 @@ class TidalProvider(MusicProvider):
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""
         tidal_session = await self._get_tidal_session()
-        artist_obj = await get_artist(tidal_session, prov_artist_id)
-        return self._parse_artist(artist_obj)
+        try:
+            artist_obj = await get_artist(tidal_session, prov_artist_id)
+            return self._parse_artist(artist_obj)
+        except tidal_exceptions.ObjectNotFound as err:
+            raise MediaNotFoundError from err
 
     @throttle_with_retries
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details for given album id."""
         tidal_session = await self._get_tidal_session()
-        album_obj = await get_album(tidal_session, prov_album_id)
-        return self._parse_album(album_obj)
+        try:
+            album_obj = await get_album(tidal_session, prov_album_id)
+            return self._parse_album(album_obj)
+        except tidal_exceptions.ObjectNotFound as err:
+            raise MediaNotFoundError from err
 
     @throttle_with_retries
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
         tidal_session = await self._get_tidal_session()
         track_obj = await get_track(tidal_session, prov_track_id)
-        track = self._parse_track(track_obj)
-        # get some extra details for the full track info
-        with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
-            lyrics: TidalLyrics = await asyncio.to_thread(track.lyrics)
-            track.metadata.lyrics = lyrics.text
-        return track
+        try:
+            track = self._parse_track(track_obj)
+            # get some extra details for the full track info
+            with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
+                lyrics: TidalLyrics = await asyncio.to_thread(track.lyrics)
+                track.metadata.lyrics = lyrics.text
+            return track
+        except tidal_exceptions.ObjectNotFound as err:
+            raise MediaNotFoundError from err
 
     @throttle_with_retries
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
