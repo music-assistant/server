@@ -6,7 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from time import time
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
 import yt_dlp
@@ -67,7 +67,6 @@ CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_TOKEN_TYPE = "token_type"
 CONF_EXPIRY_TIME = "expiry_time"
-CONF_USE_YT_DLP = "use_yt_dlp"
 
 YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
@@ -765,11 +764,11 @@ class YoutubeMusicProvider(MusicProvider):
             track.duration = int(track_obj["duration_seconds"])
         return track
 
-    async def _get_stream_format(self, item_id: str) -> str:
+    async def _get_stream_format(self, item_id: str) -> dict[str, Any]:
         """Figure out the stream URL to use and return the highest quality."""
         await self._check_oauth_token()
 
-        def _extract_best_stream_url_format():
+        def _extract_best_stream_url_format() -> dict[str, Any]:
             url = f"https://music.youtube.com/watch?v={item_id}"
             ydl_opts = {"quiet": True, "username": "oauth2", "password": ""}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -780,10 +779,10 @@ class YoutubeMusicProvider(MusicProvider):
 
         return await asyncio.to_thread(_extract_best_stream_url_format)
 
-    async def _update_ytdlp_oauth_token_cache(self):
+    async def _update_ytdlp_oauth_token_cache(self) -> None:
         """Update the ytdlp token so we can grab the best available quality audio stream."""
 
-        def _update_oauth_cache():
+        def _update_oauth_cache() -> None:
             ydl_opts = {"quiet": True, "username": "oauth2", "password": ""}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 token_data = {
@@ -794,7 +793,7 @@ class YoutubeMusicProvider(MusicProvider):
                 }
                 ydl.cache.store("youtube-oauth2", "token_data", token_data)
 
-        return await asyncio.to_thread(_update_oauth_cache)
+        await asyncio.to_thread(_update_oauth_cache)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
