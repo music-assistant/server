@@ -769,7 +769,11 @@ class YoutubeMusicProvider(MusicProvider):
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
-            ydl_opts = {"quiet": True, "username": "oauth2", "password": ""}
+            ydl_opts = {
+                "quiet": self.logger.level > logging.DEBUG,
+                "username": "oauth2",
+                "password": "",
+            }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
@@ -782,7 +786,11 @@ class YoutubeMusicProvider(MusicProvider):
         """Update the ytdlp token so we can grab the best available quality audio stream."""
 
         def _update_oauth_cache() -> None:
-            ydl_opts = {"quiet": True, "username": "oauth2", "password": ""}
+            ydl_opts = {
+                "quiet": self.logger.level > logging.DEBUG,
+                "username": "oauth2",
+                "password": "",
+            }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 token_data = {
                     "access_token": self.config.get_value(CONF_AUTH_TOKEN),
