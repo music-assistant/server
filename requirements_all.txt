@@ -18,7 +18,7 @@ deezer-python-async==0.3.0
 defusedxml==0.7.1
 eyeD3==0.9.7
 faust-cchardet>=2.1.18
-git+https://github.com/MarvinSchenkel/pytube.git
+git+https://github.com/coletdjnz/yt-dlp-youtube-oauth2.git
 hass-client==1.1.1
 ifaddr==0.2.0
 mashumaro==3.13.1
@@ -42,5 +42,6 @@ soundcloudpy==0.1.0
 tidalapi==0.7.6
 unidecode==1.3.8
 xmltodict==0.13.0
+yt-dlp==2024.5.27
 ytmusicapi==1.7.0
 zeroconf==0.132.2
