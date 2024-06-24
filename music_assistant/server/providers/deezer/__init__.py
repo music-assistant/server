@@ -488,12 +488,12 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             async for chunk in resp.content.iter_chunked(2048):
                 buffer += chunk
                 if len(buffer) >= 2048:
-                    if chunk_index >= skip_chunks:
-                        continue
-                    if chunk_index % 3 > 0:
-                        yield bytes(buffer[:2048])
-                    else:
-                        yield self.decrypt_chunk(bytes(buffer[:2048]), blowfish_key)
+                    if chunk_index >= skip_chunks or chunk_index == 0:
+                        if chunk_index % 3 > 0:
+                            yield bytes(buffer[:2048])
+                        else:
+                            yield self.decrypt_chunk(bytes(buffer[:2048]), blowfish_key)
+
                     chunk_index += 1
                     del buffer[:2048]
         yield bytes(buffer)
