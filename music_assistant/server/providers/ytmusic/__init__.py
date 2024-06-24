@@ -14,7 +14,12 @@ from ytmusicapi.constants import SUPPORTED_LANGUAGES
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
-from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
+from music_assistant.common.models.errors import (
+    InvalidDataError,
+    LoginFailed,
+    MediaNotFoundError,
+    UnplayableMediaError,
+)
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -775,7 +780,10 @@ class YoutubeMusicProvider(MusicProvider):
                 "password": "",
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
+                try:
+                    info = ydl.extract_info(url, download=False)
+                except yt_dlp.utils.DownloadError as err:
+                    raise UnplayableMediaError(err) from err
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
                 stream_format = next(format_selector({"formats": info["formats"]}))
                 return stream_format
