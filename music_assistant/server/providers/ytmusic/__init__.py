@@ -828,7 +828,7 @@ class YoutubeMusicProvider(MusicProvider):
         """Check if the user has Youtube Music Premium."""
         stream_format = await self._get_stream_format(YTM_PREMIUM_CHECK_TRACK_ID)
         # Only premium users can stream the HQ stream of this song
-        return stream_format["format"] == "141 - audio only (high)"
+        return stream_format["format_id"] == "141"
 
     async def _parse_thumbnails(self, thumbnails_obj: dict) -> list[MediaItemImage]:
         """Parse and YTM thumbnails to MediaItemImage."""
