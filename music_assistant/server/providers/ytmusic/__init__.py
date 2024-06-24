@@ -68,7 +68,6 @@ CONF_REFRESH_TOKEN = "refresh_token"
 CONF_TOKEN_TYPE = "token_type"
 CONF_EXPIRY_TIME = "expiry_time"
 
-YT_DOMAIN = "https://www.youtube.com"
 YTM_DOMAIN = "https://music.youtube.com"
 YTM_BASE_URL = f"{YTM_DOMAIN}/youtubei/v1/"
 VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
@@ -578,7 +577,7 @@ class YoutubeMusicProvider(MusicProvider):
             "Accept-Language": "en-US,en;q=0.5",
             "Content-Type": "application/json",
             "X-Goog-AuthUser": "0",
-            "x-origin": "https://music.youtube.com",
+            "x-origin": YTM_DOMAIN,
             "X-Goog-Request-Time": str(int(time())),
             "Authorization": auth,
         }
@@ -661,7 +660,7 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=str(artist_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=f"https://music.youtube.com/channel/{artist_id}",
+                    url=f"{YTM_DOMAIN}/channel/{artist_id}",
                 )
             },
         )
@@ -769,7 +768,7 @@ class YoutubeMusicProvider(MusicProvider):
         await self._check_oauth_token()
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
-            url = f"https://music.youtube.com/watch?v={item_id}"
+            url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {"quiet": True, "username": "oauth2", "password": ""}
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(url, download=False)
