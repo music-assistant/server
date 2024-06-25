@@ -106,8 +106,10 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             library_id = cur_item.item_id
         elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
-            await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
-            library_id = cur_item.item_id
+            # Double check external IDs - if MBID exists, regards that as overriding
+            if compare_media_item(item, cur_item):
+                await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
+                library_id = cur_item.item_id
         else:
             # search by (exact) name match
             query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
