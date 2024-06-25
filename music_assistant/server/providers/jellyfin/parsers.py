@@ -8,11 +8,7 @@ from typing import TYPE_CHECKING
 
 from aiojellyfin.const import ImageType as JellyImageType
 
-from music_assistant.common.models.enums import (
-    ContentType,
-    ImageType,
-    MediaType,
-)
+from music_assistant.common.models.enums import ContentType, ImageType, MediaType
 from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import (
     Album,
@@ -190,7 +186,7 @@ def parse_track(
 
     track.disc_number = jellyfin_track.get(ITEM_KEY_PARENT_INDEX_NUM, 0)
     track.track_number = jellyfin_track.get("IndexNumber", 0)
-    if track.track_number >= 0:
+    if track.track_number and track.track_number >= 0:
         track.position = track.track_number
 
     track.metadata.images = _get_artwork(instance_id, client, jellyfin_track)
