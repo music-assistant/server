@@ -6,6 +6,7 @@ import asyncio
 import logging
 from collections.abc import AsyncGenerator
 from time import time
+from timeit import default_timer as timer
 from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
 
@@ -778,10 +779,16 @@ class YoutubeMusicProvider(MusicProvider):
                 "quiet": self.logger.level > logging.DEBUG,
                 "username": "oauth2",
                 "password": "",
+                "extractor_args": {
+                    "youtube": {"skip": ["translated_subs", "dash"], "player_client": ["ios"]}
+                },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
+                    start = timer()
                     info = ydl.extract_info(url, download=False)
+                    end = timer()
+                    self.logger.debug("YTMusic extract stream info took %s seconds", end - start)
                 except yt_dlp.utils.DownloadError as err:
                     raise UnplayableMediaError(err) from err
                 format_selector = ydl.build_format_selector("m4a/bestaudio")
