@@ -220,7 +220,10 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             raise LoginFailed(msg)
 
         self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
+        self.logger.debug(
+            "Using mount command: %s",
+            [m.replace(password, "########") if password else m for m in mount_cmd],
+        )
 
         returncode, output = await check_output(mount_cmd)
         if returncode != 0:
