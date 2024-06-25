@@ -108,7 +108,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # existing item match by external id
             # Double check external IDs - if MBID exists, regards that as overriding
             if compare_media_item(item, cur_item):
-                await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
+                await self._update_library_item(
+                    cur_item.item_id, item, overwrite=overwrite_existing
+                )
                 library_id = cur_item.item_id
         else:
             # search by (exact) name match
