@@ -304,8 +304,9 @@ class SnapCastProvider(PlayerProvider):
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
-        for client in self._snapserver.clients:
-            await self.cmd_stop(client.identifier)
+        for snap_client_id in self._snapserver.clients:
+            player_id = self._get_ma_id(snap_client_id)
+            await self.cmd_stop(player_id)
         self._snapserver.stop()
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
