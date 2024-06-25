@@ -97,6 +97,7 @@ repos:
         language: script
         types: [python]
         require_serial: true
+        pass_filenames: false
       - id: gen_requirements_all
         name: gen_requirements_all
         entry: scripts/run-in-env.sh python3 -m scripts.gen_requirements_all
