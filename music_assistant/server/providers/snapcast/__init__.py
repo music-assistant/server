@@ -108,7 +108,7 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    returncode, output = await check_output("snapserver -v")
+    returncode, output = await check_output(["snapserver", "-v"])
     snapserver_present = returncode == 0 and "snapserver v0.27.0" in output.decode()
     return (
         ConfigEntry(

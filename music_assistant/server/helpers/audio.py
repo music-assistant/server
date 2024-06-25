@@ -819,7 +819,7 @@ async def get_ffmpeg_stream(
 async def check_audio_support() -> tuple[bool, bool, str]:
     """Check if ffmpeg is present (with/without libsoxr support)."""
     # check for FFmpeg presence
-    returncode, output = await check_output("ffmpeg -version")
+    returncode, output = await check_output(["ffmpeg", "-version"])
     ffmpeg_present = returncode == 0 and "FFmpeg" in output.decode()
 
     # use globals as in-memory cache
