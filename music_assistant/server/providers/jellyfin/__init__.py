@@ -9,7 +9,7 @@ from asyncio import TaskGroup
 from collections.abc import AsyncGenerator
 
 from aiojellyfin import MediaLibrary as JellyMediaLibrary
-from aiojellyfin import SessionConfiguration, authenticate_by_name
+from aiojellyfin import NotFound, SessionConfiguration, authenticate_by_name
 from aiojellyfin import Track as JellyTrack
 
 from music_assistant.common.models.config_entries import (
@@ -370,10 +370,11 @@ class JellyfinProvider(MusicProvider):
 
     async def get_album(self, prov_album_id: str) -> Album:
         """Get full album details by id."""
-        if jellyfin_album := await self._client.get_album(prov_album_id):
-            return parse_album(self.logger, self.instance_id, self._client, jellyfin_album)
-        msg = f"Item {prov_album_id} not found"
-        raise MediaNotFoundError(msg)
+        try:
+            album = await self._client.get_album(prov_album_id)
+        except NotFound:
+            raise MediaNotFoundError(f"Item {prov_album_id} not found")
+        return parse_album(self.logger, self.instance_id, self._client, album)
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
@@ -403,24 +404,27 @@ class JellyfinProvider(MusicProvider):
             artist.mbid = UNKNOWN_ARTIST_ID_MBID
             return artist
 
-        if jellyfin_artist := await self._client.get_artist(prov_artist_id):
-            return parse_artist(self.logger, self.instance_id, self._client, jellyfin_artist)
-        msg = f"Item {prov_artist_id} not found"
-        raise MediaNotFoundError(msg)
+        try:
+            jellyfin_artist = await self._client.get_artist(prov_artist_id)
+        except NotFound:
+            raise MediaNotFoundError(f"Item {prov_artist_id} not found")
+        return parse_artist(self.logger, self.instance_id, self._client, jellyfin_artist)
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        if jellyfin_track := await self._client.get_track(prov_track_id):
-            return parse_track(self.logger, self.instance_id, self._client, jellyfin_track)
-        msg = f"Item {prov_track_id} not found"
-        raise MediaNotFoundError(msg)
+        try:
+            track = await self._client.get_track(prov_track_id)
+        except NotFound:
+            raise MediaNotFoundError(f"Item {prov_track_id} not found")
+        return parse_track(self.logger, self.instance_id, self._client, track)
 
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get full playlist details by id."""
-        if jellyfin_playlist := await self._client.get_playlist(prov_playlist_id):
-            return parse_playlist(self.instance_id, self._client, jellyfin_playlist)
-        msg = f"Item {prov_playlist_id} not found"
-        raise MediaNotFoundError(msg)
+        try:
+            playlist = await self._client.get_playlist(prov_playlist_id)
+        except NotFound:
+            raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
+        return parse_playlist(self.instance_id, self._client, playlist)
 
     async def get_playlist_tracks(
         self, prov_playlist_id: str, offset: int, limit: int
@@ -435,8 +439,6 @@ class JellyfinProvider(MusicProvider):
         playlist_items = await self._client.tracks(
             jellyfin_playlist[ITEM_KEY_ID], enable_user_data=True, fields=TRACK_FIELDS
         )
-        if not playlist_items:
-            return result
         for index, jellyfin_track in enumerate(playlist_items["Items"], 1):
             try:
                 if track := parse_track(
