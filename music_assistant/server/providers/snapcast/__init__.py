@@ -109,7 +109,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     returncode, output = await check_output("snapserver -v")
-    snapserver_present = returncode == 0 and "snapserver v0.2" in output.decode()
+    snapserver_present = returncode == 0 and "snapserver v0.27.0" in output.decode()
     return (
         ConfigEntry(
             key=CONF_SERVER_BUFFER_SIZE,
@@ -659,8 +659,7 @@ class SnapCastProvider(PlayerProvider):
                 data = data.decode().strip()  # noqa: PLW2901
                 for line in data.split("\n"):
                     logger.debug(line)
-                    if "(Snapserver) Version 0.2" in line:
-                        self.logger.info(f"Snapserver started: {line}")
+                    if "(Snapserver) Version 0.27.0" in line:
                         # delay init a small bit to prevent race conditions
                         # where we try to connect too soon
                         self.mass.loop.call_later(2, self._snapserver_started.set)
