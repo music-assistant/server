@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import pprint
-from typing import Any
+from typing import Any, cast
 
 from aiohttp import ClientSession, ClientWebSocketResponse, WSMsgType, client_exceptions
 
@@ -39,7 +39,7 @@ class WebsocketsConnection:
         """Initialize."""
         self.ws_server_url = get_websocket_url(server_url)
         self._aiohttp_session_provided = aiohttp_session is not None
-        self._aiohttp_session = aiohttp_session or ClientSession()
+        self._aiohttp_session: ClientSession | None = aiohttp_session or ClientSession()
         self._ws_client: ClientWebSocketResponse | None = None
 
     @property
@@ -87,24 +87,20 @@ class WebsocketsConnection:
         ws_msg = await self._ws_client.receive()
 
         if ws_msg.type in (WSMsgType.CLOSE, WSMsgType.CLOSED, WSMsgType.CLOSING):
-            msg = "Connection was closed."
-            raise ConnectionClosed(msg)
+            raise ConnectionClosed("Connection was closed.")
 
         if ws_msg.type == WSMsgType.ERROR:
             raise ConnectionFailed
 
         if ws_msg.type != WSMsgType.TEXT:
-            msg = f"Received non-Text message: {ws_msg.type}"
-            raise InvalidMessage(msg)
+            raise InvalidMessage(f"Received non-Text message: {ws_msg.type}")
 
         try:
-            msg = json_loads(ws_msg.data)
+            msg = cast(dict[str, Any], json_loads(ws_msg.data))
         except TypeError as err:
-            msg = f"Received unsupported JSON: {err}"
-            raise InvalidMessage(msg) from err
+            raise InvalidMessage(f"Received unsupported JSON: {err}") from err
         except ValueError as err:
-            msg = "Received invalid JSON."
-            raise InvalidMessage(msg) from err
+            raise InvalidMessage("Received invalid JSON.") from err
 
         if LOGGER.isEnabledFor(logging.DEBUG):
             LOGGER.debug("Received message:\n%s\n", pprint.pformat(ws_msg))

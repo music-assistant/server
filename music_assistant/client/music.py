@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.common.models.enums import ImageType, MediaType
 from music_assistant.common.models.media_items import (
@@ -22,6 +22,7 @@ from music_assistant.common.models.media_items import (
     media_from_dict,
 )
 from music_assistant.common.models.provider import SyncTask
+from music_assistant.common.models.queue_item import QueueItem
 
 if TYPE_CHECKING:
     from .client import MusicAssistantClient
@@ -111,6 +112,7 @@ class Music:
         provider_instance_id_or_domain: str,
     ) -> str:
         """Get URL to preview clip of given track."""
+        assert self.client.server_info
         encoded_url = urllib.parse.quote(urllib.parse.quote(item_id))
         return f"{self.client.server_info.base_url}/preview?path={encoded_url}&provider={provider_instance_id_or_domain}"  # noqa: E501
 
@@ -230,7 +232,7 @@ class Music:
     ) -> list[Track]:
         """Get (top)tracks for given artist."""
         return [
-            Artist.from_dict(item)
+            Track.from_dict(item)
             for item in await self.client.send_command(
                 "music/artists/artist_tracks",
                 item_id=item_id,
@@ -525,7 +527,9 @@ class Music:
 
     async def add_item_to_library(self, item: str | MediaItemType) -> MediaItemType:
         """Add item (uri or mediaitem) to the library."""
-        return await self.client.send_command("music/library/add_item", item=item)
+        return cast(
+            MediaItemType, await self.client.send_command("music/library/add_item", item=item)
+        )
 
     async def refresh_item(
         self,
@@ -540,7 +544,7 @@ class Music:
 
     def get_media_item_image(
         self,
-        item: MediaItemType | ItemMapping,
+        item: MediaItemType | ItemMapping | QueueItem,
         type: ImageType = ImageType.THUMB,  # noqa: A002
     ) -> MediaItemImage | None:
         """Get MediaItemImage for MediaItem, ItemMapping."""
@@ -556,11 +560,11 @@ class Music:
             if album_image := self.get_media_item_image(album, type):
                 return album_image
         # handle regular image within mediaitem
-        metadata: MediaItemMetadata
+        metadata: MediaItemMetadata | None
         if metadata := getattr(item, "metadata", None):
             for img in metadata.images or []:
                 if img.type == type:
-                    return img
+                    return cast(MediaItemImage, img)
         # retry with album/track artist(s)
         artists: list[Artist | ItemMapping] | None
         if artists := getattr(item, "artists", None):

@@ -58,7 +58,7 @@ class MusicAssistantClient:
         self.server_url = server_url
         self.connection = WebsocketsConnection(server_url, aiohttp_session)
         self.logger = logging.getLogger(__package__)
-        self._result_futures: dict[str, asyncio.Future] = {}
+        self._result_futures: dict[str | int, asyncio.Future[Any]] = {}
         self._subscribers: list[EventSubscriptionType] = []
         self._stop_called: bool = False
         self._loop: asyncio.AbstractEventLoop | None = None
@@ -133,6 +133,7 @@ class MusicAssistantClient:
 
     def get_image_url(self, image: MediaItemImage, size: int = 0) -> str:
         """Get (proxied) URL for MediaItemImage."""
+        assert self.server_info
         if image.remotely_accessible and not size:
             return image.path
         if image.remotely_accessible and size:
@@ -167,9 +168,9 @@ class MusicAssistantClient:
     def subscribe(
         self,
         cb_func: EventCallBackType,
-        event_filter: EventType | tuple[EventType] | None = None,
-        id_filter: str | tuple[str] | None = None,
-    ) -> Callable:
+        event_filter: EventType | tuple[EventType, ...] | None = None,
+        id_filter: str | tuple[str, ...] | None = None,
+    ) -> Callable[[], None]:
         """Add callback to event listeners.
 
         Returns function to remove the listener.
@@ -360,6 +361,8 @@ class MusicAssistantClient:
         if self._stop_called:
             return
 
+        assert self._loop
+
         if event.event == EventType.PROVIDERS_UPDATED:
             self._providers = {x["instance_id"]: ProviderInstance.from_dict(x) for x in event.data}
 
@@ -386,6 +389,7 @@ class MusicAssistantClient:
     ) -> bool | None:
         """Exit context manager."""
         await self.disconnect()
+        return None
 
     def __repr__(self) -> str:
         """Return the representation."""
