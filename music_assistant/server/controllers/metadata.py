@@ -69,7 +69,7 @@ LOCALES = {
     "el_GR": "Greek",
     "en_AU": "English (AU)",
     "en_US": "English (US)",
-    "en_UK": "English (UK)",
+    "en_GB": "English (UK)",
     "es_ES": "Spanish",
     "et_EE": "Estonian",
     "fi_FI": "Finnish",
@@ -87,7 +87,7 @@ LOCALES = {
     "ru_RU": "Russian",
     "sk_SK": "Slovak",
     "sl_SI": "Slovenian",
-    "sr": "Serbian",
+    "sr_RS": "Serbian",
     "sv_SE": "Swedish",
     "tr_TR": "Turkish",
 }
