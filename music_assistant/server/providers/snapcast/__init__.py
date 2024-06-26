@@ -660,7 +660,7 @@ class SnapCastProvider(PlayerProvider):
                 for line in data.split("\n"):
                     logger.debug(line)
                     if "(Snapserver) Version 0.2" in line:
-                        self.logger.info(f"Snapserver started: {line}")
+                        self.logger.info("Snapserver started: %s", line)
                         # delay init a small bit to prevent race conditions
                         # where we try to connect too soon
                         self.mass.loop.call_later(2, self._snapserver_started.set)
