@@ -620,8 +620,8 @@ class YoutubeMusicProvider(MusicProvider):
             album.year = album_obj["year"]
         if "thumbnails" in album_obj:
             album.metadata.images = self._parse_thumbnails(album_obj["thumbnails"])
-        if "description" in album_obj:
-            album.metadata.description = unquote(album_obj["description"])
+        if description := album_obj.get("description"):
+            album.metadata.description = unquote(description)
         if "isExplicit" in album_obj:
             album.metadata.explicit = album_obj["isExplicit"]
         if "artists" in album_obj:
@@ -776,8 +776,14 @@ class YoutubeMusicProvider(MusicProvider):
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,
+                # This enables the oauth2 plugin so we can grab the best
+                # available quality audio stream
                 "username": "oauth2",
                 "password": "",
+                # This enforces a player client and skips unnecessary scraping to increase speed
+                "extractor_args": {
+                    "youtube": {"skip": ["translated_subs", "dash"], "player_client": ["ios"]}
+                },
             }
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 try:
@@ -807,6 +813,7 @@ class YoutubeMusicProvider(MusicProvider):
                     "refresh_token": self.config.get_value(CONF_REFRESH_TOKEN),
                 }
                 ydl.cache.store("youtube-oauth2", "token_data", token_data)
+                self.logger.debug("Updated ytdlp oauth token cache with new OAuth token.")
 
         await asyncio.to_thread(_update_oauth_cache)
 
@@ -834,22 +841,29 @@ class YoutubeMusicProvider(MusicProvider):
         """Parse and YTM thumbnails to MediaItemImage."""
         result: list[MediaItemImage] = []
         processed_images = set()
-        for img in thumbnails_obj:
+        for img in sorted(thumbnails_obj, key=lambda w: w.get("width", 0), reverse=True):
             url: str = img["url"]
             url_base = url.split("=w")[0]
-            if url_base in processed_images:
-                continue
             width: int = img["width"]
+            height: int = img["height"]
+            image_ratio: float = width / height
+            image_type = (
+                ImageType.LANDSCAPE
+                if "maxresdefault" in url or image_ratio > 2.0
+                else ImageType.THUMB
+            )
             if "=w" not in url and width < 500:
                 continue
-            processed_images.add(url_base)
             # if the size is in the url, we can actually request a higher thumb
-            if "=w" in url:
+            if "=w" in url and width < 600:
                 url = f"{url_base}=w600-h600-p"
+                image_type = ImageType.THUMB
+            if (url_base, image_type) in processed_images:
+                continue
+            processed_images.add((url_base, image_type))
             result.append(
                 MediaItemImage(
-                    # if maxresdefault its a crap YTM wide thumb
-                    type=ImageType.LANDSCAPE if "maxresdefault" in url else ImageType.THUMB,
+                    type=image_type,
                     path=url,
                     provider=self.instance_id,
                     remotely_accessible=True,

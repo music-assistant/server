@@ -94,7 +94,6 @@ async def get_track(
             "thumbnails"
         ]
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"
-        track["streamingData"] = track_obj["streamingData"]
         return track
 
     return await asyncio.to_thread(_get_song)
