@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass, field, fields
-from typing import TYPE_CHECKING, Any, Self, TypeVar, cast
+from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
 
 from mashumaro import DataClassDictMixin
 
@@ -34,7 +34,7 @@ class UniqueList(list[_T]):
         if not iterable:
             super().__init__()
             return
-        seen = set()
+        seen: set[_T] = set()
         seen_add = seen.add
         super().__init__(x for x in iterable if not (x in seen or seen_add(x)))
 
@@ -61,7 +61,7 @@ class AudioFormat(DataClassDictMixin):
     output_format_str: str = ""
     bit_rate: int = 320  # optional
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Execute actions after init."""
         if not self.output_format_str and self.content_type.is_pcm():
             self.output_format_str = (
@@ -90,9 +90,9 @@ class AudioFormat(DataClassDictMixin):
         """Return the PCM sample size."""
         return int(self.sample_rate * (self.bit_depth / 8) * self.channels)
 
-    def __eq__(self, other: AudioFormat) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Check equality of two items."""
-        if not other:
+        if not isinstance(other, AudioFormat):
             return False
         return self.output_format_str == other.output_format_str
 
@@ -121,7 +121,7 @@ class ProviderMapping(DataClassDictMixin):
             quality += 1
         return quality
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Call after init."""
         # having items for unavailable providers can have all sorts
         # of unpredictable results so ensure we have accurate availability status
@@ -138,9 +138,9 @@ class ProviderMapping(DataClassDictMixin):
         """Return custom hash."""
         return hash((self.provider_instance, self.item_id))
 
-    def __eq__(self, other: ProviderMapping) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Check equality of two items."""
-        if not other:
+        if not isinstance(other, ProviderMapping):
             return False
         return self.provider_instance == other.provider_instance and self.item_id == other.item_id
 
@@ -156,8 +156,10 @@ class MediaItemLink(DataClassDictMixin):
         """Return custom hash."""
         return hash(self.type)
 
-    def __eq__(self, other: MediaItemLink) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Check equality of two items."""
+        if not isinstance(other, MediaItemLink):
+            return False
         return self.url == other.url
 
 
@@ -174,8 +176,10 @@ class MediaItemImage(DataClassDictMixin):
         """Return custom hash."""
         return hash((self.type.value, self.path))
 
-    def __eq__(self, other: MediaItemImage) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Check equality of two items."""
+        if not isinstance(other, MediaItemImage):
+            return False
         return self.__hash__() == other.__hash__()
 
     @classmethod
@@ -202,8 +206,10 @@ class MediaItemChapter(DataClassDictMixin):
         """Return custom hash."""
         return hash(self.chapter_id)
 
-    def __eq__(self, other: MediaItemChapter) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Check equality of two items."""
+        if not isinstance(other, MediaItemChapter):
+            return False
         return self.chapter_id == other.chapter_id
 
 
@@ -277,7 +283,7 @@ class _MediaItemBase(DataClassDictMixin):
     external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
     media_type: MediaType = MediaType.UNKNOWN
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Call after init."""
         if self.name is None:
             # we've got some reports where the name was empty, causing weird issues.
@@ -318,8 +324,10 @@ class _MediaItemBase(DataClassDictMixin):
         """Return custom hash."""
         return hash(self.uri)
 
-    def __eq__(self, other: MediaItem | ItemMapping) -> bool:
+    def __eq__(self, other: object) -> bool:
         """Check equality of two items."""
+        if not isinstance(other, MediaItem | ItemMapping):
+            return False
         return self.uri == other.uri
 
 
@@ -337,7 +345,7 @@ class MediaItem(_MediaItemBase):
     position: int | None = None  # required for playlist tracks, optional for all other
 
     @property
-    def available(self):
+    def available(self) -> bool:
         """Return (calculated) availability."""
         return any(x.available for x in self.provider_mappings)
 
@@ -409,7 +417,6 @@ class Album(MediaItem):
 class Track(MediaItem):
     """Model for a track."""
 
-    __hash__ = _MediaItemBase.__hash__
     __eq__ = _MediaItemBase.__eq__
 
     media_type: MediaType = MediaType.TRACK
@@ -420,7 +427,7 @@ class Track(MediaItem):
     disc_number: int | None = None  # required for album tracks
     track_number: int | None = None  # required for album tracks
 
-    def __hash__(self):
+    def __hash__(self) -> int:
         """Return custom hash."""
         return hash((self.provider, self.item_id))
 
@@ -432,7 +439,11 @@ class Track(MediaItem):
         This is often an indicator that this track is an episode from a
         Podcast or AudioBook.
         """
-        return self.metadata and self.metadata.chapters and len(self.metadata.chapters) > 1
+        if not self.metadata:
+            return False
+        if not self.metadata.chapters:
+            return False
+        return len(self.metadata.chapters) > 1
 
     @property
     def image(self) -> MediaItemImage | None:
@@ -465,28 +476,22 @@ class AlbumTrack(Track):
 
     @classmethod
     def from_track(
-        cls: type,
+        cls,
         track: Track,
         album: Album | None = None,
         disc_number: int | None = None,
         track_number: int | None = None,
-    ) -> Self:
+    ) -> AlbumTrack:
         """Cast Track to AlbumTrack."""
-        if album is None:
-            album = track.album
+        album_track = track.to_dict()
+        if album is None and track.album:
+            album_track["album"] = track.album
         if disc_number is None:
-            disc_number = track.disc_number
+            album_track["disc_number"] = track.disc_number
         if track_number is None:
-            track_number = track.track_number
+            album_track["track_number"] = track.track_number
         # let mushmumaro instantiate a new object - this will ensure that valididation takes place
-        return AlbumTrack.from_dict(
-            {
-                **track.to_dict(),
-                "album": album.to_dict(),
-                "disc_number": disc_number,
-                "track_number": track_number,
-            }
-        )
+        return AlbumTrack.from_dict(album_track)
 
 
 @dataclass(kw_only=True)
@@ -540,7 +545,7 @@ class BrowseFolder(MediaItem):
     label: str = ""
     provider_mappings: set[ProviderMapping] = field(default_factory=set)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Call after init."""
         super().__post_init__()
         if not self.path:
@@ -571,7 +576,7 @@ class SearchResults(DataClassDictMixin):
     radio: list[Radio | ItemMapping] = field(default_factory=list)
 
 
-def media_from_dict(media_item: dict) -> MediaItemType:
+def media_from_dict(media_item: dict[str, Any]) -> MediaItemType | ItemMapping | MediaItem:
     """Return MediaItem from dict."""
     if "provider_mappings" not in media_item:
         return ItemMapping.from_dict(media_item)
@@ -586,3 +591,8 @@ def media_from_dict(media_item: dict) -> MediaItemType:
     if media_item["media_type"] == "radio":
         return Radio.from_dict(media_item)
     return MediaItem.from_dict(media_item)
+
+
+def is_track(val: MediaItem) -> TypeGuard[Track]:
+    """Return true if this MediaItem is a track."""
+    return val.media_type == MediaType.TRACK

@@ -33,7 +33,7 @@ class PlayerMedia(DataClassDictMixin):
     duration: int | None = None  # optional
     queue_id: str | None = None  # only present for requests from queue controller
     queue_item_id: str | None = None  # only present for requests from queue controller
-    custom_data: dict | None = None  # optional
+    custom_data: dict[str, Any] | None = None  # optional
 
 
 @dataclass
