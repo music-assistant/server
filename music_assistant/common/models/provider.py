@@ -79,7 +79,7 @@ class SyncTask:
     provider_domain: str
     provider_instance: str
     media_types: tuple[MediaType, ...]
-    task: asyncio.Task
+    task: asyncio.Task[None] | None
 
     def to_dict(self) -> dict[str, Any]:
         """Return SyncTask as (serializable) dict."""

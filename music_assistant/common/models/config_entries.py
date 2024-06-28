@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from types import NoneType
-from typing import Any
+from typing import Any, cast
 
 from mashumaro import DataClassDictMixin
 
@@ -256,7 +256,8 @@ class Config(DataClassDictMixin):
             changed_keys.add(key)
 
         # config entry values
-        values = update.get("values", update)
+        values = cast(dict[str, ConfigValueType], update.get("values", update))
+
         for key, new_val in values.items():
             if key in root_values:
                 continue
@@ -595,16 +596,21 @@ def create_sample_rates_config_entry(
     hidden: bool = False,
 ) -> ConfigEntry:
     """Create sample rates config entry based on player specific helpers."""
+    assert CONF_ENTRY_SAMPLE_RATES.options
     conf_entry = ConfigEntry.from_dict(CONF_ENTRY_SAMPLE_RATES.to_dict())
-    conf_entry.options = ()
-    conf_entry.default_value = []
     conf_entry.hidden = hidden
-    options = []
+    options: list[ConfigValueOption] = []
+    default_value: list[tuple[int, int]] = []
     for option in CONF_ENTRY_SAMPLE_RATES.options:
+        if not isinstance(option.value, tuple):
+            continue
         sample_rate, bit_depth = option.value
+        if not isinstance(sample_rate, int) and isinstance(bit_depth, int):
+            continue
         if sample_rate <= max_sample_rate and bit_depth <= max_bit_depth:
             options.append(option)
         if sample_rate <= safe_max_sample_rate and bit_depth <= safe_max_bit_depth:
-            conf_entry.default_value.append(option.value)
+            default_value.append(option.value)
     conf_entry.options = tuple(options)
+    conf_entry.default_value = default_value
     return conf_entry

@@ -146,6 +146,6 @@ class Player(DataClassDictMixin):
         return None
 
     @current_item_id.setter
-    def current_item_id(self, uri: str) -> str | None:
+    def current_item_id(self, uri: str) -> None:
         """Set current_item_id (for backwards compatibility)."""
         self.current_media = PlayerMedia(uri)

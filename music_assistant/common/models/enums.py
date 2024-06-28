@@ -27,7 +27,7 @@ class MediaType(StrEnum):
         return cls.UNKNOWN
 
     @classproperty
-    def ALL(self) -> tuple[MediaType, ...]:  # noqa: N802
+    def ALL(cls) -> tuple[MediaType, ...]:  # noqa: N805,N802
         """Return all (default) MediaTypes as tuple."""
         return (
             MediaType.ARTIST,

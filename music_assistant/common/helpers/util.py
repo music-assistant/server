@@ -7,7 +7,8 @@ import os
 import re
 import socket
 from collections.abc import Callable
-from typing import Any, TypeVar
+from collections.abc import Set as AbstractSet
+from typing import Any, Generic, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -335,7 +336,7 @@ def get_changed_keys(
     dict1: dict[str, Any],
     dict2: dict[str, Any],
     ignore_keys: list[str] | None = None,
-) -> set[str]:
+) -> AbstractSet[str]:
     """Compare 2 dicts and return set of changed keys."""
     return get_changed_values(dict1, dict2, ignore_keys).keys()
 
@@ -369,7 +370,7 @@ def get_changed_values(
     return changed_values
 
 
-def empty_queue(q: asyncio.Queue) -> None:
+def empty_queue(q: asyncio.Queue[T]) -> None:
     """Empty an asyncio Queue."""
     for _ in range(q.qsize()):
         try:
@@ -388,8 +389,17 @@ def is_valid_uuid(uuid_to_test: str) -> bool:
     return str(uuid_obj) == uuid_to_test
 
 
-class classproperty(property):  # noqa: N801
+ClassT = TypeVar("ClassT")
+ReturnV = TypeVar("ReturnV")
+
+
+class classproperty(Generic[ClassT, ReturnV]):  # noqa: N801
     """Implement class property for python3.11+."""
 
-    def __get__(self, cls: type[Any], owner: type | None) -> Any:  # noqa: D105
-        return classmethod(self.fget).__get__(None, owner)()
+    def __init__(self, getter: Callable[[ClassT], ReturnV]) -> None:
+        """Initialise the class."""
+        self.getter = getter
+
+    def __get__(self, _instance: Any, cls: ClassT) -> ReturnV:
+        """Run the getter."""
+        return self.getter(cls)

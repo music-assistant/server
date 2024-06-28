@@ -70,7 +70,6 @@ class QueueItem(DataClassDictMixin):
             media_item.artists = UniqueList([ItemMapping.from_item(x) for x in media_item.artists])
             if media_item.album:
                 media_item.album = ItemMapping.from_item(media_item.album)
-            media_item.albums = []
         else:
             name = media_item.name
         return cls(

@@ -254,8 +254,7 @@ class MediaItemMetadata(DataClassDictMixin):
                 new_val = merge_lists(cur_val, new_val)
                 setattr(self, fld.name, new_val)
             elif isinstance(cur_val, set) and isinstance(new_val, set | list | tuple):
-                new_val = cur_val.update(new_val)
-                setattr(self, fld.name, new_val)
+                cur_val.update(new_val)
             elif new_val and fld.name in (
                 "popularity",
                 "last_refresh",
