@@ -121,7 +121,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
     async def _get_library_item_by_match(
         self, item: Track, overwrite_existing: bool = False
-    ) -> int:
+    ) -> int | None:
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
             # existing item match by provider id
             await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
@@ -142,9 +142,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         ):
             if compare_media_item(db_item, item, True):
                 # existing item found: update it
-                await self._update_library_item(
-                    db_item.item_id, item, overwrite=overwrite_existing
-                )
+                await self._update_library_item(db_item.item_id, item, overwrite=overwrite_existing)
                 return db_item.item_id
         return None
 
