@@ -179,7 +179,7 @@ ignore-imports = true
 max-line-length = 100
 
 [tool.pytest.ini_options]
-addopts = "--cov"
+addopts = "--cov music_assistant"
 asyncio_mode = "auto"
 
 [tool.ruff.lint]

@@ -166,6 +166,7 @@ class JellyfinProvider(MusicProvider):
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
+            ProviderFeature.SIMILAR_TRACKS,
         )
 
     @property
@@ -485,6 +486,14 @@ class JellyfinProvider(MusicProvider):
             ),  # 10000000 ticks per millisecond)
             path=url,
         )
+
+    async def get_similar_tracks(self, prov_track_id, limit=25) -> list[Track]:
+        """Retrieve a dynamic list of tracks based on the provided item."""
+        resp = await self._client.get_similar_tracks(prov_track_id, limit=limit)
+        return [
+            parse_track(self.logger, self.instance_id, self._client, track)
+            for track in resp["Items"]
+        ]
 
     async def _get_music_libraries(self) -> list[JellyMediaLibrary]:
         """Return all supported libraries a user has access to."""
