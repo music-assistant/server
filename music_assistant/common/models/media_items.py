@@ -334,7 +334,6 @@ class _MediaItemBase(DataClassDictMixin):
 class MediaItem(_MediaItemBase):
     """Base representation of a media item."""
 
-    __hash__ = _MediaItemBase.__hash__
     __eq__ = _MediaItemBase.__eq__
 
     provider_mappings: set[ProviderMapping]
@@ -367,7 +366,7 @@ class ItemMapping(_MediaItemBase):
     image: MediaItemImage | None = None
 
     @classmethod
-    def from_item(cls, item: MediaItem) -> ItemMapping:
+    def from_item(cls, item: MediaItem | ItemMapping) -> ItemMapping:
         """Create ItemMapping object from regular item."""
         if isinstance(item, ItemMapping):
             return item
