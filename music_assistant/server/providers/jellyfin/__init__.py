@@ -489,7 +489,7 @@ class JellyfinProvider(MusicProvider):
             path=url,
         )
 
-    async def get_similar_tracks(self, prov_track_id: str, limit: int=25) -> list[Track]:
+    async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
         resp = await self._client.get_similar_tracks(prov_track_id, limit=limit)
         return [
