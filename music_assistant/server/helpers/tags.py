@@ -115,7 +115,7 @@ class AudioTags:
         return ""
 
     @property
-    def album(self) -> str:
+    def album(self) -> str | None:
         """Return album tag (as-is) if present."""
         return self.tags.get("album")
 
