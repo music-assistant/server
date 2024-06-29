@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -51,8 +51,11 @@ class Config:
 
     async def get_provider_config_value(self, instance_id: str, key: str) -> ConfigValueType:
         """Return single configentry value for a provider."""
-        return await self.client.send_command(
-            "config/providers/get_value", instance_id=instance_id, key=key
+        return cast(
+            ConfigValueType,
+            await self.client.send_command(
+                "config/providers/get_value", instance_id=instance_id, key=key
+            ),
         )
 
     async def get_provider_config_entries(
@@ -70,7 +73,7 @@ class Config:
         action: [optional] action key called from config entries UI.
         values: the (intermediate) raw values for config entries sent with the action.
         """
-        return (
+        return tuple(
             ConfigEntry.from_dict(x)
             for x in await self.client.send_command(
                 "config/providers/get_entries",
@@ -144,8 +147,11 @@ class Config:
         key: str,
     ) -> ConfigValueType:
         """Return single configentry value for a player."""
-        return await self.client.send_command(
-            "config/players/get_value", player_id=player_id, key=key
+        return cast(
+            ConfigValueType,
+            await self.client.send_command(
+                "config/players/get_value", player_id=player_id, key=key
+            ),
         )
 
     async def save_player_config(
@@ -185,7 +191,10 @@ class Config:
 
     async def get_core_config_value(self, domain: str, key: str) -> ConfigValueType:
         """Return single configentry value for a core controller."""
-        return await self.client.send_command("config/core/get_value", domain=domain, key=key)
+        return cast(
+            ConfigValueType,
+            await self.client.send_command("config/core/get_value", domain=domain, key=key),
+        )
 
     async def get_core_config_entries(
         self,
@@ -200,7 +209,7 @@ class Config:
         action: [optional] action key called from config entries UI.
         values: the (intermediate) raw values for config entries sent with the action.
         """
-        return (
+        return tuple(
             ConfigEntry.from_dict(x)
             for x in await self.client.send_command(
                 "config/core/get_entries",
