@@ -100,7 +100,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             await self.mass.metadata.get_metadata(item)
         # check for existing item first
         library_id = await self._get_library_item_by_match(item, overwrite_existing)
-        
+
         if library_id is None:
             # actually add a new item in the library db
             async with self._db_add_lock:
@@ -135,7 +135,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     cur_item.item_id, item, overwrite=overwrite_existing
                 )
                 return cur_item.item_id
-        
+
         # search by (exact) name match
         query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
