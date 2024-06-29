@@ -723,7 +723,7 @@ class AirplayProvider(PlayerProvider):
                 empty_queue(buffer)
 
         # get current ntp and start cliraop
-        _, stdout = await check_output(f"{self.cliraop_bin} -ntp")
+        _, stdout = await check_output(self.cliraop_bin, "-ntp")
         start_ntp = int(stdout.strip())
         wait_start = 1250 + (250 * len(sync_clients))
         await asyncio.gather(
