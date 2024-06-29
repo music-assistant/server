@@ -163,35 +163,40 @@ class PlayerController(CoreController):
 
     @api_command("players/cmd/stop")
     @handle_player_command
-    async def cmd_stop(self, player_id: str) -> None:
+    async def cmd_stop(self, player_id: str, skip_forward: bool = False) -> None:
         """Send STOP command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
+        player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
-        # Always prefer queue controller's stop (as it also handles some other logic)
-        if player.active_source == player_id:
+        # Redirect to queue controller if active (as it also handles some other logic)
+        # Note that skip_forward will be set by the queue controller
+        # to prevent an endless loop.
+        if not skip_forward and player.active_source == player_id:
             await self.mass.player_queues.stop(player_id)
             return
-        # if the player doesn't have our queue controller active, forward the stop command
-        player_id = self._check_redirect(player_id)
         if player_provider := self.get_player_provider(player_id):
             await player_provider.cmd_stop(player_id)
 
     @api_command("players/cmd/play")
     @handle_player_command
-    async def cmd_play(self, player_id: str) -> None:
+    async def cmd_play(self, player_id: str, skip_forward: bool = False) -> None:
         """Send PLAY (unpause) command to given player.
 
         - player_id: player_id of the player to handle the command.
         """
+        player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
-        # Always prefer queue controller's play (as it also handles some other logic)
-        if player.active_source == player_id:
+        if player.announcement_in_progress:
+            self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
+        # Redirect to queue controller if active (as it also handles some other logic)
+        # Note that skip_forward will be set by the queue controller
+        # to prevent an endless loop.
+        if not skip_forward and player.active_source == player_id:
             await self.mass.player_queues.play(player_id)
             return
-        # if the player doesn't have our queue controller active, forward the stop command
-        player_id = self._check_redirect(player_id)
         player_provider = self.get_player_provider(player_id)
         await player_provider.cmd_play(player_id)
 
@@ -202,13 +207,11 @@ class PlayerController(CoreController):
 
         - player_id: player_id of the player to handle the command.
         """
-        player = self.get(player_id, True)
-        # Always prefer queue controller's pause (as it also handles some other logic)
-        if player.active_source == player_id:
-            await self.mass.player_queues.pause(player_id)
-            return
         player_id = self._check_redirect(player_id)
         player = self.get(player_id, True)
+        if player.announcement_in_progress:
+            self.logger.warning("Ignore command: An announcement is in progress")
+            return
         if PlayerFeature.PAUSE not in player.supported_features:
             # if player does not support pause, we need to send stop
             await self.cmd_stop(player_id)
