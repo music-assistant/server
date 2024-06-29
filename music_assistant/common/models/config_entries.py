@@ -605,8 +605,6 @@ def create_sample_rates_config_entry(
         if not isinstance(option.value, tuple):
             continue
         sample_rate, bit_depth = option.value
-        if not isinstance(sample_rate, int) and isinstance(bit_depth, int):
-            continue
         if sample_rate <= max_sample_rate and bit_depth <= max_bit_depth:
             options.append(option)
         if sample_rate <= safe_max_sample_rate and bit_depth <= safe_max_bit_depth:

@@ -8,7 +8,7 @@ import re
 import socket
 from collections.abc import Callable
 from collections.abc import Set as AbstractSet
-from typing import Any, Generic, TypeVar
+from typing import Any, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID
 
@@ -387,19 +387,3 @@ def is_valid_uuid(uuid_to_test: str) -> bool:
     except ValueError:
         return False
     return str(uuid_obj) == uuid_to_test
-
-
-ClassT = TypeVar("ClassT")
-ReturnV = TypeVar("ReturnV")
-
-
-class classproperty(Generic[ClassT, ReturnV]):  # noqa: N801
-    """Implement class property for python3.11+."""
-
-    def __init__(self, getter: Callable[[ClassT], ReturnV]) -> None:
-        """Initialise the class."""
-        self.getter = getter
-
-    def __get__(self, _instance: Any, cls: ClassT) -> ReturnV:
-        """Run the getter."""
-        return self.getter(cls)

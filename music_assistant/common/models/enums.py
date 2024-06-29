@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 import contextlib
-from enum import StrEnum
-
-from music_assistant.common.helpers.util import classproperty
+from enum import EnumType, StrEnum
 
 
-class MediaType(StrEnum):
+class MediaTypeMeta(EnumType):
+    """Class properties for MediaType."""
+
+    @property
+    def ALL(self) -> list[MediaType]:  # noqa: N802
+        """All MediaTypes."""
+        return [
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.PLAYLIST,
+            MediaType.RADIO,
+        ]
+
+
+class MediaType(StrEnum, metaclass=MediaTypeMeta):
     """Enum for MediaType."""
 
     ARTIST = "artist"
@@ -25,17 +38,6 @@ class MediaType(StrEnum):
     def _missing_(cls, value: object) -> MediaType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
-
-    @classproperty
-    def ALL(cls) -> tuple[MediaType, ...]:  # noqa: N805,N802
-        """Return all (default) MediaTypes as tuple."""
-        return (
-            MediaType.ARTIST,
-            MediaType.ALBUM,
-            MediaType.TRACK,
-            MediaType.PLAYLIST,
-            MediaType.RADIO,
-        )
 
 
 class ExternalID(StrEnum):
