@@ -383,7 +383,7 @@ class SoundcloudMusicProvider(MusicProvider):
             playlist.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=playlist_obj["artwork_url"],
+                    path=playlist_obj["artwork_url"].replace("large", "t500x500"),
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
@@ -426,7 +426,7 @@ class SoundcloudMusicProvider(MusicProvider):
             track.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=track_obj["artwork_url"],
+                    path=track_obj["artwork_url"].replace("large", "t500x500"),
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
