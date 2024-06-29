@@ -440,4 +440,5 @@ class SoundcloudMusicProvider(MusicProvider):
         return track
 
     def _create_hi_res_artwork_url(self, artwork_url: str) -> str:
+        # This is undocumented in their API docs, but was previously
         return artwork_url.replace("large", "t500x500")
