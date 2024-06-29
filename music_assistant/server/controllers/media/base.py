@@ -126,7 +126,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             # existing item match by provider id
             await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
             return cur_item.item_id
-
         if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             # Double check external IDs - if MBID exists, regards that as overriding
@@ -135,7 +134,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     cur_item.item_id, item, overwrite=overwrite_existing
                 )
                 return cur_item.item_id
-
         # search by (exact) name match
         query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
         query_params = {"name": item.name, "sort_name": item.sort_name}
