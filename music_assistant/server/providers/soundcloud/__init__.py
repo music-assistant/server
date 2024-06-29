@@ -383,7 +383,7 @@ class SoundcloudMusicProvider(MusicProvider):
             playlist.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=playlist_obj["artwork_url"].replace("large", "t500x500"),
+                    path=self._create_higher_resolution_artwork_url(playlist_obj["artwork_url"]),
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
@@ -426,7 +426,7 @@ class SoundcloudMusicProvider(MusicProvider):
             track.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=track_obj["artwork_url"].replace("large", "t500x500"),
+                    path=self._create_higher_resolution_artwork_url(track_obj["artwork_url"]),
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
@@ -438,3 +438,6 @@ class SoundcloudMusicProvider(MusicProvider):
         if track_obj.get("tag_list"):
             track.metadata.style = track_obj["tag_list"]
         return track
+
+    def _create_higher_resolution_artwork_url(self, artwork_url: str) -> str:
+        return artwork_url.replace("large", "t500x500")
