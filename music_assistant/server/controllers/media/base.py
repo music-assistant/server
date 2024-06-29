@@ -99,29 +99,8 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if metadata_lookup:
             await self.mass.metadata.get_metadata(item)
         # check for existing item first
-        library_id = None
-        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-            # existing item match by provider id
-            await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
-            library_id = cur_item.item_id
-        elif cur_item := await self.get_library_item_by_external_ids(item.external_ids):
-            # existing item match by external id
-            await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
-            library_id = cur_item.item_id
-        else:
-            # search by (exact) name match
-            query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
-            query_params = {"name": item.name, "sort_name": item.sort_name}
-            async for db_item in self.iter_library_items(
-                extra_query=query, extra_query_params=query_params
-            ):
-                if compare_media_item(db_item, item, True):
-                    # existing item found: update it
-                    await self._update_library_item(
-                        db_item.item_id, item, overwrite=overwrite_existing
-                    )
-                    library_id = db_item.item_id
-                    break
+        library_id = await self._get_library_item_by_match(item, overwrite_existing)
+
         if library_id is None:
             # actually add a new item in the library db
             async with self._db_add_lock:
@@ -139,6 +118,33 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             library_item,
         )
         return library_item
+
+    async def _get_library_item_by_match(
+        self, item: Track, overwrite_existing: bool = False
+    ) -> int | None:
+        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+            # existing item match by provider id
+            await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
+            return cur_item.item_id
+        if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
+            # existing item match by external id
+            # Double check external IDs - if MBID exists, regards that as overriding
+            if compare_media_item(item, cur_item):
+                await self._update_library_item(
+                    cur_item.item_id, item, overwrite=overwrite_existing
+                )
+                return cur_item.item_id
+        # search by (exact) name match
+        query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
+        query_params = {"name": item.name, "sort_name": item.sort_name}
+        async for db_item in self.iter_library_items(
+            extra_query=query, extra_query_params=query_params
+        ):
+            if compare_media_item(db_item, item, True):
+                # existing item found: update it
+                await self._update_library_item(db_item.item_id, item, overwrite=overwrite_existing)
+                return db_item.item_id
+        return None
 
     async def update_item_in_library(
         self, item_id: str | int, update: ItemCls, overwrite: bool = False
