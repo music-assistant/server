@@ -109,7 +109,11 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     returncode, output = await check_output("snapserver -v")
-    snapserver_present = returncode == 0 and "snapserver v0.2" in output.decode()
+    snapserver_version: float = float(output.decode().split("v")[1])
+    snapserver_valid_version: bool = snapserver_version >= 0.27
+    snapserver_present = (
+        returncode == 0 and "snapserver" in output.decode() and snapserver_valid_version
+    )
     return (
         ConfigEntry(
             key=CONF_SERVER_BUFFER_SIZE,
