@@ -58,10 +58,11 @@ ConfigValueType = (
     | list[str]
     | list[int]
     | list[tuple[int, int]]
+    | Enum
     | None
 )
 
-ConfigEntryTypeMap = {
+ConfigEntryTypeMap: dict[ConfigEntryType, type[ConfigValueType]] = {
     ConfigEntryType.BOOLEAN: bool,
     ConfigEntryType.STRING: str,
     ConfigEntryType.SECURE_STRING: str,

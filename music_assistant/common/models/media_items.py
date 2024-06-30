@@ -274,7 +274,7 @@ class _MediaItemBase(DataClassDictMixin):
 
     item_id: str
     provider: str  # provider instance id or provider domain
-    name: str
+    name: str = "[Unknown]"
     version: str = ""
     # sort_name and uri are auto generated, do not override unless really needed
     sort_name: str | None = None
@@ -284,10 +284,6 @@ class _MediaItemBase(DataClassDictMixin):
 
     def __post_init__(self) -> None:
         """Call after init."""
-        if self.name is None:
-            # we've got some reports where the name was empty, causing weird issues.
-            # e.g. here: https://github.com/music-assistant/hass-music-assistant/issues/1515
-            self.name = "[Unknown]"
         if self.uri is None:
             self.uri = create_uri(self.media_type, self.provider, self.item_id)
         if self.sort_name is None:

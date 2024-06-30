@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 
 from music_assistant.common.models.enums import ImageType, MediaType
+from music_assistant.common.models.errors import UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
     Album,
     AlbumTrack,
@@ -19,13 +20,27 @@ from music_assistant.common.models.media_items import (
     Radio,
     SearchResults,
     Track,
-    media_from_dict,
 )
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.queue_item import QueueItem
 
 if TYPE_CHECKING:
     from .client import MusicAssistantClient
+
+
+def media_from_dict(media_item: dict[str, Any]) -> MediaItemType:
+    """Return MediaItem from dict."""
+    if media_item["media_type"] == "artist":
+        return Artist.from_dict(media_item)
+    if media_item["media_type"] == "album":
+        return Album.from_dict(media_item)
+    if media_item["media_type"] == "track":
+        return Track.from_dict(media_item)
+    if media_item["media_type"] == "playlist":
+        return Playlist.from_dict(media_item)
+    if media_item["media_type"] == "radio":
+        return Radio.from_dict(media_item)
+    raise UnsupportedFeaturedException(f"Unknown media_type: {media_item['media_type']}")
 
 
 class Music:
