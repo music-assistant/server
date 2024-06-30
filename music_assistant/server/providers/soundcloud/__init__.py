@@ -439,6 +439,7 @@ class SoundcloudMusicProvider(MusicProvider):
             track.metadata.style = track_obj["tag_list"]
         return track
 
-    def _create_hi_res_artwork_url(self, artwork_url: str) -> str:
+    def _transform_artwork_url(self, artwork_url: str) -> str:
+        """Patch artwork URL to a high quality thumbnail."""
         # This is undocumented in their API docs, but was previously
         return artwork_url.replace("large", "t500x500")
