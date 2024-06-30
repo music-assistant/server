@@ -426,7 +426,7 @@ class SoundcloudMusicProvider(MusicProvider):
             track.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=self._create_hi_res_artwork_url(track_obj["artwork_url"]),
+                    path=self._transform_artwork_url(track_obj["artwork_url"]),
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
