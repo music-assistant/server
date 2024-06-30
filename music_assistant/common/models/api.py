@@ -40,7 +40,7 @@ class SuccessResultMessage(ResultMessageBase):
 class ErrorResultMessage(ResultMessageBase):
     """Message sent when a command did not execute successfully."""
 
-    error_code: str
+    error_code: int
     details: str | None = None
 
 

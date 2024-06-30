@@ -130,7 +130,7 @@ class Players:
 
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:
         """Create temporary sync group by joining given players to target player."""
-        await self.client.send_command("players/cmd/unsync_many", player_ids)
+        await self.client.send_command("players/cmd/unsync_many", player_ids=player_ids)
 
     async def play_announcement(
         self,
@@ -208,7 +208,11 @@ class Players:
     def _handle_event(self, event: MassEvent) -> None:
         """Handle incoming player event."""
         if event.event in (EventType.PLAYER_ADDED, EventType.PLAYER_UPDATED):
+            # Player events always have an object id
+            assert event.object_id
             self._players[event.object_id] = Player.from_dict(event.data)
             return
         if event.event == EventType.PLAYER_REMOVED:
+            # Player events always have an object id
+            assert event.object_id
             self._players.pop(event.object_id, None)

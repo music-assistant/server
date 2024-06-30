@@ -161,7 +161,7 @@ class PlayerQueues:
         """
         await self.client.send_command("player_queues/skip", queue_id=queue_id, seconds=seconds)
 
-    async def queue_command_shuffle(self, queue_id: str, shuffle_enabled=bool) -> None:
+    async def queue_command_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle mode on the the queue."""
         await self.client.send_command(
             "player_queues/shuffle", queue_id=queue_id, shuffle_enabled=shuffle_enabled
@@ -231,4 +231,6 @@ class PlayerQueues:
     def _handle_event(self, event: MassEvent) -> None:
         """Handle incoming player(queue) event."""
         if event.event in (EventType.QUEUE_ADDED, EventType.QUEUE_UPDATED):
+            # Queue events always have an object_id
+            assert event.object_id
             self._queues[event.object_id] = PlayerQueue.from_dict(event.data)

@@ -186,7 +186,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         if platform.system() == "Darwin":
             password_str = f":{password}" if password else ""
-            mount_cmd = f'mount -t smbfs "//{username}:{password_str}@{server}/{share}{subfolder}" "{self.base_path}"'  # noqa: E501
+            mount_cmd = [
+                "mount",
+                "-t",
+                "smbfs",
+                f"//{username}:{password_str}@{server}/{share}{subfolder}",
+                self.base_path,
+            ]
 
         elif platform.system() == "Linux":
             options = [
@@ -199,17 +205,25 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 options += mount_options.split(",")
 
             options_str = ",".join(options)
-            mount_cmd = (
-                f"mount -t cifs -o {options_str} "
-                f'"//{server}/{share}{subfolder}" "{self.base_path}"'
-            )
+            mount_cmd = [
+                "mount",
+                "-t",
+                "cifs",
+                "-o",
+                options_str,
+                f"//{server}/{share}{subfolder}",
+                self.base_path,
+            ]
 
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
             raise LoginFailed(msg)
 
         self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
+        self.logger.debug(
+            "Using mount command: %s",
+            [m.replace(password, "########") if password else m for m in mount_cmd],
+        )
 
         returncode, output = await check_output(mount_cmd)
         if returncode != 0:
@@ -218,6 +232,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
-        returncode, output = await check_output(f"umount {self.base_path}")
+        returncode, output = await check_output(["umount", self.base_path])
         if returncode != 0 and not ignore_error:
             self.logger.warning("SMB unmount failed with error: %s", output.decode())

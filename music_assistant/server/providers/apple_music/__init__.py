@@ -199,9 +199,16 @@ class AppleMusicProvider(MusicProvider):
         """Retrieve library tracks from the provider."""
         endpoint = "me/library/songs"
         song_catalog_ids = []
-        for item in await self._get_all_items(endpoint, include="catalog"):
-            if item and "catalog" in item["relationships"]:
-                song_catalog_ids.append(item["relationships"]["catalog"]["data"][0]["id"])
+        for item in await self._get_all_items(endpoint):
+            catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
+            if not catalog_id:
+                self.logger.warning(
+                    "Skipping track. No catalog version found for %s - %s",
+                    item["attributes"]["artistName"],
+                    item["attributes"]["name"],
+                )
+                continue
+            song_catalog_ids.append(catalog_id)
         # Obtain catalog info per 300 songs
         max_limit = 300
         for i in range(0, len(song_catalog_ids), max_limit):
@@ -517,7 +524,8 @@ class AppleMusicProvider(MusicProvider):
                 )
             ]
         if albums := relationships.get("albums"):
-            track.album = self._parse_album(albums["data"][0])
+            if "data" in albums and len(albums["data"]) > 0:
+                track.album = self._parse_album(albums["data"][0])
         if artwork := attributes.get("artwork"):
             track.metadata.images = [
                 MediaItemImage(
