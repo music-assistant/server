@@ -667,8 +667,7 @@ class SnapCastProvider(PlayerProvider):
                 data = data.decode().strip()  # noqa: PLW2901
                 for line in data.split("\n"):
                     self.logger.debug(line)
-                    if "(Snapserver) Version 0.2" in line:
-                        self.logger.info("Snapserver started: %s", line)
+                    if "(Snapserver) Version 0." in line:
                         # delay init a small bit to prevent race conditions
                         # where we try to connect too soon
                         self.mass.loop.call_later(2, self._snapserver_started.set)
