@@ -420,10 +420,6 @@ class Track(MediaItem):
     disc_number: int | None = None  # required for album tracks
     track_number: int | None = None  # required for album tracks
 
-    def __hash__(self):
-        """Return custom hash."""
-        return hash((self.provider, self.item_id))
-
     @property
     def has_chapters(self) -> bool:
         """

@@ -192,16 +192,13 @@ def compare_track(
         for track_album in track_albums:
             if compare_album(track_album, compare_item.album, False):
                 return True
-    # edge case: albumless track
-    if (
+    # accept last resort: albumless track and (near) exact duration
+    # otherwise fail all other cases
+    return (
         base_item.album is None
         and compare_item.album is None
         and abs(base_item.duration - compare_item.duration) <= 1
-    ):
-        return True
-
-    # all efforts failed, this is NOT a match
-    return False
+    )
 
 
 def compare_playlist(
@@ -384,9 +381,7 @@ def loose_compare_strings(base: str, alt: str) -> bool:
     alt_comp = create_safe_string(alt)
     if base_comp in alt_comp:
         return True
-    if alt_comp in base_comp:
-        return True
-    return False
+    return alt_comp in base_comp
 
 
 def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
