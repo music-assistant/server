@@ -4,10 +4,11 @@ import asyncio
 import base64
 from _collections_abc import dict_keys, dict_values
 from types import MethodType
-from typing import Any
+from typing import Any, TypeVar
 
 import aiofiles
 import orjson
+from mashumaro.mixins.orjson import DataClassORJSONMixin
 
 JSON_ENCODE_EXCEPTIONS = (TypeError, ValueError)
 JSON_DECODE_EXCEPTIONS = (orjson.JSONDecodeError,)
@@ -59,12 +60,11 @@ def json_dumps(data: Any, indent: bool = False) -> str:
 
 json_loads = orjson.loads
 
+TargetT = TypeVar("TargetT", bound=DataClassORJSONMixin)
 
-async def load_json_file(path: str, target_class: type | None = None) -> dict:
+
+async def load_json_file(path: str, target_class: type[TargetT]) -> TargetT:
     """Load JSON from file."""
     async with aiofiles.open(path, "r") as _file:
         content = await _file.read()
-        if target_class:
-            # support for a mashumaro model
-            return target_class.from_json(content)
-        return json_loads(content)
+        return target_class.from_json(content)

@@ -65,7 +65,7 @@ MessageType = (
 )
 
 
-def parse_message(raw: dict) -> MessageType:
+def parse_message(raw: dict[Any, Any]) -> MessageType:
     """Parse Message from raw dict object."""
     if "event" in raw:
         return EventMessage.from_dict(raw)

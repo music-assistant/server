@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 import contextlib
-from enum import StrEnum
-from typing import Self
-
-from music_assistant.common.helpers.util import classproperty
+from enum import EnumType, StrEnum
 
 
-class MediaType(StrEnum):
+class MediaTypeMeta(EnumType):
+    """Class properties for MediaType."""
+
+    @property
+    def ALL(self) -> list[MediaType]:  # noqa: N802
+        """All MediaTypes."""
+        return [
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.PLAYLIST,
+            MediaType.RADIO,
+        ]
+
+
+class MediaType(StrEnum, metaclass=MediaTypeMeta):
     """Enum for MediaType."""
 
     ARTIST = "artist"
@@ -23,20 +35,9 @@ class MediaType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> MediaType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
-
-    @classproperty
-    def ALL(self) -> tuple[MediaType, ...]:  # noqa: N802
-        """Return all (default) MediaTypes as tuple."""
-        return (
-            MediaType.ARTIST,
-            MediaType.ALBUM,
-            MediaType.TRACK,
-            MediaType.PLAYLIST,
-            MediaType.RADIO,
-        )
 
 
 class ExternalID(StrEnum):
@@ -56,7 +57,7 @@ class ExternalID(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ExternalID:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -78,7 +79,7 @@ class LinkType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> LinkType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -98,7 +99,7 @@ class ImageType(StrEnum):
     OTHER = "other"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ImageType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.OTHER
 
@@ -142,12 +143,12 @@ class ContentType(StrEnum):
     UNKNOWN = "?"
 
     @classmethod
-    def _missing_(cls, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ContentType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
     @classmethod
-    def try_parse(cls, string: str) -> Self:
+    def try_parse(cls, string: str) -> ContentType:
         """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
         if "audio/" in tempstr:
@@ -247,7 +248,7 @@ class PlayerType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> PlayerType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -275,7 +276,7 @@ class PlayerFeature(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> PlayerFeature:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -302,7 +303,7 @@ class EventType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> EventType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -364,7 +365,7 @@ class ProviderFeature(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ProviderFeature:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -396,7 +397,7 @@ class ConfigEntryType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ConfigEntryType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 

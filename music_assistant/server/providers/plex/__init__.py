@@ -51,6 +51,7 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.constants import UNKNOWN_ARTIST
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
@@ -426,7 +427,7 @@ class PlexProvider(MusicProvider):
         artist_id = FAKE_ARTIST_PREFIX + artist_name
         return Artist(
             item_id=artist_id,
-            name=artist_name,
+            name=artist_name or UNKNOWN_ARTIST,
             provider=self.domain,
             provider_mappings={
                 ProviderMapping(
@@ -498,7 +499,7 @@ class PlexProvider(MusicProvider):
         album = Album(
             item_id=album_id,
             provider=self.domain,
-            name=plex_album.title,
+            name=plex_album.title or "[Unknown]",
             provider_mappings={
                 ProviderMapping(
                     item_id=str(album_id),
@@ -533,7 +534,7 @@ class PlexProvider(MusicProvider):
             self._get_item_mapping(
                 MediaType.ARTIST,
                 plex_album.parentKey,
-                plex_album.parentTitle,
+                plex_album.parentTitle or UNKNOWN_ARTIST,
             )
         )
         return album
@@ -546,7 +547,7 @@ class PlexProvider(MusicProvider):
             raise InvalidDataError(msg)
         artist = Artist(
             item_id=artist_id,
-            name=plex_artist.title,
+            name=plex_artist.title or UNKNOWN_ARTIST,
             provider=self.domain,
             provider_mappings={
                 ProviderMapping(
@@ -575,7 +576,7 @@ class PlexProvider(MusicProvider):
         playlist = Playlist(
             item_id=plex_playlist.key,
             provider=self.domain,
-            name=plex_playlist.title,
+            name=plex_playlist.title or "[Unknown]",
             provider_mappings={
                 ProviderMapping(
                     item_id=plex_playlist.key,
@@ -612,7 +613,7 @@ class PlexProvider(MusicProvider):
         track = Track(
             item_id=plex_track.key,
             provider=self.instance_id,
-            name=plex_track.title,
+            name=plex_track.title or "[Unknown]",
             provider_mappings={
                 ProviderMapping(
                     item_id=plex_track.key,
@@ -639,13 +640,15 @@ class PlexProvider(MusicProvider):
             # The artist of the track if different from the album's artist.
             # For this kind of artist, we just know the name, so we create a fake artist,
             # if it does not already exist.
-            track.artists.append(await self._get_or_create_artist_by_name(plex_track.originalTitle))
+            track.artists.append(
+                await self._get_or_create_artist_by_name(plex_track.originalTitle or UNKNOWN_ARTIST)
+            )
         elif plex_track.grandparentKey:
             track.artists.append(
                 self._get_item_mapping(
                     MediaType.ARTIST,
                     plex_track.grandparentKey,
-                    plex_track.grandparentTitle,
+                    plex_track.grandparentTitle or UNKNOWN_ARTIST,
                 )
             )
         else:

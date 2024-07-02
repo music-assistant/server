@@ -27,7 +27,7 @@ def now_timestamp() -> float:
     return now().timestamp()
 
 
-def future_timestamp(**kwargs) -> float:
+def future_timestamp(**kwargs: float) -> float:
     """Return current timestamp + timedelta."""
     return (now() + datetime.timedelta(**kwargs)).timestamp()
 

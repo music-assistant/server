@@ -59,7 +59,7 @@ class PlayerQueue(DataClassDictMixin):
         return d
 
     @classmethod
-    def from_cache(cls: Self, d: dict[Any, Any]) -> Self:
+    def from_cache(cls, d: dict[Any, Any]) -> Self:
         """Restore a PlayerQueue from a cache dict."""
         d.pop("current_item", None)
         d.pop("next_item", None)

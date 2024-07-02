@@ -33,7 +33,7 @@ class PlayerMedia(DataClassDictMixin):
     duration: int | None = None  # optional
     queue_id: str | None = None  # only present for requests from queue controller
     queue_item_id: str | None = None  # only present for requests from queue controller
-    custom_data: dict | None = None  # optional
+    custom_data: dict[str, Any] | None = None  # optional
 
 
 @dataclass
@@ -146,6 +146,6 @@ class Player(DataClassDictMixin):
         return None
 
     @current_item_id.setter
-    def current_item_id(self, uri: str) -> str | None:
+    def current_item_id(self, uri: str) -> None:
         """Set current_item_id (for backwards compatibility)."""
         self.current_media = PlayerMedia(uri)
