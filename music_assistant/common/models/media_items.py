@@ -338,6 +338,9 @@ class MediaItem(_MediaItemBase):
     favorite: bool = False
     position: int | None = None  # required for playlist tracks, optional for all other
 
+    def __hash__(self) -> int:
+        return super().__hash__()
+
     @property
     def available(self) -> bool:
         """Return (calculated) availability."""
