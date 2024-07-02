@@ -111,9 +111,6 @@ async def get_config_entries(
     returncode, output = await check_output(["snapserver", "-v"])
     snapserver_version: int = int(output.decode().split(".")[1]) if returncode == 0 else -1
     snapserver_valid_version: bool = snapserver_version >= 27
-    snapserver_present = (
-        returncode == 0 and "snapserver" in output.decode() and snapserver_valid_version
-    )
     if returncode == 0 and not snapserver_valid_version:
         raise SetupFailedError("Invalid snapserver version")
 
@@ -129,7 +126,7 @@ async def get_config_entries(
             "the sample is played-out on the client",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not snapserver_valid_version,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -141,7 +138,7 @@ async def get_config_entries(
             description="Volume assigned to new snapclients [percent]",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not snapserver_valid_version,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -151,7 +148,7 @@ async def get_config_entries(
             label="Send audio to muted clients",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not snapserver_valid_version,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -180,19 +177,19 @@ async def get_config_entries(
             description="This is the codec used by snapserver to send audio to clients",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not snapserver_valid_version,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
             key=CONF_USE_EXTERNAL_SERVER,
             type=ConfigEntryType.BOOLEAN,
-            default_value=not snapserver_present,
+            default_value=not snapserver_valid_version,
             label="Use existing Snapserver",
             required=False,
             description="Music Assistant by default already includes a Snapserver. \n\n"
             "Checking this option allows you to connect to your own/external existing Snapserver "
             "and not use the builtin one provided by Music Assistant.",
-            category="advanced" if snapserver_present else "generic",
+            category="advanced" if snapserver_valid_version else "generic",
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
@@ -201,7 +198,7 @@ async def get_config_entries(
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if snapserver_present else "generic",
+            category="advanced" if snapserver_valid_version else "generic",
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -210,7 +207,7 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if snapserver_present else "generic",
+            category="advanced" if snapserver_valid_version else "generic",
         ),
     )
 
