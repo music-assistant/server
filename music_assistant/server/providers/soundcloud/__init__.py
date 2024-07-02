@@ -383,7 +383,7 @@ class SoundcloudMusicProvider(MusicProvider):
             playlist.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=playlist_obj["artwork_url"],
+                    path=self._transform_artwork_url(playlist_obj["artwork_url"]),
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
@@ -426,7 +426,7 @@ class SoundcloudMusicProvider(MusicProvider):
             track.metadata.images = [
                 MediaItemImage(
                     type=ImageType.THUMB,
-                    path=track_obj["artwork_url"],
+                    path=self._transform_artwork_url(track_obj["artwork_url"]),
                     provider=self.instance_id,
                     remotely_accessible=True,
                 )
@@ -438,3 +438,8 @@ class SoundcloudMusicProvider(MusicProvider):
         if track_obj.get("tag_list"):
             track.metadata.style = track_obj["tag_list"]
         return track
+
+    def _transform_artwork_url(self, artwork_url: str) -> str:
+        """Patch artwork URL to a high quality thumbnail."""
+        # This is undocumented in their API docs, but was previously
+        return artwork_url.replace("large", "t500x500")
