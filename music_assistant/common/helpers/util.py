@@ -7,14 +7,13 @@ import os
 import re
 import socket
 from collections.abc import Callable
+from collections.abc import Set as AbstractSet
 from typing import Any, TypeVar
 from urllib.parse import urlparse
 from uuid import UUID
 
 # pylint: disable=invalid-name
 T = TypeVar("T")
-_UNDEF: dict = {}
-CALLABLE_T = TypeVar("CALLABLE_T", bound=Callable)
 CALLBACK_TYPE = Callable[[], None]
 # pylint: enable=invalid-name
 
@@ -50,7 +49,7 @@ def try_parse_float(possible_float: Any, default: float | None = 0.0) -> float |
         return default
 
 
-def try_parse_bool(possible_bool: Any) -> str:
+def try_parse_bool(possible_bool: Any) -> bool:
     """Try to parse a bool."""
     if isinstance(possible_bool, bool):
         return possible_bool
@@ -79,7 +78,7 @@ def create_sort_name(input_str: str) -> str:
     return input_str.strip()
 
 
-def parse_title_and_version(title: str, track_version: str | None = None):
+def parse_title_and_version(title: str, track_version: str | None = None) -> tuple[str, str]:
     """Try to parse clean track title and version from the title."""
     version = ""
     for splitter in [" (", " [", " - ", " (", " [", "-"]:
@@ -135,7 +134,7 @@ def clean_title(title: str) -> str:
     return title.strip()
 
 
-def get_version_substitute(version_str: str):
+def get_version_substitute(version_str: str) -> str:
     """Transform provider version str to universal version type."""
     version_str = version_str.lower()
     # substitute edit and edition with version
@@ -169,7 +168,7 @@ def strip_url(line: str) -> str:
     ).rstrip()
 
 
-def strip_dotcom(line: str):
+def strip_dotcom(line: str) -> str:
     """Strip scheme-less netloc from line."""
     return dot_com_pattern.sub("", line)
 
@@ -227,17 +226,17 @@ def clean_stream_title(line: str) -> str:
     return line
 
 
-async def get_ip():
+async def get_ip() -> str:
     """Get primary IP-address for this host."""
 
-    def _get_ip():
+    def _get_ip() -> str:
         """Get primary IP-address for this host."""
         # pylint: disable=broad-except,no-member
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         try:
             # doesn't even have to be reachable
             sock.connect(("10.255.255.255", 1))
-            _ip = sock.getsockname()[0]
+            _ip = str(sock.getsockname()[0])
         except Exception:
             _ip = "127.0.0.1"
         finally:
@@ -273,7 +272,7 @@ async def select_free_port(range_start: int, range_end: int) -> int:
 async def get_ip_from_host(dns_name: str) -> str | None:
     """Resolve (first) IP-address for given dns name."""
 
-    def _resolve():
+    def _resolve() -> str | None:
         try:
             return socket.gethostbyname(dns_name)
         except Exception:  # pylint: disable=broad-except
@@ -283,7 +282,7 @@ async def get_ip_from_host(dns_name: str) -> str | None:
     return await asyncio.to_thread(_resolve)
 
 
-async def get_ip_pton(ip_string: str | None = None):
+async def get_ip_pton(ip_string: str | None = None) -> bytes:
     """Return socket pton for local ip."""
     if ip_string is None:
         ip_string = await get_ip()
@@ -294,7 +293,7 @@ async def get_ip_pton(ip_string: str | None = None):
         return await asyncio.to_thread(socket.inet_pton, socket.AF_INET6, ip_string)
 
 
-def get_folder_size(folderpath):
+def get_folder_size(folderpath: str) -> float:
     """Return folder size in gb."""
     total_size = 0
     # pylint: disable=unused-variable
@@ -306,7 +305,9 @@ def get_folder_size(folderpath):
     return total_size / float(1 << 30)
 
 
-def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
+def merge_dict(
+    base_dict: dict[Any, Any], new_dict: dict[Any, Any], allow_overwite: bool = False
+) -> dict[Any, Any]:
     """Merge dict without overwriting existing values."""
     final_dict = base_dict.copy()
     for key, value in new_dict.items():
@@ -321,12 +322,12 @@ def merge_dict(base_dict: dict, new_dict: dict, allow_overwite=False):
     return final_dict
 
 
-def merge_tuples(base: tuple, new: tuple) -> tuple:
+def merge_tuples(base: tuple[Any, ...], new: tuple[Any, ...]) -> tuple[Any, ...]:
     """Merge 2 tuples."""
     return tuple(x for x in base if x not in new) + tuple(new)
 
 
-def merge_lists(base: list, new: list) -> list:
+def merge_lists(base: list[Any], new: list[Any]) -> list[Any]:
     """Merge 2 lists."""
     return [x for x in base if x not in new] + list(new)
 
@@ -335,7 +336,7 @@ def get_changed_keys(
     dict1: dict[str, Any],
     dict2: dict[str, Any],
     ignore_keys: list[str] | None = None,
-) -> set[str]:
+) -> AbstractSet[str]:
     """Compare 2 dicts and return set of changed keys."""
     return get_changed_values(dict1, dict2, ignore_keys).keys()
 
@@ -369,7 +370,7 @@ def get_changed_values(
     return changed_values
 
 
-def empty_queue(q: asyncio.Queue) -> None:
+def empty_queue(q: asyncio.Queue[T]) -> None:
     """Empty an asyncio Queue."""
     for _ in range(q.qsize()):
         try:
@@ -386,10 +387,3 @@ def is_valid_uuid(uuid_to_test: str) -> bool:
     except ValueError:
         return False
     return str(uuid_obj) == uuid_to_test
-
-
-class classproperty(property):  # noqa: N801
-    """Implement class property for python3.11+."""
-
-    def __get__(self, cls, owner):  # noqa: D105
-        return classmethod(self.fget).__get__(None, owner)()

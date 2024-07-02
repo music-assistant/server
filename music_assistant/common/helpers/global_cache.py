@@ -8,7 +8,7 @@ from typing import Any
 # global cache - we use this on a few places (as limited as possible)
 # where we have no other options
 _global_cache_lock = asyncio.Lock()
-_global_cache = {}
+_global_cache: dict[str, Any] = {}
 
 
 def get_global_cache_value(key: str, default: Any = None) -> Any:

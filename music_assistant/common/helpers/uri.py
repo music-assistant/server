@@ -10,7 +10,7 @@ from music_assistant.common.models.errors import InvalidProviderID, InvalidProvi
 base62_length22_id_pattern = re.compile(r"^[a-zA-Z0-9]{22}$")
 
 
-def valid_base62_length22(item_id) -> bool:
+def valid_base62_length22(item_id: str) -> bool:
     """Validate Spotify style ID."""
     return bool(base62_length22_id_pattern.match(item_id))
 

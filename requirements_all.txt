@@ -25,12 +25,12 @@ mashumaro==3.13.1
 memory-tempfile==2.2.3
 music-assistant-frontend==2.5.15
 orjson==3.10.5
-pillow==10.3.0
+pillow==10.4.0
 plexapi==4.15.13
 py-opensonic==5.1.0
 PyChromecast==14.0.1
 pycryptodome==3.20.0
-python-fullykiosk==0.0.12
+python-fullykiosk==0.0.14
 python-slugify==8.0.4
 pywidevine==1.8.0
 radios==0.3.1
