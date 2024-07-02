@@ -4,7 +4,7 @@
   "name": "Fully Kiosk Browser",
   "description": "Support for media players from the Fully Kiosk app.",
   "codeowners": ["@music-assistant"],
-  "requirements": ["python-fullykiosk==0.0.12"],
+  "requirements": ["python-fullykiosk==0.0.14"],
   "documentation": "https://music-assistant.io/player-support/fully-kiosk/",
   "multi_instance": true,
   "builtin": false,
