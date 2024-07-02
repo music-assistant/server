@@ -274,7 +274,7 @@ class _MediaItemBase(DataClassDictMixin):
 
     item_id: str
     provider: str  # provider instance id or provider domain
-    name: str = "[Unknown]"
+    name: str
     version: str = ""
     # sort_name and uri are auto generated, do not override unless really needed
     sort_name: str | None = None
