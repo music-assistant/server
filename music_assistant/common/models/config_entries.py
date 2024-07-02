@@ -8,7 +8,7 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from types import NoneType
-from typing import Any, cast
+from typing import Any
 
 from mashumaro import DataClassDictMixin
 
@@ -256,10 +256,7 @@ class Config(DataClassDictMixin):
             setattr(self, key, new_val)
             changed_keys.add(key)
 
-        # config entry values
-        values = cast(dict[str, ConfigValueType], update.get("values", update))
-
-        for key, new_val in values.items():
+        for key, new_val in update.items():
             if key in root_values:
                 continue
             cur_val = self.values[key].value if key in self.values else None
