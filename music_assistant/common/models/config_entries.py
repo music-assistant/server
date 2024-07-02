@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import warnings
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from enum import Enum
 from types import NoneType
@@ -46,8 +46,8 @@ warnings.filterwarnings("ignore", category=UserWarning, module="mashumaro")
 
 LOGGER = logging.getLogger(__name__)
 
-ENCRYPT_CALLBACK: callable[[str], str] | None = None
-DECRYPT_CALLBACK: callable[[str], str] | None = None
+ENCRYPT_CALLBACK: Callable[[str], str] | None = None
+DECRYPT_CALLBACK: Callable[[str], str] | None = None
 
 ConfigValueType = (
     str
@@ -58,15 +58,16 @@ ConfigValueType = (
     | list[str]
     | list[int]
     | list[tuple[int, int]]
+    | Enum
     | None
 )
 
-ConfigEntryTypeMap = {
+ConfigEntryTypeMap: dict[ConfigEntryType, type[ConfigValueType]] = {
     ConfigEntryType.BOOLEAN: bool,
     ConfigEntryType.STRING: str,
     ConfigEntryType.SECURE_STRING: str,
     ConfigEntryType.INTEGER: int,
-    ConfigEntryType.INTEGER_TUPLE: tuple[int, int],
+    ConfigEntryType.INTEGER_TUPLE: tuple[int, int],  # type: ignore[dict-item]
     ConfigEntryType.FLOAT: float,
     ConfigEntryType.LABEL: str,
     ConfigEntryType.DIVIDER: str,
@@ -187,6 +188,7 @@ class Config(DataClassDictMixin):
         """Return config value for given key."""
         config_value = self.values[key]
         if config_value.type == ConfigEntryType.SECURE_STRING:
+            assert isinstance(config_value.value, str)
             assert DECRYPT_CALLBACK is not None
             return DECRYPT_CALLBACK(config_value.value)
         return config_value.value
@@ -213,8 +215,9 @@ class Config(DataClassDictMixin):
     def to_raw(self) -> dict[str, Any]:
         """Return minimized/raw dict to store in persistent storage."""
 
-        def _handle_value(value: ConfigEntry):
+        def _handle_value(value: ConfigEntry) -> ConfigValueType:
             if value.type == ConfigEntryType.SECURE_STRING:
+                assert isinstance(value.value, str)
                 assert ENCRYPT_CALLBACK is not None
                 return ENCRYPT_CALLBACK(value.value)
             return value.value
@@ -253,9 +256,7 @@ class Config(DataClassDictMixin):
             setattr(self, key, new_val)
             changed_keys.add(key)
 
-        # config entry values
-        values = update.get("values", update)
-        for key, new_val in values.items():
+        for key, new_val in update.items():
             if key in root_values:
                 continue
             cur_val = self.values[key].value if key in self.values else None
@@ -366,12 +367,12 @@ CONF_ENTRY_AUTO_PLAY = ConfigEntry(
 CONF_ENTRY_OUTPUT_CHANNELS = ConfigEntry(
     key=CONF_OUTPUT_CHANNELS,
     type=ConfigEntryType.STRING,
-    options=[
+    options=(
         ConfigValueOption("Stereo (both channels)", "stereo"),
         ConfigValueOption("Left channel", "left"),
         ConfigValueOption("Right channel", "right"),
         ConfigValueOption("Mono (both channels)", "mono"),
-    ],
+    ),
     default_value="stereo",
     label="Output Channel Mode",
     category="audio",
@@ -503,12 +504,12 @@ CONF_ENTRY_TTS_PRE_ANNOUNCE = ConfigEntry(
 CONF_ENTRY_ANNOUNCE_VOLUME_STRATEGY = ConfigEntry(
     key=CONF_ANNOUNCE_VOLUME_STRATEGY,
     type=ConfigEntryType.STRING,
-    options=[
+    options=(
         ConfigValueOption("Absolute volume", "absolute"),
         ConfigValueOption("Relative volume increase", "relative"),
         ConfigValueOption("Volume increase by fixed percentage", "percentual"),
         ConfigValueOption("Do not adjust volume", "none"),
-    ],
+    ),
     default_value="percentual",
     label="Volume strategy for Announcements",
     category="announcements",
@@ -557,7 +558,7 @@ CONF_ENTRY_PLAYER_ICON_GROUP = ConfigEntry.from_dict(
 CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
     key=CONF_SAMPLE_RATES,
     type=ConfigEntryType.INTEGER_TUPLE,
-    options=[
+    options=(
         ConfigValueOption("44.1kHz / 16 bits", (44100, 16)),
         ConfigValueOption("44.1kHz / 24 bits", (44100, 24)),
         ConfigValueOption("48kHz / 16 bits", (48000, 16)),
@@ -574,7 +575,7 @@ CONF_ENTRY_SAMPLE_RATES = ConfigEntry(
         ConfigValueOption("352.8kHz / 24 bits", (352800, 24)),
         ConfigValueOption("384kHz / 16 bits", (384000, 16)),
         ConfigValueOption("384kHz / 24 bits", (384000, 24)),
-    ],
+    ),
     default_value=[(44100, 16), (48000, 16)],
     required=True,
     multi_value=True,
@@ -593,14 +594,19 @@ def create_sample_rates_config_entry(
     hidden: bool = False,
 ) -> ConfigEntry:
     """Create sample rates config entry based on player specific helpers."""
+    assert CONF_ENTRY_SAMPLE_RATES.options
     conf_entry = ConfigEntry.from_dict(CONF_ENTRY_SAMPLE_RATES.to_dict())
-    conf_entry.options = []
-    conf_entry.default_value = []
     conf_entry.hidden = hidden
+    options: list[ConfigValueOption] = []
+    default_value: list[tuple[int, int]] = []
     for option in CONF_ENTRY_SAMPLE_RATES.options:
+        if not isinstance(option.value, tuple):
+            continue
         sample_rate, bit_depth = option.value
         if sample_rate <= max_sample_rate and bit_depth <= max_bit_depth:
-            conf_entry.options.append(option)
+            options.append(option)
         if sample_rate <= safe_max_sample_rate and bit_depth <= safe_max_bit_depth:
-            conf_entry.default_value.append(option.value)
+            default_value.append(option.value)
+    conf_entry.options = tuple(options)
+    conf_entry.default_value = default_value
     return conf_entry

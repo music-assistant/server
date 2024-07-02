@@ -62,6 +62,7 @@ CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
+CONF_SERVER_DRYOUT_MS = "snapcast_stream_dryout_ms"
 
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
@@ -209,6 +210,16 @@ async def get_config_entries(
             depends_on=CONF_USE_EXTERNAL_SERVER,
             category="advanced" if snapserver_valid_version else "generic",
         ),
+        ConfigEntry(
+            key=CONF_SERVER_DRYOUT_MS,
+            type=ConfigEntryType.INTEGER,
+            default_value=2000,
+            label="Stream dryout parameter in ms",
+            description="Allows you to modify the dryout of the tcp stream.",
+            required=False,
+            category="advanced",
+            help_link="https://github.com/badaix/snapcast/blob/develop/doc/configuration.md",
+        ),
     )
 
 
@@ -273,7 +284,7 @@ class SnapCastProvider(PlayerProvider):
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
-
+        self._snapcast_stream_dryout_ms = self.config.get_value(CONF_SERVER_DRYOUT_MS)
         self._stream_tasks = {}
         self._ids_map = bidict({})
 
@@ -579,10 +590,11 @@ class SnapCastProvider(PlayerProvider):
             # pick a random port
             port = random.randint(4953, 4953 + 200)
             name = f"MusicAssistant--{port}"
+            dryout_ms = self._snapcast_stream_dryout_ms
             result = await self._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
+                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2&dryout_ms={dryout_ms}",
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error

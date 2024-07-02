@@ -115,7 +115,7 @@ class RetriesExhausted(MusicAssistantError):
 class ResourceTemporarilyUnavailable(MusicAssistantError):
     """Error thrown when a resource is temporarily unavailable."""
 
-    def __init__(self, *args, backoff_time: int = 0) -> None:
+    def __init__(self, *args: object, backoff_time: int = 0) -> None:
         """Initialize."""
         super().__init__(*args)
         self.backoff_time = backoff_time
