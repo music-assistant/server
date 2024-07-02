@@ -110,7 +110,7 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     returncode, output = await check_output(["snapserver", "-v"])
-    snapserver_version: int = int(output.decode().split(".")[1]) if returncode == 0 else -1
+    snapserver_version = int(output.decode().split(".")[1]) if returncode == 0 else -1
     snapserver_valid_version: bool = snapserver_version >= 27
     if returncode == 0 and not snapserver_valid_version:
         raise SetupFailedError("Invalid snapserver version")
