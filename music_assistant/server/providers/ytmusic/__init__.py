@@ -243,13 +243,13 @@ class YoutubeMusicProvider(MusicProvider):
                 if result["resultType"] == "artist" and MediaType.ARTIST in media_types:
                     parsed_results.artists.append(self._parse_artist(result))
                 elif result["resultType"] == "album" and MediaType.ALBUM in media_types:
-                    parsed_results.albums.append(self._parse_album(result))
+                    parsed_results.albums.append(await self._parse_album(result))
                 elif result["resultType"] == "playlist" and MediaType.PLAYLIST in media_types:
                     parsed_results.playlists.append(self._parse_playlist(result))
                 elif (
                     result["resultType"] in ("song", "video")
                     and MediaType.TRACK in media_types
-                    and (track := self._parse_track(result))
+                    and (track := await self._parse_track(result))
                 ):
                     parsed_results.tracks.append(track)
             except InvalidDataError:
@@ -268,7 +268,7 @@ class YoutubeMusicProvider(MusicProvider):
         await self._check_oauth_token()
         albums_obj = await get_library_albums(headers=self._headers, language=self.language)
         for album in albums_obj:
-            yield self._parse_album(album, album["browseId"])
+            yield await self._parse_album(album, album["browseId"], fetch_missing_artist_info=True)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
@@ -285,7 +285,7 @@ class YoutubeMusicProvider(MusicProvider):
             # Library tracks sometimes do not have a valid artist id
             # In that case, call the API for track details based on track id
             try:
-                yield self._parse_track(track)
+                yield await self._parse_track(track, fetch_missing_artist_info=True)
             except InvalidDataError:
                 track = await self.get_track(track["videoId"])
                 yield track
@@ -294,7 +294,7 @@ class YoutubeMusicProvider(MusicProvider):
         """Get full album details by id."""
         await self._check_oauth_token()
         if album_obj := await get_album(prov_album_id=prov_album_id, language=self.language):
-            return self._parse_album(album_obj=album_obj, album_id=prov_album_id)
+            return await self._parse_album(album_obj=album_obj, album_id=prov_album_id)
         msg = f"Item {prov_album_id} not found"
         raise MediaNotFoundError(msg)
 
@@ -307,7 +307,7 @@ class YoutubeMusicProvider(MusicProvider):
         tracks = []
         for idx, track_obj in enumerate(album_obj["tracks"], 1):
             try:
-                track = self._parse_track(track_obj=track_obj)
+                track = await self._parse_track(track_obj=track_obj)
                 track.disc_number = 0
                 track.track_number = track_obj.get("trackNumber", idx)
             except InvalidDataError:
@@ -333,7 +333,7 @@ class YoutubeMusicProvider(MusicProvider):
             headers=self._headers,
             language=self.language,
         ):
-            return self._parse_track(track_obj)
+            return await self._parse_track(track_obj)
         msg = f"Item {prov_track_id} not found"
         raise MediaNotFoundError(msg)
 
@@ -378,7 +378,7 @@ class YoutubeMusicProvider(MusicProvider):
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id
                 try:
-                    if track := self._parse_track(track_obj):
+                    if track := await self._parse_track(track_obj):
                         track.position = index + 1
                         result.append(track)
                 except InvalidDataError:
@@ -399,7 +399,7 @@ class YoutubeMusicProvider(MusicProvider):
                     album_obj["artists"] = [
                         {"id": artist_obj["channelId"], "name": artist_obj["name"]}
                     ]
-                albums.append(self._parse_album(album_obj, album_obj["browseId"]))
+                albums.append(await self._parse_album(album_obj, album_obj["browseId"]))
             return albums
         return []
 
@@ -508,7 +508,7 @@ class YoutubeMusicProvider(MusicProvider):
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id
                 try:
-                    track = self._parse_track(track)
+                    track = await self._parse_track(track)
                     if track:
                         tracks.append(track)
                 except InvalidDataError:
@@ -597,7 +597,9 @@ class YoutubeMusicProvider(MusicProvider):
             }
         }
 
-    def _parse_album(self, album_obj: dict, album_id: str | None = None) -> Album:
+    async def _parse_album(
+        self, album_obj: dict, album_id: str | None = None, fetch_missing_artist_info: bool = False
+    ) -> Album:
         """Parse a YT Album response to an Album model object."""
         album_id = album_id or album_obj.get("id") or album_obj.get("browseId")
         if "title" in album_obj:
@@ -624,14 +626,23 @@ class YoutubeMusicProvider(MusicProvider):
             album.metadata.description = unquote(description)
         if "isExplicit" in album_obj:
             album.metadata.explicit = album_obj["isExplicit"]
-        if "artists" in album_obj:
-            album.artists = [
-                self._get_artist_item_mapping(artist)
-                for artist in album_obj["artists"]
-                if artist.get("id")
-                or artist.get("channelId")
-                or artist.get("name") == "Various Artists"
-            ]
+        if artists := album_obj.get("artists"):
+            if fetch_missing_artist_info:
+                for artist in artists:
+                    if artist.get("id") or artist.get("channelId"):
+                        album.artists.append(
+                            await self.get_artist(artist.get("id") or artist.get("channelId"))
+                        )
+                    elif artist["name"] == "Various Artists":
+                        album.artists.append(self._get_artist_item_mapping(artist))
+            else:
+                album.artists = [
+                    self._get_artist_item_mapping(artist)
+                    for artist in album_obj["artists"]
+                    if artist.get("id")
+                    or artist.get("channelId")
+                    or artist.get("name") == "Various Artists"
+                ]
         if "type" in album_obj:
             if album_obj["type"] == "Single":
                 album_type = AlbumType.SINGLE
@@ -716,7 +727,7 @@ class YoutubeMusicProvider(MusicProvider):
         playlist.metadata.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
-    def _parse_track(self, track_obj: dict) -> Track:
+    async def _parse_track(self, track_obj: dict, fetch_missing_artist_info: bool = False) -> Track:
         """Parse a YT Track response to a Track model object."""
         if not track_obj.get("videoId"):
             msg = "Track is missing videoId"
@@ -739,14 +750,23 @@ class YoutubeMusicProvider(MusicProvider):
             },
         )
 
-        if track_obj.get("artists"):
-            track.artists = [
-                self._get_artist_item_mapping(artist)
-                for artist in track_obj["artists"]
-                if artist.get("id")
-                or artist.get("channelId")
-                or artist.get("name") == "Various Artists"
-            ]
+        if artists := track_obj.get("artists"):
+            for artist in artists:
+                if fetch_missing_artist_info:
+                    if artist.get("id") or artist.get("channelId"):
+                        track.artists.append(
+                            await self.get_artist(artist.get("id") or artist.get("channelId"))
+                        )
+                    elif artist["name"] == "Various Artists":
+                        track.artists.append(self._get_artist_item_mapping(artist))
+                else:
+                    track.artists = [
+                        self._get_artist_item_mapping(artist)
+                        for artist in track_obj["artists"]
+                        if artist.get("id")
+                        or artist.get("channelId")
+                        or artist.get("name") == "Various Artists"
+                    ]
         # guard that track has valid artists
         if not track.artists:
             msg = "Track is missing artists"
