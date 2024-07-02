@@ -339,6 +339,7 @@ class MediaItem(_MediaItemBase):
     position: int | None = None  # required for playlist tracks, optional for all other
 
     def __hash__(self) -> int:
+        """Return hash of MediaItem."""
         return super().__hash__()
 
     @property
