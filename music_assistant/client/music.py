@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import urllib.parse
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, cast
 
 from music_assistant.common.models.enums import ImageType, MediaType
-from music_assistant.common.models.errors import UnsupportedFeaturedException
 from music_assistant.common.models.media_items import (
     Album,
     AlbumTrack,
@@ -20,27 +19,13 @@ from music_assistant.common.models.media_items import (
     Radio,
     SearchResults,
     Track,
+    media_from_dict,
 )
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.queue_item import QueueItem
 
 if TYPE_CHECKING:
     from .client import MusicAssistantClient
-
-
-def media_from_dict(media_item: dict[str, Any]) -> MediaItemType:
-    """Return MediaItem from dict."""
-    if media_item["media_type"] == "artist":
-        return Artist.from_dict(media_item)
-    if media_item["media_type"] == "album":
-        return Album.from_dict(media_item)
-    if media_item["media_type"] == "track":
-        return Track.from_dict(media_item)
-    if media_item["media_type"] == "playlist":
-        return Playlist.from_dict(media_item)
-    if media_item["media_type"] == "radio":
-        return Radio.from_dict(media_item)
-    raise UnsupportedFeaturedException(f"Unknown media_type: {media_item['media_type']}")
 
 
 class Music:
@@ -455,7 +440,7 @@ class Music:
         path: str | None = None,
         limit: int | None = None,
         offset: int | None = None,
-    ) -> list[MediaItemType]:
+    ) -> list[MediaItemType | ItemMapping]:
         """Browse Music providers."""
         return [
             media_from_dict(obj)
@@ -469,7 +454,7 @@ class Music:
 
     async def recently_played(
         self, limit: int = 10, media_types: list[MediaType] | None = None
-    ) -> list[MediaItemType]:
+    ) -> list[MediaItemType | ItemMapping]:
         """Return a list of the last played items."""
         return [
             media_from_dict(item)
@@ -481,7 +466,7 @@ class Music:
     async def get_item_by_uri(
         self,
         uri: str,
-    ) -> MediaItemType:
+    ) -> MediaItemType | ItemMapping:
         """Get single music item providing a mediaitem uri."""
         return media_from_dict(await self.client.send_command("music/item_by_uri", uri=uri))
 
@@ -493,7 +478,7 @@ class Music:
         force_refresh: bool = False,
         lazy: bool = True,
         add_to_library: bool = False,
-    ) -> MediaItemType:
+    ) -> MediaItemType | ItemMapping:
         """Get single music item by id and media type."""
         return media_from_dict(
             await self.client.send_command(
@@ -549,7 +534,7 @@ class Music:
     async def refresh_item(
         self,
         media_item: MediaItemType,
-    ) -> MediaItemType | None:
+    ) -> MediaItemType | ItemMapping | None:
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
         if result := await self.client.send_command("music/refresh_item", media_item=media_item):
             return media_from_dict(result)

@@ -570,7 +570,7 @@ class SearchResults(DataClassDictMixin):
     radio: list[Radio | ItemMapping] = field(default_factory=list)
 
 
-def media_from_dict(media_item: dict[str, Any]) -> MediaItemType | ItemMapping | MediaItem:
+def media_from_dict(media_item: dict[str, Any]) -> MediaItemType | ItemMapping:
     """Return MediaItem from dict."""
     if "provider_mappings" not in media_item:
         return ItemMapping.from_dict(media_item)
@@ -584,7 +584,7 @@ def media_from_dict(media_item: dict[str, Any]) -> MediaItemType | ItemMapping |
         return Playlist.from_dict(media_item)
     if media_item["media_type"] == "radio":
         return Radio.from_dict(media_item)
-    return MediaItem.from_dict(media_item)
+    raise InvalidDataError("Unknown media type")
 
 
 def is_track(val: MediaItem) -> TypeGuard[Track]:
