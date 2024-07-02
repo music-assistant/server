@@ -414,7 +414,7 @@ class Album(MediaItem):
 @dataclass(kw_only=True)
 class Track(MediaItem):
     """Model for a track."""
-  
+
     __hash__ = _MediaItemBase.__hash__
     __eq__ = _MediaItemBase.__eq__
 
