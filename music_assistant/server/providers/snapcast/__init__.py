@@ -127,7 +127,7 @@ async def get_config_entries(
             "the sample is played-out on the client",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_valid_version,
+            hidden=not local_snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
