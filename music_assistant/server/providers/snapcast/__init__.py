@@ -284,7 +284,7 @@ class SnapCastProvider(PlayerProvider):
         self._ids_map = bidict({})
 
         if self._use_builtin_server:
-            self._start_builtin_server()
+            await self._start_builtin_server()
         else:
             self._snapserver_runner = None
             self._snapserver_started = None
