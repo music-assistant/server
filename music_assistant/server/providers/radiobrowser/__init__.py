@@ -6,20 +6,17 @@ from typing import TYPE_CHECKING
 
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
 
-from music_assistant.common.models.enums import LinkType, ProviderFeature, StreamType
-from music_assistant.common.models.media_items import (
-    AudioFormat,
-    BrowseFolder,
-    ContentType,
-    ImageType,
-    MediaItemImage,
-    MediaItemLink,
-    MediaItemType,
-    MediaType,
-    ProviderMapping,
-    Radio,
-    SearchResults,
-)
+from music_assistant.common.models.enums import (LinkType, ProviderFeature,
+                                                 StreamType)
+from music_assistant.common.models.media_items import (AudioFormat,
+                                                       BrowseFolder,
+                                                       ContentType, ImageType,
+                                                       MediaItemImage,
+                                                       MediaItemLink,
+                                                       MediaItemType,
+                                                       MediaType,
+                                                       ProviderMapping, Radio,
+                                                       SearchResults)
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.models.music_provider import MusicProvider
@@ -27,11 +24,9 @@ from music_assistant.server.models.music_provider import MusicProvider
 SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import (
-        ConfigEntry,
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant.common.models.config_entries import (ConfigEntry,
+                                                              ConfigValueType,
+                                                              ProviderConfig)
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -94,15 +89,15 @@ class RadioBrowserProvider(MusicProvider):
         result = SearchResults()
         if MediaType.RADIO not in media_types:
             return result
+        
+        search_result = await self.radios.search(name=search_query, limit=limit)
 
-        searchresult = await self.radios.search(name=search_query, limit=limit)
-
-        for item in searchresult:
+        for item in search_result:
             result.radio.append(await self._parse_radio(item))
 
         return result
 
-    @use_cache(86400 * 7)
+    @use_cache(60)
     async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
         """Browse this provider's items.
 
@@ -162,7 +157,7 @@ class RadioBrowserProvider(MusicProvider):
         if subpath == "country":
             items: list[BrowseFolder | Radio] = []
             for country in await self.radios.countries(
-                order=Order.NAME, hide_broken=True, limit=limit, offset=offset
+                order=Order.NAME, hide_broken=True
             ):
                 folder = BrowseFolder(
                     item_id=country.code.lower(),
@@ -179,21 +174,20 @@ class RadioBrowserProvider(MusicProvider):
                     )
                 ]
                 items.append(folder)
-            return items
+            return items[offset:(offset+limit)]
 
-        if subsubpath in await self.get_tag_names(limit=limit, offset=offset):
-            return await self.get_by_tag(subsubpath)
-
-        if subsubpath in await self.get_country_codes(limit=limit, offset=offset):
+        if "country" in subpath and subsubpath in await self.get_country_codes():
             return await self.get_by_country(subsubpath)
+        
+        if subsubpath in await self.get_tag_names():
+            return await self.get_by_tag(subsubpath)
+        
         return []
 
-    async def get_tag_names(self, limit: int, offset: int):
+    async def get_tag_names(self):
         """Get a list of tag names."""
         tags = await self.radios.tags(
             hide_broken=True,
-            limit=limit,
-            offset=offset,
             order=Order.STATION_COUNT,
             reverse=True,
         )
@@ -203,10 +197,10 @@ class RadioBrowserProvider(MusicProvider):
             tag_names.append(tag.name.lower())
         return tag_names
 
-    async def get_country_codes(self, limit: int, offset: int):
+    async def get_country_codes(self):
         """Get a list of country names."""
         countries = await self.radios.countries(
-            order=Order.NAME, hide_broken=True, limit=limit, offset=offset
+            order=Order.NAME, hide_broken=True
         )
         country_codes = []
         for country in countries:
