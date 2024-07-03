@@ -673,11 +673,14 @@ class SnapCastProvider(PlayerProvider):
 
     async def _restart_builtin_server(self) -> None:
         """Restart the built-in Snapserver."""
-        if self._use_builtin_server:
+        if self._use_builtin_server and self._builtin_server_retry > 1:
             self.logger.info("Restarting, built-in Snapserver.")
             await self._stop_builtin_server()
             await asyncio.sleep(10)
             await self._start_builtin_server()
+        else:
+            self._builtin_server_retry += 1
+            self.logger.debug("Increase snapcast retry count")
 
     async def _stop_builtin_server(self) -> None:
         """Stop the built-in Snapserver."""
@@ -689,12 +692,8 @@ class SnapCastProvider(PlayerProvider):
 
     async def _start_builtin_server(self) -> None:
         """Start the built-in Snapserver."""
-        if not self._use_builtin_server:
-            return
-        if self._builtin_server_retry > 1:
+        if self._use_builtin_server:
             self._builtin_server_retry = 0
             self._snapserver_started = asyncio.Event()
             self._snapserver_runner = asyncio.create_task(self._builtin_server_runner())
             await asyncio.wait_for(self._snapserver_started.wait(), 10)
-        else:
-            self._builtin_server_retry += 1
