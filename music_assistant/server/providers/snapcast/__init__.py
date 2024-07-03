@@ -68,11 +68,6 @@ CONF_SERVER_DRYOUT_MS = "snapcast_stream_dryout_ms"
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
 
-SNAP_STREAM_STATUS_MAP = {
-    "idle": PlayerState.IDLE,
-    "playing": PlayerState.PLAYING,
-    "unknown": PlayerState.IDLE,
-}
 DEFAULT_SNAPSERVER_PORT = 1705
 
 SNAPWEB_DIR: Final[pathlib.Path] = pathlib.Path(__file__).parent.resolve().joinpath("snapweb")
@@ -604,11 +599,6 @@ class SnapCastProvider(PlayerProvider):
             return (stream, port)
         msg = "Unable to create stream - No free port found?"
         raise RuntimeError(msg)
-
-    def _get_player_state(self, player_id: str) -> PlayerState:
-        """Return the state of the player."""
-        snap_group = self._get_snapgroup(player_id)
-        return SNAP_STREAM_STATUS_MAP.get(snap_group.stream_status)
 
     def _set_childs_state(self, player_id: str, state: PlayerState) -> None:
         """Set the state of the child`s of the player."""
