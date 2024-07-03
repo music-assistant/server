@@ -229,6 +229,7 @@ class SnapCastProvider(PlayerProvider):
     _snapserver_runner: asyncio.Task | None
     _snapserver_started: asyncio.Event | None
     _ids_map: bidict  # ma_id / snapclient_id
+    _builtin_server_retry: int
 
     def _get_snapclient_id(self, player_id: str) -> str:
         search_dict = self._ids_map
@@ -282,6 +283,7 @@ class SnapCastProvider(PlayerProvider):
         self._snapcast_stream_dryout_ms = self.config.get_value(CONF_SERVER_DRYOUT_MS)
         self._stream_tasks = {}
         self._ids_map = bidict({})
+        self._builtin_server_retry = 0
 
         if self._use_builtin_server:
             await self._start_builtin_server()
@@ -687,6 +689,12 @@ class SnapCastProvider(PlayerProvider):
 
     async def _start_builtin_server(self) -> None:
         """Start the built-in Snapserver."""
-        self._snapserver_started = asyncio.Event()
-        self._snapserver_runner = asyncio.create_task(self._builtin_server_runner())
-        await asyncio.wait_for(self._snapserver_started.wait(), 10)
+        if not self._use_builtin_server:
+            return
+        if self._builtin_server_retry > 1:
+            self._builtin_server_retry = 0
+            self._snapserver_started = asyncio.Event()
+            self._snapserver_runner = asyncio.create_task(self._builtin_server_runner())
+            await asyncio.wait_for(self._snapserver_started.wait(), 10)
+        else:
+            self._builtin_server_retry += 1
