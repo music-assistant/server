@@ -669,7 +669,7 @@ class SnapCastProvider(PlayerProvider):
                         # where we try to connect too soon
                         self.mass.loop.call_later(2, self._snapserver_started.set)
 
-    async def _restart_builtin_server(self):
+    async def _restart_builtin_server(self) -> None:
         """Restart the built-in Snapserver."""
         if self._use_builtin_server:
             self.logger.info("Restarting, built-in Snapserver.")
@@ -677,7 +677,7 @@ class SnapCastProvider(PlayerProvider):
             await asyncio.sleep(10)
             await self._start_builtin_server()
 
-    async def _stop_builtin_server(self):
+    async def _stop_builtin_server(self) -> None:
         """Stop the built-in Snapserver."""
         self.logger.info("Stopping, built-in Snapserver")
         if self._snapserver_runner and not self._snapserver_runner.done():
@@ -685,7 +685,7 @@ class SnapCastProvider(PlayerProvider):
             await asyncio.sleep(10)  # prevent race conditions when reloading
             self._snapserver_started.clear()
 
-    async def _start_builtin_server(self):
+    async def _start_builtin_server(self) -> None:
         """Start the built-in Snapserver."""
         self._snapserver_started = asyncio.Event()
         self._snapserver_runner = asyncio.create_task(self._builtin_server_runner())
