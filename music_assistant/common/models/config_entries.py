@@ -146,10 +146,10 @@ class ConfigEntry(DataClassDictMixin):
             value = self.label
         if not isinstance(value, expected_type):
             # handle common conversions/mistakes
-            if expected_type == float and isinstance(value, int):
+            if expected_type is float and isinstance(value, int):
                 self.value = float(value)
                 return self.value
-            if expected_type == int and isinstance(value, float):
+            if expected_type is int and isinstance(value, float):
                 self.value = int(value)
                 return self.value
             for val_type in (int, float):

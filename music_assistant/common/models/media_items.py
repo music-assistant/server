@@ -415,6 +415,7 @@ class Album(MediaItem):
 class Track(MediaItem):
     """Model for a track."""
 
+    __hash__ = _MediaItemBase.__hash__
     __eq__ = _MediaItemBase.__eq__
 
     media_type: MediaType = MediaType.TRACK
@@ -424,10 +425,6 @@ class Track(MediaItem):
     album: Album | ItemMapping | None = None  # optional
     disc_number: int | None = None  # required for album tracks
     track_number: int | None = None  # required for album tracks
-
-    def __hash__(self) -> int:
-        """Return custom hash."""
-        return hash((self.provider, self.item_id))
 
     @property
     def has_chapters(self) -> bool:
