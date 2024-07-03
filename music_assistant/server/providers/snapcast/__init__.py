@@ -110,7 +110,11 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     returncode, output = await check_output(["snapserver", "-v"])
-    snapserver_present = returncode == 0 and "snapserver v0.27.0" in output.decode()
+    snapserver_version = int(output.decode().split(".")[1]) if returncode == 0 else -1
+    local_snapserver_present = snapserver_version >= 27
+    if returncode == 0 and not local_snapserver_present:
+        raise SetupFailedError("Invalid snapserver version")
+
     return (
         ConfigEntry(
             key=CONF_SERVER_BUFFER_SIZE,
@@ -123,7 +127,7 @@ async def get_config_entries(
             "the sample is played-out on the client",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not local_snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -135,7 +139,7 @@ async def get_config_entries(
             description="Volume assigned to new snapclients [percent]",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not local_snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -145,7 +149,7 @@ async def get_config_entries(
             label="Send audio to muted clients",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not local_snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
@@ -174,19 +178,19 @@ async def get_config_entries(
             description="This is the codec used by snapserver to send audio to clients",
             required=False,
             category="Built-in Snapserver Settings",
-            hidden=not snapserver_present,
+            hidden=not local_snapserver_present,
             help_link="https://raw.githubusercontent.com/badaix/snapcast/86cd4b2b63e750a72e0dfe6a46d47caf01426c8d/server/etc/snapserver.conf",
         ),
         ConfigEntry(
             key=CONF_USE_EXTERNAL_SERVER,
             type=ConfigEntryType.BOOLEAN,
-            default_value=not snapserver_present,
+            default_value=not local_snapserver_present,
             label="Use existing Snapserver",
             required=False,
             description="Music Assistant by default already includes a Snapserver. \n\n"
             "Checking this option allows you to connect to your own/external existing Snapserver "
             "and not use the builtin one provided by Music Assistant.",
-            category="advanced" if snapserver_present else "generic",
+            category="advanced" if local_snapserver_present else "generic",
         ),
         ConfigEntry(
             key=CONF_SERVER_HOST,
@@ -195,7 +199,7 @@ async def get_config_entries(
             label="Snapcast server ip",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if snapserver_present else "generic",
+            category="advanced" if local_snapserver_present else "generic",
         ),
         ConfigEntry(
             key=CONF_SERVER_CONTROL_PORT,
@@ -204,7 +208,7 @@ async def get_config_entries(
             label="Snapcast control port",
             required=False,
             depends_on=CONF_USE_EXTERNAL_SERVER,
-            category="advanced" if snapserver_present else "generic",
+            category="advanced" if local_snapserver_present else "generic",
         ),
         ConfigEntry(
             key=CONF_SERVER_DRYOUT_MS,
@@ -672,7 +676,7 @@ class SnapCastProvider(PlayerProvider):
                 data = data.decode().strip()  # noqa: PLW2901
                 for line in data.split("\n"):
                     logger.debug(line)
-                    if "(Snapserver) Version 0.27.0" in line:
+                    if "(Snapserver) Version 0." in line:
                         # delay init a small bit to prevent race conditions
                         # where we try to connect too soon
                         self.mass.loop.call_later(2, self._snapserver_started.set)
