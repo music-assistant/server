@@ -229,12 +229,19 @@ class SonosPlayerProvider(PlayerProvider):
         self.mass.streams.register_dynamic_route(
             "/sonos_queue/v2.3/context", self._handle_sonos_queue_context
         )
+        self.mass.streams.register_dynamic_route(
+            "/sonos_queue/v2.3/timePlayed", self._handle_sonos_queue_time_played
+        )
 
     async def unload(self) -> None:
         """Handle close/cleanup of the provider."""
         # disconnect all players
         await asyncio.gather(*(player.disconnect() for player in self.sonos_players.values()))
         self.sonos_players = None
+        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/itemWindow")
+        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/version")
+        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/context")
+        self.mass.streams.unregister_dynamic_route("/sonos_queue/v2.3/timePlayed")
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -515,7 +522,7 @@ class SonosPlayerProvider(PlayerProvider):
                     else None,
                 },
             }
-            for item in queue_items.items
+            for item in queue_items
         ]
         result = {
             "includesBeginningOfQueue": True,
@@ -563,18 +570,40 @@ class SonosPlayerProvider(PlayerProvider):
                 "name": "Music Assistant",
                 "service": {"name": "mass"},
             },
+            "reports": {"sendUpdateAfterMillis": 30000, "sendPlaybackActions": True},
+            "id": {
+                "serviceId": "8",
+                "objectId": "music:user:john.musiclover:playlist:5t33Mtrb6rFBqvgz0U2DQe",
+                "accountId": "john.musiclover",
+            },
             "playbackPolicies": {
                 "canSkip": True,
                 "limitedSkips": False,
                 "canSkipToItem": True,
                 "canSkipBack": True,
-                "canSeek": True,
+                "canSeek": False,
+                "canRepeat": False,
+                "canRepeatOne": False,
                 "canCrossfade": True,
-                "showNNextTracks": 3,
+                "canShuffle": False,
+                "showNNextTracks": 10,
                 "showNPreviousTracks": 0,
             },
         }
         return web.json_response(result)
+
+    async def _handle_sonos_queue_time_played(self, request: web.Request) -> web.Response:
+        """
+        Handle the Sonos CloudQueue TimePlayed endpoint.
+
+        https://docs.sonos.com/reference/timeplayed
+        """
+        print("### Sonos Cloud Queue - TimePlayed endpoint ###")  # noqa: T201
+        print(request.headers)  # noqa: T201
+        print(request.query)  # noqa: T201
+        json_body = await request.json()
+        print(json_body)  # noqa: T201
+        print()  # noqa: T201
 
 
 def get_primary_ip_address(discovery_info: AsyncServiceInfo) -> str | None:
