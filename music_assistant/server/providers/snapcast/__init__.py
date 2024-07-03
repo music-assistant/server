@@ -301,8 +301,8 @@ class SnapCastProvider(PlayerProvider):
                 "Started connection to Snapserver %s",
                 f"{self._snapcast_server_host}:{self._snapcast_server_control_port}",
             )
-            if self._use_builtin_server:
-                self._snapserver.set_on_disconnect_callback(self._restart_builtin_server)
+            # if self._use_builtin_server:
+            # self._snapserver.set_on_disconnect_callback(self._restart_builtin_server)
 
         except OSError as err:
             msg = "Unable to start the Snapserver connection ?"
