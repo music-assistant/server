@@ -415,6 +415,29 @@ class MusicAssistant:
             raise RuntimeError(msg)
         self.command_handlers[command] = APICommandHandler.parse(command, handler)
 
+    async def load_provider_config(
+        self,
+        prov_conf: ProviderConfig,
+    ) -> None:
+        """Try to load a provider and catch errors."""
+        try:
+            await self._load_provider(prov_conf)
+        # pylint: disable=broad-except
+        except Exception as exc:
+            if isinstance(exc, MusicAssistantError):
+                LOGGER.error(
+                    "Error loading provider(instance) %s: %s",
+                    prov_conf.name or prov_conf.domain,
+                    str(exc),
+                )
+            else:
+                # log full stack trace on unhandled/generic exception
+                LOGGER.exception(
+                    "Error loading provider(instance) %s",
+                    prov_conf.name or prov_conf.domain,
+                )
+            raise
+
     async def load_provider(
         self,
         instance_id: str,
@@ -433,21 +456,9 @@ class MusicAssistant:
             return
 
         try:
-            await self._load_provider(prov_conf)
+            await self.load_provider_config(prov_conf)
         # pylint: disable=broad-except
         except Exception as exc:
-            if isinstance(exc, MusicAssistantError):
-                LOGGER.error(
-                    "Error loading provider(instance) %s: %s",
-                    prov_conf.name or prov_conf.domain,
-                    str(exc),
-                )
-            else:
-                # log full stack trace on unhandled/generic exception
-                LOGGER.exception(
-                    "Error loading provider(instance) %s",
-                    prov_conf.name or prov_conf.domain,
-                )
             if raise_on_error:
                 raise
             # if loading failed, we store the error in the config object

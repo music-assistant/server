@@ -802,12 +802,11 @@ class ConfigController:
         )
         # validate the new config
         config.validate()
-
+        # try to load the provider first to catch errors before we save it.
+        await self.mass.load_provider_config(config)
+        # the load was a success, store this config
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
-
-        await self.mass.load_provider(instance_id, raise_on_error=True)
-
         return config
 
     async def _load_provider_config(self, config: ProviderConfig) -> None:
