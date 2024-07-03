@@ -285,6 +285,7 @@ class SnapCastProvider(PlayerProvider):
 
         if self._use_builtin_server:
             await self._start_builtin_server()
+            await asyncio.sleep(10)
         else:
             self._snapserver_runner = None
             self._snapserver_started = None
