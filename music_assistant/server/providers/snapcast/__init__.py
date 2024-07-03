@@ -674,7 +674,8 @@ class SnapCastProvider(PlayerProvider):
         if self._use_builtin_server:
             self.logger.info("Restarting, built-in Snapserver.")
             await self._stop_builtin_server()
-            raise NotImplementedError
+            await asyncio.sleep(10)
+            await self._start_builtin_server()
 
     async def _stop_builtin_server(self):
         """Stop the built-in Snapserver."""
