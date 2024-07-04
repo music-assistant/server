@@ -818,7 +818,7 @@ class ConfigController:
         # validate the new config
         config.validate()
         # try to load the provider first to catch errors before we save it.
-        await self.mass.load_provider(config, raise_on_error=True)
+        await self.mass.load_provider_config(config)
         # the load was a success, store this config
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
@@ -833,8 +833,8 @@ class ConfigController:
                 deps.add(dep_prov.instance_id)
                 await self.mass.unload_provider(dep_prov.instance_id)
         # (re)load the provider
-        await self.mass.load_provider(config)
+        await self.mass.load_provider(config.instance_id)
         # reload any dependants
         for dep in deps:
             conf = await self.get_provider_config(dep)
-            await self.mass.load_provider(conf)
+            await self.mass.load_provider(conf.instance_id)
