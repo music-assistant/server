@@ -694,12 +694,27 @@ class ConfigController:
                 async with aiofiles.open(filename, "r", encoding="utf-8") as _file:
                     self._data = json_loads(await _file.read())
                     LOGGER.debug("Loaded persistent settings from %s", filename)
+                    await self._migrate()
                     return
             except FileNotFoundError:
                 pass
             except JSON_DECODE_EXCEPTIONS:  # pylint: disable=catching-non-exception
                 LOGGER.exception("Error while reading persistent storage file %s", filename)
         LOGGER.debug("Started with empty storage: No persistent storage file found.")
+
+    async def _migrate(self) -> None:
+        changed = False
+
+        # Older versions of MA can create corrupt entries with no domain if retrying
+        # logic runs after a provider has been removed. Remove those corrupt entries.
+        for instance_id, provider_config in list(self._data.get(CONF_PROVIDERS, {}).items()):
+            if "domain" not in provider_config:
+                self._data[CONF_PROVIDERS].pop(instance_id, None)
+                LOGGER.warning("Removed corrupt provider configuration: %s", instance_id)
+                changed = True
+
+        if changed:
+            await self._async_save()
 
     async def _async_save(self) -> None:
         """Save persistent data to disk."""
