@@ -675,7 +675,7 @@ class SnapCastProvider(PlayerProvider):
         if self._use_builtin_server and self._builtin_server_retry > 1:
             self.logger.info("Restarting, built-in Snapserver.")
             await self._stop_builtin_server()
-            await asyncio.sleep(10)
+            await asyncio.sleep(10)  # prevent race conditions when reloading
             await self._start_builtin_server()
         else:
             self._builtin_server_retry += 1
@@ -686,7 +686,6 @@ class SnapCastProvider(PlayerProvider):
         self.logger.info("Stopping, built-in Snapserver")
         if self._snapserver_runner and not self._snapserver_runner.done():
             self._snapserver_runner.cancel()
-            await asyncio.sleep(10)  # prevent race conditions when reloading
             self._snapserver_started.clear()
 
     async def _start_builtin_server(self) -> None:
