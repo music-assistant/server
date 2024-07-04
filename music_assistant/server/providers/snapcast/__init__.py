@@ -320,7 +320,6 @@ class SnapCastProvider(PlayerProvider):
             player_id = self._get_ma_id(snap_client_id)
             await self.cmd_stop(player_id)
         self._snapserver.stop()
-        await asyncio.sleep(10)
         await self._stop_builtin_server()
 
     def on_player_config_removed(self, player_id: str) -> None:
