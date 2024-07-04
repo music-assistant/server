@@ -7,15 +7,41 @@ import os
 from music_assistant.server.helpers.compare import compare_strings
 
 
-def get_parentdir(base_path: str, name: str, skip: int = 0) -> str | None:
-    """Look for folder name in path (to find dedicated artist or album folder)."""
-    if not base_path:
-        return None
-    parentdir = os.path.dirname(base_path)
-    for _ in range(skip, 3):
+def get_artist_dir(album_path: str, artist_name: str) -> str | None:
+    """Look for (Album)Artist directory in path of album."""
+    parentdir = os.path.dirname(album_path)
+    dirname = parentdir.rsplit(os.sep)[-1]
+    if compare_strings(artist_name, dirname, False):
+        return parentdir
+    return None
+
+
+def get_disc_dir(track_path: str, album_name: str, disc_number: int | None) -> str | None:
+    """Look for disc directory in path of album/tracks."""
+    parentdir = os.path.dirname(track_path)
+    dirname = parentdir.rsplit(os.sep)[-1]
+    dirname_lower = dirname.lower()
+    if disc_number is not None and compare_strings(f"disc {disc_number}", dirname, False):
+        return parentdir
+    if dirname_lower.startswith(album_name.lower()) and "disc" in dirname_lower:
+        return parentdir
+    if dirname_lower.startswith(album_name.lower()) and dirname_lower.endswith(str(disc_number)):
+        return parentdir
+    return None
+
+
+def get_album_dir(track_path: str, album_name: str, disc_dir: str | None) -> str | None:
+    """Return album/parent directory of a track."""
+    parentdir = os.path.dirname(track_path)
+    # account for disc sublevel by ignoring 1 level if needed
+    for _ in range(2 if disc_dir else 1):
         dirname = parentdir.rsplit(os.sep)[-1]
-        dirname = dirname.split("(")[0].split("[")[0].strip()
-        if compare_strings(name, dirname, False):
+        dirname_lower = dirname.lower()
+        if compare_strings(album_name, dirname, False):
+            return parentdir
+        if album_name in dirname_lower:
+            return parentdir
+        if dirname_lower in album_name:
             return parentdir
         parentdir = os.path.dirname(parentdir)
     return None

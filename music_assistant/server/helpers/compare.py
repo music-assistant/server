@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import re
+from difflib import SequenceMatcher
 
 import unidecode
 
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.enums import ExternalID, MediaType
 from music_assistant.common.models.media_items import (
     Album,
@@ -388,18 +388,23 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     """Compare strings and return True if we have an (almost) perfect match."""
     if not str1 or not str2:
         return False
+    str1_lower = str1.lower()
+    str2_lower = str2.lower()
+    if strict:
+        return str1_lower == str2_lower
     # return early if total length mismatch
     if abs(len(str1) - len(str2)) > 4:
         return False
-    if not strict:
-        # handle '&' vs 'And'
-        if " & " in str1 and " and " in str2.lower():
-            str2 = str2.lower().replace(" and ", " & ")
-        elif " and " in str1.lower() and " & " in str2:
-            str2 = str2.replace(" & ", " and ")
-        return create_safe_string(str1) == create_safe_string(str2)
-
-    return create_sort_name(str1) == create_sort_name(str2)
+    # handle '&' vs 'And'
+    if " & " in str1_lower and " and " in str2_lower:
+        str2 = str2_lower.replace(" and ", " & ")
+    elif " and " in str1_lower and " & " in str2:
+        str2 = str2.replace(" & ", " and ")
+    if create_safe_string(str1) == create_safe_string(str2):
+        return True
+    # last resort: use difflib to compare strings
+    required_accuracy = 0.91 if len(str1) > 8 else 0.85
+    return SequenceMatcher(a=str1_lower, b=str2).ratio() > required_accuracy
 
 
 def compare_version(base_version: str, compare_version: str) -> bool:
