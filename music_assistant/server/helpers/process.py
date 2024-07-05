@@ -257,12 +257,10 @@ class AsyncProcess:
         return self._returncode
 
 
-async def check_output(*args: str) -> tuple[int, bytes]:
+async def check_output(*args: str, env: dict[str, str] | None = None) -> tuple[int, bytes]:
     """Run subprocess and return returncode and output."""
     proc = await asyncio.create_subprocess_exec(
-        *args,
-        stderr=asyncio.subprocess.STDOUT,
-        stdout=asyncio.subprocess.PIPE,
+        *args, stderr=asyncio.subprocess.STDOUT, stdout=asyncio.subprocess.PIPE, env=env
     )
     stdout, _ = await proc.communicate()
     return (proc.returncode, stdout)

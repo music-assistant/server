@@ -185,22 +185,18 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 subfolder = subfolder[:-1]
 
         if platform.system() == "Darwin":
+            # NOTE: MacOS does not support special characters in the username/password
             password_str = f":{password}" if password else ""
             mount_cmd = [
                 "mount",
                 "-t",
                 "smbfs",
-                f"//{username}:{password_str}@{server}/{share}{subfolder}",
+                f"//{username}{password_str}@{server}/{share}{subfolder}",
                 self.base_path,
             ]
 
         elif platform.system() == "Linux":
-            options = [
-                "rw",
-                f'username="{username}"',
-            ]
-            if password:
-                options.append(f'password="{password}"')
+            options = ["rw"]
             if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
                 options += mount_options.split(",")
 
@@ -224,8 +220,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             "Using mount command: %s",
             [m.replace(password, "########") if password else m for m in mount_cmd],
         )
+        env_vars = {
+            "USER": username,
+        }
+        if password:
+            env_vars["PASSWD"] = password
 
-        returncode, output = await check_output(*mount_cmd)
+        returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
