@@ -54,10 +54,10 @@ ConfigValueType = (
     | int
     | float
     | bool
+    | list[tuple[int, int]]
     | tuple[int, int]
     | list[str]
     | list[int]
-    | list[tuple[int, int]]
     | Enum
     | None
 )
