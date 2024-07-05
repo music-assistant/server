@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import platform
-import urllib.parse
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -186,13 +185,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 subfolder = subfolder[:-1]
 
         if platform.system() == "Darwin":
-            username_str = urllib.parse.quote(username)
-            password_str = f":{urllib.parse.quote(password)}" if password else ""
+            # NOTE: MacOS does not support special characters in the username/password
+            password_str = f":{password}" if password else ""
             mount_cmd = [
                 "mount",
                 "-t",
                 "smbfs",
-                f"//{username_str}{password_str}@{server}/{share}{subfolder}",
+                f"//{username}{password_str}@{server}/{share}{subfolder}",
                 self.base_path,
             ]
 
