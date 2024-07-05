@@ -19,7 +19,7 @@ defusedxml==0.7.1
 eyeD3==0.9.7
 faust-cchardet>=2.1.18
 git+https://github.com/coletdjnz/yt-dlp-youtube-oauth2.git
-hass-client==1.1.1
+hass-client==1.2.0
 ifaddr==0.2.0
 mashumaro==3.13.1
 memory-tempfile==2.2.3
