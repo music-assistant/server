@@ -818,7 +818,8 @@ class AirplayProvider(PlayerProvider):
         async def check_binary(cliraop_path: str) -> str | None:
             try:
                 returncode, output = await check_output(
-                    [cliraop_path, "-check"],
+                    cliraop_path,
+                    "-check",
                 )
                 if returncode == 0 and output.strip().decode() == "cliraop check":
                     self.cliraop_bin = cliraop_path

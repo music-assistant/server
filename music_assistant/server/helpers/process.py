@@ -257,42 +257,27 @@ class AsyncProcess:
         return self._returncode
 
 
-async def check_output(args: str | list[str]) -> tuple[int, bytes]:
+async def check_output(*args: str) -> tuple[int, bytes]:
     """Run subprocess and return returncode and output."""
-    if isinstance(args, str):
-        proc = await asyncio.create_subprocess_shell(
-            args,
-            stderr=asyncio.subprocess.STDOUT,
-            stdout=asyncio.subprocess.PIPE,
-        )
-    else:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stderr=asyncio.subprocess.STDOUT,
-            stdout=asyncio.subprocess.PIPE,
-        )
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stderr=asyncio.subprocess.STDOUT,
+        stdout=asyncio.subprocess.PIPE,
+    )
     stdout, _ = await proc.communicate()
     return (proc.returncode, stdout)
 
 
 async def communicate(
-    args: str | list[str],
+    args: list[str],
     input: bytes | None = None,  # noqa: A002
 ) -> tuple[int, bytes, bytes]:
     """Communicate with subprocess and return returncode, stdout and stderr output."""
-    if isinstance(args, str):
-        proc = await asyncio.create_subprocess_shell(
-            args,
-            stderr=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE if input is not None else None,
-        )
-    else:
-        proc = await asyncio.create_subprocess_exec(
-            *args,
-            stderr=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stdin=asyncio.subprocess.PIPE if input is not None else None,
-        )
+    proc = await asyncio.create_subprocess_exec(
+        *args,
+        stderr=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stdin=asyncio.subprocess.PIPE if input is not None else None,
+    )
     stdout, stderr = await proc.communicate(input)
     return (proc.returncode, stdout, stderr)

@@ -660,18 +660,9 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         queue_items = self._queue_items[queue_id]
         resume_item = queue.current_item
-        next_item = queue.next_item
         resume_pos = queue.elapsed_time
-        if (
-            resume_item
-            and next_item
-            and resume_item.duration
-            and resume_pos > (resume_item.duration * 0.9)
-        ):
-            # track is already played for > 90% - skip to next
-            resume_item = next_item
-            resume_pos = 0
-        elif not resume_item and queue.current_index is not None and len(queue_items) > 0:
+
+        if not resume_item and queue.current_index is not None and len(queue_items) > 0:
             resume_item = self.get_item(queue_id, queue.current_index)
             resume_pos = 0
         elif not resume_item and queue.current_index is None and len(queue_items) > 0:

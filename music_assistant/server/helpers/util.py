@@ -34,7 +34,7 @@ async def install_package(package: str) -> None:
     """Install package with pip, raise when install failed."""
     LOGGER.debug("Installing python package %s", package)
     args = ["pip", "install", "--find-links", HA_WHEELS, package]
-    return_code, output = await check_output(args)
+    return_code, output = await check_output(*args)
 
     if return_code != 0:
         msg = f"Failed to install package {package}\n{output.decode()}"
