@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
-from radios import FilterBy, Order, RadioBrowser, RadioBrowserError
+from radios import FilterBy, Order, RadioBrowser, RadioBrowserError, Station
 
 from music_assistant.common.models.enums import LinkType, ProviderFeature, StreamType
+from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     AudioFormat,
     BrowseFolder,
@@ -19,6 +21,7 @@ from music_assistant.common.models.media_items import (
     ProviderMapping,
     Radio,
     SearchResults,
+    UniqueList,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.controllers.cache import use_cache
@@ -83,7 +86,7 @@ class RadioBrowserProvider(MusicProvider):
             self.logger.exception("%s", err)
 
     async def search(
-        self, search_query: str, media_types=list[MediaType], limit: int = 10
+        self, search_query: str, media_types: list[MediaType], limit: int = 10
     ) -> SearchResults:
         """Perform search on musicprovider.
 
@@ -102,7 +105,7 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
-    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
+    async def browse(self, path: str, offset: int, limit: int) -> Sequence[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
@@ -168,14 +171,16 @@ class RadioBrowserProvider(MusicProvider):
                     path=path + "/" + country.code.lower(),
                     name=country.name,
                 )
-                folder.metadata.images = [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=country.favicon,
-                        provider=self.instance_id,
-                        remotely_accessible=True,
-                    )
-                ]
+                folder.metadata.images = UniqueList(
+                    [
+                        MediaItemImage(
+                            type=ImageType.THUMB,
+                            path=country.favicon,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    ]
+                )
                 items.append(folder)
             return items
 
@@ -187,7 +192,7 @@ class RadioBrowserProvider(MusicProvider):
         return []
 
     @use_cache(3600 * 24)
-    async def get_tag_names(self):
+    async def get_tag_names(self) -> Sequence[str]:
         """Get a list of tag names."""
         tags = await self.radios.tags(
             hide_broken=True,
@@ -202,7 +207,7 @@ class RadioBrowserProvider(MusicProvider):
         return tag_names
 
     @use_cache(3600 * 24)
-    async def get_country_codes(self):
+    async def get_country_codes(self) -> Sequence[str]:
         """Get a list of country names."""
         countries = await self.radios.countries(order=Order.NAME, hide_broken=True)
         country_codes = []
@@ -211,7 +216,7 @@ class RadioBrowserProvider(MusicProvider):
         return country_codes
 
     @use_cache(3600)
-    async def get_by_popularity(self):
+    async def get_by_popularity(self) -> Sequence[Radio]:
         """Get radio stations by popularity."""
         stations = await self.radios.stations(
             hide_broken=True,
@@ -225,7 +230,7 @@ class RadioBrowserProvider(MusicProvider):
         return items
 
     @use_cache(3600)
-    async def get_by_tag(self, tag: str):
+    async def get_by_tag(self, tag: str) -> Sequence[Radio]:
         """Get radio stations by tag."""
         items = []
         stations = await self.radios.stations(
@@ -240,7 +245,7 @@ class RadioBrowserProvider(MusicProvider):
         return items
 
     @use_cache(3600)
-    async def get_by_country(self, country_code: str):
+    async def get_by_country(self, country_code: str) -> list[Radio]:
         """Get radio stations by country."""
         items = []
         stations = await self.radios.stations(
@@ -257,9 +262,11 @@ class RadioBrowserProvider(MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         radio = await self.radios.station(uuid=prov_radio_id)
+        if not radio:
+            raise MediaNotFoundError(f"Radio station {prov_radio_id} not found")
         return await self._parse_radio(radio)
 
-    async def _parse_radio(self, radio_obj: dict) -> Radio:
+    async def _parse_radio(self, radio_obj: Station) -> Radio:
         """Parse Radio object from json obj returned from api."""
         radio = Radio(
             item_id=radio_obj.uuid,
@@ -273,23 +280,26 @@ class RadioBrowserProvider(MusicProvider):
                 )
             },
         )
-        radio.metadata.label = radio_obj.tags
         radio.metadata.popularity = radio_obj.votes
-        radio.metadata.links = [MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)]
-        radio.metadata.images = [
-            MediaItemImage(
-                type=ImageType.THUMB,
-                path=radio_obj.favicon,
-                provider=self.instance_id,
-                remotely_accessible=True,
-            )
-        ]
+        radio.metadata.links = {MediaItemLink(type=LinkType.WEBSITE, url=radio_obj.homepage)}
+        radio.metadata.images = UniqueList(
+            [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=radio_obj.favicon,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
+        )
 
         return radio
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
         stream = await self.radios.station(uuid=item_id)
+        if not stream:
+            raise MediaNotFoundError(f"Radio station {item_id} not found")
         await self.radios.station_click(uuid=item_id)
         return StreamDetails(
             provider=self.domain,
