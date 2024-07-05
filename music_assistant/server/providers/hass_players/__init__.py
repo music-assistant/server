@@ -15,7 +15,7 @@ from music_assistant.common.helpers.datetime import from_iso_string
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
-    CONF_ENTRY_ENFORCE_MP3,
+    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
     CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
     ConfigEntry,
     ConfigValueOption,
@@ -89,9 +89,6 @@ class MediaPlayerEntityFeature(IntFlag):
 
 CONF_ENFORCE_MP3 = "enforce_mp3"
 
-CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED = ConfigEntry.from_dict(
-    {**CONF_ENTRY_ENFORCE_MP3.to_dict(), "default_value": True}
-)
 
 PLAYER_CONFIG_ENTRIES = (
     CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
@@ -233,7 +230,7 @@ class HomeAssistantPlayers(PlayerProvider):
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
             media.uri = media.uri.replace(".flac", ".mp3")
         await self.hass_prov.hass.call_service(
             domain="media_player",
@@ -264,7 +261,7 @@ class HomeAssistantPlayers(PlayerProvider):
 
     async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
             media.uri = media.uri.replace(".flac", ".mp3")
         await self.hass_prov.hass.call_service(
             domain="media_player",

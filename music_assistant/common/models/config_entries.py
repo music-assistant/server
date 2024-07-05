@@ -479,6 +479,10 @@ CONF_ENTRY_ENFORCE_MP3 = ConfigEntry(
     category="audio",
 )
 
+CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_ENFORCE_MP3.to_dict(), "default_value": True}
+)
+
 CONF_ENTRY_SYNC_ADJUST = ConfigEntry(
     key=CONF_SYNC_ADJUST,
     type=ConfigEntryType.INTEGER,
