@@ -42,6 +42,7 @@ DOMAIN = "hass"
 CONF_URL = "url"
 CONF_AUTH_TOKEN = "token"
 CONF_ACTION_AUTH = "auth"
+CONF_VERIFY_SSL = "verify_ssl"
 
 
 async def setup(
@@ -147,6 +148,15 @@ async def get_config_entries(
             value=values.get(CONF_AUTH_TOKEN) if values else None,
             category="advanced",
         ),
+        ConfigEntry(
+            key=CONF_VERIFY_SSL,
+            type=ConfigEntryType.BOOLEAN,
+            label="Verify SSL",
+            required=False,
+            description="Whether or not to verify the certificate of SSL/TLS connections.",
+            category="advanced",
+            default_value=True,
+        ),
     )
 
 
@@ -163,7 +173,7 @@ class HomeAssistant(PluginProvider):
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
         self.hass = HomeAssistantClient(url, token, self.mass.http_session)
         try:
-            await self.hass.connect()
+            await self.hass.connect(ssl=bool(self.config.get_value(CONF_VERIFY_SSL)))
         except BaseHassClientError as err:
             err_msg = str(err) or err.__class__.__name__
             raise SetupFailedError(err_msg) from err
