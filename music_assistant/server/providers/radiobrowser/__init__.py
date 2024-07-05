@@ -102,7 +102,6 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
-    @use_cache(3600)
     async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
         """Browse this provider's items.
 
@@ -187,6 +186,7 @@ class RadioBrowserProvider(MusicProvider):
             return await self.get_by_country(subsubpath)
         return []
 
+    @use_cache(3600 * 24)
     async def get_tag_names(self):
         """Get a list of tag names."""
         tags = await self.radios.tags(
@@ -201,6 +201,7 @@ class RadioBrowserProvider(MusicProvider):
             tag_names.append(tag.name.lower())
         return tag_names
 
+    @use_cache(3600 * 24)
     async def get_country_codes(self):
         """Get a list of country names."""
         countries = await self.radios.countries(order=Order.NAME, hide_broken=True)
@@ -209,11 +210,12 @@ class RadioBrowserProvider(MusicProvider):
             country_codes.append(country.code.lower())
         return country_codes
 
+    @use_cache(3600)
     async def get_by_popularity(self):
         """Get radio stations by popularity."""
         stations = await self.radios.stations(
             hide_broken=True,
-            limit=10000,
+            limit=5000,
             order=Order.CLICK_COUNT,
             reverse=True,
         )
@@ -222,6 +224,7 @@ class RadioBrowserProvider(MusicProvider):
             items.append(await self._parse_radio(station))
         return items
 
+    @use_cache(3600)
     async def get_by_tag(self, tag: str):
         """Get radio stations by tag."""
         items = []
@@ -236,6 +239,7 @@ class RadioBrowserProvider(MusicProvider):
             items.append(await self._parse_radio(station))
         return items
 
+    @use_cache(3600)
     async def get_by_country(self, country_code: str):
         """Get radio stations by country."""
         items = []
