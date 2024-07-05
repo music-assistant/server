@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
@@ -282,7 +283,7 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
+    async def browse(self, path: str, offset: int, limit: int) -> Sequence[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).

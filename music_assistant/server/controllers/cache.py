@@ -8,8 +8,8 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from collections.abc import Iterator, MutableMapping
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Iterator, MutableMapping
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -235,12 +235,18 @@ class CacheController(CoreController):
         self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
 
 
-def use_cache(expiration=86400 * 30):
+Param = ParamSpec("Param")
+RetType = TypeVar("RetType")
+
+
+def use_cache(
+    expiration: int = 86400 * 30,
+) -> Callable[[Callable[Param, RetType]], Callable[Param, RetType]]:
     """Return decorator that can be used to cache a method's result."""
 
-    def wrapper(func):
+    def wrapper(func: Callable[Param, RetType]) -> Callable[Param, RetType]:
         @functools.wraps(func)
-        async def wrapped(*args, **kwargs):
+        async def wrapped(*args: Param.args, **kwargs: Param.kwargs):
             method_class = args[0]
             method_class_name = method_class.__class__.__name__
             cache_key_parts = [method_class_name, func.__name__]
