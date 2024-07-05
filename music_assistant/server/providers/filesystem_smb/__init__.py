@@ -196,15 +196,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             ]
 
         elif platform.system() == "Linux":
-            # escape quotes in username and password
-            username_str = username.replace('"', '\\"')
-            password_str = f":{password.replace('"', '\\"')}" if password else ""
-            options = [
-                "rw",
-                f"username={username_str}",
-            ]
-            if password:
-                options.append(f'password="{password_str}"')
+            options = ["rw"]
             if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
                 options += mount_options.split(",")
 
@@ -228,8 +220,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             "Using mount command: %s",
             [m.replace(password, "########") if password else m for m in mount_cmd],
         )
+        env_vars = {
+            "USER": username,
+        }
+        if password:
+            env_vars["PASSWD"] = password
 
-        returncode, output = await check_output(*mount_cmd)
+        returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
