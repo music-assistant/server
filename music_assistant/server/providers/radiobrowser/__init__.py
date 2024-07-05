@@ -102,12 +102,15 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
-    @use_cache(86400 * 7)
+    @use_cache(3600)
     async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
+        if offset != 0:
+            # paging is broken on RadioBrowser, we just return some big lists
+            return []
         subpath = path.split("://", 1)[1]
         subsubpath = "" if "/" not in subpath else subpath.split("/")[-1]
 
@@ -138,13 +141,11 @@ class RadioBrowserProvider(MusicProvider):
             ]
 
         if subpath == "popular":
-            return await self.get_by_popularity(limit=limit, offset=offset)
+            return await self.get_by_popularity()
 
         if subpath == "tag":
             tags = await self.radios.tags(
                 hide_broken=True,
-                limit=limit,
-                offset=offset,
                 order=Order.STATION_COUNT,
                 reverse=True,
             )
@@ -161,9 +162,7 @@ class RadioBrowserProvider(MusicProvider):
 
         if subpath == "country":
             items: list[BrowseFolder | Radio] = []
-            for country in await self.radios.countries(
-                order=Order.NAME, hide_broken=True, limit=limit, offset=offset
-            ):
+            for country in await self.radios.countries(order=Order.NAME, hide_broken=True):
                 folder = BrowseFolder(
                     item_id=country.code.lower(),
                     provider=self.domain,
@@ -181,19 +180,18 @@ class RadioBrowserProvider(MusicProvider):
                 items.append(folder)
             return items
 
-        if subsubpath in await self.get_tag_names(limit=limit, offset=offset):
+        if subsubpath in await self.get_tag_names():
             return await self.get_by_tag(subsubpath)
 
-        if subsubpath in await self.get_country_codes(limit=limit, offset=offset):
+        if subsubpath in await self.get_country_codes():
             return await self.get_by_country(subsubpath)
         return []
 
-    async def get_tag_names(self, limit: int, offset: int):
+    async def get_tag_names(self):
         """Get a list of tag names."""
         tags = await self.radios.tags(
             hide_broken=True,
-            limit=limit,
-            offset=offset,
+            limit=10000,
             order=Order.STATION_COUNT,
             reverse=True,
         )
@@ -203,22 +201,19 @@ class RadioBrowserProvider(MusicProvider):
             tag_names.append(tag.name.lower())
         return tag_names
 
-    async def get_country_codes(self, limit: int, offset: int):
+    async def get_country_codes(self):
         """Get a list of country names."""
-        countries = await self.radios.countries(
-            order=Order.NAME, hide_broken=True, limit=limit, offset=offset
-        )
+        countries = await self.radios.countries(order=Order.NAME, hide_broken=True)
         country_codes = []
         for country in countries:
             country_codes.append(country.code.lower())
         return country_codes
 
-    async def get_by_popularity(self, limit: int, offset: int):
+    async def get_by_popularity(self):
         """Get radio stations by popularity."""
         stations = await self.radios.stations(
             hide_broken=True,
-            limit=limit,
-            offset=offset,
+            limit=10000,
             order=Order.CLICK_COUNT,
             reverse=True,
         )
