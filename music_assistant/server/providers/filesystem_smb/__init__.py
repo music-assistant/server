@@ -174,6 +174,9 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         username: str = self.config.get_value(CONF_USERNAME)
         password: str = self.config.get_value(CONF_PASSWORD)
         share: str = self.config.get_value(CONF_SHARE)
+        # escape quotes in username and password
+        username_str = username.replace('"', '\\"')
+        password_str = f":{password.replace('"', '\\"')}" if password else ""
 
         # handle optional subfolder
         subfolder: str = self.config.get_value(CONF_SUBFOLDER)
@@ -185,24 +188,21 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 subfolder = subfolder[:-1]
 
         if platform.system() == "Darwin":
-            password_str = f":{password}" if password else ""
             mount_cmd = [
                 "mount",
                 "-t",
                 "smbfs",
-                f"//{username}{password_str}@{server}/{share}{subfolder}",
+                f"//{username_str}{password_str}@{server}/{share}{subfolder}",
                 self.base_path,
             ]
 
         elif platform.system() == "Linux":
-            quote = '"' if "'" in username else "'"
             options = [
                 "rw",
-                f"username={quote}{username}{quote}",
+                f"username={username_str}",
             ]
             if password:
-                quote = '"' if "'" in password else "'"
-                options.append(f"password={quote}{password}{quote}")
+                options.append(f'password="{password_str}"')
             if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
                 options += mount_options.split(",")
 
