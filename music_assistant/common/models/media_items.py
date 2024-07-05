@@ -479,12 +479,18 @@ class AlbumTrack(Track):
     ) -> AlbumTrack:
         """Cast Track to AlbumTrack."""
         album_track = track.to_dict()
-        if album is None and track.album:
-            album_track["album"] = track.album
-        if disc_number is None:
-            album_track["disc_number"] = track.disc_number
-        if track_number is None:
-            album_track["track_number"] = track.track_number
+        if album_track["album"] is None:
+            if not album:
+                raise InvalidDataError("AlbumTrack requires an album")
+            album_track["album"] = album
+        if album_track["disc_number"] is None:
+            if disc_number is None:
+                raise InvalidDataError("AlbumTrack requires a disc_number")
+            album_track["disc_number"] = disc_number
+        if album_track["track_number"] is None:
+            if track_number is None:
+                raise InvalidDataError("AlbumTrack requires a track_number")
+            album_track["track_number"] = track_number
         # let mushmumaro instantiate a new object - this will ensure that valididation takes place
         return AlbumTrack.from_dict(album_track)
 
