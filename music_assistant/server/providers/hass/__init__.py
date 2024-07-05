@@ -165,7 +165,8 @@ class HomeAssistant(PluginProvider):
         try:
             await self.hass.connect()
         except BaseHassClientError as err:
-            raise SetupFailedError(str(err) or err.__class__.__name__) from err
+            err_msg = str(err) or err.__class__.__name__
+            raise SetupFailedError(err_msg) from err
         self._listen_task = self.mass.create_task(self._hass_listener())
 
     async def unload(self) -> None:
