@@ -482,7 +482,7 @@ class AlbumTrack(Track):
         if album_track["album"] is None:
             if not album:
                 raise InvalidDataError("AlbumTrack requires an album")
-            album_track["album"] = album
+            album_track["album"] = album.to_dict()
         if album_track["disc_number"] is None:
             if disc_number is None:
                 raise InvalidDataError("AlbumTrack requires a disc_number")
