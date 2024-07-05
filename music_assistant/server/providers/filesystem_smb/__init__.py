@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import platform
+import urllib.parse
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
 
@@ -174,9 +175,6 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         username: str = self.config.get_value(CONF_USERNAME)
         password: str = self.config.get_value(CONF_PASSWORD)
         share: str = self.config.get_value(CONF_SHARE)
-        # escape quotes in username and password
-        username_str = username.replace('"', '\\"')
-        password_str = f":{password.replace('"', '\\"')}" if password else ""
 
         # handle optional subfolder
         subfolder: str = self.config.get_value(CONF_SUBFOLDER)
@@ -188,6 +186,8 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 subfolder = subfolder[:-1]
 
         if platform.system() == "Darwin":
+            username_str = urllib.parse.quote(username)
+            password_str = f":{urllib.parse.quote(password)}" if password else ""
             mount_cmd = [
                 "mount",
                 "-t",
@@ -197,6 +197,9 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             ]
 
         elif platform.system() == "Linux":
+            # escape quotes in username and password
+            username_str = username.replace('"', '\\"')
+            password_str = f":{password.replace('"', '\\"')}" if password else ""
             options = [
                 "rw",
                 f"username={username_str}",
