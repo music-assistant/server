@@ -681,7 +681,11 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""
-        sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
+        try:
+            sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
+        except DataNotFoundError as e:
+            msg = f"Artist {prov_artist_id} not found"
+            raise MediaNotFoundError(msg) from e
         songs: list[SonicSong] = await self._run_async(self._conn.getTopSongs, sonic_artist.name)
         return [self._parse_track(entry) for entry in songs]
 
