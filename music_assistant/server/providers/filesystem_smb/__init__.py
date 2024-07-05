@@ -190,17 +190,19 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 "mount",
                 "-t",
                 "smbfs",
-                f"//{username}:{password_str}@{server}/{share}{subfolder}",
+                f"//{username}{password_str}@{server}/{share}{subfolder}",
                 self.base_path,
             ]
 
         elif platform.system() == "Linux":
+            quote = '"' if "'" in username else "'"
             options = [
                 "rw",
-                f'username="{username}"',
+                f"username={quote}{username}{quote}",
             ]
             if password:
-                options.append(f'password="{password}"')
+                quote = '"' if "'" in password else "'"
+                options.append(f"password={quote}{password}{quote}")
             if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
                 options += mount_options.split(",")
 
