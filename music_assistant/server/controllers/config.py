@@ -313,7 +313,11 @@ class ConfigController:
     @api_command("config/providers/reload")
     async def reload_provider(self, instance_id: str) -> None:
         """Reload provider."""
-        config = await self.get_provider_config(instance_id)
+        try:
+            config = await self.get_provider_config(instance_id)
+        except KeyError:
+            # Edge case: Provider was removed before we could reload it
+            return
         await self._load_provider_config(config)
 
     @api_command("config/players")
