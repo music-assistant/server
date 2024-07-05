@@ -28,13 +28,10 @@ class DLNANotifyServer(UpnpNotifyServer):
 
     async def _handle_request(self, request: Request) -> Response:
         """Handle incoming requests."""
-        headers = request.headers
-        body = await request.text()
-
         if request.method != "NOTIFY":
             return Response(status=405)
 
-        status = await self.event_handler.handle_notify(headers, body)
+        status = await self.event_handler.handle_notify(request)
 
         return Response(status=status)
 
