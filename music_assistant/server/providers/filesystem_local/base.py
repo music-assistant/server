@@ -887,22 +887,29 @@ class FileSystemProviderBase(MusicProvider):
                 elif await self.exists(name.title()):
                     artist_path = name.title()
 
+        if artist_path:  # noqa: SIM108
+            # prefer the path as id
+            item_id = artist_path
+        else:
+            # simply use the album name as item id
+            item_id = name
+
         artist = Artist(
-            item_id=artist_path or name,
+            item_id=item_id,
             provider=self.instance_id,
             name=name,
             sort_name=sort_name,
             provider_mappings={
                 ProviderMapping(
-                    item_id=artist_path or name,
+                    item_id=item_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
-                    url=artist_path or name,
+                    url=artist_path,
                 )
             },
         )
 
-        if not await self.exists(artist_path):
+        if artist_path is None or not await self.exists(artist_path):
             # return basic object if there is no dedicated artist folder
             await self.mass.cache.set(cache_key, artist, expiration=120)
             return artist
@@ -946,24 +953,26 @@ class FileSystemProviderBase(MusicProvider):
         cache_key = f"{self.instance_id}-albumdata-{name}-{album_path}"
         if cache := await self.mass.cache.get(cache_key):
             return cache
-        # create fake path if needed
-        if not album_path and artists:
-            album_path = artists[0].name + os.sep + name
-        elif not album_path:
+
+        if album_path:
+            # prefer the path as id
+            item_id = album_path
+        elif artists:
+            # create fake item_id based on artist + album
+            item_id = artists[0].name + os.sep + name
+        else:
+            # simply use the album name as item id
             album_path = name
 
-        if not name:
-            name = album_path.split(os.sep)[-1]
-
         album = Album(
-            item_id=album_path,
+            item_id=item_id,
             provider=self.instance_id,
             name=name,
             sort_name=sort_name,
             artists=artists,
             provider_mappings={
                 ProviderMapping(
-                    item_id=album_path,
+                    item_id=item_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     url=album_path,
@@ -976,7 +985,7 @@ class FileSystemProviderBase(MusicProvider):
         # hunt for additional metadata and images in the folder structure
         extra_path = os.path.dirname(track_path) if (track_path and not album_path) else None
         for folder_path in (disc_path, album_path, extra_path):
-            if not folder_path:
+            if not folder_path or not await self.exists(folder_path):
                 continue
             nfo_file = os.path.join(folder_path, "album.nfo")
             if await self.exists(nfo_file):

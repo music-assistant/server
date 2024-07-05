@@ -837,7 +837,7 @@ class ConfigController:
                 deps.add(dep_prov.instance_id)
                 await self.mass.unload_provider(dep_prov.instance_id)
         # (re)load the provider
-        await self.mass.load_provider(config.instance_id)
+        await self.mass.load_provider_config(config)
         # reload any dependants
         for dep in deps:
             conf = await self.get_provider_config(dep)

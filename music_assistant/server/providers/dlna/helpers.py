@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from aiohttp.web import Request, Response
+from async_upnp_client.const import HttpRequest
 from async_upnp_client.event_handler import UpnpEventHandler, UpnpNotifyServer
 
 if TYPE_CHECKING:
@@ -28,13 +29,18 @@ class DLNANotifyServer(UpnpNotifyServer):
 
     async def _handle_request(self, request: Request) -> Response:
         """Handle incoming requests."""
-        headers = request.headers
-        body = await request.text()
-
         if request.method != "NOTIFY":
             return Response(status=405)
 
-        status = await self.event_handler.handle_notify(headers, body)
+        # transform aiohttp request to async_upnp_client request
+        http_request = HttpRequest(
+            method=request.method,
+            url=request.url,
+            headers=request.headers,
+            body=await request.text(),
+        )
+
+        status = await self.event_handler.handle_notify(http_request)
 
         return Response(status=status)
 

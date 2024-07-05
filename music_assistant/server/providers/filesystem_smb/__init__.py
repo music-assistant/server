@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import platform
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
@@ -221,6 +222,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             [m.replace(password, "########") if password else m for m in mount_cmd],
         )
         env_vars = {
+            **os.environ,
             "USER": username,
         }
         if password:

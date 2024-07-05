@@ -54,10 +54,10 @@ ConfigValueType = (
     | int
     | float
     | bool
+    | list[tuple[int, int]]
     | tuple[int, int]
     | list[str]
     | list[int]
-    | list[tuple[int, int]]
     | Enum
     | None
 )
@@ -477,6 +477,10 @@ CONF_ENTRY_ENFORCE_MP3 = ConfigEntry(
     "into a lossy mp3 codec. \n\n "
     "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
     category="audio",
+)
+
+CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED = ConfigEntry.from_dict(
+    {**CONF_ENTRY_ENFORCE_MP3.to_dict(), "default_value": True}
 )
 
 CONF_ENTRY_SYNC_ADJUST = ConfigEntry(

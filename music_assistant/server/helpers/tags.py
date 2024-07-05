@@ -431,7 +431,12 @@ async def parse_tags(
         if not tags.duration and tags.raw.get("format", {}).get("duration"):
             tags.duration = float(tags.raw["format"]["duration"])
 
-        if file_path.endswith(".mp3") and "musicbrainzrecordingid" not in tags.tags:
+        if (
+            not file_path.startswith("http")
+            and file_path.endswith(".mp3")
+            and "musicbrainzrecordingid" not in tags.tags
+            and await asyncio.to_thread(os.path.isfile, file_path)
+        ):
             # eyed3 is able to extract the musicbrainzrecordingid from the unique file id
             # this is actually a bug in ffmpeg/ffprobe which does not expose this tag
             # so we use this as alternative approach for mp3 files

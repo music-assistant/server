@@ -420,29 +420,28 @@ class MusicAssistant:
         prov_conf: ProviderConfig,
     ) -> None:
         """Try to load a provider and catch errors."""
+        # cancel existing (re)load timer if needed
+        task_id = f"load_provider_{prov_conf.instance_id}"
+        if existing := self._tracked_timers.pop(task_id, None):
+            existing.cancel()
+
         try:
             await self._load_provider(prov_conf)
         # pylint: disable=broad-except
         except Exception as exc:
-            if isinstance(exc, MusicAssistantError):
-                LOGGER.error(
-                    "Error loading provider(instance) %s: %s",
-                    prov_conf.name or prov_conf.domain,
-                    str(exc),
-                )
-            else:
-                # log full stack trace on unhandled/generic exception
-                LOGGER.exception(
-                    "Error loading provider(instance) %s",
-                    prov_conf.name or prov_conf.domain,
-                )
+            LOGGER.error(
+                "Error loading provider(instance) %s: %s",
+                prov_conf.name or prov_conf.instance_id,
+                str(exc) or exc.__class__.__name__,
+                # log full stack trace if debug logging is enabled
+                exc_info=exc if LOGGER.isEnabledFor(logging.DEBUG) else None,
+            )
             raise
 
     async def load_provider(
         self,
         instance_id: str,
-        raise_on_error: bool = False,
-        schedule_retry: int | None = 10,
+        allow_retry: bool = False,
     ) -> None:
         """Try to load a provider and catch errors."""
         try:
@@ -455,25 +454,31 @@ class MusicAssistant:
             # Was disabled before we could run
             return
 
+        # cancel existing (re)load timer if needed
+        task_id = f"load_provider_{instance_id}"
+        if existing := self._tracked_timers.pop(task_id, None):
+            existing.cancel()
+
         try:
             await self.load_provider_config(prov_conf)
         # pylint: disable=broad-except
         except Exception as exc:
-            if raise_on_error:
-                raise
             # if loading failed, we store the error in the config object
             # so we can show something useful to the user
             prov_conf.last_error = str(exc)
             self.config.set(f"{CONF_PROVIDERS}/{instance_id}/last_error", str(exc))
-            # auto schedule a retry if the (re)load failed
-            if schedule_retry:
+
+            # auto schedule a retry if the (re)load failed (handled exceptions only)
+            if isinstance(exc, MusicAssistantError) and allow_retry:
                 self.call_later(
-                    schedule_retry,
+                    300,
                     self.load_provider,
                     instance_id,
-                    raise_on_error,
-                    min(schedule_retry + 10, 600),
+                    allow_retry,
+                    task_id=task_id,
                 )
+            else:
+                raise
 
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""
@@ -536,7 +541,7 @@ class MusicAssistant:
             for prov_conf in prov_configs:
                 if not prov_conf.enabled:
                     continue
-                tg.create_task(self.load_provider(prov_conf.instance_id))
+                tg.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
 
     async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""

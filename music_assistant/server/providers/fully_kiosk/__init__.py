@@ -12,7 +12,7 @@ from fullykiosk import FullyKiosk
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_ENFORCE_MP3,
+    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
     CONF_ENTRY_FLOW_MODE_ENFORCED,
     ConfigEntry,
     ConfigValueType,
@@ -25,7 +25,13 @@ from music_assistant.common.models.enums import (
 )
 from music_assistant.common.models.errors import PlayerUnavailableError, SetupFailedError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
-from music_assistant.constants import CONF_IP_ADDRESS, CONF_PASSWORD, CONF_PORT, VERBOSE_LOG_LEVEL
+from music_assistant.constants import (
+    CONF_ENFORCE_MP3,
+    CONF_IP_ADDRESS,
+    CONF_PASSWORD,
+    CONF_PORT,
+    VERBOSE_LOG_LEVEL,
+)
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -35,7 +41,6 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
 
 AUDIOMANAGER_STREAM_MUSIC = 3
-CONF_ENFORCE_MP3 = "enforce_mp3"
 
 
 async def setup(
@@ -164,7 +169,7 @@ class FullyKioskProvider(PlayerProvider):
             CONF_ENTRY_FLOW_MODE_ENFORCED,
             CONF_ENTRY_CROSSFADE,
             CONF_ENTRY_CROSSFADE_DURATION,
-            CONF_ENTRY_ENFORCE_MP3,
+            CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
         )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
@@ -188,7 +193,7 @@ class FullyKioskProvider(PlayerProvider):
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
-        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
             media.uri = media.uri.replace(".flac", ".mp3")
         await self._fully.playSound(media.uri, AUDIOMANAGER_STREAM_MUSIC)
         player.current_media = media
