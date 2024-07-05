@@ -975,14 +975,21 @@ class AirplayProvider(PlayerProvider):
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
                 self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
             elif "dmcp.device-volume=" in path:
+                if mass_player.device_info.manufacturer.lower() == "apple":
+                    # Apple devices only report their (new) volume level, they dont request it
+                    return
                 raop_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 volume = convert_airplay_volume(raop_volume)
-                if abs(volume - mass_player.volume_level) > 2:
+                if volume != mass_player.volume_level:
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))
+                    # optimistically set the new volume to prevent bouncing around
+                    mass_player.volume_level = volume
             elif "dmcp.volume=" in path:
                 volume = int(path.split("dmcp.volume=", 1)[-1])
-                if abs(volume - mass_player.volume_level) > 2:
+                if volume != mass_player.volume_level:
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))
+                    # optimistically set the new volume to prevent bouncing around
+                    mass_player.volume_level = volume
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 if active_stream := airplay_player.active_stream:
