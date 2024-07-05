@@ -115,6 +115,15 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
 CONF_ENTRY_SAMPLE_RATES_AIRPLAY = create_sample_rates_config_entry(44100, 16, 44100, 16, True)
 
 
+# TODO: Airplay provider
+# - split up and cleanup the code into more digestable parts
+# - Implement authentication for Apple TV
+# - Implement volume control for Apple devices using pyatv
+# - Implement metadata for Apple Apple devices using pyatv
+# - Use pyatv for communicating with original Apple devices
+# and use cliraop for actual streaming
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
