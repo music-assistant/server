@@ -696,7 +696,7 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        _returncode, output = await check_output(args)
+        _returncode, output = await check_output(*args)
         if _returncode == 0 and output.decode().strip() != "authorized":
             raise LoginFailed(f"Login failed for username {self.config.get_value(CONF_USERNAME)}")
         # get token with (authorized) librespot
@@ -731,7 +731,7 @@ class SpotifyProvider(MusicProvider):
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
-        _returncode, output = await check_output(args)
+        _returncode, output = await check_output(*args)
         duration = round(time.time() - time_start, 2)
         try:
             result = json.loads(output)
@@ -873,7 +873,7 @@ class SpotifyProvider(MusicProvider):
 
         async def check_librespot(librespot_path: str) -> str | None:
             try:
-                returncode, output = await check_output([librespot_path, "--check"])
+                returncode, output = await check_output(librespot_path, "--check")
                 if returncode == 0 and b"ok spotty" in output and b"using librespot" in output:
                     self._librespot_bin = librespot_path
                     return librespot_path

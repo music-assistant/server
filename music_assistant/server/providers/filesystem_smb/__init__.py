@@ -225,13 +225,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
             [m.replace(password, "########") if password else m for m in mount_cmd],
         )
 
-        returncode, output = await check_output(mount_cmd)
+        returncode, output = await check_output(*mount_cmd)
         if returncode != 0:
             msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
-        returncode, output = await check_output(["umount", self.base_path])
+        returncode, output = await check_output("umount", self.base_path)
         if returncode != 0 and not ignore_error:
             self.logger.warning("SMB unmount failed with error: %s", output.decode())
