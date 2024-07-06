@@ -667,8 +667,8 @@ class TidalProvider(MusicProvider):
                     available=track_obj.available,
                 )
             },
-            disc_number=track_obj.volume_num,
-            track_number=track_obj.track_num,
+            disc_number=track_obj.volume_num or 0,
+            track_number=track_obj.track_num or 0,
         )
         if track_obj.isrc:
             track.external_ids.add((ExternalID.ISRC, track_obj.isrc))

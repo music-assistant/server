@@ -555,8 +555,8 @@ class SpotifyProvider(MusicProvider):
                     available=not track_obj["is_local"] and track_obj["is_playable"],
                 )
             },
-            disc_number=track_obj.get("disc_number"),
-            track_number=track_obj.get("track_number"),
+            disc_number=track_obj.get("disc_number", 0),
+            track_number=track_obj.get("track_number", 0),
         )
         if isrc := track_obj.get("external_ids", {}).get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))

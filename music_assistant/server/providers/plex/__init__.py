@@ -628,6 +628,8 @@ class PlexProvider(MusicProvider):
                     url=plex_track.getWebURL(self._baseurl),
                 )
             },
+            disc_number=plex_track.parentIndex or 0,
+            track_number=plex_track.trackNumber or 0,
         )
         # Only add 5-star rated tracks to Favorites. userRating will be 10.0 for those.
         # TODO: Let user set threshold?
@@ -680,9 +682,6 @@ class PlexProvider(MusicProvider):
                 )
                 for plex_chapter in plex_track.chapters
             ]
-
-        available = False
-        content = None
 
         return track
 
@@ -777,12 +776,10 @@ class PlexProvider(MusicProvider):
         """Get album tracks for given album id."""
         plex_album: PlexAlbum = await self._get_data(prov_album_id, PlexAlbum)
         tracks = []
-        for idx, plex_track in enumerate(await self._run_async(plex_album.tracks), 1):
+        for plex_track in await self._run_async(plex_album.tracks):
             track = await self._parse_track(
                 plex_track,
             )
-            track.disc_number = plex_track.parentIndex
-            track.track_number = plex_track.trackNumber or idx
             tracks.append(track)
         return tracks
 

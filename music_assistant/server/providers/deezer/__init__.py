@@ -315,9 +315,9 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 track=deezer_track,
                 user_country=self.gw_client.user_country,
                 # TODO: doesn't Deezer have disc and track number in the api ?
-                position=count,
+                position=0,
             )
-            for count, deezer_track in enumerate(await album.get_tracks(), 1)
+            for deezer_track in await album.get_tracks()
         ]
 
     async def get_playlist_tracks(
@@ -679,7 +679,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             metadata=self.parse_metadata_track(track=track),
             track_number=position,
             position=position,
-            disc_number=getattr(track, "disk_number", 1),
+            disc_number=getattr(track, "disk_number", 0),
         )
         if isrc := getattr(track, "isrc", None):
             item.external_ids.add((ExternalID.ISRC, isrc))

@@ -8,7 +8,6 @@ from typing import TYPE_CHECKING, cast
 from music_assistant.common.models.enums import ImageType, MediaType
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     ItemMapping,
     MediaItemImage,
@@ -158,10 +157,10 @@ class Music:
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> list[AlbumTrack]:
+    ) -> list[Track]:
         """Get tracks for given album."""
         return [
-            AlbumTrack.from_dict(item)
+            Track.from_dict(item)
             for item in await self.client.send_command(
                 "music/albums/album_tracks",
                 item_id=item_id,

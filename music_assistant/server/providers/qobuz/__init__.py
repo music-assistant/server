@@ -591,8 +591,8 @@ class QobuzProvider(MusicProvider):
                     url=f'https://open.qobuz.com/track/{track_obj["id"]}',
                 )
             },
-            disc_number=track_obj.get("media_number"),
-            track_number=track_obj.get("track_number"),
+            disc_number=track_obj.get("media_number", 0),
+            track_number=track_obj.get("track_number", 0),
         )
         if isrc := track_obj.get("isrc"):
             track.external_ids.add((ExternalID.ISRC, isrc))

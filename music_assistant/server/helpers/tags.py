@@ -25,10 +25,14 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
+# silence the eyed3 logger because it is too verbose
+logging.getLogger("eyed3").setLevel(logging.WARNING)
+
+
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.
 # the slash is also a common splitter but causes collisions with
-# artists actually containing a slash in the name, such as ACDC
+# artists actually containing a slash in the name, such as AC/DC
 TAG_SPLITTER = ";"
 
 

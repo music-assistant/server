@@ -829,8 +829,10 @@ class FileSystemProviderBase(MusicProvider):
         # parse other info
         track.duration = tags.duration or 0
         track.metadata.genres = set(tags.genres)
-        track.disc_number = tags.disc
-        track.track_number = tags.track
+        if tags.disc:
+            track.disc_number = tags.disc
+        if tags.track:
+            track.track_number = tags.track
         track.metadata.copyright = tags.get("copyright")
         track.metadata.lyrics = tags.lyrics
         explicit_tag = tags.get("itunesadvisory")

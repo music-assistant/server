@@ -305,11 +305,9 @@ class YoutubeMusicProvider(MusicProvider):
         if not album_obj.get("tracks"):
             return []
         tracks = []
-        for idx, track_obj in enumerate(album_obj["tracks"], 1):
+        for track_obj in album_obj["tracks"]:
             try:
                 track = self._parse_track(track_obj=track_obj)
-                track.disc_number = 0
-                track.track_number = track_obj.get("trackNumber", idx)
             except InvalidDataError:
                 continue
             tracks.append(track)
@@ -737,6 +735,8 @@ class YoutubeMusicProvider(MusicProvider):
                     ),
                 )
             },
+            disc_number=0,  # not supported on YTM?
+            track_number=track_obj.get("trackNumber", 0),
         )
 
         if track_obj.get("artists"):
