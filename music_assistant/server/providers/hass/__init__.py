@@ -117,6 +117,14 @@ async def get_config_entries(
                 value=None,
                 hidden=True,
             ),
+            ConfigEntry(
+                key=CONF_VERIFY_SSL,
+                type=ConfigEntryType.BOOLEAN,
+                label=CONF_VERIFY_SSL,
+                required=False,
+                default_value=False,
+                hidden=True,
+            ),
         )
     # manual configuration
     return (

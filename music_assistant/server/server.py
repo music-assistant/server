@@ -477,8 +477,9 @@ class MusicAssistant:
                     allow_retry,
                     task_id=task_id,
                 )
-            else:
-                raise
+                return
+            # raise in all other situations
+            raise
 
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""
@@ -537,11 +538,12 @@ class MusicAssistant:
 
         # load all configured (and enabled) providers
         prov_configs = await self.config.get_provider_configs(include_values=True)
-        async with asyncio.TaskGroup() as tg:
-            for prov_conf in prov_configs:
-                if not prov_conf.enabled:
-                    continue
-                tg.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
+        for prov_conf in prov_configs:
+            if not prov_conf.enabled:
+                continue
+            # Use a task so we can load multiple providers at once.
+            # If a provider fails, that will not block the loading of other providers.
+            self.create_task(self.load_provider(prov_conf.instance_id, allow_retry=True))
 
     async def _load_provider(self, conf: ProviderConfig) -> None:
         """Load (or reload) a provider."""
