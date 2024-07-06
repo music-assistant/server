@@ -204,8 +204,8 @@ class AppleMusicProvider(MusicProvider):
             if not catalog_id:
                 self.logger.warning(
                     "Skipping track. No catalog version found for %s - %s",
-                    item["attributes"]["artistName"],
-                    item["attributes"]["name"],
+                    item["attributes"].get("artistName", ""),
+                    item["attributes"].get("name", ""),
                 )
                 continue
             song_catalog_ids.append(catalog_id)
@@ -442,6 +442,15 @@ class AppleMusicProvider(MusicProvider):
         )
         if artists := relationships.get("artists"):
             album.artists = [self._parse_artist(artist) for artist in artists["data"]]
+        elif artist_name := attributes.get("artistName"):
+            album.artists = [
+                ItemMapping(
+                    media_type=MediaType.ARTIST,
+                    provider=self.instance_id,
+                    item_id=artist_name,
+                    name=artist_name,
+                )
+            ]
         if release_date := attributes.get("releaseDate"):
             album.year = int(release_date.split("-")[0])
         if genres := attributes.get("genreNames"):
@@ -514,13 +523,13 @@ class AppleMusicProvider(MusicProvider):
             artists = relationships["artists"]
             track.artists = [self._parse_artist(artist) for artist in artists["data"]]
         # 'Similar tracks' do not provide full artist details
-        elif artist := attributes.get("artistName"):
+        elif artist_name := attributes.get("artistName"):
             track.artists = [
                 ItemMapping(
                     media_type=MediaType.ARTIST,
-                    item_id=artist,
+                    item_id=artist_name,
                     provider=self.instance_id,
-                    name=artist,
+                    name=artist_name,
                 )
             ]
         if albums := relationships.get("albums"):
