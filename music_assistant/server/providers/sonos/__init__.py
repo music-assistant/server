@@ -36,6 +36,7 @@ from music_assistant.common.models.errors import PlayerCommandFailed, PlayerUnav
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_CROSSFADE, SYNCGROUP_PREFIX, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .player import SonosPlayer
@@ -417,7 +418,7 @@ class SonosPlayerProvider(PlayerProvider):
         """Handle (provider native) playback of an announcement on given player."""
         if player_id.startswith(SYNCGROUP_PREFIX):
             # handle syncgroup, unwrap to all underlying child's
-            async with asyncio.TaskGroup() as tg:
+            async with TaskManager(self.mass) as tg:
                 if group_player := self.mass.players.get(player_id):
                     # execute on all child players
                     for child_player_id in group_player.group_childs:

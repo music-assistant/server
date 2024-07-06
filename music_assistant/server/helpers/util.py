@@ -10,10 +10,12 @@ import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
+from collections.abc import Coroutine
 from functools import lru_cache
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
-from typing import TYPE_CHECKING
+from types import TracebackType
+from typing import TYPE_CHECKING, Self
 
 import ifaddr
 import memory_tempfile
@@ -23,6 +25,7 @@ from music_assistant.server.helpers.process import check_output
 if TYPE_CHECKING:
     from collections.abc import Iterator
 
+    from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderModuleType
 
 LOGGER = logging.getLogger(__name__)
@@ -130,3 +133,37 @@ def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:
     """Chunk bytes data into smaller chunks."""
     for i in range(0, len(data), chunk_size):
         yield data[i : i + chunk_size]
+
+
+class TaskManager:
+    """
+    Helper class to run many tasks at once.
+
+    This is basically an alternative to asyncio.TaskGroup but this will not
+    cancel all operations when one of the tasks fails.
+    Logging of exceptions is done by the mass.create_task helper.
+    """
+
+    def __init__(self, mass: MusicAssistant):
+        """Initialize the TaskManager."""
+        self.mass = mass
+        self._tasks: list[asyncio.Task] = []
+
+    def create_task(self, coro: Coroutine) -> None:
+        """Create a new task and add it to the manager."""
+        task = self.mass.create_task(coro)
+        self._tasks.append(task)
+
+    async def __aenter__(self) -> Self:
+        """Enter context manager."""
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_val: BaseException | None,
+        exc_tb: TracebackType | None,
+    ) -> bool | None:
+        """Exit context manager."""
+        await asyncio.wait(self._tasks)
+        self._tasks.clear()

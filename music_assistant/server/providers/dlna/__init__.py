@@ -41,6 +41,7 @@ from music_assistant.common.models.errors import PlayerUnavailableError
 from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.constants import CONF_ENFORCE_MP3, CONF_PLAYERS, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
@@ -286,7 +287,7 @@ class DLNAPlayerProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for dlna_player in self.dlnaplayers.values():
                 tg.create_task(self._device_disconnect(dlna_player))
 

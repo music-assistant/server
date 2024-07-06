@@ -42,6 +42,7 @@ from music_assistant.server.controllers.webserver import WebserverController
 from music_assistant.server.helpers.api import APICommandHandler, api_command
 from music_assistant.server.helpers.images import get_icon_string
 from music_assistant.server.helpers.util import (
+    TaskManager,
     get_package_version,
     is_hass_supervisor,
     load_provider_module,
@@ -168,9 +169,10 @@ class MusicAssistant:
         for task in self._tracked_tasks.values():
             task.cancel()
         # cleanup all providers
-        async with asyncio.TaskGroup() as tg:
-            for prov_id in list(self._providers.keys()):
-                tg.create_task(self.unload_provider(prov_id))
+        await asyncio.gather(
+            *[self.unload_provider(prov_id) for prov_id in list(self._providers.keys())],
+            return_exceptions=True,
+        )
         # stop core controllers
         await self.streams.close()
         await self.webserver.close()
@@ -653,7 +655,7 @@ class MusicAssistant:
                         exc_info=exc,
                     )
 
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self) as tg:
             for dir_str in os.listdir(PROVIDERS_PATH):
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
                 if dir_str == "test" and not ENABLE_DEBUG:

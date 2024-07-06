@@ -7,7 +7,6 @@ allowing the user to create player groups from all players known in the system.
 
 from __future__ import annotations
 
-import asyncio
 from time import time
 from typing import TYPE_CHECKING
 
@@ -38,6 +37,7 @@ from music_assistant.constants import CONF_GROUP_MEMBERS, SYNCGROUP_PREFIX
 from music_assistant.server.controllers.streams import DEFAULT_STREAM_HEADERS
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.multi_client_stream import MultiClientStream
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -150,7 +150,7 @@ class UniversalGroupProvider(PlayerProvider):
         group_player.state = PlayerState.IDLE
         self.mass.players.update(player_id)
         # forward command to player and any connected sync child's
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for member in self.mass.players.iter_group_members(group_player, only_powered=True):
                 if member.state == PlayerState.IDLE:
                     continue
@@ -215,7 +215,7 @@ class UniversalGroupProvider(PlayerProvider):
         base_url = f"{self.mass.streams.base_url}/ugp/{player_id}.flac"
 
         # forward to downstream play_media commands
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for member in self.mass.players.iter_group_members(group_player, only_powered=True):
                 if member.player_id.startswith(SYNCGROUP_PREFIX):
                     member = self.mass.players.get_sync_leader(member)  # noqa: PLW2901
