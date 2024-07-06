@@ -165,5 +165,6 @@ class TaskManager:
         exc_tb: TracebackType | None,
     ) -> bool | None:
         """Exit context manager."""
-        await asyncio.wait(self._tasks)
-        self._tasks.clear()
+        if len(self._tasks) > 0:
+            await asyncio.wait(self._tasks)
+            self._tasks.clear()
