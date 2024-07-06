@@ -8,7 +8,6 @@ from contextlib import suppress
 from music_assistant.common.helpers.util import empty_queue
 from music_assistant.common.models.media_items import AudioFormat
 from music_assistant.server.helpers.audio import get_ffmpeg_stream
-from music_assistant.server.helpers.util import TaskManager
 
 LOGGER = logging.getLogger(__name__)
 
@@ -94,6 +93,4 @@ class MultiClientStream:
                 *[sub.put(chunk) for sub in self.subscribers], return_exceptions=True
             )
         # EOF: send empty chunk
-        async with TaskManager(self.mass) as tg:
-            for sub in list(self.subscribers):
-                tg.create_task(sub.put(b""))
+        await asyncio.gather(*[sub.put(b"") for sub in self.subscribers], return_exceptions=True)
