@@ -152,12 +152,6 @@ def compare_track(
     # track version must match
     if strict and not compare_version(base_item.version, compare_item.version):
         return False
-    # if we're not strict matching, we allow ItemMapping objects to match
-    if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
-        return True
-    # for strict matching we REQUIRE both items to be a real track object
-    assert isinstance(base_item, Track)
-    assert isinstance(compare_item, Track)
     # check if both tracks are (not) explicit
     if base_item.metadata.explicit is None and isinstance(base_item.album, Album):
         base_item.metadata.explicit = base_item.album.metadata.explicit
@@ -166,8 +160,8 @@ def compare_track(
     if strict and compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
     if not strict and not (base_item.album or track_albums):
-        # in non-strict mode, the album does not have to match
-        return abs(base_item.duration - compare_item.duration) <= 3
+        # in non-strict mode, the album does not have to match (but duration needs to)
+        return abs(base_item.duration - compare_item.duration) <= 2
     # exact albumtrack match = 100% match
     if (
         base_item.album
