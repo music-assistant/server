@@ -46,6 +46,7 @@ from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
@@ -590,7 +591,7 @@ class AirplayProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         """
         # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream:
                     tg.create_task(airplay_player.active_stream.stop())
@@ -604,7 +605,7 @@ class AirplayProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         """
         # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream and airplay_player.active_stream.running:
                     # prefer interactive command to our streamer
@@ -639,7 +640,7 @@ class AirplayProvider(PlayerProvider):
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
         # always stop existing stream first
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream and airplay_player.active_stream:
                     tg.create_task(airplay_player.active_stream.stop())

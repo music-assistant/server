@@ -44,6 +44,7 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.tags import parse_tags
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.core_controller import CoreController
 from music_assistant.server.models.player_provider import PlayerProvider
 
@@ -399,8 +400,8 @@ class PlayerController(CoreController):
         if not power and group_player.state in (PlayerState.PLAYING, PlayerState.PAUSED):
             await self.cmd_stop(player_id)
 
-        async with asyncio.TaskGroup() as tg:
-            any_member_powered = False
+        any_member_powered = False
+        async with TaskManager(self.mass) as tg:
             for member in self.iter_group_members(group_player, only_powered=True):
                 any_member_powered = True
                 if power:
@@ -502,7 +503,7 @@ class PlayerController(CoreController):
                         "while one or more individual players are playing. "
                         "This announcement will be redirected to the individual players."
                     )
-                    async with asyncio.TaskGroup() as tg:
+                    async with TaskManager(self.mass) as tg:
                         for group_member in player.group_childs:
                             tg.create_task(
                                 self.play_announcement(
@@ -1147,7 +1148,7 @@ class PlayerController(CoreController):
         # adjust volume if needed
         # in case of a (sync) group, we need to do this for all child players
         prev_volumes: dict[str, int] = {}
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for volume_player_id in player.group_childs or (player.player_id,):
                 if not (volume_player := self.get(volume_player_id)):
                     continue
@@ -1194,7 +1195,7 @@ class PlayerController(CoreController):
             "Announcement to player %s - restore previous state...", player.display_name
         )
         # restore volume
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for volume_player_id, prev_volume in prev_volumes.items():
                 tg.create_task(self.cmd_volume_set(volume_player_id, prev_volume))
 

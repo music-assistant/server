@@ -59,6 +59,7 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.audio import get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.multi_client_stream import MultiClientStream
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.ugp import UniversalGroupProvider
 
@@ -333,14 +334,14 @@ class SlimprotoProvider(PlayerProvider):
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
         # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients(player_id):
                 tg.create_task(slimplayer.stop())
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY command to given player."""
         # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients(player_id):
                 tg.create_task(slimplayer.play())
 
@@ -407,7 +408,7 @@ class SlimprotoProvider(PlayerProvider):
         base_url = f"{self.mass.streams.base_url}/slimproto/multi?player_id={player_id}&fmt=flac"
 
         # forward to downstream play_media commands
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients(player_id):
                 url = f"{base_url}&child_player_id={slimplayer.player_id}"
                 if self.mass.config.get_raw_player_config_value(
@@ -508,7 +509,7 @@ class SlimprotoProvider(PlayerProvider):
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player."""
         # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for slimplayer in self._get_sync_clients(player_id):
                 tg.create_task(slimplayer.pause())
 
@@ -818,7 +819,7 @@ class SlimprotoProvider(PlayerProvider):
                 break
 
         # all child's ready (or timeout) - start play
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for _client in self._get_sync_clients(player.player_id):
                 self._sync_playpoints.setdefault(
                     _client.player_id, deque(maxlen=MIN_REQ_PLAYPOINTS)
