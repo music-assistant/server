@@ -29,7 +29,7 @@ from music_assistant.common.models.errors import (
     PlayerUnavailableError,
     QueueEmpty,
 )
-from music_assistant.common.models.media_items import AlbumTrack, MediaItemType, media_from_dict
+from music_assistant.common.models.media_items import MediaItemType, media_from_dict
 from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
@@ -1224,7 +1224,7 @@ class PlayerQueuesController(CoreController):
 
         return []
 
-    async def get_album_tracks(self, album: Album) -> list[AlbumTrack]:
+    async def get_album_tracks(self, album: Album) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,

@@ -21,7 +21,7 @@ def get_disc_dir(track_path: str, album_name: str, disc_number: int | None) -> s
     parentdir = os.path.dirname(track_path)
     dirname = parentdir.rsplit(os.sep)[-1]
     dirname_lower = dirname.lower()
-    if disc_number is not None and compare_strings(f"disc {disc_number}", dirname, False):
+    if disc_number and compare_strings(f"disc {disc_number}", dirname, False):
         return parentdir
     if dirname_lower.startswith(album_name.lower()) and "disc" in dirname_lower:
         return parentdir

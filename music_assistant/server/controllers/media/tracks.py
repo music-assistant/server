@@ -54,8 +54,8 @@ class TracksController(MediaControllerBase[Track]):
                 'version', {DB_TABLE_ALBUMS}.version,
                 'images',  json_extract({DB_TABLE_ALBUMS}.metadata, '$.images'),
                 'media_type', 'album') END as album,
-            {DB_TABLE_ALBUM_TRACKS}.disc_number,
-            {DB_TABLE_ALBUM_TRACKS}.track_number
+            CASE WHEN {DB_TABLE_ALBUM_TRACKS}.disc_number IS NULL THEN 0 ELSE {DB_TABLE_ALBUM_TRACKS}.disc_number END as disc_number,
+            CASE WHEN {DB_TABLE_ALBUM_TRACKS}.track_number IS NULL THEN 0 ELSE {DB_TABLE_ALBUM_TRACKS}.track_number END as track_number
         FROM {self.db_table}
         LEFT JOIN {DB_TABLE_ALBUM_TRACKS} on {DB_TABLE_ALBUM_TRACKS}.track_id = {self.db_table}.item_id
         LEFT JOIN {DB_TABLE_ALBUMS} on {DB_TABLE_ALBUMS}.item_id = {DB_TABLE_ALBUM_TRACKS}.album_id
@@ -345,8 +345,8 @@ class TracksController(MediaControllerBase[Track]):
             await self._set_track_album(
                 db_id=db_id,
                 album=item.album,
-                disc_number=getattr(item, "disc_number", None) or 0,
-                track_number=getattr(item, "track_number", None) or 0,
+                disc_number=getattr(item, "disc_number", 0),
+                track_number=getattr(item, "track_number", 0),
             )
         self.logger.debug("added %s to database (id: %s)", item.name, db_id)
         return db_id
@@ -390,8 +390,8 @@ class TracksController(MediaControllerBase[Track]):
             await self._set_track_album(
                 db_id=db_id,
                 album=update.album,
-                disc_number=getattr(update, "disc_number", None) or 0,
-                track_number=getattr(update, "track_number", None) or 1,
+                disc_number=update.disc_number or cur_item.disc_number,
+                track_number=update.track_number or cur_item.track_number,
                 overwrite=overwrite,
             )
         self.logger.debug("updated %s in database: (id %s)", update.name, db_id)

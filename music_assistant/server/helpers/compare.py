@@ -132,7 +132,7 @@ def compare_track(
         ExternalID.DISCOGS,
         ExternalID.ACOUSTID,
         ExternalID.TADB,
-        # make sure to check isrc before musicbrainz
+        # make sure to check musicbrainz before isrc
         # https://github.com/music-assistant/hass-music-assistant/issues/2316
         ExternalID.ISRC,
         ExternalID.ASIN,
@@ -152,6 +152,7 @@ def compare_track(
     # track version must match
     if strict and not compare_version(base_item.version, compare_item.version):
         return False
+    # if we're not strict matching, we allow ItemMapping objects to match
     if not strict and (isinstance(base_item, ItemMapping) or isinstance(compare_item, ItemMapping)):
         return True
     # for strict matching we REQUIRE both items to be a real track object
@@ -172,6 +173,7 @@ def compare_track(
         base_item.album
         and compare_item.album
         and compare_album(base_item.album, compare_item.album, False)
+        and base_item.disc_number == compare_item.disc_number
         and base_item.track_number == compare_item.track_number
     ):
         return True

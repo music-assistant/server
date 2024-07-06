@@ -422,9 +422,9 @@ class Track(MediaItem):
     duration: int = 0
     version: str = ""
     artists: UniqueList[Artist | ItemMapping] = field(default_factory=UniqueList)
-    album: Album | ItemMapping | None = None  # optional
-    disc_number: int | None = None  # required for album tracks
-    track_number: int | None = None  # required for album tracks
+    album: Album | ItemMapping | None = None  # required for album tracks
+    disc_number: int = 0  # required for album tracks
+    track_number: int = 0  # required for album tracks
 
     @property
     def has_chapters(self) -> bool:
@@ -451,48 +451,6 @@ class Track(MediaItem):
     def artist_str(self) -> str:
         """Return (combined) artist string for track."""
         return "/".join(x.name for x in self.artists)
-
-
-@dataclass(kw_only=True)
-class AlbumTrack(Track):
-    """
-    Model for a track on an album.
-
-    Same as regular Track but with explicit and required definitions of
-    album, disc_number and track_number
-    """
-
-    __hash__ = _MediaItemBase.__hash__
-    __eq__ = _MediaItemBase.__eq__
-
-    album: Album | ItemMapping
-    disc_number: int
-    track_number: int
-
-    @classmethod
-    def from_track(
-        cls,
-        track: Track,
-        album: Album | None = None,
-        disc_number: int | None = None,
-        track_number: int | None = None,
-    ) -> AlbumTrack:
-        """Cast Track to AlbumTrack."""
-        album_track = track.to_dict()
-        if album_track["album"] is None:
-            if not album:
-                raise InvalidDataError("AlbumTrack requires an album")
-            album_track["album"] = album.to_dict()
-        if album_track["disc_number"] is None:
-            if disc_number is None:
-                raise InvalidDataError("AlbumTrack requires a disc_number")
-            album_track["disc_number"] = disc_number
-        if album_track["track_number"] is None:
-            if track_number is None:
-                raise InvalidDataError("AlbumTrack requires a track_number")
-            album_track["track_number"] = track_number
-        # let mushmumaro instantiate a new object - this will ensure that valididation takes place
-        return AlbumTrack.from_dict(album_track)
 
 
 @dataclass(kw_only=True)
@@ -561,9 +519,7 @@ class BrowseFolder(MediaItem):
             )
 
 
-MediaItemType = (
-    Artist | Album | PlaylistTrack | AlbumTrack | Track | Radio | Playlist | BrowseFolder
-)
+MediaItemType = Artist | Album | PlaylistTrack | Track | Radio | Playlist | BrowseFolder
 
 
 @dataclass(kw_only=True)

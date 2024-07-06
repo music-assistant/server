@@ -5,7 +5,7 @@ from __future__ import annotations
 import contextlib
 from collections.abc import Iterable
 from random import choice, random
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING
 
 from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.json import serialize_to_json
@@ -17,7 +17,6 @@ from music_assistant.common.models.errors import (
 )
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     AlbumType,
     Artist,
     ItemMapping,
@@ -150,7 +149,7 @@ class AlbumsController(MediaControllerBase[Album]):
         item_id: str,
         provider_instance_id_or_domain: str,
         in_library_only: bool = False,
-    ) -> UniqueList[AlbumTrack]:
+    ) -> UniqueList[Track]:
         """Return album tracks for the given provider album id."""
         # always check if we have a library item for this album
         library_album = await self.get_library_item_by_prov_id(
@@ -159,12 +158,16 @@ class AlbumsController(MediaControllerBase[Album]):
         if not library_album:
             return await self._get_provider_album_tracks(item_id, provider_instance_id_or_domain)
         db_items = await self.get_library_album_tracks(library_album.item_id)
-        result: UniqueList[AlbumTrack] = UniqueList(db_items)
+        result: UniqueList[Track] = UniqueList(db_items)
         if in_library_only:
             # return in-library items only
             return sorted(db_items, key=lambda x: (x.disc_number, x.track_number))
+
         # return all (unique) items from all providers
-        unique_ids: set[str] = {f"{x.disc_number or 1}.{x.track_number}" for x in db_items}
+        # because we are returning the items from all providers combined,
+        # we need to make sure that we don't return duplicates
+        unique_ids: set[str] = {f"{x.disc_number}.{x.track_number}" for x in db_items}
+        unique_ids.update({f"{x.name.lower()}.{x.version.lower()}" for x in db_items})
         for db_item in db_items:
             unique_ids.add(x.item_id for x in db_item.provider_mappings)
         for provider_mapping in library_album.provider_mappings:
@@ -174,11 +177,15 @@ class AlbumsController(MediaControllerBase[Album]):
             for provider_track in provider_tracks:
                 if provider_track.item_id in unique_ids:
                     continue
-                unique_id = f"{provider_track.disc_number or 1}.{provider_track.track_number}"
+                unique_id = f"{provider_track.disc_number}.{provider_track.track_number}"
+                if unique_id in unique_ids:
+                    continue
+                unique_id = f"{provider_track.name.lower()}.{provider_track.version.lower()}"
                 if unique_id in unique_ids:
                     continue
                 unique_ids.add(unique_id)
-                result.append(AlbumTrack.from_track(provider_track, library_album))
+                provider_track.album = library_album
+                result.append(provider_track)
         # NOTE: we need to return the results sorted on disc/track here
         # to ensure the correct order at playback
         return sorted(result, key=lambda x: (x.disc_number, x.track_number))
@@ -211,13 +218,10 @@ class AlbumsController(MediaControllerBase[Album]):
     async def get_library_album_tracks(
         self,
         item_id: str | int,
-    ) -> list[AlbumTrack]:
+    ) -> list[Track]:
         """Return in-database album tracks for the given database album."""
         query = f"WHERE {DB_TABLE_ALBUM_TRACKS}.album_id = {item_id}"
-        result = await self.mass.music.tracks._get_library_items_by_query(extra_query=query)
-        if TYPE_CHECKING:
-            return cast(list[AlbumTrack], result)
-        return result
+        return await self.mass.music.tracks._get_library_items_by_query(extra_query=query)
 
     async def _add_library_item(self, item: Album) -> int:
         """Add a new record to the database."""
