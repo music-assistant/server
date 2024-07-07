@@ -114,7 +114,7 @@ class AppleMusicProvider(MusicProvider):
     _decrypt_private_key: bytes | None = None
     # rate limiter needs to be specified on provider-level,
     # so make it an instance attribute
-    throttler = ThrottlerManager(rate_limit=1, period=2)
+    throttler = ThrottlerManager(rate_limit=1, period=2, initial_backoff=15)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -413,7 +413,7 @@ class AppleMusicProvider(MusicProvider):
             artist.metadata.description = notes.get("standard") or notes.get("short")
         return artist
 
-    def _parse_album(self, album_obj: dict):
+    def _parse_album(self, album_obj: dict) -> Album | ItemMapping:
         """Parse album object to generic layout."""
         relationships = album_obj.get("relationships", {})
         response_type = album_obj.get("type")
@@ -425,7 +425,8 @@ class AppleMusicProvider(MusicProvider):
             attributes = album_obj["attributes"]
         else:
             album_id = album_obj["id"]
-            attributes = {}
+            # No more details available other than the id, return an ItemMapping
+            return ItemMapping(MediaType.ALBUM, item_id=album_id, name=album_id)
         album = Album(
             item_id=album_id,
             provider=self.domain,
@@ -622,7 +623,12 @@ class AppleMusicProvider(MusicProvider):
                 raise MediaNotFoundError(f"{endpoint} not found")
             if response.status == 504:
                 # See if we can get more info from the response on occasional timeouts
-                self.logger.debug("Apple Music API Timeout: %s", await response.text())
+                self.logger.debug(
+                    "Apple Music API Timeout: url=%s, params=%s, response_headers=%s",
+                    url,
+                    kwargs,
+                    response.headers,
+                )
                 raise ResourceTemporarilyUnavailable("Apple Music API Timeout")
             if response.status == 429:
                 # Debug this for now to see if the response headers give us info about the
