@@ -190,7 +190,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         if not file_path:
             return False  # guard
         abs_path = get_absolute_path(self.base_path, file_path)
-        return await exists(abs_path)
+        return bool(await exists(abs_path))
 
     async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
