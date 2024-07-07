@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import abc
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -12,6 +13,7 @@ from music_assistant.common.models.media_items import (
     Album,
     Artist,
     BrowseFolder,
+    ItemMapping,
     MediaItemType,
     Playlist,
     Radio,
@@ -249,6 +251,7 @@ class MusicProvider(Provider):
         """Get streamdetails for a track/radio."""
         raise NotImplementedError
 
+    @abc.abstractmethod
     async def get_audio_stream(  # type: ignore[return]
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
@@ -283,7 +286,9 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str, offset: int, limit: int) -> Sequence[MediaItemType]:
+    async def browse(
+        self, path: str, offset: int, limit: int
+    ) -> Sequence[MediaItemType | ItemMapping]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).

@@ -51,7 +51,7 @@ async def setup(
         msg = f"Music Directory {conf_path} does not exist"
         raise SetupFailedError(msg)
     prov = LocalFileSystemProvider(mass, manifest, config)
-    prov.base_path = config.get_value(CONF_PATH)
+    prov.base_path = str(config.get_value(CONF_PATH))
     await prov.check_write_access()
     mass.call_later(30, prov.migrate_playlists)
     return prov
@@ -77,14 +77,14 @@ async def get_config_entries(
     )
 
 
-def sorted_scandir(base_path: str, sub_path: str) -> list[os.DirEntry]:
+def sorted_scandir(base_path: str, sub_path: str) -> list[FileSystemItem]:
     """Implement os.scandir that returns (naturally) sorted entries."""
 
-    def nat_key(name: str) -> tuple[int, str]:
+    def nat_key(name: str) -> tuple[int | str, ...]:
         """Sort key for natural sorting."""
         return tuple(int(s) if s.isdigit() else s for s in re.split(r"(\d+)", name))
 
-    def create_item(entry: os.DirEntry):
+    def create_item(entry: os.DirEntry) -> FileSystemItem:
         """Create FileSystemItem from os.DirEntry."""
         absolute_path = get_absolute_path(base_path, entry.path)
         stat = entry.stat(follow_symlinks=False)
@@ -168,7 +168,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         """
         absolute_path = get_absolute_path(self.base_path, file_path)
 
-        def _create_item():
+        def _create_item() -> FileSystemItem:
             stat = os.stat(absolute_path, follow_symlinks=False)
             return FileSystemItem(
                 filename=os.path.basename(file_path),
@@ -229,11 +229,11 @@ class LocalFileSystemProvider(FileSystemProviderBase):
                 continue
             if item.ext != "m3u":
                 continue
-            playlist_data = b""
+            playlist_bytes = b""
             async for chunk in self.read_file_content(item.absolute_path):
-                playlist_data += chunk
-            encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-            playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
+                playlist_bytes += chunk
+            encoding_details = await asyncio.to_thread(cchardet.detect, playlist_bytes)
+            playlist_data = playlist_bytes.decode(encoding_details["encoding"] or "utf-8")
             # a (legacy) playlist file created by MA does not have EXTINFO tags and has uri's
             if "EXTINF" in playlist_data or "://" not in playlist_data:
                 continue

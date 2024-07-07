@@ -99,9 +99,7 @@ class RadioBrowserProvider(MusicProvider):
             return result
 
         searchresult = await self.radios.search(name=search_query, limit=limit)
-
-        for item in searchresult:
-            result.radio.append(await self._parse_radio(item))
+        result.radio = [await self._parse_radio(item) for item in searchresult]
 
         return result
 

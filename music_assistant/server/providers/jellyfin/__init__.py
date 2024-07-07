@@ -256,13 +256,13 @@ class JellyfinProvider(MusicProvider):
         search_results = SearchResults()
 
         if artists:
-            search_results.artists += artists.result()
+            search_results.artists = artists.result()
         if albums:
-            search_results.albums += albums.result()
+            search_results.albums = albums.result()
         if tracks:
-            search_results.tracks += tracks.result()
+            search_results.tracks = tracks.result()
         if playlists:
-            search_results.playlists += playlists.result()
+            search_results.playlists = playlists.result()
 
         return search_results
 
