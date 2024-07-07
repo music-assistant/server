@@ -430,7 +430,12 @@ class AppleMusicProvider(MusicProvider):
         else:
             album_id = album_obj["id"]
             # No more details available other than the id, return an ItemMapping
-            return ItemMapping(MediaType.ALBUM, item_id=album_id, name=album_id)
+            return ItemMapping(
+                media_type=MediaType.ALBUM,
+                provider=self.instance_id,
+                item_id=album_id,
+                name=album_id,
+            )
         album = Album(
             item_id=album_id,
             provider=self.domain,
