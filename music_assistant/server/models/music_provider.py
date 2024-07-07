@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-from collections import abc
 from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
@@ -251,7 +250,6 @@ class MusicProvider(Provider):
         """Get streamdetails for a track/radio."""
         raise NotImplementedError
 
-    @abc.abstractmethod
     async def get_audio_stream(  # type: ignore[return]
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
@@ -260,6 +258,8 @@ class MusicProvider(Provider):
 
         Will only be called when the stream_type is set to CUSTOM.
         """
+        if False:
+            yield
         raise NotImplementedError
 
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
