@@ -547,8 +547,6 @@ class BuiltinProvider(MusicProvider):
         for random_album in await self.mass.music.albums.library_items(
             limit=1, order_by="random_fast"
         ):
-            # use the function specified in the queue controller as that
-            # already handles unwrapping an album by user preference
             tracks = await self.mass.music.albums.tracks(
                 random_album.item_id, random_album.provider
             )
