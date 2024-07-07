@@ -62,8 +62,6 @@ CONF_SERVER_BUFFER_SIZE = "snapcast_server_built_in_buffer_size"
 CONF_SERVER_INITIAL_VOLUME = "snapcast_server_built_in_initial_volume"
 CONF_SERVER_TRANSPORT_CODEC = "snapcast_server_built_in_codec"
 CONF_SERVER_SEND_AUDIO_TO_MUTED = "snapcast_server_built_in_send_muted"
-CONF_SERVER_DRYOUT_MS = "snapcast_stream_dryout_ms"
-
 
 # airplay has fixed sample rate/bit depth so make this config entry static and hidden
 CONF_ENTRY_SAMPLE_RATES_SNAPCAST = create_sample_rates_config_entry(48000, 16, 48000, 16, True)
@@ -205,16 +203,6 @@ async def get_config_entries(
             depends_on=CONF_USE_EXTERNAL_SERVER,
             category="advanced" if local_snapserver_present else "generic",
         ),
-        ConfigEntry(
-            key=CONF_SERVER_DRYOUT_MS,
-            type=ConfigEntryType.INTEGER,
-            default_value=2000,
-            label="Stream dryout parameter in ms",
-            description="Allows you to modify the dryout of the tcp stream.",
-            required=False,
-            category="advanced",
-            help_link="https://github.com/badaix/snapcast/blob/develop/doc/configuration.md",
-        ),
     )
 
 
@@ -279,7 +267,6 @@ class SnapCastProvider(PlayerProvider):
         else:
             self._snapcast_server_host = self.config.get_value(CONF_SERVER_HOST)
             self._snapcast_server_control_port = self.config.get_value(CONF_SERVER_CONTROL_PORT)
-        self._snapcast_stream_dryout_ms = self.config.get_value(CONF_SERVER_DRYOUT_MS)
         self._stream_tasks = {}
         self._ids_map = bidict({})
 
@@ -448,7 +435,7 @@ class SnapCastProvider(PlayerProvider):
         # update all players
         self._handle_update()
 
-    async def play_media(self, player_id: str, media: PlayerMedia) -> None:  # noqa: PLR0915
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
@@ -505,18 +492,6 @@ class SnapCastProvider(PlayerProvider):
 
         async def _streamer() -> None:
             host = self._snapcast_server_host
-            self.mass.players.update(player_id)
-
-            def stream_callback(_stream) -> None:
-                player.state = PlayerState(_stream.status)
-                if player.state == PlayerState.PLAYING:
-                    player.current_media = media
-                    player.elapsed_time = 0
-                    player.elapsed_time_last_updated = time.time()
-                self.mass.players.update(player_id)
-                self._set_childs_state(player_id, player.state)
-
-            stream.set_callback(stream_callback)
             stream_path = f"tcp://{host}:{port}"
             self.logger.debug("Start streaming to %s", stream_path)
             try:
@@ -525,18 +500,27 @@ class SnapCastProvider(PlayerProvider):
                     input_format=input_format,
                     output_format=DEFAULT_SNAPCAST_FORMAT,
                     filter_params=get_player_filter_params(self.mass, player_id),
-                    audio_output=f"tcp://{host}:{port}",
+                    audio_output=stream_path,
                     logger=self.logger.getChild("ffmpeg"),
                 ) as ffmpeg_proc:
+                    player.state = PlayerState.PLAYING
+                    player.current_media = media
+                    player.elapsed_time = 0
+                    player.elapsed_time_last_updated = time.time()
+                    self.mass.players.update(player_id)
+                    self._set_childs_state(player_id, player.state)
                     await ffmpeg_proc.wait()
                     # we need to wait a bit for the stream status to become idle
                     # to ensure that all snapclients have consumed the audio
-                    await self.mass.players.wait_for_state(player, PlayerState.IDLE)
                     await asyncio.sleep(5)
+
+                    player.state = PlayerState.IDLE
+                    self.mass.players.update(player_id)
+                    self._set_childs_state(player_id, player.state)
+
             finally:
                 self.logger.debug("Finished streaming to %s", stream_path)
-                # there is no way to unsub the callback to we do this nasty
-                stream._callback_func = None
+
                 with suppress(TypeError, KeyError, AttributeError):
                     await self._snapserver.stream_remove_stream(stream.identifier)
 
@@ -582,11 +566,10 @@ class SnapCastProvider(PlayerProvider):
             # pick a random port
             port = random.randint(4953, 4953 + 200)
             name = f"MusicAssistant--{port}"
-            dryout_ms = self._snapcast_stream_dryout_ms
             result = await self._snapserver.stream_add_stream(
                 # NOTE: setting the sampleformat to something else
                 # (like 24 bits bit depth) does not seem to work at all!
-                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2&dryout_ms={dryout_ms}",
+                f"tcp://0.0.0.0:{port}?name={name}&sampleformat=48000:16:2",
             )
             if "id" not in result:
                 # if the port is already taken, the result will be an error
