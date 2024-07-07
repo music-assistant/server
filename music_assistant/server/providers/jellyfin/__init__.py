@@ -491,7 +491,9 @@ class JellyfinProvider(MusicProvider):
 
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Retrieve a dynamic list of tracks based on the provided item."""
-        resp = await self._client.get_similar_tracks(prov_track_id, limit=limit)
+        resp = await self._client.get_similar_tracks(
+            prov_track_id, limit=limit, fields=TRACK_FIELDS
+        )
         return [
             parse_track(self.logger, self.instance_id, self._client, track)
             for track in resp["Items"]
