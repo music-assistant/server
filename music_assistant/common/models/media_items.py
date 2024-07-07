@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass, field, fields
 from typing import TYPE_CHECKING, Any, TypeGuard, TypeVar, cast
 
@@ -526,11 +526,11 @@ MediaItemType = Artist | Album | PlaylistTrack | Track | Radio | Playlist | Brow
 class SearchResults(DataClassDictMixin):
     """Model for results from a search query."""
 
-    artists: list[Artist | ItemMapping] = field(default_factory=list)
-    albums: list[Album | ItemMapping] = field(default_factory=list)
-    tracks: list[Track | ItemMapping] = field(default_factory=list)
-    playlists: list[Playlist | ItemMapping] = field(default_factory=list)
-    radio: list[Radio | ItemMapping] = field(default_factory=list)
+    artists: Sequence[Artist | ItemMapping] = field(default_factory=list)
+    albums: Sequence[Album | ItemMapping] = field(default_factory=list)
+    tracks: Sequence[Track | ItemMapping] = field(default_factory=list)
+    playlists: Sequence[Playlist | ItemMapping] = field(default_factory=list)
+    radio: Sequence[Radio | ItemMapping] = field(default_factory=list)
 
 
 def media_from_dict(media_item: dict[str, Any]) -> MediaItemType | ItemMapping:

@@ -36,6 +36,8 @@ from music_assistant.common.models.media_items import (
     ProviderMapping,
     SearchResults,
     Track,
+    UniqueList,
+    is_track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
@@ -181,7 +183,9 @@ class FileSystemProviderBase(MusicProvider):
             AsyncGenerator yielding FileSystemItem objects.
 
         """
-        yield
+        # mypy will infer wrong type without an explicit yield
+        # https://github.com/python/mypy/issues/5070
+        yield  # type: ignore[misc]
 
     @abstractmethod
     async def resolve(self, file_path: str) -> FileSystemItem:
@@ -194,6 +198,9 @@ class FileSystemProviderBase(MusicProvider):
     @abstractmethod
     async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""
+        # mypy will infer wrong type without an explicit yield
+        # https://github.com/python/mypy/issues/5070
+        yield  # type: ignore[misc]
 
     @abstractmethod
     async def write_file_content(self, file_path: str, data: bytes) -> None:
@@ -221,7 +228,7 @@ class FileSystemProviderBase(MusicProvider):
     async def search(
         self,
         search_query: str,
-        media_types=list[MediaType] | None,
+        media_types: list[MediaType] | None,
         limit: int = 5,
     ) -> SearchResults:
         """Perform search on this file based musicprovider."""
@@ -252,7 +259,7 @@ class FileSystemProviderBase(MusicProvider):
             )
         return result
 
-    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType]:
+    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType | ItemMapping]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
@@ -260,7 +267,7 @@ class FileSystemProviderBase(MusicProvider):
         if offset:
             # we do not support pagination
             return []
-        items: list[MediaItemType] = []
+        items: list[MediaItemType | ItemMapping] = []
         item_path = path.split("://", 1)[1]
         if not item_path:
             item_path = ""
@@ -300,6 +307,7 @@ class FileSystemProviderBase(MusicProvider):
 
     async def sync_library(self, media_types: tuple[MediaType, ...]) -> None:
         """Run library sync for this provider."""
+        assert self.mass.music.database
         file_checksums: dict[str, str] = {}
         query = (
             f"SELECT provider_item_id, details FROM {DB_TABLE_PROVIDER_MAPPINGS} "
@@ -362,6 +370,7 @@ class FileSystemProviderBase(MusicProvider):
 
     async def _process_orphaned_albums_and_artists(self) -> None:
         """Process deletion of orphaned albums and artists."""
+        assert self.mass.music.database
         # Remove albums without any tracks
         query = (
             f"SELECT item_id FROM {DB_TABLE_ALBUMS} "
@@ -409,7 +418,7 @@ class FileSystemProviderBase(MusicProvider):
             if library_item := await controller.get_library_item_by_prov_id(
                 file_path, self.instance_id
             ):
-                if library_item.media_type == MediaType.TRACK:
+                if is_track(library_item):
                     if library_item.album:
                         album_ids.add(library_item.album.item_id)
                         # need to fetch the library album to resolve the itemmapping
@@ -451,6 +460,7 @@ class FileSystemProviderBase(MusicProvider):
             for prov_mapping in track.provider_mappings:
                 if prov_mapping.provider_instance == self.instance_id:
                     full_track = await self.get_track(prov_mapping.item_id)
+                    assert isinstance(full_track.album, Album)
                     return full_track.album
         msg = f"Album not found: {prov_album_id}"
         raise MediaNotFoundError(msg)
@@ -525,11 +535,11 @@ class FileSystemProviderBase(MusicProvider):
         _, ext = prov_playlist_id.rsplit(".", 1)
         try:
             # get playlist file contents
-            playlist_data = b""
+            playlist_bytes = b""
             async for chunk in self.read_file_content(prov_playlist_id):
-                playlist_data += chunk
-            encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-            playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
+                playlist_bytes += chunk
+            encoding_details = await asyncio.to_thread(cchardet.detect, playlist_bytes)
+            playlist_data = playlist_bytes.decode(encoding_details["encoding"] or "utf-8")
 
             if ext in ("m3u", "m3u8"):
                 playlist_lines = parse_m3u(playlist_data)
@@ -574,18 +584,19 @@ class FileSystemProviderBase(MusicProvider):
 
         except MusicAssistantError as err:
             self.logger.warning("Could not parse uri/file %s to track: %s", line, str(err))
-            return None
+
+        return None
 
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
-        playlist_data = b""
+        playlist_bytes = b""
         async for chunk in self.read_file_content(prov_playlist_id):
-            playlist_data += chunk
-        encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-        playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
+            playlist_bytes += chunk
+        encoding_details = await asyncio.to_thread(cchardet.detect, playlist_bytes)
+        playlist_data = playlist_bytes.decode(encoding_details["encoding"] or "utf-8")
         for file_path in prov_track_ids:
             track = await self.get_track(file_path)
             playlist_data += f"\n#EXTINF:{track.duration or 0},{track.name}\n{file_path}\n"
@@ -602,11 +613,11 @@ class FileSystemProviderBase(MusicProvider):
             raise MediaNotFoundError(msg)
         _, ext = prov_playlist_id.rsplit(".", 1)
         # get playlist file contents
-        playlist_data = b""
+        playlist_bytes = b""
         async for chunk in self.read_file_content(prov_playlist_id):
-            playlist_data += chunk
-        encoding_details = await asyncio.to_thread(cchardet.detect, playlist_data)
-        playlist_data = playlist_data.decode(encoding_details["encoding"] or "utf-8")
+            playlist_bytes += chunk
+        encoding_details = await asyncio.to_thread(cchardet.detect, playlist_bytes)
+        playlist_data = playlist_bytes.decode(encoding_details["encoding"] or "utf-8")
         # get current contents first
         if ext in ("m3u", "m3u8"):
             playlist_items = parse_m3u(playlist_data)
@@ -713,8 +724,8 @@ class FileSystemProviderBase(MusicProvider):
                     details=file_item.checksum,
                 )
             },
-            disc_number=tags.disc,
-            track_number=tags.track,
+            disc_number=tags.disc or 0,
+            track_number=tags.track or 0,
         )
 
         if isrc_tags := tags.isrc:
@@ -723,6 +734,9 @@ class FileSystemProviderBase(MusicProvider):
 
         if acoustid := tags.get("acoustidid"):
             track.external_ids.add((ExternalID.ACOUSTID, acoustid))
+
+        album: Album | None
+        album_artists: list[Artist] = []
 
         # album
         if tags.album:
@@ -734,7 +748,6 @@ class FileSystemProviderBase(MusicProvider):
             album_dir = get_album_dir(file_item.path, tags.album, disc_dir)
 
             # album artist(s)
-            album_artists = []
             if tags.album_artists:
                 for index, album_artist_str in enumerate(tags.album_artists):
                     artist = await self._parse_artist(album_artist_str, album_path=album_dir)
@@ -776,7 +789,7 @@ class FileSystemProviderBase(MusicProvider):
                     )
                     album_artists = [await self._parse_artist(name=VARIOUS_ARTISTS_NAME)]
 
-            track.album = await self._parse_album(
+            album = track.album = await self._parse_album(
                 tags.album,
                 track_path=file_item.path,
                 album_path=album_dir,
@@ -788,10 +801,8 @@ class FileSystemProviderBase(MusicProvider):
         # track artist(s)
         for index, track_artist_str in enumerate(tags.artists):
             # reuse album artist details if possible
-            if track.album and (
-                album_artist := next(
-                    (x for x in track.album.artists if x.name == track_artist_str), None
-                )
+            if album and (
+                album_artist := next((x for x in album_artists if x.name == track_artist_str), None)
             ):
                 artist = album_artist
             else:
@@ -809,25 +820,27 @@ class FileSystemProviderBase(MusicProvider):
             # we do not actually embed the image in the metadata because that would consume too
             # much space and bandwidth. Instead we set the filename as value so the image can
             # be retrieved later in realtime.
-            track.metadata.images = [
-                MediaItemImage(
-                    type=ImageType.THUMB,
-                    path=file_item.path,
-                    provider=self.instance_id,
-                    remotely_accessible=False,
-                )
-            ]
+            track.metadata.images = UniqueList(
+                [
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=file_item.path,
+                        provider=self.instance_id,
+                        remotely_accessible=False,
+                    )
+                ]
+            )
 
-        if track.album and not track.album.metadata.images:
+        if album and not album.metadata.images:
             # set embedded cover on album if it does not have one yet
-            track.album.metadata.images = track.metadata.images
+            album.metadata.images = track.metadata.images
         # copy album image from track (only if the album itself doesn't have an image)
         # this deals with embedded images from filesystem providers
-        if track.album and not track.album.image and track.image:
-            track.album.metadata.images = [track.image]
+        if album and not album.image and track.image:
+            album.metadata.images = UniqueList([track.image])
 
         # parse other info
-        track.duration = tags.duration or 0
+        track.duration = int(tags.duration or 0)
         track.metadata.genres = set(tags.genres)
         if tags.disc:
             track.disc_number = tags.disc
@@ -839,20 +852,20 @@ class FileSystemProviderBase(MusicProvider):
         if explicit_tag is not None:
             track.metadata.explicit = explicit_tag == "1"
         track.mbid = tags.musicbrainz_recordingid
-        track.metadata.chapters = tags.chapters
-        if track.album:
-            if not track.album.mbid:
-                track.album.mbid = tags.musicbrainz_releasegroupid
-            if not track.album.year:
-                track.album.year = tags.year
-            track.album.album_type = tags.album_type
-            track.album.metadata.explicit = track.metadata.explicit
+        track.metadata.chapters = UniqueList(tags.chapters)
+        if album:
+            if not album.mbid:
+                album.mbid = tags.musicbrainz_releasegroupid
+            if not album.year:
+                album.year = tags.year
+            album.album_type = tags.album_type
+            album.metadata.explicit = track.metadata.explicit
         # set checksum to invalidate any cached listings
         track.metadata.cache_checksum = file_item.checksum
-        if track.album:
+        if album:
             # use track checksum for album(artists) too
-            track.album.metadata.cache_checksum = track.metadata.cache_checksum
-            for artist in track.album.artists:
+            album.metadata.cache_checksum = track.metadata.cache_checksum
+            for artist in album_artists:
                 artist.metadata.cache_checksum = track.metadata.cache_checksum
 
         return track
@@ -867,6 +880,7 @@ class FileSystemProviderBase(MusicProvider):
         """Parse Artist metadata into an Artist object."""
         cache_key = f"{self.instance_id}-artistdata-{name}-{artist_path}"
         if cache := await self.mass.cache.get(cache_key):
+            assert isinstance(cache, Artist)
             return cache
         if not artist_path and album_path:
             # try to find (album)artist folder based on album path
@@ -936,7 +950,7 @@ class FileSystemProviderBase(MusicProvider):
                 artist.metadata.genres = set(split_items(genre))
         # find local images
         if images := await self._get_local_images(artist_path):
-            artist.metadata.images = images
+            artist.metadata.images = UniqueList(images)
 
         await self.mass.cache.set(cache_key, artist, expiration=120)
         return artist
@@ -954,6 +968,7 @@ class FileSystemProviderBase(MusicProvider):
         """Parse Album metadata into an Album object."""
         cache_key = f"{self.instance_id}-albumdata-{name}-{album_path}"
         if cache := await self.mass.cache.get(cache_key):
+            assert isinstance(cache, Album)
             return cache
 
         if album_path:
@@ -971,7 +986,7 @@ class FileSystemProviderBase(MusicProvider):
             provider=self.instance_id,
             name=name,
             sort_name=sort_name,
-            artists=artists,
+            artists=UniqueList(artists),
             provider_mappings={
                 ProviderMapping(
                     item_id=item_id,
@@ -1017,7 +1032,7 @@ class FileSystemProviderBase(MusicProvider):
             # find local images
             if images := await self._get_local_images(folder_path):
                 if album.metadata.images is None:
-                    album.metadata.images = images
+                    album.metadata.images = UniqueList(images)
                 else:
                     album.metadata.images += images
 

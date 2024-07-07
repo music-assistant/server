@@ -91,7 +91,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self._db_add_lock = asyncio.Lock()
 
     async def add_item_to_library(
-        self, item: Track, metadata_lookup: bool = True, overwrite_existing: bool = False
+        self, item: ItemCls, metadata_lookup: bool = True, overwrite_existing: bool = False
     ) -> ItemCls:
         """Add item to library and return the new (or updated) database item."""
         new_item = False
@@ -758,7 +758,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         provider: str | None = None,
         extra_query: str | None = None,
         extra_query_params: dict[str, Any] | None = None,
-    ) -> list[ItemCls] | int:
+    ) -> list[ItemCls]:
         """Fetch MediaItem records from database given a custom (WHERE) clause."""
         sql_query = self.base_query
         query_params = extra_query_params or {}

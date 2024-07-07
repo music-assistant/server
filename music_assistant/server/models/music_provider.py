@@ -12,6 +12,7 @@ from music_assistant.common.models.media_items import (
     Album,
     Artist,
     BrowseFolder,
+    ItemMapping,
     MediaItemType,
     Playlist,
     Radio,
@@ -257,6 +258,8 @@ class MusicProvider(Provider):
 
         Will only be called when the stream_type is set to CUSTOM.
         """
+        if False:
+            yield
         raise NotImplementedError
 
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
@@ -283,7 +286,9 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str, offset: int, limit: int) -> Sequence[MediaItemType]:
+    async def browse(
+        self, path: str, offset: int, limit: int
+    ) -> Sequence[MediaItemType | ItemMapping]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
