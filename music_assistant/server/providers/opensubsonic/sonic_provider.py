@@ -681,6 +681,10 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""
+        # We have seen top tracks requested for the UNKNOWN_ARTIST ID, protect against that
+        if prov_artist_id == UNKNOWN_ARTIST_ID:
+            return []
+
         try:
             sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
         except DataNotFoundError as e:
