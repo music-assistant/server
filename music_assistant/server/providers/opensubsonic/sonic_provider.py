@@ -320,6 +320,10 @@ class OpenSonicProvider(MusicProvider):
                 )
             )
         else:
+            logging.getLogger("libopensonic").info(
+                f"Unable to find an artist ID for album '{sonic_album.name}' with "
+                f"ID '{sonic_album.id}'."
+            )
             album.artists.append(
                 Artist(
                     item_id=UNKNOWN_ARTIST_ID,
@@ -400,6 +404,10 @@ class OpenSonicProvider(MusicProvider):
                 track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
 
         if not track.artists:
+            logging.getLogger("libopensonic").info(
+                f"Unable to find artist ID for track '{sonic_song.title}' with "
+                f"ID '{sonic_song.id}'."
+            )
             track.artists.append(
                 Artist(
                     item_id=UNKNOWN_ARTIST_ID,
