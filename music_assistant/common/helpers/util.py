@@ -71,6 +71,8 @@ def try_parse_duration(duration_str: str) -> float:
 
 def create_sort_name(input_str: str) -> str:
     """Create sort name/title from string."""
+    if not input_str:
+        return ""
     input_str = input_str.lower().strip()
     for item in ["the ", "de ", "les ", "dj ", ".", "-", "'", "`"]:
         if input_str.startswith(item):

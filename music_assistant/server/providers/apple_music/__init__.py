@@ -204,8 +204,8 @@ class AppleMusicProvider(MusicProvider):
             if not catalog_id:
                 self.logger.warning(
                     "Skipping track. No catalog version found for %s - %s",
-                    item["attributes"]["artistName"],
-                    item["attributes"]["name"],
+                    item["attributes"].get("artistName", "?No ArtistName"),
+                    item["attributes"].get("name", "?No Name"),
                 )
                 continue
             song_catalog_ids.append(catalog_id)
