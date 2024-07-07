@@ -419,8 +419,10 @@ class MusicProvider(Provider):
                         library_item = await controller.add_item_to_library(
                             prov_item, metadata_lookup=False
                         )
-                    elif library_item.metadata.cache_checksum != prov_item.metadata.cache_checksum:
-                        # existing dbitem checksum changed
+                    elif getattr(library_item, "cache_checksum", None) != getattr(
+                        prov_item, "cache_checksum", None
+                    ):
+                        # existing dbitem checksum changed (playlists only)
                         library_item = await controller.update_item_in_library(
                             library_item.item_id, prov_item
                         )

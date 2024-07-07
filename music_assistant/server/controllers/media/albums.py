@@ -119,11 +119,6 @@ class AlbumsController(MediaControllerBase[Album]):
                     prov_track = await self.mass.music.tracks.get_provider_item(
                         track_prov_map.item_id, track_prov_map.provider_instance, force_refresh=True
                     )
-                    if (
-                        prov_track.metadata.cache_checksum
-                        == prov_album_track.metadata.cache_checksum
-                    ):
-                        continue
                     await self.mass.music.tracks._update_library_item(
                         prov_album_track.item_id, prov_track, True
                     )

@@ -142,6 +142,19 @@ def compare_track(
         )
         if external_id_match is not None:
             return external_id_match
+    # return early on exact albumtrack match = 100% match
+    if (
+        base_item.album
+        and compare_item.album
+        and compare_album(base_item.album, compare_item.album, False)
+        and base_item.disc_number
+        and compare_item.disc_number
+        and base_item.track_number
+        and compare_item.track_number
+        and base_item.disc_number == compare_item.disc_number
+        and base_item.track_number == compare_item.track_number
+    ):
+        return True
     ## fallback to comparing on attributes
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
@@ -159,9 +172,6 @@ def compare_track(
         compare_item.metadata.explicit = compare_item.album.metadata.explicit
     if strict and compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
-    if not strict and not (base_item.album or track_albums):
-        # in non-strict mode, the album does not have to match (but duration needs to)
-        return abs(base_item.duration - compare_item.duration) <= 2
     # exact albumtrack match = 100% match
     if (
         base_item.album
@@ -188,13 +198,13 @@ def compare_track(
         for track_album in track_albums:
             if compare_album(track_album, compare_item.album, False):
                 return True
-    # accept last resort: albumless track and (near) exact duration
-    # otherwise fail all other cases
-    return (
-        base_item.album is None
-        and compare_item.album is None
-        and abs(base_item.duration - compare_item.duration) <= 1
-    )
+    if strict:
+        return False
+    # Accept last resort (in non strict mode): (near) exact duration,
+    # otherwise fail all other cases.
+    # Note that as this stage, all other info already matches,
+    # such as title artist etc.
+    return abs(base_item.duration - compare_item.duration) <= 1
 
 
 def compare_playlist(

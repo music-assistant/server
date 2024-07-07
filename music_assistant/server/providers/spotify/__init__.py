@@ -271,7 +271,7 @@ class SpotifyProvider(MusicProvider):
             )
         ]
 
-        liked_songs.metadata.cache_checksum = str(time.time())
+        liked_songs.cache_checksum = str(time.time())
 
         return liked_songs
 
@@ -622,7 +622,7 @@ class SpotifyProvider(MusicProvider):
             ]
         if playlist.owner is None:
             playlist.owner = self._sp_user["display_name"]
-        playlist.metadata.cache_checksum = str(playlist_obj["snapshot_id"])
+        playlist.cache_checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
     async def login(self) -> dict:

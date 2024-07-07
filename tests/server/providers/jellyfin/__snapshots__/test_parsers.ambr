@@ -27,7 +27,6 @@
     'item_id': '70b7288088b42d318f75dbcc41fd0091',
     'media_type': 'album',
     'metadata': dict({
-      'cache_checksum': None,
       'chapters': None,
       'copyright': None,
       'description': None,
@@ -107,7 +106,6 @@
     'item_id': '32ed6a0091733dcff57eae67010f3d4b',
     'media_type': 'album',
     'metadata': dict({
-      'cache_checksum': None,
       'chapters': None,
       'copyright': None,
       'description': None,
@@ -183,7 +181,6 @@
     'item_id': '7c8d0bd55291c7fc0451d17ebef30017',
     'media_type': 'album',
     'metadata': dict({
-      'cache_checksum': None,
       'chapters': None,
       'copyright': None,
       'description': None,
@@ -241,7 +238,6 @@
     'item_id': 'dd954bbf54398e247d803186d3585b79',
     'media_type': 'artist',
     'metadata': dict({
-      'cache_checksum': None,
       'chapters': None,
       'copyright': None,
       'description': None,
@@ -342,7 +338,6 @@
     'item_id': 'b5319fb11cde39fca2023184fcfa9862',
     'media_type': 'track',
     'metadata': dict({
-      'cache_checksum': None,
       'chapters': None,
       'copyright': None,
       'description': None,
@@ -414,7 +409,6 @@
     'item_id': '54918f75ee8f6c8b8dc5efd680644f29',
     'media_type': 'track',
     'metadata': dict({
-      'cache_checksum': None,
       'chapters': None,
       'copyright': None,
       'description': None,
@@ -521,7 +515,6 @@
     'item_id': 'fb12a77f49616a9fc56a6fab2b94174c',
     'media_type': 'track',
     'metadata': dict({
-      'cache_checksum': None,
       'chapters': None,
       'copyright': None,
       'description': None,

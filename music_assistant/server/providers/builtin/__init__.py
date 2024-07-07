@@ -237,11 +237,11 @@ class BuiltinProvider(MusicProvider):
                 },
                 owner="Music Assistant",
                 is_editable=False,
+                cache_checksum=str(int(time.time())),
                 metadata=MediaItemMetadata(
                     images=UniqueList([DEFAULT_THUMB])
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
                     else UniqueList([DEFAULT_THUMB, DEFAULT_FANART]),
-                    cache_checksum=str(int(time.time())),
                 ),
             )
         # user created universal playlist
@@ -263,7 +263,7 @@ class BuiltinProvider(MusicProvider):
             owner="Music Assistant",
             is_editable=True,
         )
-        playlist.metadata.cache_checksum = f"{DB_SCHEMA_VERSION}.{stored_item.get('last_updated')}"
+        playlist.cache_checksum = f"{DB_SCHEMA_VERSION}.{stored_item.get('last_updated')}"
         if image_url := stored_item.get("image_url"):
             playlist.metadata.images = UniqueList(
                 [

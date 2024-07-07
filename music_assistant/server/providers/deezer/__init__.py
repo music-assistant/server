@@ -626,10 +626,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                         remotely_accessible=True,
                     )
                 ],
-                cache_checksum=playlist.checksum,
             ),
             is_editable=creator.id == self.user.id,
             owner=creator.name,
+            cache_checksum=playlist.checksum,
         )
 
     def get_playlist_creator(self, playlist: deezer.Playlist):

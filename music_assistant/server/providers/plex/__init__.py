@@ -17,6 +17,7 @@ from plexapi.audio import Track as PlexTrack
 from plexapi.myplex import MyPlexAccount, MyPlexPinLogin
 from plexapi.server import PlexServer
 
+from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
     ConfigValueOption,
@@ -180,7 +181,7 @@ async def get_config_entries(  # noqa: PLR0915
         ),
         ConfigEntry(
             key=CONF_LOCAL_SERVER_PORT,
-            type=ConfigEntryType.STRING,
+            type=ConfigEntryType.INTEGER,
             label="Local server port",
             description="The local server port (e.g. 32400)",
             required=True,
@@ -402,11 +403,17 @@ class PlexProvider(MusicProvider):
         return await self._run_async(self._plex_library.fetchItem, key, cls)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
+        name, version = parse_title_and_version(name)
+        if media_type in (MediaType.ALBUM, MediaType.TRACK):
+            name, version = parse_title_and_version(name)
+        else:
+            version = ""
         return ItemMapping(
             media_type=media_type,
             item_id=key,
             provider=self.instance_id,
             name=name,
+            version=version,
         )
 
     async def _get_or_create_artist_by_name(self, artist_name) -> Artist:
@@ -598,7 +605,7 @@ class PlexProvider(MusicProvider):
                 )
             ]
         playlist.is_editable = not plex_playlist.smart
-        playlist.metadata.cache_checksum = str(plex_playlist.updatedAt.timestamp())
+        playlist.cache_checksum = str(plex_playlist.updatedAt.timestamp())
 
         return playlist
 
@@ -668,7 +675,7 @@ class PlexProvider(MusicProvider):
             ]
         if plex_track.parentKey:
             track.album = self._get_item_mapping(
-                MediaType.ALBUM, plex_track.parentKey, plex_track.parentKey
+                MediaType.ALBUM, plex_track.parentKey, plex_track.parentTitle
             )
         if plex_track.duration:
             track.duration = int(plex_track.duration / 1000)

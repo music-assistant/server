@@ -596,7 +596,7 @@ class AppleMusicProvider(MusicProvider):
             playlist.metadata.description = description.get("standard")
         playlist.is_editable = attributes.get("canEdit", False)
         if checksum := attributes.get("lastModifiedDate"):
-            playlist.metadata.cache_checksum = checksum
+            playlist.cache_checksum = checksum
         return playlist
 
     async def _get_all_items(self, endpoint, key="data", **kwargs) -> list[dict]:

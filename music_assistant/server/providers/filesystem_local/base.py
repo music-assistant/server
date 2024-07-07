@@ -332,7 +332,8 @@ class FileSystemProviderBase(MusicProvider):
             cur_filenames.add(item.path)
             try:
                 # continue if the item did not change (checksum still the same)
-                if item.checksum == file_checksums.get(item.path):
+                prev_checksum = file_checksums.get(item.path)
+                if item.checksum == prev_checksum:
                     continue
                 self.logger.debug("Processing: %s", item.path)
                 if item.ext in TRACK_EXTENSIONS:
@@ -341,16 +342,18 @@ class FileSystemProviderBase(MusicProvider):
                     # when they are detected as changed
                     track = await self._parse_track(item)
                     await self.mass.music.tracks.add_item_to_library(
-                        track, metadata_lookup=False, overwrite_existing=True
+                        track, metadata_lookup=False, overwrite_existing=prev_checksum is not None
                     )
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
                     # add/update] playlist to db
-                    playlist.metadata.cache_checksum = item.checksum
+                    playlist.cache_checksum = item.checksum
                     # playlist is always favorite
                     playlist.favorite = True
                     await self.mass.music.playlists.add_item_to_library(
-                        playlist, metadata_lookup=False, overwrite_existing=True
+                        playlist,
+                        metadata_lookup=False,
+                        overwrite_existing=prev_checksum is not None,
                     )
             except Exception as err:  # pylint: disable=broad-except
                 # we don't want the whole sync to crash on one file so we catch all exceptions here
@@ -504,7 +507,7 @@ class FileSystemProviderBase(MusicProvider):
             playlist.is_editable = False
         playlist.owner = self.name
         checksum = f"{DB_SCHEMA_VERSION}.{file_item.checksum}"
-        playlist.metadata.cache_checksum = checksum
+        playlist.cache_checksum = checksum
         return playlist
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
@@ -860,14 +863,6 @@ class FileSystemProviderBase(MusicProvider):
                 album.year = tags.year
             album.album_type = tags.album_type
             album.metadata.explicit = track.metadata.explicit
-        # set checksum to invalidate any cached listings
-        track.metadata.cache_checksum = file_item.checksum
-        if album:
-            # use track checksum for album(artists) too
-            album.metadata.cache_checksum = track.metadata.cache_checksum
-            for artist in album_artists:
-                artist.metadata.cache_checksum = track.metadata.cache_checksum
-
         return track
 
     async def _parse_artist(

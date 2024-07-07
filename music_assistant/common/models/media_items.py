@@ -233,8 +233,6 @@ class MediaItemMetadata(DataClassDictMixin):
     performers: set[str] | None = None
     preview: str | None = None
     popularity: int | None = None
-    # cache_checksum: optional value to (in)validate cache / detect changes (used for playlists)
-    cache_checksum: str | None = None
     # last_refresh: timestamp the (full) metadata was last collected
     last_refresh: int | None = None
 
@@ -477,6 +475,10 @@ class Playlist(MediaItem):
     media_type: MediaType = MediaType.PLAYLIST
     owner: str = ""
     is_editable: bool = False
+
+    # cache_checksum: optional value to (in)validate cache
+    # detect changes to the playlist tracks listing
+    cache_checksum: str | None = None
 
 
 @dataclass(kw_only=True)
