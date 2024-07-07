@@ -40,12 +40,12 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     # check if valid dns name is given for the host
-    server: str = config.get_value(CONF_HOST)
+    server = str(config.get_value(CONF_HOST))
     if not await get_ip_from_host(server):
         msg = f"Unable to resolve {server}, make sure the address is resolveable."
         raise LoginFailed(msg)
     # check if share is valid
-    share: str = config.get_value(CONF_SHARE)
+    share = str(config.get_value(CONF_SHARE))
     if not share or "/" in share or "\\" in share:
         msg = "Invalid share name"
         raise LoginFailed(msg)
@@ -171,13 +171,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
-        server: str = self.config.get_value(CONF_HOST)
-        username: str = self.config.get_value(CONF_USERNAME)
-        password: str = self.config.get_value(CONF_PASSWORD)
-        share: str = self.config.get_value(CONF_SHARE)
+        server = str(self.config.get_value(CONF_HOST))
+        username = str(self.config.get_value(CONF_USERNAME))
+        password = str(self.config.get_value(CONF_PASSWORD))
+        share = str(self.config.get_value(CONF_SHARE))
 
         # handle optional subfolder
-        subfolder: str = self.config.get_value(CONF_SUBFOLDER)
+        subfolder = str(self.config.get_value(CONF_SUBFOLDER))
         if subfolder:
             subfolder = subfolder.replace("\\", "/")
             if not subfolder.startswith("/"):
@@ -198,7 +198,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
         elif platform.system() == "Linux":
             options = ["rw"]
-            if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
+            if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
 
             options_str = ",".join(options)
