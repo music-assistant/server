@@ -417,7 +417,11 @@ class AppleMusicProvider(MusicProvider):
         """Parse album object to generic layout."""
         relationships = album_obj.get("relationships", {})
         response_type = album_obj.get("type")
-        if response_type == "library-albums" and relationships["catalog"]["data"] != []:
+        if (
+            response_type == "library-albums"
+            and relationships["catalog"]["data"] != []
+            and "attributes" in relationships["catalog"]["data"][0]
+        ):
             album_id = relationships.get("catalog", {})["data"][0]["id"]
             attributes = relationships.get("catalog", {})["data"][0]["attributes"]
         elif "attributes" in album_obj:
