@@ -153,7 +153,7 @@ class WebserverController(CoreController):
         # add info
         routes.append(("GET", "/info", self._handle_server_info))
         # add logging
-        routes.append(("GET", "/log", self._handle_application_log))
+        routes.append(("GET", "/music-assistant.log", self._handle_application_log))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
         # also host the image proxy on the webserver
