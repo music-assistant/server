@@ -117,10 +117,10 @@ def compare_album(
 
 
 def compare_track(
-    base_item: Track | ItemMapping,
-    compare_item: Track | ItemMapping,
+    base_item: Track,
+    compare_item: Track,
     strict: bool = True,
-    track_albums: list[Album | ItemMapping] | None = None,
+    track_albums: list[Album] | None = None,
 ) -> bool:
     """Compare two track items and return True if they match."""
     if base_item is None or compare_item is None:
@@ -159,6 +159,7 @@ def compare_track(
         return True
 
     ## fallback to comparing on attributes
+
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
         return False
@@ -180,7 +181,7 @@ def compare_track(
     if (
         base_item.album is not None
         and compare_item.album is not None
-        and (base_item.track_number is None or compare_item.track_number is None)
+        and (base_item.track_number == 0 or compare_item.track_number == 0)
         and compare_album(base_item.album, compare_item.album, False)
         and abs(base_item.duration - compare_item.duration) <= 3
     ):
@@ -195,6 +196,19 @@ def compare_track(
         for track_album in track_albums:
             if compare_album(track_album, compare_item.album, False):
                 return True
+
+    # fallback edge case: albumless track with same duration
+    if (
+        base_item.album is None
+        and compare_item.album is None
+        and base_item.disc_number == 0
+        and compare_item.disc_number == 0
+        and base_item.track_number == 0
+        and compare_item.track_number == 0
+        and base_item.duration == compare_item.duration
+    ):
+        return True
+
     if strict:
         # in strict mode, we require an exact album match so return False here
         return False
@@ -274,6 +288,14 @@ def compare_artists(
     any_match: bool = True,
 ) -> bool:
     """Compare two lists of artist and return True if both lists match (exactly)."""
+    if not base_items and not compare_items:
+        return True
+    if not base_items or not compare_items:
+        return False
+    # match if first artist matches in both lists
+    if compare_artist(base_items[0], compare_items[0]):
+        return True
+    # compare the artist lists
     matches = 0
     for base_item in base_items:
         for compare_item in compare_items:
@@ -281,7 +303,7 @@ def compare_artists(
                 if any_match:
                     return True
                 matches += 1
-    return len(base_items) == matches
+    return len(base_items) == len(compare_items) == matches
 
 
 def compare_albums(
@@ -408,7 +430,7 @@ def compare_strings(str1: str, str2: str, strict: bool = True) -> bool:
     if create_safe_string(str1) == create_safe_string(str2):
         return True
     # last resort: use difflib to compare strings
-    required_accuracy = 0.91 if len(str1) > 8 else 0.85
+    required_accuracy = 0.9 if (len(str1) + len(str2)) > 18 else 0.8
     return SequenceMatcher(a=str1_lower, b=str2).ratio() > required_accuracy
 
 
@@ -424,11 +446,18 @@ def compare_version(base_version: str, compare_version: str) -> bool:
         return False
     if base_version and not compare_version:
         return False
-    if " " not in base_version:
-        return compare_strings(base_version, compare_version)
+
+    if " " not in base_version and " " not in compare_version:
+        return compare_strings(base_version, compare_version, False)
+
     # do this the hard way as sometimes the version string is in the wrong order
-    base_versions = base_version.lower().split(" ").sort()
-    compare_versions = compare_version.lower().split(" ").sort()
+    base_versions = sorted(base_version.lower().split(" "))
+    compare_versions = sorted(compare_version.lower().split(" "))
+    # filter out words we can ignore (such as 'version')
+    ignore_words = [*IGNORE_VERSIONS, "version", "edition", "variant", "versie", "versione"]
+    base_versions = [x for x in base_versions if x not in ignore_words]
+    compare_versions = [x for x in compare_versions if x not in ignore_words]
+
     return base_versions == compare_versions
 
 

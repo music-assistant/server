@@ -25,6 +25,7 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.compare import (
     compare_artists,
+    compare_media_item,
     compare_track,
     loose_compare_strings,
 )
@@ -268,9 +269,9 @@ class TracksController(MediaControllerBase[Track]):
                     if not search_result_item.available:
                         continue
                     # do a basic compare first
-                    if not compare_track(db_track, search_result_item, strict=False):
+                    if not compare_media_item(db_track, search_result_item, strict=False):
                         continue
-                    # we must fetch the full version, search results are simplified objects
+                    # we must fetch the full version, search results can be simplified objects
                     prov_track = await self.get_provider_item(
                         search_result_item.item_id,
                         search_result_item.provider,

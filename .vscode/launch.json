@@ -1,19 +1,32 @@
 {
-    // Use IntelliSense to learn about possible attributes.
-    // Hover to view descriptions of existing attributes.
-    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
-    "version": "0.2.0",
-    "configurations": [
-        {
-            "name": "Python: Module",
-            "type": "debugpy",
-            "request": "launch",
-            "module": "music_assistant",
-            "justMyCode": false,
-            "args":[
-                 "--log-level", "debug"
-            ],
-            "env": {"PYTHONDEVMODE": "1"}
-        }
-    ]
+  // Use IntelliSense to learn about possible attributes.
+  // Hover to view descriptions of existing attributes.
+  // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Music Assistant: Server",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "music_assistant",
+      "justMyCode": false,
+      "args": ["--log-level", "debug"],
+      "env": { "PYTHONDEVMODE": "1" }
+    },
+    {
+      "name": "Music Assistant: Tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "pytest",
+      "justMyCode": false,
+      "args": ["tests"]
+    },
+    {
+      "name": "Python Debugger: Current File",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${file}",
+      "console": "integratedTerminal"
+    }
+  ]
 }
