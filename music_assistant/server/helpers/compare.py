@@ -21,11 +21,10 @@ from music_assistant.common.models.media_items import (
 )
 
 IGNORE_VERSIONS = (
-    "remaster",
-    "explicit",
+    "explicit",  # explicit is matched separately
     "music from and inspired by the motion picture",
     "original soundtrack",
-    "hi-res",
+    "hi-res",  # quality is handled separately
 )
 
 
@@ -107,6 +106,9 @@ def compare_album(
     # for strict matching we REQUIRE both items to be a real album object
     assert isinstance(base_item, Album)
     assert isinstance(compare_item, Album)
+    # compare year
+    if base_item.year and compare_item.year and base_item.year != compare_item.year:
+        return False
     # compare explicitness
     if compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
@@ -155,6 +157,7 @@ def compare_track(
         and base_item.track_number == compare_item.track_number
     ):
         return True
+
     ## fallback to comparing on attributes
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
@@ -172,23 +175,17 @@ def compare_track(
         compare_item.metadata.explicit = compare_item.album.metadata.explicit
     if strict and compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
-    # exact albumtrack match = 100% match
-    if (
-        base_item.album
-        and compare_item.album
-        and compare_album(base_item.album, compare_item.album, False)
-        and base_item.disc_number == compare_item.disc_number
-        and base_item.track_number == compare_item.track_number
-    ):
-        return True
+
     # fallback: exact album match and (near-exact) track duration match
     if (
         base_item.album is not None
         and compare_item.album is not None
+        and (base_item.track_number is None or compare_item.track_number is None)
         and compare_album(base_item.album, compare_item.album, False)
         and abs(base_item.duration - compare_item.duration) <= 3
     ):
         return True
+
     # fallback: additional compare albums provided for base track
     if (
         compare_item.album is not None
@@ -199,12 +196,14 @@ def compare_track(
             if compare_album(track_album, compare_item.album, False):
                 return True
     if strict:
+        # in strict mode, we require an exact album match so return False here
         return False
+
     # Accept last resort (in non strict mode): (near) exact duration,
     # otherwise fail all other cases.
     # Note that as this stage, all other info already matches,
     # such as title artist etc.
-    return abs(base_item.duration - compare_item.duration) <= 1
+    return abs(base_item.duration - compare_item.duration) <= 2
 
 
 def compare_playlist(

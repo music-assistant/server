@@ -738,7 +738,7 @@ class FileSystemProviderBase(MusicProvider):
         if acoustid := tags.get("acoustidid"):
             track.external_ids.add((ExternalID.ACOUSTID, acoustid))
 
-        album: Album | None
+        album: Album | None = None
         album_artists: list[Artist] = []
 
         # album
@@ -804,9 +804,7 @@ class FileSystemProviderBase(MusicProvider):
         # track artist(s)
         for index, track_artist_str in enumerate(tags.artists):
             # reuse album artist details if possible
-            if album and (
-                album_artist := next((x for x in album_artists if x.name == track_artist_str), None)
-            ):
+            if album_artist := next((x for x in album_artists if x.name == track_artist_str), None):
                 artist = album_artist
             else:
                 artist = await self._parse_artist(track_artist_str)
