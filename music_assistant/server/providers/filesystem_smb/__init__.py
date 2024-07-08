@@ -173,7 +173,7 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         """Mount the SMB location to a temporary folder."""
         server = str(self.config.get_value(CONF_HOST))
         username = str(self.config.get_value(CONF_USERNAME))
-        password = str(self.config.get_value(CONF_PASSWORD))
+        password = self.config.get_value(CONF_PASSWORD)
         share = str(self.config.get_value(CONF_SHARE))
 
         # handle optional subfolder
@@ -219,14 +219,14 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
         self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
         self.logger.debug(
             "Using mount command: %s",
-            [m.replace(password, "########") if password else m for m in mount_cmd],
+            [m.replace(str(password), "########") if password else m for m in mount_cmd],
         )
         env_vars = {
             **os.environ,
             "USER": username,
         }
         if password:
-            env_vars["PASSWD"] = password
+            env_vars["PASSWD"] = str(password)
 
         returncode, output = await check_output(*mount_cmd, env=env_vars)
         if returncode != 0:
