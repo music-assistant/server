@@ -21,6 +21,7 @@ from music_assistant.common.models.media_items import (
     MediaItemMetadata,
     ProviderMapping,
     Track,
+    UniqueList,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
@@ -92,7 +93,7 @@ class TestProvider(MusicProvider):
             provider=self.instance_id,
             name=f"Test Track {artist_idx} - {album_idx} - {track_idx}",
             duration=5,
-            artists=[await self.get_artist(artist_idx)],
+            artists=UniqueList([await self.get_artist(artist_idx)]),
             album=await self.get_album(f"{artist_idx}_{album_idx}"),
             provider_mappings={
                 ProviderMapping(
@@ -101,18 +102,18 @@ class TestProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 ),
             },
-            metadata=MediaItemMetadata(images=[DEFAULT_THUMB]),
+            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB])),
             disc_number=1,
             track_number=int(track_idx),
         )
 
-    async def get_artist(self, prov_artist_id: str) -> Track:
+    async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
         return Artist(
             item_id=prov_artist_id,
             provider=self.instance_id,
             name=f"Test Artist {prov_artist_id}",
-            metadata=MediaItemMetadata(images=[DEFAULT_THUMB, DEFAULT_FANART]),
+            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB, DEFAULT_FANART])),
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_artist_id,
@@ -129,7 +130,7 @@ class TestProvider(MusicProvider):
             item_id=prov_album_id,
             provider=self.instance_id,
             name=f"Test Album {album_idx}",
-            artists=[await self.get_artist(artist_idx)],
+            artists=UniqueList([await self.get_artist(artist_idx)]),
             provider_mappings={
                 ProviderMapping(
                     item_id=prov_album_id,
@@ -137,7 +138,7 @@ class TestProvider(MusicProvider):
                     provider_instance=self.instance_id,
                 )
             },
-            metadata=MediaItemMetadata(images=[DEFAULT_THUMB]),
+            metadata=MediaItemMetadata(images=UniqueList([DEFAULT_THUMB])),
         )
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
@@ -150,19 +151,17 @@ class TestProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a track/radio."""
-        media_info = await self._get_media_info(item_id)
-        is_radio = media_info.get("icy-name") or not media_info.duration
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                channels=media_info.channels,
+                content_type=ContentType.MP3,
+                sample_rate=44100,
+                bit_depth=16,
+                channels=2,
             ),
-            media_type=MediaType.RADIO if is_radio else MediaType.TRACK,
+            media_type=MediaType.TRACK,
             stream_type=StreamType.HTTP,
             path=item_id,
-            can_seek=not is_radio,
+            can_seek=True,
         )
