@@ -9,7 +9,7 @@ import shutil
 from contextlib import suppress
 from itertools import zip_longest
 from math import inf
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Final
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.global_cache import get_global_cache_value
@@ -33,7 +33,6 @@ from music_assistant.common.models.media_items import BrowseFolder, MediaItemTyp
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
-    DB_SCHEMA_VERSION,
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -66,6 +65,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
+DB_SCHEMA_VERSION: Final[int] = 2
 
 
 class MusicController(CoreController):

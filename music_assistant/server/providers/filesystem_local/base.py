@@ -49,7 +49,6 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.server.controllers.music import DB_SCHEMA_VERSION
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
@@ -506,7 +505,7 @@ class FileSystemProviderBase(MusicProvider):
         if file_item.ext == "pls":
             playlist.is_editable = False
         playlist.owner = self.name
-        checksum = f"{DB_SCHEMA_VERSION}.{file_item.checksum}"
+        checksum = str(file_item.checksum)
         playlist.cache_checksum = checksum
         return playlist
 

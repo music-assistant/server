@@ -14,12 +14,7 @@ from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.constants import (
-    DB_SCHEMA_VERSION,
-    DB_TABLE_CACHE,
-    DB_TABLE_SETTINGS,
-    MASS_LOGGER_NAME,
-)
+from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
 from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
 
@@ -28,6 +23,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
+DB_SCHEMA_VERSION = 1
 
 
 class CacheController(CoreController):
