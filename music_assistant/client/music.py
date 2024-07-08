@@ -474,9 +474,6 @@ class Music:
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool = False,
-        lazy: bool = True,
-        add_to_library: bool = False,
     ) -> MediaItemType | ItemMapping:
         """Get single music item by id and media type."""
         return media_from_dict(
@@ -485,9 +482,6 @@ class Music:
                 media_type=media_type,
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                force_refresh=force_refresh,
-                lazy=lazy,
-                add_to_library=add_to_library,
             )
         )
 

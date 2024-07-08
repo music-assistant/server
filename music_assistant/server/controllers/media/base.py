@@ -7,7 +7,6 @@ import logging
 from abc import ABCMeta, abstractmethod
 from collections.abc import Iterable
 from contextlib import suppress
-from time import time
 from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from music_assistant.common.helpers.json import json_loads, serialize_to_json
@@ -36,7 +35,6 @@ if TYPE_CHECKING:
 
 ItemCls = TypeVar("ItemCls", bound="MediaItemType")
 
-REFRESH_INTERVAL = 60 * 60 * 24 * 30
 JSON_KEYS = ("artists", "album", "metadata", "provider_mappings", "external_ids")
 
 SORT_KEYS = {
@@ -91,25 +89,24 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self._db_add_lock = asyncio.Lock()
 
     async def add_item_to_library(
-        self, item: ItemCls, metadata_lookup: bool = True, overwrite_existing: bool = False
+        self,
+        item: ItemCls,
+        metadata_lookup: bool = True,
+        overwrite_existing: bool = False,
     ) -> ItemCls:
         """Add item to library and return the new (or updated) database item."""
         new_item = False
-        # grab additional metadata
-        if metadata_lookup:
-            await self.mass.metadata.get_metadata(item)
         # check for existing item first
         library_id = await self._get_library_item_by_match(item, overwrite_existing)
-
         if library_id is None:
             # actually add a new item in the library db
             async with self._db_add_lock:
                 library_id = await self._add_library_item(item)
                 new_item = True
-        # also fetch same track on all providers (will also get other quality versions)
+        # grab additional metadata
         if metadata_lookup:
             library_item = await self.get_library_item(library_id)
-            await self._match(library_item)
+            await self.mass.metadata.update_metadata(library_item)
         # return final library_item after all match/metadata actions
         library_item = await self.get_library_item(library_id)
         self.mass.signal_event(
@@ -149,7 +146,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def update_item_in_library(
         self, item_id: str | int, update: ItemCls, overwrite: bool = False
     ) -> ItemCls:
-        """Update existing library record in the database."""
+        """Update existing library record in the library database."""
         await self._update_library_item(item_id, update, overwrite=overwrite)
         # return the updated object
         library_item = await self.get_library_item(item_id)
@@ -265,77 +262,19 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool = False,
-        lazy: bool = True,
-        details: ItemCls = None,
-        add_to_library: bool = False,
     ) -> ItemCls:
         """Return (full) details for a single media item."""
-        metadata_lookup = False
         # always prefer the full library item if we have it
-        library_item = await self.get_library_item_by_prov_id(
+        if library_item := await self.get_library_item_by_prov_id(
             item_id,
             provider_instance_id_or_domain,
-        )
-        if library_item and (time() - (library_item.metadata.last_refresh or 0)) > REFRESH_INTERVAL:
-            # it's been too long since the full metadata was last retrieved (or never at all)
-            # NOTE: do not attempt metadata refresh on unavailable items as it has side effects
-            metadata_lookup = library_item.available
-
-        if library_item and not (force_refresh or metadata_lookup or add_to_library):
-            # we have a library item and no refreshing is needed, return the results!
+        ):
             return library_item
-
-        if force_refresh:
-            # get (first) provider item id belonging to this library item
-            add_to_library = True
-            metadata_lookup = True
-            if library_item:
-                # resolve library item into a provider item to get the source details
-                provider_instance_id_or_domain, item_id = await self.get_provider_mapping(
-                    library_item
-                )
-
         # grab full details from the provider
-        details = await self.get_provider_item(
+        return await self.get_provider_item(
             item_id,
             provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            fallback=details,
         )
-        if not details and library_item:
-            # something went wrong while trying to fetch/refresh this item
-            # return the existing (unavailable) library item and leave this for another day
-            return library_item
-
-        if not details:
-            # we couldn't get a match from any of the providers, raise error
-            msg = f"Item not found: {provider_instance_id_or_domain}/{item_id}"
-            raise MediaNotFoundError(msg)
-
-        if not (add_to_library or metadata_lookup):
-            # return the provider item as-is
-            return details
-
-        # create task to add the item to the library,
-        # including matching metadata etc. takes some time
-        # in 99% of the cases we just return lazy because we want the details as fast as possible
-        # only if we really need to wait for the result (e.g. to prevent race conditions),
-        # we can set lazy to false and we await the job to complete.
-        overwrite_existing = force_refresh and library_item is not None
-        task_id = f"add_{self.media_type.value}.{details.provider}.{details.item_id}"
-        add_task = self.mass.create_task(
-            self.add_item_to_library,
-            item=details,
-            metadata_lookup=metadata_lookup,
-            overwrite_existing=overwrite_existing,
-            task_id=task_id,
-        )
-        if not lazy:
-            await add_task
-            return add_task.result()
-
-        return library_item or details
 
     async def search(
         self,
@@ -728,7 +667,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     ) -> None:
         """Update existing library record in the database."""
 
-    async def _match(self, db_item: ItemCls) -> None:
+    async def match_providers(self, db_item: ItemCls) -> None:
         """
         Try to find match on all (streaming) providers for the provided (database) item.
 

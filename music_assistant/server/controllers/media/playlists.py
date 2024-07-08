@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+import time
 from typing import Any
 
 from music_assistant.common.helpers.json import serialize_to_json
@@ -55,17 +56,19 @@ class PlaylistController(MediaControllerBase[Playlist]):
         playlist = await self.get(
             item_id,
             provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            lazy=not force_refresh,
         )
+        # a playlist can only have one provider so simply pick the first one
         prov_map = next(x for x in playlist.provider_mappings)
         cache_checksum = playlist.cache_checksum
+        # playlist tracks ar enot stored in the db,
+        # we always fetched them (cached) from the provider
         tracks = await self._get_provider_playlist_tracks(
             prov_map.item_id,
             prov_map.provider_instance,
             cache_checksum=cache_checksum,
             offset=offset,
             limit=limit,
+            force_refresh=force_refresh,
         )
         if prefer_library_items:
             final_tracks = []
@@ -183,9 +186,15 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     continue
 
             # ensure we have a full library track
-            db_track = await self.mass.music.tracks.get(
-                item_id, provider_instance_id_or_domain, lazy=False, add_to_library=True
+            full_track = await self.mass.music.tracks.get(
+                item_id,
+                provider_instance_id_or_domain,
+                recursive=provider_instance_id_or_domain != "library",
             )
+            if full_track.provider == "library":
+                db_track = full_track
+            else:
+                db_track = await self.mass.music.tracks.add_item_to_library(full_track)
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
             for track_version in sorted(
@@ -241,11 +250,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # actually add the tracks to the playlist on the provider
         await playlist_prov.add_playlist_tracks(playlist_prov_map.item_id, list(ids_to_add))
         # invalidate cache so tracks get refreshed
-        await self.get(
-            playlist.item_id,
-            playlist.provider,
-            force_refresh=True,
-        )
+        playlist.cache_checksum = str(time.time())
+        await self.update_item_in_library(db_playlist_id, playlist)
 
     async def add_playlist_track(self, db_playlist_id: str | int, track_uri: str) -> None:
         """Add (single) track to playlist."""
@@ -273,11 +279,8 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 continue
             await provider.remove_playlist_tracks(prov_mapping.item_id, positions_to_remove)
         # invalidate cache so tracks get refreshed
-        await self.get(
-            playlist.item_id,
-            playlist.provider,
-            force_refresh=True,
-        )
+        playlist.cache_checksum = str(time.time())
+        await self.update_item_in_library(db_playlist_id, playlist)
 
     async def get_all_playlist_tracks(
         self, playlist: Playlist, prefer_library_items: bool = False
@@ -375,6 +378,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         cache_checksum: Any = None,
         offset: int = 0,
         limit: int = 50,
+        force_refresh: bool = False,
     ) -> list[PlaylistTrack]:
         """Return playlist tracks for the given provider playlist id."""
         assert provider_instance_id_or_domain != "library"
@@ -383,9 +387,12 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return []
         # prefer cache items (if any)
         cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks.{offset}.{limit}"
-        if (cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)) is not None:
+        if (
+            not force_refresh
+            and (cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)) is not None
+        ):
             return [PlaylistTrack.from_dict(x) for x in cache]
-        # no items in cache - get listing from provider
+        # no items in cache (or force_refresh) - get listing from provider
         result: list[Track] = []
         for item in await provider.get_playlist_tracks(item_id, offset=offset, limit=limit):
             # double check if position set

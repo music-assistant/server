@@ -338,18 +338,24 @@ class PlayerQueuesController(CoreController):
                     radio_source.append(media_item)
                 elif media_item.media_type == MediaType.PLAYLIST:
                     tracks += await self.mass.music.playlists.get_all_playlist_tracks(media_item)
-                    await self.mass.music.mark_item_played(
-                        media_item.media_type, media_item.item_id, media_item.provider
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item.media_type, media_item.item_id, media_item.provider
+                        )
                     )
                 elif media_item.media_type == MediaType.ARTIST:
                     tracks += await self.get_artist_tracks(media_item)
-                    await self.mass.music.mark_item_played(
-                        media_item.media_type, media_item.item_id, media_item.provider
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item.media_type, media_item.item_id, media_item.provider
+                        )
                     )
                 elif media_item.media_type == MediaType.ALBUM:
                     tracks += await self.get_album_tracks(media_item)
-                    await self.mass.music.mark_item_played(
-                        media_item.media_type, media_item.item_id, media_item.provider
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item.media_type, media_item.item_id, media_item.provider
+                        )
                     )
                 else:
                     # single track or radio item
