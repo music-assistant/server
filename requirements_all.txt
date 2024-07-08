@@ -26,7 +26,7 @@ memory-tempfile==2.2.3
 music-assistant-frontend==2.5.15
 orjson==3.10.6
 pillow==10.4.0
-plexapi==4.15.13
+plexapi==4.15.15
 py-opensonic==5.1.1
 PyChromecast==14.0.1
 pycryptodome==3.20.0
