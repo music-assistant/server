@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
 # silence the eyed3 logger because it is too verbose
-logging.getLogger("eyed3").setLevel(logging.WARNING)
+logging.getLogger("eyed3").setLevel(logging.ERROR)
 
 
 # the only multi-item splitter we accept is the semicolon,
