@@ -287,6 +287,3 @@ def test_compare_track() -> None:  # noqa: PLR0915
         (media_items.ExternalID.MUSICBRAINZ, "abcd"),
     }
     assert compare.compare_track(track_a, track_b) is False
-
-
-test_compare_track()

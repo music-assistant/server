@@ -112,8 +112,8 @@ def compare_album(
     # compare explicitness
     if compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
-    # compare album artist
-    return compare_artists(base_item.artists, compare_item.artists, True)
+    # compare album artist(s)
+    return compare_artists(base_item.artists, compare_item.artists, not strict)
 
 
 def compare_track(
