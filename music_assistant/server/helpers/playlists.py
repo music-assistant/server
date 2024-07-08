@@ -90,7 +90,7 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
                 # apparently VLC manages to encode spaces in filenames
                 line = line.replace("%20", " ")  # noqa: PLW2901
             # replace Windows directory separators
-            line = line.replace("\\", "/")
+            line = line.replace("\\", "/") # noqa: PLW2901
             playlist.append(
                 PlaylistItem(
                     path=line, length=length, title=title, stream_info=stream_info, key=key
