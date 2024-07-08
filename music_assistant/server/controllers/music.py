@@ -49,6 +49,7 @@ from music_assistant.constants import (
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.core_controller import CoreController
 
 from .media.albums import AlbumsController
@@ -373,25 +374,18 @@ class MusicController(CoreController):
                 item = await ctrl.get(
                     db_row["item_id"],
                     db_row["provider"],
-                    add_to_library=False,
-                    lazy=True,
-                    force_refresh=False,
                 )
                 result.append(item)
         return result
 
     @api_command("music/item_by_uri")
-    async def get_item_by_uri(
-        self, uri: str, lazy: bool = True, add_to_library: bool = False
-    ) -> MediaItemType:
+    async def get_item_by_uri(self, uri: str) -> MediaItemType:
         """Fetch MediaItem by uri."""
         media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
-            lazy=lazy,
-            add_to_library=add_to_library,
         )
 
     @api_command("music/item")
@@ -400,9 +394,6 @@ class MusicController(CoreController):
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool = False,
-        lazy: bool = True,
-        add_to_library: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         if provider_instance_id_or_domain == "database":
@@ -415,9 +406,6 @@ class MusicController(CoreController):
         return await ctrl.get(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            lazy=lazy,
-            add_to_library=add_to_library,
         )
 
     @api_command("music/favorites/add_item")
@@ -441,9 +429,9 @@ class MusicController(CoreController):
             item.media_type,
             item.item_id,
             item.provider,
-            lazy=False,
-            add_to_library=True,
         )
+        if full_item.provider != "library":
+            full_item = await self.add_item_to_library(full_item)
         # set favorite in library db
         ctrl = self.get_controller(item.media_type)
         await ctrl.set_favorite(
@@ -492,60 +480,65 @@ class MusicController(CoreController):
         provider = self.mass.get_provider(item.provider)
         if provider.library_edit_supported(item.media_type):
             await provider.library_add(item)
-        return await ctrl.get(
-            item_id=item.item_id,
-            provider_instance_id_or_domain=item.provider,
-            details=item,
-            add_to_library=True,
-        )
+        return await ctrl.add_item_to_library(item)
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
         """
-        for media_item in items:
-            self.mass.create_task(self.refresh_item(media_item))
+        async with TaskManager(self.mass) as tg:
+            for media_item in items:
+                tg.create_task(self.refresh_item(media_item))
 
     @api_command("music/refresh_item")
     async def refresh_item(
         self,
-        media_item: MediaItemType,
+        media_item: str | MediaItemType,
     ) -> MediaItemType | None:
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
-        try:
-            return await self.get_item(
-                media_item.media_type,
-                media_item.item_id,
-                media_item.provider,
-                force_refresh=True,
-                lazy=False,
-                add_to_library=True,
-            )
-        except MusicAssistantError:
-            pass
+        if isinstance(media_item, str):
+            # media item uri given
+            media_item = await self.get_item_by_uri(media_item)
 
-        searchresult = await self.search(media_item.name, [media_item.media_type], 20)
-        if media_item.media_type == MediaType.ARTIST:
-            result = searchresult.artists
-        elif media_item.media_type == MediaType.ALBUM:
-            result = searchresult.albums
-        elif media_item.media_type == MediaType.TRACK:
-            result = searchresult.tracks
-        elif media_item.media_type == MediaType.PLAYLIST:
-            result = searchresult.playlists
+        media_type = media_item.media_type
+        ctrl = self.get_controller(media_type)
+        is_library_item = media_item.provider == "library"
+
+        # fetch the first (available) provider item
+        for prov_mapping in media_item.provider_mappings:
+            provider = prov_mapping.provider_instance
+            item_id = prov_mapping.item_id
+            if prov_mapping.available:
+                break
         else:
-            result = searchresult.radio
-        for item in result:
-            if item.available:
-                return await self.get_item(
-                    item.media_type,
-                    item.item_id,
-                    item.provider,
-                    lazy=False,
-                    add_to_library=True,
-                )
-        return None
+            # try to find a substitute
+            searchresult = await self.search(media_item.name, [media_item.media_type], 20)
+            if media_item.media_type == MediaType.ARTIST:
+                result = searchresult.artists
+            elif media_item.media_type == MediaType.ALBUM:
+                result = searchresult.albums
+            elif media_item.media_type == MediaType.TRACK:
+                result = searchresult.tracks
+            elif media_item.media_type == MediaType.PLAYLIST:
+                result = searchresult.playlists
+            else:
+                result = searchresult.radio
+            for item in result:
+                if item.available:
+                    provider = item.provider
+                    item_id = item.item_id
+                    break
+            else:
+                # raise if we didn't find a substitute
+                raise MediaNotFoundError(f"Could not find a substitute for {media_item.name}")
+        # fetch full (provider) item
+        media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
+        # update library item if needed (including refresh of the metadata etc.)
+        if is_library_item:
+            return await ctrl.add_item_to_library(media_item, metadata_lookup=True)
+
+        return media_item
 
     async def set_track_loudness(
         self, item_id: str, provider_instance_id_or_domain: str, loudness: LoudnessMeasurement
@@ -596,7 +589,7 @@ class MusicController(CoreController):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
 
-        if provider_instance_id_or_domain == "builtin":
+        if provider_instance_id_or_domain == "builtin" and media_type != MediaType.PLAYLIST:
             # we deliberately skip builtin provider items as those are often
             # one-off items like TTS or some sound effect etc.
             return
@@ -622,15 +615,16 @@ class MusicController(CoreController):
 
         # also update playcount in library table
         ctrl = self.get_controller(media_type)
-        if self.mass.config.get_raw_core_config_value(self.domain, CONF_ADD_LIBRARY_ON_PLAY):
+        db_item = await ctrl.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)
+        if (
+            not db_item
+            and media_type in (MediaType.TRACK, MediaType.RADIO)
+            and self.mass.config.get_raw_core_config_value(self.domain, CONF_ADD_LIBRARY_ON_PLAY)
+        ):
             # handle feature to add to the lib on playback
-            db_item = await ctrl.get(
-                item_id, provider_instance_id_or_domain, lazy=False, add_to_library=True
-            )
-        else:
-            db_item = await ctrl.get_library_item_by_prov_id(
-                item_id, provider_instance_id_or_domain
-            )
+            full_item = await ctrl.get(item_id, provider_instance_id_or_domain)
+            db_item = await ctrl.add_item_to_library(full_item)
+
         if db_item:
             await self.database.execute(
                 f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "

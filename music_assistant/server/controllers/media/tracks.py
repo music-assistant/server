@@ -75,21 +75,18 @@ class TracksController(MediaControllerBase[Track]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool = False,
-        lazy: bool = True,
-        details: Track = None,
+        recursive: bool = True,
         album_uri: str | None = None,
-        add_to_library: bool = False,
     ) -> Track:
         """Return (full) details for a single media item."""
         track = await super().get(
             item_id,
             provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            lazy=lazy,
-            details=details,
-            add_to_library=add_to_library,
         )
+        if not recursive and album_uri is None:
+            # return early if we do not want recursive full details and no album uri is provided
+            return track
+
         # append full album details to full track item (resolve ItemMappings)
         try:
             if album_uri and (album := await self.mass.music.get_item_by_uri(album_uri)):
@@ -104,15 +101,14 @@ class TracksController(MediaControllerBase[Track]):
                     )
             elif isinstance(track.album, ItemMapping) or (track.album and not track.album.image):
                 track.album = await self.mass.music.albums.get(
-                    track.album.item_id,
-                    track.album.provider,
-                    lazy=lazy,
-                    details=None if isinstance(track.album, ItemMapping) else track.album,
-                    add_to_library=False,  # TODO: make this configurable
+                    track.album.item_id, track.album.provider, recursive=False
                 )
         except MusicAssistantError as err:
             # edge case where playlist track has invalid albumdetails
             self.logger.warning("Unable to fetch album details %s - %s", track.album.uri, str(err))
+
+        if not recursive:
+            return track
 
         # append artist details to full track item (resolve ItemMappings)
         track_artists = []
@@ -125,8 +121,6 @@ class TracksController(MediaControllerBase[Track]):
                     await self.mass.music.artists.get(
                         artist.item_id,
                         artist.provider,
-                        lazy=lazy,
-                        add_to_library=False,  # TODO: make this configurable
                     )
                 )
             except MusicAssistantError as err:
@@ -141,7 +135,7 @@ class TracksController(MediaControllerBase[Track]):
         provider_instance_id_or_domain: str,
     ) -> UniqueList[Track]:
         """Return all versions of a track we can find on all providers."""
-        track = await self.get(item_id, provider_instance_id_or_domain, add_to_library=False)
+        track = await self.get(item_id, provider_instance_id_or_domain)
         search_query = f"{track.artist_str} - {track.name}"
         result: UniqueList[Track] = UniqueList()
         for provider_id in self.mass.music.get_unique_providers():
@@ -237,7 +231,7 @@ class TracksController(MediaControllerBase[Track]):
         query = f"WHERE {DB_TABLE_ALBUMS}.item_id in ({subquery})"
         return await self.mass.music.albums._get_library_items_by_query(extra_query=query)
 
-    async def _match(self, db_track: Track) -> None:
+    async def match_providers(self, db_track: Track) -> None:
         """Try to find matching track on all providers for the provided (database) track_id.
 
         This is used to link objects of different providers/qualities together.
@@ -282,6 +276,7 @@ class TracksController(MediaControllerBase[Track]):
                         match_found = True
                         for provider_mapping in search_result_item.provider_mappings:
                             await self.add_provider_mapping(db_track.item_id, provider_mapping)
+                            db_track.provider_mappings.add(provider_mapping)
 
             if not match_found:
                 self.logger.debug(

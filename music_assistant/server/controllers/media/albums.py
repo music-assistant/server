@@ -7,7 +7,6 @@ from collections.abc import Iterable
 from random import choice, random
 from typing import TYPE_CHECKING
 
-from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.json import serialize_to_json
 from music_assistant.common.models.enums import ProviderFeature
 from music_assistant.common.models.errors import (
@@ -69,21 +68,17 @@ class AlbumsController(MediaControllerBase[Album]):
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool = False,
-        lazy: bool = True,
-        details: Album | ItemMapping = None,
-        add_to_library: bool = False,
+        recursive: bool = True,
     ) -> Album:
         """Return (full) details for a single media item."""
         album = await super().get(
             item_id,
             provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            lazy=lazy,
-            details=details,
-            add_to_library=add_to_library,
         )
-        # append artist details to full track item (resolve ItemMappings)
+        if not recursive:
+            return album
+
+        # append artist details to full album item (resolve ItemMappings)
         album_artists = UniqueList()
         for artist in album.artists:
             if not isinstance(artist, ItemMapping):
@@ -94,36 +89,9 @@ class AlbumsController(MediaControllerBase[Album]):
                     await self.mass.music.artists.get(
                         artist.item_id,
                         artist.provider,
-                        lazy=lazy,
-                        details=artist,
-                        add_to_library=False,
                     )
                 )
         album.artists = album_artists
-        if not force_refresh:
-            return album
-        # if force refresh, we need to ensure that we also refresh all album tracks
-        # in case of a filebased (non streaming) provider to ensure we catch changes the user
-        # made on track level and then pressed the refresh button on album level.
-        file_provs = get_global_cache_value("non_streaming_providers", [])
-        for album_provider_mapping in album.provider_mappings:
-            if album_provider_mapping.provider_instance not in file_provs:
-                continue
-            for prov_album_track in await self._get_provider_album_tracks(
-                album_provider_mapping.item_id, album_provider_mapping.provider_instance
-            ):
-                if prov_album_track.provider != "library":
-                    continue
-                for track_prov_map in prov_album_track.provider_mappings:
-                    if track_prov_map.provider_instance != album_provider_mapping.provider_instance:
-                        continue
-                    prov_track = await self.mass.music.tracks.get_provider_item(
-                        track_prov_map.item_id, track_prov_map.provider_instance, force_refresh=True
-                    )
-                    await self.mass.music.tracks._update_library_item(
-                        prov_album_track.item_id, prov_track, True
-                    )
-                    break
         return album
 
     async def remove_item_from_library(self, item_id: str | int) -> None:
@@ -411,7 +379,7 @@ class AlbumsController(MediaControllerBase[Album]):
         )
         return ItemMapping.from_item(db_artist)
 
-    async def _match(self, db_album: Album) -> None:
+    async def match_providers(self, db_album: Album) -> None:
         """Try to find match on all (streaming) providers for the provided (database) album.
 
         This is used to link objects of different providers/qualities together.
@@ -451,6 +419,7 @@ class AlbumsController(MediaControllerBase[Album]):
                         match_found = True
                         for provider_mapping in search_result_item.provider_mappings:
                             await self.add_provider_mapping(db_album.item_id, provider_mapping)
+                            db_album.provider_mappings.add(provider_mapping)
             return match_found
 
         # try to find match on all providers
