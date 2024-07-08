@@ -10,10 +10,26 @@ from music_assistant.constants import SILENCE_FILE
 
 def test_version_extract() -> None:
     """Test the extraction of version from title."""
+    test_str = "Bam Bam (feat. Ed Sheeran)"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "Bam Bam"
+    assert version == ""
     test_str = "Bam Bam (feat. Ed Sheeran) - Karaoke Version"
     title, version = util.parse_title_and_version(test_str)
     assert title == "Bam Bam"
     assert version == "Karaoke Version"
+    test_str = "SuperSong (2011 Remaster)"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "SuperSong"
+    assert version == "Remaster"
+    test_str = "SuperSong (Live at Wembley)"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "SuperSong"
+    assert version == "Live At Wembley"
+    test_str = "SuperSong (Instrumental)"
+    title, version = util.parse_title_and_version(test_str)
+    assert title == "SuperSong"
+    assert version == "Instrumental"
 
 
 async def test_uri_parsing() -> None:

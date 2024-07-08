@@ -711,7 +711,7 @@ class YoutubeMusicProvider(MusicProvider):
                 playlist.owner = authors["name"]
         else:
             playlist.owner = self.instance_id
-        playlist.metadata.cache_checksum = playlist_obj.get("checksum")
+        playlist.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
     def _parse_track(self, track_obj: dict) -> Track:

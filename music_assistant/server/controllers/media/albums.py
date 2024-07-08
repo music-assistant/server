@@ -35,6 +35,7 @@ from music_assistant.server.controllers.media.base import MediaControllerBase
 from music_assistant.server.helpers.compare import (
     compare_album,
     compare_artists,
+    compare_media_item,
     loose_compare_strings,
 )
 
@@ -119,11 +120,6 @@ class AlbumsController(MediaControllerBase[Album]):
                     prov_track = await self.mass.music.tracks.get_provider_item(
                         track_prov_map.item_id, track_prov_map.provider_instance, force_refresh=True
                     )
-                    if (
-                        prov_track.metadata.cache_checksum
-                        == prov_album_track.metadata.cache_checksum
-                    ):
-                        continue
                     await self.mass.music.tracks._update_library_item(
                         prov_album_track.item_id, prov_track, True
                     )
@@ -442,9 +438,9 @@ class AlbumsController(MediaControllerBase[Album]):
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
-                    if not compare_album(db_album, search_result_item):
+                    if not compare_media_item(db_album, search_result_item):
                         continue
-                    # we must fetch the full album version, search results are simplified objects
+                    # we must fetch the full album version, search results can be simplified objects
                     prov_album = await self.get_provider_item(
                         search_result_item.item_id,
                         search_result_item.provider,

@@ -59,7 +59,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             lazy=not force_refresh,
         )
         prov_map = next(x for x in playlist.provider_mappings)
-        cache_checksum = playlist.metadata.cache_checksum
+        cache_checksum = playlist.cache_checksum
         tracks = await self._get_provider_playlist_tracks(
             prov_map.item_id,
             prov_map.provider_instance,

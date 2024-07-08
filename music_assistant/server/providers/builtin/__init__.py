@@ -39,7 +39,7 @@ from music_assistant.common.models.media_items import (
     UniqueList,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import DB_SCHEMA_VERSION, MASS_LOGO, VARIOUS_ARTISTS_FANART
+from music_assistant.constants import MASS_LOGO, VARIOUS_ARTISTS_FANART
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
 from music_assistant.server.models.music_provider import MusicProvider
 
@@ -237,11 +237,11 @@ class BuiltinProvider(MusicProvider):
                 },
                 owner="Music Assistant",
                 is_editable=False,
+                cache_checksum=str(int(time.time())),
                 metadata=MediaItemMetadata(
                     images=UniqueList([DEFAULT_THUMB])
                     if prov_playlist_id in COLLAGE_IMAGE_PLAYLISTS
                     else UniqueList([DEFAULT_THUMB, DEFAULT_FANART]),
-                    cache_checksum=str(int(time.time())),
                 ),
             )
         # user created universal playlist
@@ -263,7 +263,7 @@ class BuiltinProvider(MusicProvider):
             owner="Music Assistant",
             is_editable=True,
         )
-        playlist.metadata.cache_checksum = f"{DB_SCHEMA_VERSION}.{stored_item.get('last_updated')}"
+        playlist.cache_checksum = str(stored_item.get("last_updated"))
         if image_url := stored_item.get("image_url"):
             playlist.metadata.images = UniqueList(
                 [

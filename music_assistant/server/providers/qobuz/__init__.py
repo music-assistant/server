@@ -681,7 +681,7 @@ class QobuzProvider(MusicProvider):
                     remotely_accessible=True,
                 )
             ]
-        playlist.metadata.cache_checksum = str(playlist_obj["updated_at"])
+        playlist.cache_checksum = str(playlist_obj["updated_at"])
         return playlist
 
     async def _auth_token(self):
