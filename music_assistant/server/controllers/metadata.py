@@ -623,22 +623,22 @@ class MetaDataController(CoreController):
         while True:
             for artist in await self.mass.music.artists.library_items(order_by="random"):
                 if (time() - (artist.metadata.last_refresh or 0)) < REFRESH_INTERVAL:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
                     continue
                 await self._update_artist_metadata(artist)
-                await asyncio.sleep(60)
+                await asyncio.sleep(300)
             for album in await self.mass.music.albums.library_items(order_by="random"):
                 if (time() - (album.metadata.last_refresh or 0)) < REFRESH_INTERVAL:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
                     continue
                 await self._update_album_metadata(album)
-                await asyncio.sleep(60)
+                await asyncio.sleep(300)
             for track in await self.mass.music.tracks.library_items(order_by="random"):
                 if (time() - (track.metadata.last_refresh or 0)) < REFRESH_INTERVAL:
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(5)
                     continue
                 await self._update_track_metadata(track)
-                await asyncio.sleep(60)
+                await asyncio.sleep(300)
             for playlist in await self.mass.music.playlists.library_items(order_by="random"):
                 await self._update_playlist_metadata(playlist)
                 await asyncio.sleep(60)
