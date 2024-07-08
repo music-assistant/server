@@ -86,14 +86,15 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
             # Ignore other extensions
             continue
         elif len(line) != 0:
-            if "%20" in line:
+            filepath = line
+            if "%20" in filepath:
                 # apparently VLC manages to encode spaces in filenames
-                line = line.replace("%20", " ")  # noqa: PLW2901
+                filepath = filepath.replace("%20", " ")
             # replace Windows directory separators
-            line = line.replace("\\", "/") # noqa: PLW2901
+            filepath = filepath.replace("\\", "/")
             playlist.append(
                 PlaylistItem(
-                    path=line, length=length, title=title, stream_info=stream_info, key=key
+                    path=filepath, length=length, title=title, stream_info=stream_info, key=key
                 )
             )
             # reset the song variables so it doesn't use the same EXTINF more than once
