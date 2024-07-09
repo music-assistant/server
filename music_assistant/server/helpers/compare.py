@@ -59,7 +59,7 @@ def compare_artist(
     if compare_item_ids(base_item, compare_item):
         return True
     # return early on (un)matched external id
-    for ext_id in (ExternalID.DISCOGS, ExternalID.MUSICBRAINZ, ExternalID.TADB):
+    for ext_id in (ExternalID.DISCOGS, ExternalID.MB_ARTIST, ExternalID.TADB):
         external_id_match = compare_external_ids(
             base_item.external_ids, compare_item.external_ids, ext_id
         )
@@ -84,7 +84,7 @@ def compare_album(
     # return early on (un)matched external id
     for ext_id in (
         ExternalID.DISCOGS,
-        ExternalID.MUSICBRAINZ,
+        ExternalID.MB_ALBUM,
         ExternalID.TADB,
         ExternalID.ASIN,
         ExternalID.BARCODE,
@@ -130,7 +130,7 @@ def compare_track(
         return True
     # return early on (un)matched external id
     for ext_id in (
-        ExternalID.MUSICBRAINZ,
+        ExternalID.MB_RECORDING,
         ExternalID.DISCOGS,
         ExternalID.ACOUSTID,
         ExternalID.TADB,
@@ -385,7 +385,7 @@ def compare_external_ids(
             if base_id[1:] in compare_ids:
                 return True
         # return false if the identifier is unique (e.g. musicbrainz id)
-        if external_id_type in (ExternalID.DISCOGS, ExternalID.MUSICBRAINZ, ExternalID.TADB):
+        if external_id_type.is_unique:
             return False
     return None
 

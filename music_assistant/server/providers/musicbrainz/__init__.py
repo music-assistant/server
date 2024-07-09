@@ -15,7 +15,7 @@ from mashumaro.exceptions import MissingField
 
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.common.models.errors import (
     InvalidDataError,
     MediaNotFoundError,
@@ -341,6 +341,19 @@ class MusicbrainzProvider(MetadataProvider):
         msg = "Invalid MusicBrainz recording ID provided"
         raise InvalidDataError(msg)
 
+    async def get_release_details(self, album_id: str) -> MusicBrainzRelease:
+        """Get Release/Album details by providing a MusicBrainz Album id."""
+        endpoint = f"release/{album_id}?inc=artist-credits+aliases+labels"
+        if result := await self.get_data(endpoint):
+            if "id" not in result:
+                result["id"] = album_id
+            try:
+                return MusicBrainzRelease.from_dict(replace_hyphens(result))
+            except MissingField as err:
+                raise InvalidDataError from err
+        msg = "Invalid MusicBrainz Album ID provided"
+        raise InvalidDataError(msg)
+
     async def get_releasegroup_details(self, releasegroup_id: str) -> MusicBrainzReleaseGroup:
         """Get ReleaseGroup details by providing a MusicBrainz ReleaseGroup id."""
         endpoint = f"release-group/{releasegroup_id}?inc=artists+aliases"
@@ -351,7 +364,7 @@ class MusicbrainzProvider(MetadataProvider):
                 return MusicBrainzReleaseGroup.from_dict(replace_hyphens(result))
             except MissingField as err:
                 raise InvalidDataError from err
-        msg = "Invalid MusicBrainz ReleaseGroup ID or barcode provided"
+        msg = "Invalid MusicBrainz ReleaseGroup ID provided"
         raise InvalidDataError(msg)
 
     async def get_artist_details_by_album(
@@ -362,11 +375,15 @@ class MusicbrainzProvider(MetadataProvider):
 
         MusicBrainzArtist object that is returned does not contain the optional data.
         """
-        if not ref_album.mbid:
-            return None
         result = None
-        with suppress(InvalidDataError):
-            result = await self.get_releasegroup_details(ref_album.mbid)
+        if mb_id := ref_album.get_external_id(ExternalID.MB_RELEASEGROUP):
+            with suppress(InvalidDataError):
+                result = await self.get_releasegroup_details(mb_id)
+        elif mb_id := ref_album.get_external_id(ExternalID.MB_ALBUM):
+            with suppress(InvalidDataError):
+                result = await self.get_release_details(mb_id)
+        else:
+            return None
         if not (result and result.artist_credit):
             return None
         for strict in (True, False):

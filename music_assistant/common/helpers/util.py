@@ -384,6 +384,6 @@ def is_valid_uuid(uuid_to_test: str) -> bool:
     """Check if uuid string is a valid UUID."""
     try:
         uuid_obj = UUID(uuid_to_test)
-    except ValueError:
+    except (ValueError, TypeError):
         return False
     return str(uuid_obj) == uuid_to_test

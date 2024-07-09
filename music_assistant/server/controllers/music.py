@@ -66,7 +66,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 2
+DB_SCHEMA_VERSION: Final[int] = 3
 
 
 class MusicController(CoreController):
@@ -900,10 +900,21 @@ class MusicController(CoreController):
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
-        if prev_version == 1:
-            # migrate from version 1 to 2
+        if prev_version == 2:
+            # migrate from version 2 to 3
+            # convert musicbrainz external id's
             await self.database.execute(
-                f"DELETE FROM {DB_TABLE_PLAYLOG} WHERE provider = 'builtin'"
+                f"UPDATE {DB_TABLE_ARTISTS} SET external_ids = "
+                "replace(external_ids, 'musicbrainz', 'musicbrainz_artistid')"
+            )
+            # convert musicbrainz external id's
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_ALBUMS} SET external_ids = "
+                "replace(external_ids, 'musicbrainz', 'musicbrainz_releasegroupid')"
+            )
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_TRACKS} SET external_ids = "
+                "replace(external_ids, 'musicbrainz', 'musicbrainz_recordingid')"
             )
             await self.database.commit()
             return

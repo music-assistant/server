@@ -287,24 +287,6 @@ class _MediaItemBase(DataClassDictMixin):
         if self.sort_name is None:
             self.sort_name = create_sort_name(self.name)
 
-    @property
-    def mbid(self) -> str | None:
-        """Return MusicBrainz ID."""
-        return self.get_external_id(ExternalID.MUSICBRAINZ)
-
-    @mbid.setter
-    def mbid(self, value: str) -> None:
-        """Set MusicBrainz External ID."""
-        if not value:
-            return
-        if not is_valid_uuid(value):
-            msg = f"Invalid MusicBrainz identifier: {value}"
-            raise InvalidDataError(msg)
-        if existing := next((x for x in self.external_ids if x[0] == ExternalID.MUSICBRAINZ), None):
-            # Musicbrainz ID is unique so remove existing entry
-            self.external_ids.remove(existing)
-        self.external_ids.add((ExternalID.MUSICBRAINZ, value))
-
     def get_external_id(self, external_id_type: ExternalID) -> str | None:
         """Get (the first instance) of given External ID or None if not found."""
         for ext_id in self.external_ids:
@@ -312,6 +294,43 @@ class _MediaItemBase(DataClassDictMixin):
                 continue
             return ext_id[1]
         return None
+
+    def add_external_id(self, external_id_type: ExternalID, value: str) -> None:
+        """Add ExternalID."""
+        if external_id_type.is_musicbrainz and not is_valid_uuid(value):
+            msg = f"Invalid MusicBrainz identifier: {value}"
+            raise InvalidDataError(msg)
+        if external_id_type.is_unique and (
+            existing := next((x for x in self.external_ids if x[0] == external_id_type), None)
+        ):
+            self.external_ids.remove(existing)
+        self.external_ids.add((external_id_type, value))
+
+    @property
+    def mbid(self) -> str | None:
+        """Return MusicBrainz ID."""
+        if self.media_type == MediaType.ARTIST:
+            return self.get_external_id(ExternalID.MB_ARTIST)
+        if self.media_type == MediaType.ALBUM:
+            return self.get_external_id(ExternalID.MB_ALBUM)
+        if self.media_type == MediaType.TRACK:
+            return self.get_external_id(ExternalID.MB_RECORDING)
+        return None
+
+    @mbid.setter
+    def mbid(self, value: str) -> None:
+        """Set MusicBrainz External ID."""
+        if self.media_type == MediaType.ARTIST:
+            self.add_external_id(ExternalID.MB_ARTIST, value)
+        elif self.media_type == MediaType.ALBUM:
+            self.add_external_id(ExternalID.MB_ALBUM, value)
+        elif self.media_type == MediaType.TRACK:
+            # NOTE: for tracks we use the recording id to
+            # differentiate a unique recording
+            # and not the track id (as that is just the reference
+            #  of the recording on a specific album)
+            self.add_external_id(ExternalID.MB_RECORDING, value)
+            return
 
     def __hash__(self) -> int:
         """Return custom hash."""

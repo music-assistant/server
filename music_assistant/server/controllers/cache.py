@@ -23,7 +23,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
-DB_SCHEMA_VERSION = 1
+DB_SCHEMA_VERSION = 3
 
 
 class CacheController(CoreController):

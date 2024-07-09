@@ -45,8 +45,10 @@ async def test_parse_artists(
     """Test we can parse artists."""
     async with aiofiles.open(example) as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
-    parsed = parse_artist(_LOGGER, "xx-instance-id-xx", connection, raw_data)
-    assert snapshot == parsed.to_dict()
+    parsed = parse_artist(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
+    # sort external Ids to ensure they are always in the same order for snapshot testing
+    parsed["external_ids"].sort()
+    assert snapshot == parsed
 
 
 @pytest.mark.parametrize("example", ALBUM_FIXTURES, ids=lambda val: str(val.stem))
@@ -56,8 +58,10 @@ async def test_parse_albums(
     """Test we can parse albums."""
     async with aiofiles.open(example) as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
-    parsed = parse_album(_LOGGER, "xx-instance-id-xx", connection, raw_data)
-    assert snapshot == parsed.to_dict()
+    parsed = parse_album(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
+    # sort external Ids to ensure they are always in the same order for snapshot testing
+    parsed["external_ids"].sort()
+    assert snapshot == parsed
 
 
 @pytest.mark.parametrize("example", TRACK_FIXTURES, ids=lambda val: str(val.stem))
@@ -67,5 +71,7 @@ async def test_parse_tracks(
     """Test we can parse tracks."""
     async with aiofiles.open(example) as fp:
         raw_data = ARTIST_DECODER.decode(await fp.read())
-    parsed = parse_track(_LOGGER, "xx-instance-id-xx", connection, raw_data)
-    assert snapshot == parsed.to_dict()
+    parsed = parse_track(_LOGGER, "xx-instance-id-xx", connection, raw_data).to_dict()
+    # sort external Ids to ensure they are always in the same order for snapshot testing
+    parsed["external_ids"]
+    assert snapshot == parsed

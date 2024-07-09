@@ -212,8 +212,8 @@ class AudioTags:
         return self.tags.get("musicbrainzreleasegroupid")
 
     @property
-    def musicbrainz_releaseid(self) -> str | None:
-        """Return musicbrainz_releaseid tag if present."""
+    def musicbrainz_albumid(self) -> str | None:
+        """Return musicbrainz_albumid tag if present."""
         return self.tags.get("musicbrainzreleaseid", self.tags.get("musicbrainzalbumid"))
 
     @property

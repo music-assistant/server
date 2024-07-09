@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING, Any
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -128,10 +128,9 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on theaudiodb."""
-        if not album.mbid:
-            # for 100% accuracy we require the musicbrainz id for all lookups
+        if (mbid := album.get_external_id(ExternalID.MB_RELEASEGROUP)) is None:
             return None
-        result = await self._get_data("album-mb.php", i=album.mbid)
+        result = await self._get_data("album-mb.php", i=mbid)
         if result and result.get("album"):
             adb_album = result["album"][0]
             # fill in some missing album info if needed
@@ -166,8 +165,9 @@ class AudioDbMetadataProvider(MetadataProvider):
                         continue
                     if (
                         track.album
-                        and track.album.mbid
-                        and track.album.mbid != item["strMusicBrainzAlbumID"]
+                        and (mb_rgid := track.album.get_external_id(ExternalID.MB_RELEASEGROUP))
+                        # AudioDb swapped MB Album ID and ReleaseGroup ID ?!
+                        and mb_rgid != item["strMusicBrainzAlbumID"]
                     ):
                         continue
                     if not compare_strings(track_artist.name, item["strArtist"]):
