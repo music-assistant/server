@@ -357,6 +357,12 @@ class JellyfinProvider(MusicProvider):
                     fields=TRACK_FIELDS,
                 )
                 for track in response["Items"]:
+                    if not len(track[ITEM_KEY_MEDIA_STREAMS]):
+                        self.logger.warning(
+                            "Invalid track %s: Does not have any media streams",
+                            track[ITEM_KEY_NAME],
+                        )
+                        continue
                     yield parse_track(self.logger, self.instance_id, self._client, track)
 
                 offset += limit
