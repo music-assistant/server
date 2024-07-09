@@ -146,7 +146,8 @@ class FullyKioskProvider(PlayerProvider):
     def _handle_player_update(self) -> None:
         """Update FullyKiosk player attributes."""
         player_id = self._fully.deviceInfo["deviceID"]
-        player = self.mass.players.get(player_id)
+        if not (player := self.mass.players.get(player_id)):
+            return
         player.name = self._fully.deviceInfo["deviceName"]
         # player.volume_level = snap_client.volume
         for volume_dict in self._fully.deviceInfo.get("audioVolumes", []):
@@ -161,7 +162,7 @@ class FullyKioskProvider(PlayerProvider):
         player.available = True
         self.mass.players.update(player_id)
 
-    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
+    async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
         base_entries = await super().get_player_config_entries(player_id)
         return (
@@ -174,14 +175,19 @@ class FullyKioskProvider(PlayerProvider):
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player."""
-        player = self.mass.players.get(player_id, raise_unavailable=False)
+        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
+            return
         await self._fully.setAudioVolume(volume_level, AUDIOMANAGER_STREAM_MUSIC)
         player.volume_level = volume_level
         self.mass.players.update(player_id)
 
+    async def cmd_play(self, player_id: str) -> None:
+        """Send PLAY command to given player."""
+
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
-        player = self.mass.players.get(player_id, raise_unavailable=False)
+        if not (player := self.mass.players.get(player_id, raise_unavailable=False)):
+            return
         await self._fully.stopSound()
         player.state = PlayerState.IDLE
         self.mass.players.update(player_id)
@@ -192,7 +198,8 @@ class FullyKioskProvider(PlayerProvider):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
-        player = self.mass.players.get(player_id)
+        if not (player := self.mass.players.get(player_id)):
+            return
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
             media.uri = media.uri.replace(".flac", ".mp3")
         await self._fully.playSound(media.uri, AUDIOMANAGER_STREAM_MUSIC)
