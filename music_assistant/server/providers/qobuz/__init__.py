@@ -8,6 +8,8 @@ import time
 from contextlib import suppress
 from typing import TYPE_CHECKING
 
+from aiohttp import client_exceptions
+
 from music_assistant.common.helpers.json import json_loads
 from music_assistant.common.helpers.util import parse_title_and_version, try_parse_int
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
@@ -18,6 +20,7 @@ from music_assistant.common.models.enums import (
     StreamType,
 )
 from music_assistant.common.models.errors import (
+    InvalidDataError,
     LoginFailed,
     MediaNotFoundError,
     ResourceTemporarilyUnavailable,
@@ -765,7 +768,12 @@ class QobuzProvider(MusicProvider):
             if response.status == 404:
                 raise MediaNotFoundError(f"{endpoint} not found")
             response.raise_for_status()
-            return await response.json(loads=json_loads)
+            try:
+                return await response.json(loads=json_loads)
+            except client_exceptions.ContentTypeError as err:
+                text = err.message or await response.text() or err.status
+                msg = f"Error while handling {endpoint}: {text}"
+                raise InvalidDataError(msg)
 
     @throttle_with_retries
     async def _post_data(self, endpoint, params=None, data=None):
