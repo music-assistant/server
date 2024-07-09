@@ -19,7 +19,7 @@
     ]),
     'external_ids': list([
       list([
-        'musicbrainz',
+        'musicbrainz_albumid',
         '0193355a-cdfb-3936-afd2-44d651eb006d',
       ]),
     ]),
@@ -98,7 +98,7 @@
     ]),
     'external_ids': list([
       list([
-        'musicbrainz',
+        'musicbrainz_albumid',
         'f002d6b7-17af-4f9e-8d30-5486548ffe6f',
       ]),
     ]),
@@ -230,7 +230,7 @@
   dict({
     'external_ids': list([
       list([
-        'musicbrainz',
+        'musicbrainz_artistid',
         '99164692-c02d-407c-81c9-25d338dd21f4',
       ]),
     ]),
@@ -507,7 +507,7 @@
     'duration': 224,
     'external_ids': list([
       list([
-        'musicbrainz',
+        'musicbrainz_recordingid',
         '17d1019d-d4f4-326c-b4bb-d8aec2607bd7',
       ]),
     ]),
