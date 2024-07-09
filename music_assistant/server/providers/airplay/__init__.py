@@ -1011,12 +1011,6 @@ class AirplayProvider(PlayerProvider):
                 # device reports that its ready for playback again
                 if active_stream := airplay_player.active_stream:
                     active_stream.prevent_playback = False
-            else:
-                self.logger.info(
-                    "Unknown DACP request for %s: %s",
-                    airplay_player.discovery_info.name,
-                    path,
-                )
 
             # send response
             date_str = utc().strftime("%a, %-d %b %Y %H:%M:%S")
