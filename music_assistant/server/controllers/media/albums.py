@@ -367,7 +367,7 @@ class AlbumsController(MediaControllerBase[Album]):
 
         if not db_artist or overwrite:
             db_artist = await self.mass.music.artists.add_item_to_library(
-                artist, metadata_lookup=False, overwrite_existing=overwrite
+                artist, overwrite_existing=overwrite
             )
         # write (or update) record in album_artists table
         await self.mass.music.database.insert_or_replace(

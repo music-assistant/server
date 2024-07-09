@@ -114,6 +114,7 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "book-information-variant"
         self._reset_online_slots()
+        self._scanner_running: bool = False
 
     async def get_config_entries(
         self,
@@ -146,7 +147,6 @@ class MetaDataController(CoreController):
             await asyncio.to_thread(os.mkdir, self._collage_images_dir)
 
         self.mass.streams.register_dynamic_route("/imageproxy", self.handle_imageproxy)
-        self.mass.call_later(60, self._metadata_scanner())
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -223,6 +223,38 @@ class MetaDataController(CoreController):
             await self._update_playlist_metadata(item)
         if item.media_type == MediaType.RADIO:
             await self._update_radio_metadata(item)
+
+    @api_command("metadata/scan")
+    async def metadata_scanner(self) -> None:
+        """Scanner for (missing) metadata."""
+        if self._scanner_running:
+            # already running
+            return
+        self._scanner_running = True
+        try:
+            timestamp = int(time() - 60 * 60 * 24 * 7)
+            query = (
+                "WHERE json_extract(metadata,'$.last_refresh') ISNULL "
+                f"OR json_extract(metadata,'$.last_refresh') < {timestamp}"
+            )
+            for artist in await self.mass.music.artists.library_items(
+                limit=250, order_by="random", extra_query=query
+            ):
+                await self._update_artist_metadata(artist)
+            for album in await self.mass.music.albums.library_items(
+                limit=250, order_by="random", extra_query=query
+            ):
+                await self._update_album_metadata(album)
+            for track in await self.mass.music.tracks.library_items(
+                limit=50, order_by="random", extra_query=query
+            ):
+                await self._update_track_metadata(track)
+            for playlist in await self.mass.music.playlists.library_items(
+                limit=250, order_by="random", extra_query=query
+            ):
+                await self._update_playlist_metadata(playlist)
+        finally:
+            self._scanner_running = False
 
     async def get_image_data_for_item(
         self,
@@ -399,7 +431,10 @@ class MetaDataController(CoreController):
             artist.metadata.last_refresh = int(time())
 
             # TODO: Use a global cache/proxy for the MB lookups to save on API calls
-            artist.mbid = artist.mbid or await self._get_artist_mbid(artist)
+            if not artist.mbid:
+                if mbid := await self._get_artist_mbid(artist):
+                    artist.mbid = mbid
+
             if artist.mbid:
                 # The musicbrainz ID is mandatory for all metadata lookups
                 for provider in self.providers:
@@ -617,28 +652,3 @@ class MetaDataController(CoreController):
         self._online_slots_available = MAX_ONLINE_CALLS_PER_DAY
         # reschedule self in 24 hours
         self.mass.loop.call_later(60 * 60 * 24, self._reset_online_slots)
-
-    async def _metadata_scanner(self) -> None:
-        """Continuously (slow) background scanner for (missing) metadata."""
-        while True:
-            for artist in await self.mass.music.artists.library_items(order_by="random"):
-                if (time() - (artist.metadata.last_refresh or 0)) < REFRESH_INTERVAL:
-                    await asyncio.sleep(5)
-                    continue
-                await self._update_artist_metadata(artist)
-                await asyncio.sleep(300)
-            for album in await self.mass.music.albums.library_items(order_by="random"):
-                if (time() - (album.metadata.last_refresh or 0)) < REFRESH_INTERVAL:
-                    await asyncio.sleep(5)
-                    continue
-                await self._update_album_metadata(album)
-                await asyncio.sleep(300)
-            for track in await self.mass.music.tracks.library_items(order_by="random"):
-                if (time() - (track.metadata.last_refresh or 0)) < REFRESH_INTERVAL:
-                    await asyncio.sleep(5)
-                    continue
-                await self._update_track_metadata(track)
-                await asyncio.sleep(300)
-            for playlist in await self.mass.music.playlists.library_items(order_by="random"):
-                await self._update_playlist_metadata(playlist)
-                await asyncio.sleep(60)

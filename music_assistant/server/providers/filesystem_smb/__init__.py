@@ -52,7 +52,6 @@ async def setup(
     prov = SMBFileSystemProvider(mass, manifest, config)
     await prov.handle_async_init()
     await prov.check_write_access()
-    mass.call_later(30, prov.migrate_playlists)
     return prov
 
 

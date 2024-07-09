@@ -416,9 +416,7 @@ class MusicProvider(Provider):
                         # the additional metadata is then lazy retrieved afterwards
                         if self.is_streaming_provider:
                             prov_item.favorite = True
-                        library_item = await controller.add_item_to_library(
-                            prov_item, metadata_lookup=False
-                        )
+                        library_item = await controller.add_item_to_library(prov_item)
                     elif getattr(library_item, "cache_checksum", None) != getattr(
                         prov_item, "cache_checksum", None
                     ):

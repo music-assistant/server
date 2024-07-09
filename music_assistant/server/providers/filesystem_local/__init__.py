@@ -9,7 +9,6 @@ import re
 from typing import TYPE_CHECKING
 
 import aiofiles
-import cchardet
 import shortuuid
 from aiofiles.os import wrap
 
@@ -53,7 +52,6 @@ async def setup(
     prov = LocalFileSystemProvider(mass, manifest, config)
     prov.base_path = str(config.get_value(CONF_PATH))
     await prov.check_write_access()
-    mass.call_later(30, prov.migrate_playlists)
     return prov
 
 
@@ -211,57 +209,3 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         abs_path = get_absolute_path(self.base_path, file_path)
         async with aiofiles.open(abs_path, "wb") as _file:
             await _file.write(data)
-
-    async def migrate_playlists(self) -> None:
-        """Migrate Music Assistant filesystem playlists."""
-        # Remove this code when 2.0 stable has been released!
-        # prior to version 2.0.0b137 Music Assistant stored universal playlists
-        # in the filesystem (root of the music dir, m3u files with uri's)
-        # that is converted into a universal builtin provider approach in b137
-        # so the filesystem is not longer polluted/abused for this.
-        # this code hunts these playlists, migrates them to the universal provider
-        # and cleans up the files.
-        cache_key = f"{self.instance_id}.playlist_migration_done"
-        if await self.mass.cache.get(cache_key):
-            return
-        async for item in self.listdir("", False):
-            if not item.is_file:
-                continue
-            if item.ext != "m3u":
-                continue
-            playlist_bytes = b""
-            async for chunk in self.read_file_content(item.absolute_path):
-                playlist_bytes += chunk
-            encoding_details = await asyncio.to_thread(cchardet.detect, playlist_bytes)
-            playlist_data = playlist_bytes.decode(encoding_details["encoding"] or "utf-8")
-            # a (legacy) playlist file created by MA does not have EXTINFO tags and has uri's
-            if "EXTINF" in playlist_data or "://" not in playlist_data:
-                continue
-            all_uris: list[str] = []
-            skipped_lines = 0
-            for playlist_line in playlist_data.split("\n"):
-                playlist_line = playlist_line.strip()  # noqa: PLW2901
-                if not playlist_line:
-                    continue
-                if "://" not in playlist_line:
-                    skipped_lines += 1
-                    self.logger.debug("Ignoring line in migration playlist: %s", playlist_line)
-                all_uris.append(playlist_line)
-            if skipped_lines > len(all_uris):
-                self.logger.warning("NOT migrating playlist: %s", item.path)
-                continue
-            # create playlist on the builtin provider
-            new_playlist = await self.mass.music.playlists.create_playlist(item.name, "builtin")
-            # append existing uri's to the new playlist
-            await self.mass.music.playlists.add_playlist_tracks(new_playlist.item_id, all_uris)
-            # remove existing item from the library
-            if library_item := await self.mass.music.playlists.get_library_item_by_prov_id(
-                item.path, self.instance_id
-            ):
-                await self.mass.music.playlists.remove_item_from_library(library_item.item_id)
-            # remove old file
-            await asyncio.to_thread(os.remove, item.absolute_path)
-            # refresh the playlist so it builds the metadata
-            await self.mass.music.playlists.add_item_to_library(new_playlist, metadata_lookup=True)
-            self.logger.info("Migrated playlist %s", item.name)
-        await self.mass.cache.set(cache_key, True, expiration=365 * 86400)

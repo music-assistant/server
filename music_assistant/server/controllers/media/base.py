@@ -91,23 +91,20 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def add_item_to_library(
         self,
         item: ItemCls,
-        metadata_lookup: bool = True,
         overwrite_existing: bool = False,
     ) -> ItemCls:
         """Add item to library and return the new (or updated) database item."""
         new_item = False
         # check for existing item first
-        library_id = await self._get_library_item_by_match(item, overwrite_existing)
-        if library_id is None:
+        if library_id := await self._get_library_item_by_match(item):
+            # update existing item
+            await self._update_library_item(library_id, item, overwrite=overwrite_existing)
+        else:
             # actually add a new item in the library db
             async with self._db_add_lock:
                 library_id = await self._add_library_item(item)
                 new_item = True
-        # grab additional metadata
-        if metadata_lookup:
-            library_item = await self.get_library_item(library_id)
-            await self.mass.metadata.update_metadata(library_item)
-        # return final library_item after all match/metadata actions
+        # return final library_item
         library_item = await self.get_library_item(library_id)
         self.mass.signal_event(
             EventType.MEDIA_ITEM_ADDED if new_item else EventType.MEDIA_ITEM_UPDATED,
@@ -116,20 +113,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         )
         return library_item
 
-    async def _get_library_item_by_match(
-        self, item: Track, overwrite_existing: bool = False
-    ) -> int | None:
+    async def _get_library_item_by_match(self, item: Track) -> int | None:
         if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
-            # existing item match by provider id
-            await self._update_library_item(cur_item.item_id, item, overwrite=overwrite_existing)
             return cur_item.item_id
         if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id
             # Double check external IDs - if MBID exists, regards that as overriding
             if compare_media_item(item, cur_item):
-                await self._update_library_item(
-                    cur_item.item_id, item, overwrite=overwrite_existing
-                )
                 return cur_item.item_id
         # search by (exact) name match
         query = f"WHERE {self.db_table}.name = :name OR {self.db_table}.sort_name = :sort_name"
@@ -138,8 +128,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
             extra_query=query, extra_query_params=query_params
         ):
             if compare_media_item(db_item, item, True):
-                # existing item found: update it
-                await self._update_library_item(db_item.item_id, item, overwrite=overwrite_existing)
                 return db_item.item_id
         return None
 
@@ -656,7 +644,6 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
     async def _add_library_item(
         self,
         item: ItemCls,
-        metadata_lookup: bool = True,
         overwrite_existing: bool = False,
     ) -> int:
         """Add artist to library and return the database id."""

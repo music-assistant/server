@@ -480,7 +480,10 @@ class MusicController(CoreController):
         provider = self.mass.get_provider(item.provider)
         if provider.library_edit_supported(item.media_type):
             await provider.library_add(item)
-        return await ctrl.add_item_to_library(item)
+        library_item = await ctrl.add_item_to_library(item)
+        # perform full metadata scan (and provider match)
+        await self.mass.metadata.update_metadata(library_item)
+        return library_item
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
@@ -536,7 +539,9 @@ class MusicController(CoreController):
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
         if is_library_item:
-            return await ctrl.add_item_to_library(media_item, metadata_lookup=True)
+            library_item = await ctrl.add_item_to_library(media_item)
+            await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+            return library_item
 
         return media_item
 
@@ -718,9 +723,10 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s completed", provider.name)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            # schedule db cleanup after sync
+            # schedule db cleanup + metadata scan after sync
             if not self.in_progress_syncs:
                 self.mass.create_task(self._cleanup_database())
+                self.mass.create_task(self.mass.metadata.metadata_scanner())
 
         task.add_done_callback(on_sync_task_done)
 

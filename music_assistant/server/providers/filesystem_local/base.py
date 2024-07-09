@@ -341,7 +341,7 @@ class FileSystemProviderBase(MusicProvider):
                     # when they are detected as changed
                     track = await self._parse_track(item)
                     await self.mass.music.tracks.add_item_to_library(
-                        track, metadata_lookup=False, overwrite_existing=prev_checksum is not None
+                        track, overwrite_existing=prev_checksum is not None
                     )
                 elif item.ext in PLAYLIST_EXTENSIONS:
                     playlist = await self.get_playlist(item.path)
@@ -351,7 +351,6 @@ class FileSystemProviderBase(MusicProvider):
                     playlist.favorite = True
                     await self.mass.music.playlists.add_item_to_library(
                         playlist,
-                        metadata_lookup=False,
                         overwrite_existing=prev_checksum is not None,
                     )
             except Exception as err:  # pylint: disable=broad-except

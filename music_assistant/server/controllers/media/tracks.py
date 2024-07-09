@@ -426,7 +426,6 @@ class TracksController(MediaControllerBase[Track]):
             with suppress(MediaNotFoundError, AssertionError, InvalidDataError):
                 db_album = await self.mass.music.albums.add_item_to_library(
                     album,
-                    metadata_lookup=False,
                     overwrite_existing=overwrite,
                 )
         if not db_album:
@@ -487,7 +486,7 @@ class TracksController(MediaControllerBase[Track]):
 
         if not db_artist or overwrite:
             db_artist = await self.mass.music.artists.add_item_to_library(
-                artist, metadata_lookup=False, overwrite_existing=overwrite
+                artist, overwrite_existing=overwrite
             )
         # write (or update) record in album_artists table
         await self.mass.music.database.insert_or_replace(
