@@ -60,12 +60,12 @@ def test_compare_artist() -> None:
     artist_b.name = "Artist B"
     artist_b.item_id = "2"
     artist_b.provider = "test2"
-    artist_a.external_ids = {(media_items.ExternalID.MUSICBRAINZ, "123")}
+    artist_a.external_ids = {(media_items.ExternalID.MB_ARTIST, "123")}
     artist_b.external_ids = artist_a.external_ids
     assert compare.compare_artist(artist_a, artist_b) is True
     # test on external id mismatch
     artist_b.name = artist_a.name
-    artist_b.external_ids = {(media_items.ExternalID.MUSICBRAINZ, "1234")}
+    artist_b.external_ids = {(media_items.ExternalID.MB_ARTIST, "1234")}
     assert compare.compare_artist(artist_a, artist_b) is False
 
 
@@ -115,12 +115,12 @@ def test_compare_album() -> None:
     album_b.name = "Album B"
     album_b.item_id = "2"
     album_b.provider = "test2"
-    album_a.external_ids = {(media_items.ExternalID.MUSICBRAINZ, "123")}
+    album_a.external_ids = {(media_items.ExternalID.MB_ALBUM, "123")}
     album_b.external_ids = album_a.external_ids
     assert compare.compare_album(album_a, album_b) is True
     # test on external id mismatch
     album_b.name = album_a.name
-    album_b.external_ids = {(media_items.ExternalID.MUSICBRAINZ, "1234")}
+    album_b.external_ids = {(media_items.ExternalID.MB_ALBUM, "1234")}
     assert compare.compare_album(album_a, album_b) is False
     album_a.external_ids = set()
     album_b.external_ids = set()
@@ -216,12 +216,12 @@ def test_compare_track() -> None:  # noqa: PLR0915
     track_b.name = "Track B"
     track_b.item_id = "2"
     track_b.provider = "test2"
-    track_a.external_ids = {(media_items.ExternalID.MUSICBRAINZ, "123")}
+    track_a.external_ids = {(media_items.ExternalID.MB_RECORDING, "123")}
     track_b.external_ids = track_a.external_ids
     assert compare.compare_track(track_a, track_b) is True
     # test on external id mismatch
     track_b.name = track_a.name
-    track_b.external_ids = {(media_items.ExternalID.MUSICBRAINZ, "1234")}
+    track_b.external_ids = {(media_items.ExternalID.MB_RECORDING, "1234")}
     assert compare.compare_track(track_a, track_b) is False
     track_a.external_ids = set()
     track_b.external_ids = set()
@@ -280,10 +280,10 @@ def test_compare_track() -> None:  # noqa: PLR0915
     # this can happen for some classical music albums
     track_a.external_ids = {
         (media_items.ExternalID.ISRC, "123"),
-        (media_items.ExternalID.MUSICBRAINZ, "abc"),
+        (media_items.ExternalID.MB_RECORDING, "abc"),
     }
     track_b.external_ids = {
         (media_items.ExternalID.ISRC, "123"),
-        (media_items.ExternalID.MUSICBRAINZ, "abcd"),
+        (media_items.ExternalID.MB_RECORDING, "abcd"),
     }
     assert compare.compare_track(track_a, track_b) is False

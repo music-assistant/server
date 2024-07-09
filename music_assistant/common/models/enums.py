@@ -43,11 +43,12 @@ class MediaType(StrEnum, metaclass=MediaTypeMeta):
 class ExternalID(StrEnum):
     """Enum with External ID types."""
 
-    # musicbrainz:
-    # for tracks this is the RecordingID
-    # for albums this is the ReleaseGroupID (NOT the release ID!)
-    # for artists this is the ArtistID
-    MUSICBRAINZ = "musicbrainz"
+    MB_ARTIST = "musicbrainz_artistid"  # MusicBrainz Artist ID (or AlbumArtist ID)
+    MB_ALBUM = "musicbrainz_albumid"  # MusicBrainz Album ID
+    MB_RELEASEGROUP = "musicbrainz_releasegroupid"  # MusicBrainz ReleaseGroupID
+    MB_TRACK = "musicbrainz_trackid"  # MusicBrainz Track ID
+    MB_RECORDING = "musicbrainz_recordingid"  # MusicBrainz Recording ID
+
     ISRC = "isrc"  # used to identify unique recordings
     BARCODE = "barcode"  # EAN-13 barcode for identifying albums
     ACOUSTID = "acoustid"  # unique fingerprint (id) for a recording
@@ -60,6 +61,26 @@ class ExternalID(StrEnum):
     def _missing_(cls, value: object) -> ExternalID:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
+
+    @property
+    def is_unique(self) -> bool:
+        """Return if the ExternalID is unique."""
+        return self.is_musicbrainz or self in (
+            ExternalID.ACOUSTID,
+            ExternalID.DISCOGS,
+            ExternalID.TADB,
+        )
+
+    @property
+    def is_musicbrainz(self) -> bool:
+        """Return if the ExternalID is a MusicBrainz identifier."""
+        return self in (
+            ExternalID.MB_RELEASEGROUP,
+            ExternalID.MB_ALBUM,
+            ExternalID.MB_TRACK,
+            ExternalID.MB_ARTIST,
+            ExternalID.MB_RECORDING,
+        )
 
 
 class LinkType(StrEnum):

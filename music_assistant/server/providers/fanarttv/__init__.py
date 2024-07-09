@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
 
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.common.models.media_items import ImageType, MediaItemImage, MediaItemMetadata
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
@@ -108,12 +108,12 @@ class FanartTvMetadataProvider(MetadataProvider):
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on fanart.tv."""
-        if not album.mbid:
+        if (mbid := album.get_external_id(ExternalID.MB_RELEASEGROUP)) is None:
             return None
         self.logger.debug("Fetching metadata for Album %s on Fanart.tv", album.name)
-        if data := await self._get_data(f"music/albums/{album.mbid}"):
+        if data := await self._get_data(f"music/albums/{mbid}"):
             if data and data.get("albums"):
-                data = data["albums"][album.mbid]
+                data = data["albums"][mbid]
                 metadata = MediaItemMetadata()
                 metadata.images = []
                 for key, img_type in IMG_MAPPING.items():

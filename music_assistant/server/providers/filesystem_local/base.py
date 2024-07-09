@@ -854,8 +854,10 @@ class FileSystemProviderBase(MusicProvider):
         track.mbid = tags.musicbrainz_recordingid
         track.metadata.chapters = UniqueList(tags.chapters)
         if album:
-            if not album.mbid:
-                album.mbid = tags.musicbrainz_releasegroupid
+            if not album.mbid and tags.musicbrainz_albumid:
+                album.mbid = tags.musicbrainz_albumid
+            if tags.musicbrainz_releasegroupid:
+                album.add_external_id(ExternalID.MB_RELEASEGROUP, tags.musicbrainz_releasegroupid)
             if not album.year:
                 album.year = tags.year
             album.album_type = tags.album_type
@@ -1008,8 +1010,10 @@ class FileSystemProviderBase(MusicProvider):
                 album.name = info.get("title", info.get("name", name))
                 if sort_name := info.get("sortname"):
                     album.sort_name = sort_name
-                if mbid := info.get("musicbrainzreleasegroupid"):
-                    album.mbid = mbid
+                if releasegroup_id := info.get("musicbrainzreleasegroupid"):
+                    album.add_external_id(ExternalID.MB_RELEASEGROUP, releasegroup_id)
+                if album_id := info.get("musicbrainzalbumid"):
+                    album.add_external_id(ExternalID.MB_ALBUM, album_id)
                 if mb_artist_id := info.get("musicbrainzalbumartistid"):
                     if album.artists and not album.artists[0].mbid:
                         album.artists[0].mbid = mb_artist_id

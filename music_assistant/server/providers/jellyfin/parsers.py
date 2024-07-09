@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 
 from aiojellyfin.const import ImageType as JellyImageType
 
-from music_assistant.common.models.enums import ContentType, ImageType, MediaType
+from music_assistant.common.models.enums import ContentType, ExternalID, ImageType, MediaType
 from music_assistant.common.models.errors import InvalidDataError
 from music_assistant.common.models.media_items import (
     Album,
@@ -34,6 +34,7 @@ from .const import (
     ITEM_KEY_IMAGE_TAGS,
     ITEM_KEY_MEDIA_CODEC,
     ITEM_KEY_MEDIA_STREAMS,
+    ITEM_KEY_MUSICBRAINZ_ALBUM,
     ITEM_KEY_MUSICBRAINZ_ARTIST,
     ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP,
     ITEM_KEY_MUSICBRAINZ_TRACK,
@@ -81,9 +82,24 @@ def parse_album(
     album.metadata.images = _get_artwork(instance_id, connection, jellyfin_album)
     if ITEM_KEY_OVERVIEW in jellyfin_album:
         album.metadata.description = jellyfin_album[ITEM_KEY_OVERVIEW]
+    if ITEM_KEY_MUSICBRAINZ_ALBUM in jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
+        try:
+            album.add_external_id(
+                ExternalID.MB_ALBUM,
+                jellyfin_album[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_ALBUM],
+            )
+        except InvalidDataError as error:
+            logger.warning(
+                "Jellyfin has an invalid musicbrainz album id for album %s",
+                album.name,
+                exc_info=error if logger.isEnabledFor(logging.DEBUG) else None,
+            )
     if ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP in jellyfin_album[ITEM_KEY_PROVIDER_IDS]:
         try:
-            album.mbid = jellyfin_album[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP]
+            album.add_external_id(
+                ExternalID.MB_RELEASEGROUP,
+                jellyfin_album[ITEM_KEY_PROVIDER_IDS][ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP],
+            )
         except InvalidDataError as error:
             logger.warning(
                 "Jellyfin has an invalid musicbrainz id for album %s",
