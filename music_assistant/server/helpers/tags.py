@@ -133,10 +133,6 @@ class AudioTags:
         if tag := self.tags.get("artist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
-            if len(self.musicbrainz_artistids) > 1:
-                # special case: artist noted as 2 artists with ampersand
-                # but with 2 mb ids so they should be treated as 2 artists
-                return split_artists(tag, allow_ampersand=True)
             return split_artists(tag)
         # fallback to parsing from filename
         title = self.filename.rsplit(os.sep, 1)[-1].split(".")[0]
