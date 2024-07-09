@@ -19,12 +19,12 @@
     ]),
     'external_ids': list([
       list([
-        'musicbrainz_releasegroupid',
-        '0193355a-cdfb-3936-afd2-44d651eb006d',
-      ]),
-      list([
           'musicbrainz_albumid',
           'bf25b030-0cbb-495a-8d79-6c7fee20a089',
+      ]),
+      list([
+        'musicbrainz_releasegroupid',
+        '0193355a-cdfb-3936-afd2-44d651eb006d',
       ]),
     ]),
     'favorite': False,
@@ -102,12 +102,12 @@
     ]),
     'external_ids': list([
       list([
-        'musicbrainz_albumid',
-        'b13a174d-527d-44a1-b8f8-a4c78b03b7d9',
-      ]),
-      list([
         'musicbrainz_releasegroupid',
         'f002d6b7-17af-4f9e-8d30-5486548ffe6f',
+      ]),
+      list([
+        'musicbrainz_albumid',
+        'b13a174d-527d-44a1-b8f8-a4c78b03b7d9',
       ]),
     ]),
     'favorite': False,
