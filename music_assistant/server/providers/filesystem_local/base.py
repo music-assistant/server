@@ -850,7 +850,8 @@ class FileSystemProviderBase(MusicProvider):
         explicit_tag = tags.get("itunesadvisory")
         if explicit_tag is not None:
             track.metadata.explicit = explicit_tag == "1"
-        track.mbid = tags.musicbrainz_recordingid
+        if tags.musicbrainz_recordingid:
+            track.mbid = tags.musicbrainz_recordingid
         track.metadata.chapters = UniqueList(tags.chapters)
         if album:
             if not album.mbid and tags.musicbrainz_albumid:

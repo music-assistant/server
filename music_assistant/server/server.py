@@ -204,6 +204,7 @@ class MusicAssistant:
             min_supported_schema_version=MIN_SCHEMA_VERSION,
             base_url=self.webserver.base_url,
             homeassistant_addon=self.running_as_hass_addon,
+            onboard_done=self.config.onboard_done,
         )
 
     @api_command("providers/manifests")

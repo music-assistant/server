@@ -42,6 +42,10 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.constants import (
     CONF_LANGUAGE,
+    DB_TABLE_ALBUMS,
+    DB_TABLE_ARTISTS,
+    DB_TABLE_PLAYLISTS,
+    DB_TABLE_TRACKS,
     VARIOUS_ARTISTS_ID_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
@@ -234,21 +238,36 @@ class MetaDataController(CoreController):
         try:
             timestamp = int(time() - 60 * 60 * 24 * 7)
             query = (
-                "WHERE json_extract(metadata,'$.last_refresh') ISNULL "
-                f"OR json_extract(metadata,'$.last_refresh') < {timestamp}"
+                f"WHERE json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL "
+                f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') < {timestamp}"
             )
             for artist in await self.mass.music.artists.library_items(
                 limit=250, order_by="random", extra_query=query
             ):
                 await self._update_artist_metadata(artist)
+
+            query = (
+                f"WHERE json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
+                f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {timestamp}"
+            )
             for album in await self.mass.music.albums.library_items(
                 limit=250, order_by="random", extra_query=query
             ):
                 await self._update_album_metadata(album)
+
+            query = (
+                f"WHERE json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
+                f"OR json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') < {timestamp}"
+            )
             for track in await self.mass.music.tracks.library_items(
                 limit=50, order_by="random", extra_query=query
             ):
                 await self._update_track_metadata(track)
+
+            query = (
+                f"WHERE json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
+                f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
+            )
             for playlist in await self.mass.music.playlists.library_items(
                 limit=250, order_by="random", extra_query=query
             ):
