@@ -423,8 +423,9 @@ class MetaDataController(CoreController):
         # to not overload the (free) metadata providers with api calls
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
 
-        if self._online_slots_available and (
-            force_refresh or (time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL
+        if force_refresh or (
+            self._online_slots_available
+            and ((time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
         ):
             self._online_slots_available -= 1
             # set timestamp, used to determine when this function was last called
@@ -476,9 +477,9 @@ class MetaDataController(CoreController):
         # NOTE: we only allow this every REFRESH_INTERVAL and a max amount of calls per day
         # to not overload the (free) metadata providers with api calls
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        if (
+        if force_refresh or (
             self._online_slots_available
-            and (force_refresh or (time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
+            and ((time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
             and (album.mbid or album.artists)
         ):
             self._online_slots_available -= 1
@@ -521,9 +522,9 @@ class MetaDataController(CoreController):
         # NOTE: we only allow this every REFRESH_INTERVAL and a max amount of calls per day
         # to not overload the (free) metadata providers with api calls
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        if (
+        if force_refresh or (
             self._online_slots_available
-            and (force_refresh or (time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
+            and ((time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
             and (track.mbid or track.artists or track.album)
         ):
             self._online_slots_available -= 1
