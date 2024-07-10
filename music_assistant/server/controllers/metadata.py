@@ -517,7 +517,7 @@ class MetaDataController(CoreController):
                         provider.name,
                     )
         # update final item in library database
-        await self.mass.music.artists.update_item_in_library(album.item_id, album)
+        await self.mass.music.albums.update_item_in_library(album.item_id, album)
 
     async def _update_track_metadata(self, track: Track, force_refresh: bool = False) -> None:
         """Get/update rich metadata for a track."""
@@ -562,7 +562,7 @@ class MetaDataController(CoreController):
                         provider.name,
                     )
         # update final item in library database
-        await self.mass.music.artists.update_item_in_library(track.item_id, track)
+        await self.mass.music.tracks.update_item_in_library(track.item_id, track)
 
     async def _update_playlist_metadata(
         self, playlist: Playlist, force_refresh: bool = False
@@ -631,11 +631,17 @@ class MetaDataController(CoreController):
         playlist.metadata.images = new_images
         # set timestamp, used to determine when this function was last called
         playlist.metadata.last_refresh = int(time())
+        # update final item in library database
+        await self.mass.music.playlists.update_item_in_library(playlist.item_id, playlist)
 
     async def _update_radio_metadata(self, radio: Radio, force_refresh: bool = False) -> None:
         """Get/update rich metadata for a radio station."""
+        if not force_refresh and (time() - (radio.metadata.last_refresh or 0)) < (REFRESH_INTERVAL):
+            return
         # NOTE: we do not have any metadata for radio so consider this future proofing ;-)
         radio.metadata.last_refresh = int(time())
+        # update final item in library database
+        await self.mass.music.radio.update_item_in_library(radio.item_id, radio)
 
     async def _get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
