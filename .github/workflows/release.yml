@@ -31,7 +31,7 @@ jobs:
             fi
           fi
       - name: Set up Python ${{ env.PYTHON_VERSION }}
-        uses: actions/setup-python@v5.1.0
+        uses: actions/setup-python@v5.1.1
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Install build
