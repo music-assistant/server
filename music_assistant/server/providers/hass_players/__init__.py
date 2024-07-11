@@ -365,6 +365,8 @@ class HomeAssistantPlayers(PlayerProvider):
         supported_features: list[PlayerFeature] = []
         if MediaPlayerEntityFeature.GROUPING in hass_supported_features:
             supported_features.append(PlayerFeature.SYNC)
+        if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
+            supported_features.append(PlayerFeature.PAUSE)
         if MediaPlayerEntityFeature.MEDIA_ENQUEUE in hass_supported_features:
             supported_features.append(PlayerFeature.ENQUEUE_NEXT)
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
