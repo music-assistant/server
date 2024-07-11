@@ -238,9 +238,10 @@ class SnapCastProvider(PlayerProvider):
     def _can_sync_with(self, snap_client: Snapclient):
         snap_client_id = snap_client.identifier
         mass_player = self.mass.players.get(self._get_ma_id(snap_client_id))
-        mass_player.can_sync_with.clear()
-        new_state = [self._get_ma_id(x.identifier) for x in self._snapserver.clients]
-        mass_player.can_sync_with.extend(new_state)
+        mass_player.can_sync_with = [
+            self._get_ma_id(x.identifier) for x in self._snapserver.clients
+        ]
+        self.mass.players.update(mass_player.player_id)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -355,7 +356,7 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.VOLUME_MUTE,
                 ),
-                can_sync_with=[],
+                can_sync_with=(),
                 group_childs=set(),
                 synced_to=self._synced_to(player_id),
             )
