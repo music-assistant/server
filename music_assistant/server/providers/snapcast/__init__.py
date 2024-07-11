@@ -375,7 +375,7 @@ class SnapCastProvider(PlayerProvider):
         mass_player.available = snap_client.connected
         mass_player.synced_to = self._synced_to(mass_player_id)
         if not snap_client.connected:
-            self.cmd_sync(mass_player_id)
+            self.cmd_unsync(mass_player_id)
         if mass_player.active_group is None:
             if stream := self._get_snapstream(mass_player_id):
                 if stream.name.startswith(("MusicAssistant", "default")):
