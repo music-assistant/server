@@ -435,19 +435,18 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
         mass_player = self.mass.players.get(player_id)
-        mass_player.state = PlayerState.IDLE
         if mass_player.synced_to is None:
             group_child_copy = mass_player.group_childs.copy()
             for mass_child_id in group_child_copy:
                 if mass_child_id != player_id:
                     await self.cmd_unsync(mass_child_id)
-            return
-        mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
-        mass_sync_master_player.group_childs.remove(player_id)
-        mass_player.synced_to = None
-        snap_client_id = self._get_snapclient_id(player_id)
-        group = self._get_snapgroup(player_id)
-        await group.remove_client(snap_client_id)
+        else:
+            mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
+            mass_sync_master_player.group_childs.remove(player_id)
+            mass_player.synced_to = None
+            snap_client_id = self._get_snapclient_id(player_id)
+            group = self._get_snapgroup(player_id)
+            await group.remove_client(snap_client_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
