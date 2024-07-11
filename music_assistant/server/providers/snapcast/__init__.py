@@ -235,16 +235,15 @@ class SnapCastProvider(PlayerProvider):
         else:
             return self._get_ma_id(snap_client_id)
 
-    def _can_sync_with(self, snap_client: Snapclient):
-        snap_client_id = snap_client.identifier
-        mass_player = self.mass.players.get(self._get_ma_id(snap_client_id))
-        mass_player.can_sync_with.clear()
-        new_state = [
-            self._get_ma_id(x.identifier)
-            for x in self._snapserver.clients
-            if x.identifier != snap_client.identifier and x.connected
-        ]
-        mass_player.can_sync_with.extend(new_state)
+    def _can_sync_with(self, player_id: str) -> None:
+        mass_player = self.mass.players.get(player_id)
+        mass_player.can_sync_with = tuple(
+            self._get_ma_id(snap_client.identifier)
+            for snap_client in self._snapserver.clients
+            if self._get_ma_id(snap_client.identifier) != player_id and snap_client.connected
+        )
+
+        self.mass.players.update(mass_player.player_id)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -436,7 +435,7 @@ class SnapCastProvider(PlayerProvider):
         """Unsync Snapcast player."""
         mass_player = self.mass.players.get(player_id)
         if mass_player.synced_to is None:
-            for mass_child_id in list(group_child_copy):
+            for mass_child_id in list(mass_player.group_child):
                 if mass_child_id != player_id:
                     await self.cmd_unsync(mass_child_id)
             return
