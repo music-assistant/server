@@ -235,9 +235,8 @@ class SnapCastProvider(PlayerProvider):
         else:
             return self._get_ma_id(snap_client_id)
 
-    def _can_sync_with(self, snap_client: Snapclient):
-        snap_client_id = snap_client.identifier
-        mass_player = self.mass.players.get(self._get_ma_id(snap_client_id))
+    def _can_sync_with(self, player_id: str) -> None:
+        mass_player = self.mass.players.get(player_id)
         mass_player.can_sync_with = tuple(
             self._get_ma_id(x.identifier) for x in self._snapserver.clients
         )
@@ -384,7 +383,7 @@ class SnapCastProvider(PlayerProvider):
             else:
                 mass_player.active_source = mass_player_id
         mass_player.available = snap_client.connected
-        self._can_sync_with(snap_client)
+        self._can_sync_with(mass_player_id)
         self._group_childs(mass_player_id)
         self.mass.players.update(mass_player_id)
 
