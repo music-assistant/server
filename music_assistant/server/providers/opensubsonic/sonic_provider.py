@@ -67,6 +67,11 @@ CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
 
+# We need the following prefix because of the way that Navidrome reports artists for individual
+# tracks on Various Artists albums, see the note in the _parse_track() method and the handling
+# in get_artist()
+NAVI_VARIOUS_PREFIX = "MA-NAVIDROME-"
+
 
 class OpenSonicProvider(MusicProvider):
     """Provider for Open Subsonic servers."""
@@ -404,12 +409,30 @@ class OpenSonicProvider(MusicProvider):
                 track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
 
         if not track.artists:
-            logging.getLogger("libopensonic").info(
-                f"Unable to find artist ID for track '{sonic_song.title}' with "
-                f"ID '{sonic_song.id}'."
-            )
-            track.artists.append(
-                Artist(
+            if sonic_song.artist and not sonic_song.artist_id:
+                # This is how Navidrome handles tracks from albums which are marked
+                # 'Various Artists'. Unfortunately, we cannot lookup this artist independently
+                # because it will not have an entry in the artists table so the best we can do it
+                # add a 'fake' id with the proper artist name and have get_artist() check for this
+                # id and handle it locally.
+                artist = Artist(
+                    item_id=f"{NAVI_VARIOUS_PREFIX}{sonic_song.artist}",
+                    provider=self.domain,
+                    name=sonic_song.artist,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=UNKNOWN_ARTIST_ID,
+                            provider_domain=self.domain,
+                            provider_instance=self.instance_id,
+                        )
+                    },
+                )
+            else:
+                logging.getLogger("libopensonic").info(
+                    f"Unable to find artist ID for track '{sonic_song.title}' with "
+                    f"ID '{sonic_song.id}'."
+                )
+                artist = Artist(
                     item_id=UNKNOWN_ARTIST_ID,
                     name=UNKNOWN_ARTIST,
                     provider=self.instance_id,
@@ -421,7 +444,8 @@ class OpenSonicProvider(MusicProvider):
                         )
                     },
                 )
-            )
+
+            track.artists.append(artist)
         return track
 
     def _parse_playlist(self, sonic_playlist: SonicPlaylist) -> Playlist:
@@ -610,6 +634,20 @@ class OpenSonicProvider(MusicProvider):
                     )
                 },
             )
+        elif prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
+            # Special case for handling track artists on various artists album for Navidrome.
+            return Artist(
+                item_id=prov_artist_id,
+                name=prov_artist_id.removeprefix(NAVI_VARIOUS_PREFIX),
+                provider=self.instance_id,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=prov_artist_id,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
 
         try:
             sonic_artist: SonicArtist = await self._run_async(
@@ -641,7 +679,7 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Return a list of all Albums by specified Artist."""
-        if prov_artist_id == UNKNOWN_ARTIST_ID:
+        if prov_artist_id == UNKNOWN_ARTIST_ID or prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
             return []
 
         try:
@@ -690,7 +728,7 @@ class OpenSonicProvider(MusicProvider):
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""
         # We have seen top tracks requested for the UNKNOWN_ARTIST ID, protect against that
-        if prov_artist_id == UNKNOWN_ARTIST_ID:
+        if prov_artist_id == UNKNOWN_ARTIST_ID or prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
             return []
 
         try:
