@@ -367,24 +367,26 @@ class SnapCastProvider(PlayerProvider):
 
     def _handle_player_update(self, snap_client: Snapclient) -> None:
         """Process Snapcast update to Player controller."""
-        player_id = self._get_ma_id(snap_client.identifier)
-        player = self.mass.players.get(player_id)
-        player.name = snap_client.friendly_name
-        player.volume_level = snap_client.volume
-        player.volume_muted = snap_client.muted
-        player.available = snap_client.connected
-        player.synced_to = self._synced_to(player_id)
-        if player.active_group is None:
-            if stream := self._get_snapstream(player_id):
+        mass_player_id = self._get_ma_id(snap_client.identifier)
+        mass_player = self.mass.players.get(mass_player_id)
+        mass_player.name = snap_client.friendly_name
+        mass_player.volume_level = snap_client.volume
+        mass_player.volume_muted = snap_client.muted
+        mass_player.available = snap_client.connected
+        mass_player.synced_to = self._synced_to(mass_player_id)
+        if not snap_client.connected:
+            self.cmd_sync(mass_player_id)
+        if mass_player.active_group is None:
+            if stream := self._get_snapstream(mass_player_id):
                 if stream.name.startswith(("MusicAssistant", "default")):
-                    player.active_source = player_id
+                    mass_player.active_source = mass_player_id
                 else:
-                    player.active_source = stream.name
+                    mass_player.active_source = stream.name
             else:
-                player.active_source = player_id
+                mass_player.active_source = mass_player_id
         self._can_sync_with(snap_client)
-        self._group_childs(player_id)
-        self.mass.players.update(player_id)
+        self._group_childs(mass_player_id)
+        self.mass.players.update(mass_player_id)
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -405,13 +407,13 @@ class SnapCastProvider(PlayerProvider):
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""
-        player = self.mass.players.get(player_id, raise_unavailable=False)
+        mass_player = self.mass.players.get(player_id, raise_unavailable=False)
         if stream_task := self._stream_tasks.pop(player_id, None):
             if not stream_task.done():
                 stream_task.cancel()
-        player.state = PlayerState.IDLE
+        mass_player.state = PlayerState.IDLE
         self._set_childs_state(player_id)
-        self.mass.players.register_or_update(player)
+        self.mass.players.register_or_update(mass_player)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
 
@@ -422,10 +424,10 @@ class SnapCastProvider(PlayerProvider):
 
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Sync Snapcast player."""
-        group = self._get_snapgroup(target_player)
+        snap_group = self._get_snapgroup(target_player)
         mass_target_player = self.mass.players.get(target_player)
-        if self._get_snapclient_id(player_id) not in group.clients:
-            await group.add_client(self._get_snapclient_id(player_id))
+        if self._get_snapclient_id(player_id) not in snap_group.clients:
+            await snap_group.add_client(self._get_snapclient_id(player_id))
             mass_player = self.mass.players.get(player_id)
             mass_player.synced_to = target_player
             mass_target_player.group_childs.add(player_id)
@@ -453,8 +455,8 @@ class SnapCastProvider(PlayerProvider):
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        player = self.mass.players.get(player_id)
-        if player.synced_to:
+        mass_player = self.mass.players.get(player_id)
+        if mass_player.synced_to:
             msg = "A synced player cannot receive play commands directly"
             raise RuntimeError(msg)
         # stop any existing streams first
@@ -519,10 +521,10 @@ class SnapCastProvider(PlayerProvider):
                     audio_output=stream_path,
                     logger=self.logger.getChild("ffmpeg"),
                 ) as ffmpeg_proc:
-                    player.state = PlayerState.PLAYING
-                    player.current_media = media
-                    player.elapsed_time = 0
-                    player.elapsed_time_last_updated = time.time()
+                    mass_player.state = PlayerState.PLAYING
+                    mass_player.current_media = media
+                    mass_player.elapsed_time = 0
+                    mass_player.elapsed_time_last_updated = time.time()
                     self.mass.players.update(player_id)
                     self._set_childs_state(player_id)
                     await ffmpeg_proc.wait()
@@ -530,7 +532,7 @@ class SnapCastProvider(PlayerProvider):
                     # to ensure that all snapclients have consumed the audio
                     await asyncio.sleep(5)
 
-                    player.state = PlayerState.IDLE
+                    mass_player.state = PlayerState.IDLE
                     self.mass.players.update(player_id)
                     self._set_childs_state(player_id)
 
@@ -551,9 +553,9 @@ class SnapCastProvider(PlayerProvider):
 
     def _get_snapstream(self, player_id: str) -> Snapstream | None:
         """Get snapcast stream for given player_id."""
-        if group := self._get_snapgroup(player_id):
+        if snap_group := self._get_snapgroup(player_id):
             with suppress(KeyError):
-                return self._snapserver.stream(group.stream)
+                return self._snapserver.stream(snap_group.stream)
         return None
 
     def _synced_to(self, player_id: str) -> str | None:
