@@ -239,11 +239,7 @@ class SnapCastProvider(PlayerProvider):
         snap_client_id = snap_client.identifier
         mass_player = self.mass.players.get(self._get_ma_id(snap_client_id))
         mass_player.can_sync_with.clear()
-        new_state = [
-            self._get_ma_id(x.identifier)
-            for x in self._snapserver.clients
-            if x.identifier != snap_client.identifier and x.connected
-        ]
+        new_state = [self._get_ma_id(x.identifier) for x in self._snapserver.clients]
         mass_player.can_sync_with.extend(new_state)
 
     @property
