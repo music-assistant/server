@@ -209,8 +209,8 @@ class AppleMusicProvider(MusicProvider):
                 )
                 continue
             song_catalog_ids.append(catalog_id)
-        # Obtain catalog info per 300 songs
-        max_limit = 300
+        # Obtain catalog info per 200 songs, the documented limit of 300 results in a 504 timeout
+        max_limit = 200
         for i in range(0, len(song_catalog_ids), max_limit):
             catalog_ids = song_catalog_ids[i : i + max_limit]
             catalog_endpoint = f"catalog/{self._storefront}/songs"
@@ -384,7 +384,14 @@ class AppleMusicProvider(MusicProvider):
             attributes = artist_obj["attributes"]
         else:
             artist_id = artist_obj["id"]
-            attributes = {}
+            self.logger.debug("No attributes found for artist %s", artist_obj)
+            # No more details available other than the id, return an ItemMapping
+            return ItemMapping(
+                media_type=MediaType.ARTIST,
+                provider=self.instance_id,
+                item_id=artist_id,
+                name=artist_id,
+            )
         artist = Artist(
             item_id=artist_id,
             name=attributes.get("name"),
