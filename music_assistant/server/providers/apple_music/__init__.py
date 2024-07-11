@@ -238,8 +238,6 @@ class AppleMusicProvider(MusicProvider):
 
     async def get_album(self, prov_album_id) -> Album:
         """Get full album details by id."""
-        # Debug issue https://github.com/music-assistant/hass-music-assistant/issues/2431
-        self.logger.debug("Get album %s", prov_album_id)
         endpoint = f"catalog/{self._storefront}/albums/{prov_album_id}"
         response = await self._get_data(endpoint, include="artists")
         return self._parse_album(response["data"][0])
