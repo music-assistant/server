@@ -371,7 +371,6 @@ class SnapCastProvider(PlayerProvider):
         mass_player.available = snap_client.connected
         mass_player.synced_to = self._synced_to(mass_player_id)
         if not snap_client.connected:
-            mass_player.state = PlayerState.IDLE
             asyncio.create_task(self.cmd_unsync(mass_player_id))
         if mass_player.active_group is None:
             if stream := self._get_snapstream(mass_player_id):
@@ -443,6 +442,7 @@ class SnapCastProvider(PlayerProvider):
         mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
         mass_sync_master_player.group_childs.remove(player_id)
         mass_player.synced_to = None
+        mass_player.state = PlayerState.IDLE
         snap_client_id = self._get_snapclient_id(player_id)
         group = self._get_snapgroup(player_id)
         await group.remove_client(snap_client_id)
