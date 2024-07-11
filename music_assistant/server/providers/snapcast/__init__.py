@@ -115,9 +115,9 @@ async def get_config_entries(
             range=(500, 6000),
             default_value=1000,
             label="Snapserver buffer size",
-            description="Buffer[ms].The end-to-end latency,"
-            "from capturing a sample on the snapserver until"
-            "the sample is played-out on the client",
+            description="Buffer[ms].The end-to-end latency, "
+            "from capturing a sample on the snapserver until "
+            "the sample is played-out on the client ",
             required=False,
             category="Built-in Snapserver Settings",
             hidden=not local_snapserver_present,
@@ -235,12 +235,16 @@ class SnapCastProvider(PlayerProvider):
         else:
             return self._get_ma_id(snap_client_id)
 
-    def _can_sync_with(self, snap_client: Snapclient) -> dict:
-        return tuple(
+    def _can_sync_with(self, snap_client: Snapclient):
+        snap_client_id = snap_client.identifier
+        mass_player = self.mass.players.get(self._get_ma_id(snap_client_id))
+        mass_player.can_sync_with.clear()
+        new_state = [
             self._get_ma_id(x.identifier)
             for x in self._snapserver.clients
             if x.identifier != snap_client.identifier and x.connected
-        )
+        ]
+        mass_player.can_sync_with.extend(new_state)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -355,6 +359,9 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.VOLUME_SET,
                     PlayerFeature.VOLUME_MUTE,
                 ),
+                can_sync_with=[],
+                group_childs=set(),
+                synced_to=self._synced_to(player_id),
             )
         self.mass.players.register_or_update(player)
 
@@ -366,9 +373,7 @@ class SnapCastProvider(PlayerProvider):
         player.volume_level = snap_client.volume
         player.volume_muted = snap_client.muted
         player.available = snap_client.connected
-        player.can_sync_with = self._can_sync_with(snap_client)
         player.synced_to = self._synced_to(player_id)
-        player.group_childs = self._group_childs(player_id)
         if player.active_group is None:
             if stream := self._get_snapstream(player_id):
                 if stream.name.startswith(("MusicAssistant", "default")):
@@ -377,7 +382,9 @@ class SnapCastProvider(PlayerProvider):
                     player.active_source = stream.name
             else:
                 player.active_source = player_id
-        self.mass.players.register_or_update(player)
+        self._can_sync_with(snap_client)
+        self._group_childs(player_id)
+        self.mass.players.update(player_id)
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
@@ -403,7 +410,7 @@ class SnapCastProvider(PlayerProvider):
             if not stream_task.done():
                 stream_task.cancel()
         player.state = PlayerState.IDLE
-        self._set_childs_state(player_id, PlayerState.IDLE)
+        self._set_childs_state(player_id)
         self.mass.players.register_or_update(player)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
@@ -416,24 +423,33 @@ class SnapCastProvider(PlayerProvider):
     async def cmd_sync(self, player_id: str, target_player: str) -> None:
         """Sync Snapcast player."""
         group = self._get_snapgroup(target_player)
+        mass_target_player = self.mass.players.get(target_player)
         if self._get_snapclient_id(player_id) not in group.clients:
             await group.add_client(self._get_snapclient_id(player_id))
-            player = self.mass.players.get(player_id)
-            player.synced_to = self._synced_to(player_id)
+            mass_player = self.mass.players.get(player_id)
+            mass_player.synced_to = target_player
+            mass_target_player.group_childs.add(player_id)
+            self.mass.players.update(player_id)
             self.mass.players.update(target_player)
-            # update all players
-            self._handle_update()
 
     async def cmd_unsync(self, player_id: str) -> None:
         """Unsync Snapcast player."""
+        mass_player = self.mass.players.get(player_id)
+        if mass_player.synced_to is None:
+            group_child_copy = mass_player.group_childs.copy()
+            for mass_child_id in group_child_copy:
+                if mass_child_id != player_id:
+                    await self.cmd_unsync(mass_child_id)
+            return
+        mass_sync_master_player = self.mass.players.get(mass_player.synced_to)
+        mass_sync_master_player.group_childs.remove(player_id)
+        mass_player.synced_to = None
         snap_client_id = self._get_snapclient_id(player_id)
         group = self._get_snapgroup(player_id)
         await group.remove_client(snap_client_id)
         # assign default/empty stream to the player
         await self._get_snapgroup(player_id).set_stream("default")
         await self.cmd_stop(player_id=player_id)
-        # update all players
-        self._handle_update()
 
     async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
@@ -508,7 +524,7 @@ class SnapCastProvider(PlayerProvider):
                     player.elapsed_time = 0
                     player.elapsed_time_last_updated = time.time()
                     self.mass.players.update(player_id)
-                    self._set_childs_state(player_id, player.state)
+                    self._set_childs_state(player_id)
                     await ffmpeg_proc.wait()
                     # we need to wait a bit for the stream status to become idle
                     # to ensure that all snapclients have consumed the audio
@@ -516,7 +532,7 @@ class SnapCastProvider(PlayerProvider):
 
                     player.state = PlayerState.IDLE
                     self.mass.players.update(player_id)
-                    self._set_childs_state(player_id, player.state)
+                    self._set_childs_state(player_id)
 
             finally:
                 self.logger.debug("Finished streaming to %s", stream_path)
@@ -551,11 +567,17 @@ class SnapCastProvider(PlayerProvider):
 
     def _group_childs(self, player_id: str) -> set[str]:
         """Return player_ids of the players synced to this player."""
+        mass_player = self.mass.players.get(player_id, raise_unavailable=False)
         snap_group = self._get_snapgroup(player_id)
-        return {
-            self._get_ma_id(snap_client_id)
+        mass_player.group_childs.clear()
+        if mass_player.synced_to is not None:
+            return
+        mass_player.group_childs.add(player_id)
+        {
+            mass_player.group_childs.add(self._get_ma_id(snap_client_id))
             for snap_client_id in snap_group.clients
-            if len(snap_group.clients) > 1
+            if self._get_ma_id(snap_client_id) != player_id
+            and self._snapserver.client(snap_client_id).connected
         }
 
     async def _create_stream(self) -> tuple[Snapstream, int]:
@@ -580,11 +602,14 @@ class SnapCastProvider(PlayerProvider):
         msg = "Unable to create stream - No free port found?"
         raise RuntimeError(msg)
 
-    def _set_childs_state(self, player_id: str, state: PlayerState) -> None:
+    def _set_childs_state(self, player_id: str) -> None:
         """Set the state of the child`s of the player."""
-        for child_player_id in self._group_childs(player_id):
-            player = self.mass.players.get(child_player_id)
-            player.state = state
+        mass_player = self.mass.players.get(player_id)
+        for child_player_id in mass_player.group_childs:
+            if child_player_id == player_id:
+                continue
+            mass_child_player = self.mass.players.get(child_player_id)
+            mass_child_player.state = mass_player.state
             self.mass.players.update(child_player_id)
 
     async def _builtin_server_runner(self) -> None:
