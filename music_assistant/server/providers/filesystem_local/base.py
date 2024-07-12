@@ -258,14 +258,11 @@ class FileSystemProviderBase(MusicProvider):
             )
         return result
 
-    async def browse(self, path: str, offset: int, limit: int) -> list[MediaItemType | ItemMapping]:
+    async def browse(self, path: str) -> list[MediaItemType | ItemMapping]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        if offset:
-            # we do not support pagination
-            return []
         items: list[MediaItemType | ItemMapping] = []
         item_path = path.split("://", 1)[1]
         if not item_path:

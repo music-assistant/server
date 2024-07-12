@@ -312,7 +312,7 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(self, offset: int, limit: int, path: str | None = None) -> list[MediaItemType]:
+    async def browse(self, path: str | None = None) -> list[MediaItemType]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider
@@ -342,13 +342,13 @@ class MusicController(CoreController):
             )
             if not prov:
                 return prepend_items
-        elif offset == 0:
+        else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
                 BrowseFolder(item_id="back", provider=provider_instance, path=back_path, name="..")
             )
         # limit -1 to account for the prepended items
-        prov_items = await prov.browse(path=path, offset=offset, limit=limit)
+        prov_items = await prov.browse(path=path)
         return prepend_items + prov_items
 
     @api_command("music/recently_played_items")

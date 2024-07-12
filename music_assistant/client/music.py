@@ -437,18 +437,11 @@ class Music:
     async def browse(
         self,
         path: str | None = None,
-        limit: int | None = None,
-        offset: int | None = None,
     ) -> list[MediaItemType | ItemMapping]:
         """Browse Music providers."""
         return [
             media_from_dict(obj)
-            for obj in await self.client.send_command(
-                "music/browse",
-                path=path,
-                limit=limit,
-                offset=offset,
-            )
+            for obj in await self.client.send_command("music/browse", path=path)
         ]
 
     async def recently_played(

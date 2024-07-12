@@ -908,6 +908,8 @@ class AirplayProvider(PlayerProvider):
         )
         self.mass.players.register_or_update(mass_player)
         # update can_sync_with field of all other players
+        # this ensure that the field always contains all player ids,
+        # even when a player joins later on
         for player in self.players:
             if player.player_id == player_id:
                 continue
