@@ -359,7 +359,7 @@ class SnapCastProvider(PlayerProvider):
                     PlayerFeature.VOLUME_MUTE,
                 ),
                 can_sync_with=[],
-                group_childs=set(),
+                group_childs=(),
                 synced_to=self._synced_to(player_id),
             )
         self.mass.players.register_or_update(player)
