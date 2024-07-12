@@ -115,7 +115,7 @@ async def get_config_entries(
             range=(500, 6000),
             default_value=1000,
             label="Snapserver buffer size",
-            description="Buffer[ms].The end-to-end latency, "
+            description="Buffer[ms]. The end-to-end latency, "
             "from capturing a sample on the snapserver until "
             "the sample is played-out on the client ",
             required=False,
