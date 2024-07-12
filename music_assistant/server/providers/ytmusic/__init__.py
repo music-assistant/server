@@ -108,6 +108,9 @@ SUPPORTED_FEATURES = (
     ProviderFeature.SIMILAR_TRACKS,
 )
 
+YT_DLP_CACHE_SECTION = "youtube-oauth2"
+YT_DLP_CACHE_KEY = "oauth_token"
+
 # TODO: fix disabled tests
 # ruff: noqa: PLW2901, RET504
 
@@ -202,6 +205,8 @@ class YoutubeMusicProvider(MusicProvider):
                 break
         else:
             self.language = "en"
+        # Make sure to write the ytdlp cache on startup
+        await self._update_ytdlp_oauth_token_cache()
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
@@ -812,7 +817,7 @@ class YoutubeMusicProvider(MusicProvider):
                     "token_type": self.config.get_value(CONF_TOKEN_TYPE),
                     "refresh_token": self.config.get_value(CONF_REFRESH_TOKEN),
                 }
-                ydl.cache.store("youtube-oauth2", "token_data", token_data)
+                ydl.cache.store(YT_DLP_CACHE_SECTION, YT_DLP_CACHE_KEY, token_data)
                 self.logger.debug("Updated ytdlp oauth token cache with new OAuth token.")
 
         await asyncio.to_thread(_update_oauth_cache)
