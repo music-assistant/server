@@ -240,7 +240,7 @@ class SnapCastProvider(PlayerProvider):
         mass_player.can_sync_with = tuple(
             self._get_ma_id(snap_client.identifier)
             for snap_client in self._snapserver.clients
-            if self._get_ma_id(snap_client.identifier) != player_id and snap_client.connected
+            if self._get_ma_id(snap_client.identifier) != player_id
         )
 
         self.mass.players.update(mass_player.player_id)
