@@ -320,12 +320,10 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
             for deezer_track in await album.get_tracks()
         ]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
-        if offset:
+        if page > 0:
             # paging not supported, we always return the whole list at once
             return []
         # TODO: access the underlying paging on the deezer api (if possible))
@@ -336,7 +334,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 self.parse_track(
                     track=deezer_track,
                     user_country=self.gw_client.user_country,
-                    position=offset + index,
+                    position=index,
                 )
             )
         return result

@@ -298,8 +298,7 @@ class Music:
         self,
         item_id: str,
         provider_instance_id_or_domain: str,
-        limit: int | None = None,
-        offset: int | None = None,
+        page: int = 0,
     ) -> list[PlaylistTrack]:
         """Get tracks for given playlist."""
         return [
@@ -308,8 +307,7 @@ class Music:
                 "music/playlists/playlist_tracks",
                 item_id=item_id,
                 provider_instance_id_or_domain=provider_instance_id_or_domain,
-                limit=limit,
-                offset=offset,
+                page=page,
             )
         ]
 

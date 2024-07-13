@@ -353,15 +353,15 @@ class TidalProvider(MusicProvider):
             self.logger.warning(f"Failed to get toptracks for artist {prov_artist_id}: {err}")
             return []
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         tidal_session = await self._get_tidal_session()
         result: list[Track] = []
+        page_size = 200
+        offset = page * page_size
         track_obj: TidalTrack  # satisfy the type checker
         tidal_tracks = await get_playlist_tracks(
-            tidal_session, prov_playlist_id, limit=limit, offset=offset
+            tidal_session, prov_playlist_id, limit=page_size, offset=offset
         )
         for index, track_obj in enumerate(tidal_tracks, 1):
             track = self._parse_track(track_obj=track_obj)
@@ -409,11 +409,11 @@ class TidalProvider(MusicProvider):
         """Remove track(s) from playlist."""
         prov_track_ids = []
         tidal_session = await self._get_tidal_session()
-        for track in await self.get_playlist_tracks(prov_playlist_id, 0, 10000):
-            if track.position in positions_to_remove:
-                prov_track_ids.append(track.item_id)
-            if len(prov_track_ids) == len(positions_to_remove):
-                break
+        for pos in positions_to_remove:
+            for tidal_track in await get_playlist_tracks(
+                tidal_session, prov_playlist_id, limit=1, offset=pos - 1
+            ):
+                prov_track_ids.append(tidal_track.id)
         return await remove_playlist_tracks(tidal_session, prov_playlist_id, prov_track_ids)
 
     async def create_playlist(self, name: str) -> Playlist:

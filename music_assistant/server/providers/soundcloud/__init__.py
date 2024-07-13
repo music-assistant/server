@@ -255,23 +255,20 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
-        # TODO: soundcloud doesn't seem to support paging for playlist tracks ?!
+        if page > 0:
+            # TODO: soundcloud doesn't seem to support paging for playlist tracks ?!
+            return result
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
             return result
-        if offset:
-            # paging not supported, we always return the whole list at once
-            return []
         for index, item in enumerate(playlist_obj["tracks"], 1):
+            # TODO: is it really needed to grab the entire track with an api call ?
             song = await self._soundcloud.get_track_details(item["id"])
             try:
-                # TODO: is it really needed to grab the entire track with an api call ?
-                if track := await self._parse_track(song[0], index + offset):
+                if track := await self._parse_track(song[0], index):
                     result.append(track)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", song, exc_info=error)

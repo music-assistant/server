@@ -665,11 +665,12 @@ class OpenSonicProvider(MusicProvider):
             raise MediaNotFoundError(msg) from e
         return self._parse_playlist(sonic_playlist)
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
+        if page > 0:
+            # paging not supported, we always return the whole list at once
+            return result
         try:
             sonic_playlist: SonicPlaylist = await self._run_async(
                 self._conn.getPlaylist, prov_playlist_id
@@ -677,13 +678,11 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from e
-        if offset:
-            # paging not supported, we always return the whole list at once
-            return []
+
         # TODO: figure out if subsonic supports paging here
         for index, sonic_song in enumerate(sonic_playlist.songs, 1):
             track = self._parse_track(sonic_song)
-            track.position = offset + index
+            track.position = index
             result.append(track)
         return result
 
@@ -730,11 +729,12 @@ class OpenSonicProvider(MusicProvider):
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
     ) -> None:
         """Remove selected positions from the playlist."""
+        idx_to_remove = [pos - 1 for pos in positions_to_remove]
         try:
             await self._run_async(
                 self._conn.updatePlaylist,
                 lid=prov_playlist_id,
-                songIndexesToRemove=list(positions_to_remove),
+                songIndexesToRemove=idx_to_remove,
             )
         except SonicError:
             msg = f"Failed to remove songs from {prov_playlist_id}, check your permissions."

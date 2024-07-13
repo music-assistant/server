@@ -521,11 +521,12 @@ class FileSystemProviderBase(MusicProvider):
             if any(x.provider_instance == self.instance_id for x in track.provider_mappings)
         ]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
+        if page > 0:
+            # paging not (yet) supported
+            return result
         if not await self.exists(prov_playlist_id):
             msg = f"Playlist path does not exist: {prov_playlist_id}"
             raise MediaNotFoundError(msg)
@@ -544,13 +545,11 @@ class FileSystemProviderBase(MusicProvider):
             else:
                 playlist_lines = parse_pls(playlist_data)
 
-            playlist_lines = playlist_lines[offset : offset + limit]
-
-            for line_no, playlist_line in enumerate(playlist_lines):
+            for idx, playlist_line in enumerate(playlist_lines, 1):
                 if track := await self._parse_playlist_line(
                     playlist_line.path, os.path.dirname(prov_playlist_id)
                 ):
-                    track.position = offset + line_no
+                    track.position = idx
                     result.append(track)
 
         except Exception as err:  # pylint: disable=broad-except
@@ -623,7 +622,8 @@ class FileSystemProviderBase(MusicProvider):
             playlist_items = parse_pls(playlist_data)
         # remove items by index
         for i in sorted(positions_to_remove, reverse=True):
-            del playlist_items[i]
+            # position = index + 1
+            del playlist_items[i - 1]
         # build new playlist data
         new_playlist_data = "#EXTM3U\n"
         for item in playlist_items:

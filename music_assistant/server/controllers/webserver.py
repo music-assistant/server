@@ -347,7 +347,10 @@ class WebsocketClientHandler:
         try:
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result = handler.target(**args)
-            if asyncio.iscoroutine(result):
+            if hasattr(result, "__anext__"):
+                # handle async generator
+                result = [x async for x in result]
+            elif asyncio.iscoroutine(result):
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:  # pylint: disable=broad-except

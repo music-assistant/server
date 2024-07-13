@@ -348,14 +348,14 @@ class PlexProvider(MusicProvider):
                 if token == AUTH_TOKEN_UNAUTH:
                     # Doing local connection, not via plex.tv.
                     plex_server = PlexServer(plex_url)
-                    # I don't think PlexAPI intends for this to be accessible, but we need it.
-                    self._baseurl = plex_server._baseurl
                 else:
                     plex_server = PlexServer(
                         plex_url,
                         token,
                         session=session,
                     )
+                # I don't think PlexAPI intends for this to be accessible, but we need it.
+                self._baseurl = plex_server._baseurl
 
             except plexapi.exceptions.BadRequest as err:
                 if "Invalid token" in str(err):
@@ -882,12 +882,10 @@ class PlexProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
-        if offset:
+        if page > 0:
             # paging not supported, we always return the whole list at once
             return []
         plex_playlist: PlexPlaylist = await self._get_data(prov_playlist_id, PlexPlaylist)

@@ -356,19 +356,17 @@ class BuiltinProvider(MusicProvider):
         self.mass.config.set(key, stored_items)
         return True
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
+        if page > 0:
+            # paging not supported, we always return the whole list at once
+            return []
         if prov_playlist_id in BUILTIN_PLAYLISTS:
-            if offset:
-                # paging not supported, we always return the whole list at once
-                return []
             return await self._get_builtin_playlist_tracks(prov_playlist_id)
         # user created universal playlist
         result: list[Track] = []
-        playlist_items = await self._read_playlist_file_items(prov_playlist_id, offset, limit)
-        for index, uri in enumerate(playlist_items):
+        playlist_items = await self._read_playlist_file_items(prov_playlist_id)
+        for index, uri in enumerate(playlist_items, 1):
             try:
                 media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
                 media_controller = self.mass.music.get_controller(media_type)
@@ -383,7 +381,7 @@ class BuiltinProvider(MusicProvider):
                         item_id, provider_instance_id_or_domain
                     )
                 assert isinstance(track, Track)
-                track.position = offset + index
+                track.position = index
                 result.append(track)
             except (MediaNotFoundError, InvalidDataError, ProviderUnavailableError) as err:
                 self.logger.warning(
@@ -590,9 +588,7 @@ class BuiltinProvider(MusicProvider):
         except KeyError:
             raise MediaNotFoundError(f"No built in playlist: {builtin_playlist_id}")
 
-    async def _read_playlist_file_items(
-        self, playlist_id: str, offset: int = 0, limit: int = 100000
-    ) -> list[str]:
+    async def _read_playlist_file_items(self, playlist_id: str) -> list[str]:
         """Return lines of a playlist file."""
         playlist_file = os.path.join(self._playlists_dir, playlist_id)
         if not await asyncio.to_thread(os.path.isfile, playlist_file):
@@ -602,7 +598,7 @@ class BuiltinProvider(MusicProvider):
             aiofiles.open(playlist_file, "r", encoding="utf-8") as _file,
         ):
             lines = await _file.readlines()
-            return [x.strip() for x in lines[offset : offset + limit]]
+            return [x.strip() for x in lines]
 
     async def _write_playlist_file_items(self, playlist_id: str, lines: list[str]) -> None:
         """Return lines of a playlist file."""

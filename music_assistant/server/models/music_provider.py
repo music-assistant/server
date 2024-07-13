@@ -148,7 +148,9 @@ class MusicProvider(Provider):
             raise NotImplementedError
 
     async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
+        self,
+        prov_playlist_id: str,
+        page: int = 0,
     ) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
