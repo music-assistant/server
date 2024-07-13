@@ -697,6 +697,11 @@ class MusicController(CoreController):
             # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
                 await provider.sync_library(media_types)
+            # precache playlist tracks
+            if MediaType.PLAYLIST in media_types:
+                for playlist in await self.playlists.library_items(provider=provider_instance):
+                    async for _ in self.playlists.tracks(playlist.item_id, playlist.provider):
+                        pass
 
         # we keep track of running sync tasks
         task = self.mass.create_task(run_sync())
