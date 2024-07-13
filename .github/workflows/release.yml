@@ -20,12 +20,12 @@ jobs:
       - name: Validate version number
         run: >-
           if [[ "${{ github.event.release.prerelease }}" == "true" ]]; then
-            if ! [[ "${{ steps.vars.outputs.tag }}" =~ "b" ]] || [[ "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
+            if ! [[[[ "${{ steps.vars.outputs.tag }}" =~ "b" ]] || [[ "${{ steps.vars.outputs.tag }}" =~ "rc" ]]]]; then
             echo "Pre-release: Tag is missing beta suffix (${{ steps.vars.outputs.tag }})"
               exit 1
             fi
           else
-            if [[ "${{ steps.vars.outputs.tag }}" =~ "b" ]] || [[ "${{ steps.vars.outputs.tag }}" =~ "rc" ]]; then
+            if [[[[ "${{ steps.vars.outputs.tag }}" =~ "b" ]] || [[ "${{ steps.vars.outputs.tag }}" =~ "rc" ]]]]; then
               echo "Release: Tag must not have a beta (or rc) suffix (${{ steps.vars.outputs.tag }})"
               exit 1
             fi
