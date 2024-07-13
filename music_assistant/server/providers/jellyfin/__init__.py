@@ -437,12 +437,10 @@ class JellyfinProvider(MusicProvider):
             raise MediaNotFoundError(f"Item {prov_playlist_id} not found")
         return parse_playlist(self.instance_id, self._client, playlist)
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
-        if offset:
+        if page > 0:
             # paging not supported, we always return the whole list at once
             return []
         # TODO: Does Jellyfin support paging here?
@@ -456,7 +454,7 @@ class JellyfinProvider(MusicProvider):
                     self.logger, self.instance_id, self._client, jellyfin_track
                 ):
                     if not track.position:
-                        track.position = offset + index
+                        track.position = index
                     result.append(track)
             except (KeyError, ValueError) as err:
                 self.logger.error(

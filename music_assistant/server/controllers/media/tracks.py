@@ -14,7 +14,14 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     UnsupportedFeaturedException,
 )
-from music_assistant.common.models.media_items import Album, Artist, ItemMapping, Track, UniqueList
+from music_assistant.common.models.media_items import (
+    Album,
+    Artist,
+    ItemMapping,
+    ProviderMapping,
+    Track,
+    UniqueList,
+)
 from music_assistant.constants import (
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
@@ -29,6 +36,7 @@ from music_assistant.server.helpers.compare import (
     compare_track,
     loose_compare_strings,
 )
+from music_assistant.server.models.music_provider import MusicProvider
 
 from .base import MediaControllerBase
 
@@ -247,23 +255,46 @@ class TracksController(MediaControllerBase[Track]):
                 continue
             if not provider.library_supported(MediaType.TRACK):
                 continue
-            self.logger.debug(
-                "Trying to match track %s on provider %s", db_track.name, provider.name
+            provider_matches = await self.match_provider(
+                provider, db_track, strict=True, ref_albums=track_albums
             )
-            match_found = False
+            for provider_mapping in provider_matches:
+                # 100% match, we update the db with the additional provider mapping(s)
+                await self.add_provider_mapping(db_track.item_id, provider_mapping)
+                db_track.provider_mappings.add(provider_mapping)
+
+    async def match_provider(
+        self,
+        provider: MusicProvider,
+        ref_track: Track,
+        strict: bool = True,
+        ref_albums: list[Album] | None = None,
+    ) -> set[ProviderMapping]:
+        """Try to find matching track on given provider."""
+        if ref_albums is None:
+            ref_albums = await self.albums(ref_track.item_id, ref_track.provider)
+        if ProviderFeature.SEARCH not in provider.supported_features:
+            raise UnsupportedFeaturedException("Provider does not support search")
+        if not provider.is_streaming_provider:
+            raise UnsupportedFeaturedException("Matching only possible for streaming providers")
+        self.logger.debug("Trying to match track %s on provider %s", ref_track.name, provider.name)
+        matches: set[ProviderMapping] = set()
+        for artist in ref_track.artists:
+            if matches:
+                break
             for search_str in (
-                db_track.name,
-                f"{db_track.artists[0].name} - {db_track.name}",
-                f"{db_track.artists[0].name} {db_track.name}",
+                ref_track.name,
+                f"{artist.name} - {ref_track.name}",
+                f"{artist.name} {ref_track.name}",
             ):
-                if match_found:
+                if matches:
                     break
                 search_result = await self.search(search_str, provider.domain)
                 for search_result_item in search_result:
                     if not search_result_item.available:
                         continue
                     # do a basic compare first
-                    if not compare_media_item(db_track, search_result_item, strict=False):
+                    if not compare_media_item(ref_track, search_result_item, strict=False):
                         continue
                     # we must fetch the full version, search results can be simplified objects
                     prov_track = await self.get_provider_item(
@@ -271,19 +302,16 @@ class TracksController(MediaControllerBase[Track]):
                         search_result_item.provider,
                         fallback=search_result_item,
                     )
-                    if compare_track(db_track, prov_track, strict=True, track_albums=track_albums):
-                        # 100% match, we update the db with the additional provider mapping(s)
-                        match_found = True
-                        for provider_mapping in search_result_item.provider_mappings:
-                            await self.add_provider_mapping(db_track.item_id, provider_mapping)
-                            db_track.provider_mappings.add(provider_mapping)
+                    if compare_track(ref_track, prov_track, strict=strict, track_albums=ref_albums):
+                        matches.update(search_result_item.provider_mappings)
 
-            if not match_found:
-                self.logger.debug(
-                    "Could not find match for Track %s on provider %s",
-                    db_track.name,
-                    provider.name,
-                )
+        if not matches:
+            self.logger.debug(
+                "Could not find match for Track %s on provider %s",
+                ref_track.name,
+                provider.name,
+            )
+        return matches
 
     async def _get_provider_dynamic_tracks(
         self,

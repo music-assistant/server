@@ -353,10 +353,11 @@ class YoutubeMusicProvider(MusicProvider):
         msg = f"Item {prov_playlist_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Return playlist tracks for the given provider playlist id."""
+        if page > 0:
+            # paging not supported, we always return the whole list at once
+            return []
         await self._check_oauth_token()
         # Grab the playlist id from the full url in case of personal playlists
         if YT_PLAYLIST_ID_DELIMITER in prov_playlist_id:
@@ -373,20 +374,17 @@ class YoutubeMusicProvider(MusicProvider):
             return None
         result = []
         # TODO: figure out how to handle paging in YTM
-        if offset:
-            # paging not supported, we always return the whole list at once
-            return []
         for index, track_obj in enumerate(playlist_obj["tracks"], 1):
             if track_obj["isAvailable"]:
                 # Playlist tracks sometimes do not have a valid artist id
                 # In that case, call the API for track details based on track id
                 try:
                     if track := self._parse_track(track_obj):
-                        track.position = index + 1
+                        track.position = index
                         result.append(track)
                 except InvalidDataError:
                     if track := await self.get_track(track_obj["videoId"]):
-                        track.position = index + 1
+                        track.position = index
                         result.append(track)
         # YTM doesn't seem to support paging so we ignore offset and limit
         return result
@@ -412,7 +410,8 @@ class YoutubeMusicProvider(MusicProvider):
         artist_obj = await get_artist(prov_artist_id=prov_artist_id, headers=self._headers)
         if artist_obj.get("songs") and artist_obj["songs"].get("browseId"):
             prov_playlist_id = artist_obj["songs"]["browseId"]
-            return await self.get_playlist_tracks(prov_playlist_id, 0, 25)
+            playlist_tracks = await self.get_playlist_tracks(prov_playlist_id)
+            return playlist_tracks[:25]
         return []
 
     async def library_add(self, item: MediaItemType) -> bool:

@@ -312,7 +312,7 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(self, offset: int, limit: int, path: str | None = None) -> list[MediaItemType]:
+    async def browse(self, path: str | None = None) -> list[MediaItemType]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider
@@ -342,13 +342,13 @@ class MusicController(CoreController):
             )
             if not prov:
                 return prepend_items
-        elif offset == 0:
+        else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
             prepend_items.append(
                 BrowseFolder(item_id="back", provider=provider_instance, path=back_path, name="..")
             )
         # limit -1 to account for the prepended items
-        prov_items = await prov.browse(path=path, offset=offset, limit=limit)
+        prov_items = await prov.browse(path=path)
         return prepend_items + prov_items
 
     @api_command("music/recently_played_items")
@@ -480,6 +480,8 @@ class MusicController(CoreController):
         provider = self.mass.get_provider(item.provider)
         if provider.library_edit_supported(item.media_type):
             await provider.library_add(item)
+        # ensure a full item
+        item = await ctrl.get(item.item_id, item.provider)
         library_item = await ctrl.add_item_to_library(item)
         # perform full metadata scan (and provider match)
         await self.mass.metadata.update_metadata(library_item)
@@ -697,6 +699,11 @@ class MusicController(CoreController):
             # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
                 await provider.sync_library(media_types)
+            # precache playlist tracks
+            if MediaType.PLAYLIST in media_types:
+                for playlist in await self.playlists.library_items(provider=provider_instance):
+                    async for _ in self.playlists.tracks(playlist.item_id, playlist.provider):
+                        pass
 
         # we keep track of running sync tasks
         task = self.mass.create_task(run_sync())

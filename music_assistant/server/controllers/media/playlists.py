@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import random
 import time
+from collections.abc import AsyncGenerator
 from typing import Any
 
 from music_assistant.common.helpers.json import serialize_to_json
@@ -48,10 +49,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         force_refresh: bool = False,
-        offset: int = 0,
-        limit: int = 50,
-        prefer_library_items: bool = True,
-    ) -> list[PlaylistTrack]:
+    ) -> AsyncGenerator[PlaylistTrack, None]:
         """Return playlist tracks for the given provider playlist id."""
         playlist = await self.get(
             item_id,
@@ -60,35 +58,22 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # a playlist can only have one provider so simply pick the first one
         prov_map = next(x for x in playlist.provider_mappings)
         cache_checksum = playlist.cache_checksum
-        # playlist tracks ar enot stored in the db,
+        # playlist tracks are not stored in the db,
         # we always fetched them (cached) from the provider
-        tracks = await self._get_provider_playlist_tracks(
-            prov_map.item_id,
-            prov_map.provider_instance,
-            cache_checksum=cache_checksum,
-            offset=offset,
-            limit=limit,
-            force_refresh=force_refresh,
-        )
-        if prefer_library_items:
-            final_tracks = []
+        page = 0
+        while True:
+            tracks = await self._get_provider_playlist_tracks(
+                prov_map.item_id,
+                prov_map.provider_instance,
+                cache_checksum=cache_checksum,
+                page=page,
+                force_refresh=force_refresh,
+            )
+            if not tracks:
+                break
             for track in tracks:
-                # prefer library_item
-                # TODO: we could speedup this call by requesting all tracks at once
-                # but so far this doesn't seem to be that slow due to the paging
-                if track.provider == "library":
-                    final_tracks.append(track)
-                elif db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
-                    track.item_id, track.provider
-                ):
-                    db_item.position = track.position
-                    final_tracks.append(db_item)
-                else:
-                    # fall back to the original playlist item if we do not know it in the db
-                    final_tracks.append(track)
-        else:
-            final_tracks = tracks
-        return final_tracks
+                yield track
+            page += 1
 
     async def create_playlist(
         self, name: str, provider_instance_or_domain: str | None = None
@@ -126,7 +111,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             raise ProviderUnavailableError(msg)
         cur_playlist_track_ids = set()
         cur_playlist_track_uris = set()
-        for item in await self.get_all_playlist_tracks(playlist):
+        async for item in self.tracks(playlist.item_id, playlist.provider):
             cur_playlist_track_uris.add(item.item_id)
             cur_playlist_track_uris.add(item.uri)
 
@@ -185,20 +170,27 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     ids_to_add.add(item_id)
                     continue
 
-            # ensure we have a full library track
+            # ensure we have a full (library) track (including all provider mappings)
             full_track = await self.mass.music.tracks.get(
                 item_id,
                 provider_instance_id_or_domain,
                 recursive=provider_instance_id_or_domain != "library",
             )
-            if full_track.provider == "library":
-                db_track = full_track
-            else:
-                db_track = await self.mass.music.tracks.add_item_to_library(full_track)
+            track_prov_domains = {x.provider_domain for x in full_track.provider_mappings}
+            if (
+                playlist_prov.domain != "builtin"
+                and playlist_prov.is_streaming_provider
+                and playlist_prov.domain not in track_prov_domains
+            ):
+                # try to match the track to the playlist provider
+                full_track.provider_mappings.update(
+                    await self.mass.music.tracks.match_provider(playlist_prov, full_track, False)
+                )
+
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
             for track_version in sorted(
-                db_track.provider_mappings, key=lambda x: x.quality, reverse=True
+                full_track.provider_mappings, key=lambda x: x.quality, reverse=True
             ):
                 if not track_version.available:
                     continue
@@ -215,7 +207,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 if track_version_uri in cur_playlist_track_uris:
                     self.logger.warning(
                         "Not adding %s to playlist %s - it already exists",
-                        db_track.name,
+                        full_track.name,
                         playlist.name,
                     )
                     break  # already existing in the playlist
@@ -224,7 +216,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     ids_to_add.add(track_version_uri)
                     self.logger.info(
                         "Adding %s to playlist %s",
-                        db_track.name,
+                        full_track.name,
                         playlist.name,
                     )
                     break
@@ -232,14 +224,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     ids_to_add.add(track_version.item_id)
                     self.logger.info(
                         "Adding %s to playlist %s",
-                        db_track.name,
+                        full_track.name,
                         playlist.name,
                     )
                     break
             else:
                 self.logger.warning(
                     "Can't add %s to playlist %s - it is not available provider %s",
-                    db_track.name,
+                    full_track.name,
                     playlist.name,
                     playlist_prov.name,
                 )
@@ -281,41 +273,6 @@ class PlaylistController(MediaControllerBase[Playlist]):
         # invalidate cache so tracks get refreshed
         playlist.cache_checksum = str(time.time())
         await self.update_item_in_library(db_playlist_id, playlist)
-
-    async def get_all_playlist_tracks(
-        self, playlist: Playlist, prefer_library_items: bool = False
-    ) -> list[PlaylistTrack]:
-        """Return all tracks for given playlist (by unwrapping the paged listing)."""
-        result: list[PlaylistTrack] = []
-        offset = 0
-        limit = 50
-        self.logger.debug(
-            "Fetching all tracks for playlist %s",
-            playlist.name,
-        )
-        while True:
-            paged_items = await self.tracks(
-                item_id=playlist.item_id,
-                provider_instance_id_or_domain=playlist.provider,
-                offset=offset,
-                limit=limit,
-                prefer_library_items=prefer_library_items,
-            )
-            result += paged_items
-            if len(paged_items) > limit:
-                # this happens if the provider doesn't support paging
-                # and it does simply return all items in one call
-                break
-            if len(paged_items) == 0:
-                break
-            if len(paged_items) < (limit - 20):
-                # if get get less than 30 items, we assume this is the end
-                # note that we account for the fact that the provider might
-                # return less than the limit (e.g. 20 items) due to track unavailability
-                break
-
-            offset += limit
-        return result
 
     async def _add_library_item(self, item: Playlist) -> int:
         """Add a new record to the database."""
@@ -376,8 +333,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         item_id: str,
         provider_instance_id_or_domain: str,
         cache_checksum: Any = None,
-        offset: int = 0,
-        limit: int = 50,
+        page: int = 0,
         force_refresh: bool = False,
     ) -> list[PlaylistTrack]:
         """Return playlist tracks for the given provider playlist id."""
@@ -386,7 +342,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         if not provider:
             return []
         # prefer cache items (if any)
-        cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks.{offset}.{limit}"
+        cache_key = f"{provider.lookup_key}.playlist.{item_id}.tracks.{page}"
         if (
             not force_refresh
             and (cache := await self.mass.cache.get(cache_key, checksum=cache_checksum)) is not None
@@ -394,7 +350,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
             return [PlaylistTrack.from_dict(x) for x in cache]
         # no items in cache (or force_refresh) - get listing from provider
         result: list[Track] = []
-        for item in await provider.get_playlist_tracks(item_id, offset=offset, limit=limit):
+        for item in await provider.get_playlist_tracks(item_id, page=page):
             # double check if position set
             assert item.position is not None, "Playlist items require position to be set"
             result.append(item)
@@ -424,7 +380,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
         playlist = await self.get(item_id, provider_instance_id_or_domain)
         playlist_tracks = [
             x
-            for x in await self.get_all_playlist_tracks(playlist)
+            async for x in self.tracks(playlist.item_id, playlist.provider)
             # filter out unavailable tracks
             if x.available
         ]
@@ -470,9 +426,17 @@ class PlaylistController(MediaControllerBase[Playlist]):
 
         radio_items: list[Track] = []
         radio_item_titles: set[str] = set()
-        playlist_tracks = await self.get_all_playlist_tracks(media_item, prefer_library_items=True)
+        playlist_tracks = [x async for x in self.tracks(media_item.item_id, media_item.provider)]
         random.shuffle(playlist_tracks)
         for playlist_track in playlist_tracks:
+            # prefer library item if available so we can use all providers
+            if playlist_track.provider != "library" and (
+                db_item := await self.mass.music.tracks.get_library_item_by_prov_id(
+                    playlist_track.item_id, playlist_track.provider
+                )
+            ):
+                playlist_track = db_item  # noqa: PLW2901
+
             if not playlist_track.available:
                 continue
             # include base item in the list

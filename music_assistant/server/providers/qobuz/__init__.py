@@ -270,20 +270,20 @@ class QobuzProvider(MusicProvider):
             if (item and item["id"])
         ]
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
-    ) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
         """Get playlist tracks."""
         result: list[Track] = []
+        page_size = 100
+        offset = page * page_size
         qobuz_result = await self._get_data(
             "playlist/get",
             key="tracks",
             playlist_id=prov_playlist_id,
             extra="tracks",
             offset=offset,
-            limit=limit,
+            limit=page_size,
         )
-        for index, track_obj in enumerate(qobuz_result["tracks"]["items"]):
+        for index, track_obj in enumerate(qobuz_result["tracks"]["items"], 1):
             if not (track_obj and track_obj["id"]):
                 continue
             track = await self._parse_track(track_obj)
@@ -386,8 +386,20 @@ class QobuzProvider(MusicProvider):
         """Remove track(s) from playlist."""
         playlist_track_ids = set()
         for pos in positions_to_remove:
-            for track in await self.get_playlist_tracks(prov_playlist_id, pos, pos):
-                playlist_track_ids.add(str(track["playlist_track_id"]))
+            idx = pos - 1
+            qobuz_result = await self._get_data(
+                "playlist/get",
+                key="tracks",
+                playlist_id=prov_playlist_id,
+                extra="tracks",
+                offset=idx,
+                limit=1,
+            )
+            if not qobuz_result:
+                continue
+            playlist_track_id = qobuz_result["tracks"]["items"][0]["playlist_track_id"]
+            playlist_track_ids.add(str(playlist_track_id))
+
         return await self._get_data(
             "playlist/deleteTracks",
             playlist_id=prov_playlist_id,

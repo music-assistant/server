@@ -148,7 +148,9 @@ class MusicProvider(Provider):
             raise NotImplementedError
 
     async def get_playlist_tracks(
-        self, prov_playlist_id: str, offset: int, limit: int
+        self,
+        prov_playlist_id: str,
+        page: int = 0,
     ) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
@@ -286,9 +288,7 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(
-        self, path: str, offset: int, limit: int
-    ) -> Sequence[MediaItemType | ItemMapping]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -300,25 +300,15 @@ class MusicProvider(Provider):
         subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
         if subpath == "artists":
-            return await self.mass.music.artists.library_items(
-                limit=limit, offset=offset, provider=self.instance_id
-            )
+            return await self.mass.music.artists.library_items(provider=self.instance_id)
         if subpath == "albums":
-            return await self.mass.music.albums.library_items(
-                limit=limit, offset=offset, provider=self.instance_id
-            )
+            return await self.mass.music.albums.library_items(provider=self.instance_id)
         if subpath == "tracks":
-            return await self.mass.music.tracks.library_items(
-                limit=limit, offset=offset, provider=self.instance_id
-            )
+            return await self.mass.music.tracks.library_items(provider=self.instance_id)
         if subpath == "radios":
-            return await self.mass.music.radio.library_items(
-                limit=limit, offset=offset, provider=self.instance_id
-            )
+            return await self.mass.music.radio.library_items(provider=self.instance_id)
         if subpath == "playlists":
-            return await self.mass.music.playlists.library_items(
-                limit=limit, offset=offset, provider=self.instance_id
-            )
+            return await self.mass.music.playlists.library_items(provider=self.instance_id)
         if subpath:
             # unknown path
             msg = "Invalid subpath"

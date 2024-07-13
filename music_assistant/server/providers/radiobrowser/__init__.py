@@ -103,14 +103,11 @@ class RadioBrowserProvider(MusicProvider):
 
         return result
 
-    async def browse(self, path: str, offset: int, limit: int) -> Sequence[MediaItemType]:
+    async def browse(self, path: str) -> Sequence[MediaItemType]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provid://artists).
         """
-        if offset != 0:
-            # paging is broken on RadioBrowser, we just return some big lists
-            return []
         subpath = path.split("://", 1)[1]
         subsubpath = "" if "/" not in subpath else subpath.split("/")[-1]
 

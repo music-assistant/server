@@ -273,15 +273,17 @@ class AppleMusicProvider(MusicProvider):
             tracks.append(track)
         return tracks
 
-    async def get_playlist_tracks(self, prov_playlist_id, offset, limit) -> list[Track]:
+    async def get_playlist_tracks(self, prov_playlist_id, page: int = 0) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         if self._is_catalog_id(prov_playlist_id):
             endpoint = f"catalog/{self._storefront}/playlists/{prov_playlist_id}/tracks"
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}/tracks"
         result = []
+        page_size = 200
+        offset = page * page_size
         response = await self._get_data(
-            endpoint, include="artists,catalog", limit=limit, offset=offset
+            endpoint, include="artists,catalog", limit=page_size, offset=offset
         )
         if not response or "data" not in response:
             return result

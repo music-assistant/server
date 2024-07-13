@@ -337,7 +337,32 @@ class PlayerQueuesController(CoreController):
                 if radio_mode:
                     radio_source.append(media_item)
                 elif media_item.media_type == MediaType.PLAYLIST:
-                    tracks += await self.mass.music.playlists.get_all_playlist_tracks(media_item)
+                    first_track_seen: bool = False
+                    async for playlist_track in self.mass.music.playlists.tracks(
+                        media_item.item_id, media_item.provider
+                    ):
+                        if not playlist_track.available:
+                            continue
+                        # allow first track to start playing immediately while we still
+                        # work out the rest of the queue
+                        if (
+                            not queue.shuffle_enabled
+                            and not first_track_seen
+                            and option == QueueOption.REPLACE
+                            and not start_item
+                        ):
+                            first_track_seen = True
+                            self.load(
+                                queue_id,
+                                queue_items=[QueueItem.from_media_item(queue_id, playlist_track)],
+                                keep_remaining=False,
+                                keep_played=False,
+                            )
+                            await self.play_index(queue_id, 0)
+                            # add the remaining items
+                            option = QueueOption.ADD
+                        else:
+                            tracks.append(playlist_track)
                     self.mass.create_task(
                         self.mass.music.mark_item_played(
                             media_item.media_type, media_item.item_id, media_item.provider
