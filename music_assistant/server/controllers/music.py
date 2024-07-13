@@ -480,6 +480,8 @@ class MusicController(CoreController):
         provider = self.mass.get_provider(item.provider)
         if provider.library_edit_supported(item.media_type):
             await provider.library_add(item)
+        # ensure a full item
+        item = await ctrl.get(item.item_id, item.provider)
         library_item = await ctrl.add_item_to_library(item)
         # perform full metadata scan (and provider match)
         await self.mass.metadata.update_metadata(library_item)
