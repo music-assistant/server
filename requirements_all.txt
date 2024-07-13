@@ -23,7 +23,7 @@ hass-client==1.2.0
 ifaddr==0.2.0
 mashumaro==3.13.1
 memory-tempfile==2.2.3
-music-assistant-frontend==2.6.1
+music-assistant-frontend==2.6.3
 orjson==3.10.6
 pillow==10.4.0
 plexapi==4.15.15
