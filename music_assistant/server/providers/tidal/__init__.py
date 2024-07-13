@@ -609,12 +609,16 @@ class TidalProvider(MusicProvider):
                 )
             },
         )
+        various_artist_album: bool = False
         for artist_obj in album_obj.artists:
+            if artist_obj.name == "Various Artists":
+                various_artist_album = True
             album.artists.append(self._parse_artist(artist_obj))
-        if album_obj.type == "ALBUM":
-            album.album_type = AlbumType.ALBUM
-        elif album_obj.type == "COMPILATION":
+
+        if album_obj.type == "COMPILATION" or various_artist_album:
             album.album_type = AlbumType.COMPILATION
+        elif album_obj.type == "ALBUM":
+            album.album_type = AlbumType.ALBUM
         elif album_obj.type == "EP":
             album.album_type = AlbumType.EP
         elif album_obj.type == "SINGLE":
