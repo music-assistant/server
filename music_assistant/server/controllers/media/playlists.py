@@ -170,20 +170,27 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     ids_to_add.add(item_id)
                     continue
 
-            # ensure we have a full library track
+            # ensure we have a full (library) track (including all provider mappings)
             full_track = await self.mass.music.tracks.get(
                 item_id,
                 provider_instance_id_or_domain,
                 recursive=provider_instance_id_or_domain != "library",
             )
-            if full_track.provider == "library":
-                db_track = full_track
-            else:
-                db_track = await self.mass.music.tracks.add_item_to_library(full_track)
+            track_prov_domains = {x.provider_domain for x in full_track.provider_mappings}
+            if (
+                playlist_prov.domain != "builtin"
+                and playlist_prov.is_streaming_provider
+                and playlist_prov.domain not in track_prov_domains
+            ):
+                # try to match the track to the playlist provider
+                full_track.provider_mappings.update(
+                    await self.mass.music.tracks.match_provider(playlist_prov, full_track, False)
+                )
+
             # a track can contain multiple versions on the same provider
             # simply sort by quality and just add the first available version
             for track_version in sorted(
-                db_track.provider_mappings, key=lambda x: x.quality, reverse=True
+                full_track.provider_mappings, key=lambda x: x.quality, reverse=True
             ):
                 if not track_version.available:
                     continue
@@ -200,7 +207,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                 if track_version_uri in cur_playlist_track_uris:
                     self.logger.warning(
                         "Not adding %s to playlist %s - it already exists",
-                        db_track.name,
+                        full_track.name,
                         playlist.name,
                     )
                     break  # already existing in the playlist
@@ -209,7 +216,7 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     ids_to_add.add(track_version_uri)
                     self.logger.info(
                         "Adding %s to playlist %s",
-                        db_track.name,
+                        full_track.name,
                         playlist.name,
                     )
                     break
@@ -217,14 +224,14 @@ class PlaylistController(MediaControllerBase[Playlist]):
                     ids_to_add.add(track_version.item_id)
                     self.logger.info(
                         "Adding %s to playlist %s",
-                        db_track.name,
+                        full_track.name,
                         playlist.name,
                     )
                     break
             else:
                 self.logger.warning(
                     "Can't add %s to playlist %s - it is not available provider %s",
-                    db_track.name,
+                    full_track.name,
                     playlist.name,
                     playlist_prov.name,
                 )
