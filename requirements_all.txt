@@ -18,7 +18,7 @@ deezer-python-async==0.3.0
 defusedxml==0.7.1
 eyeD3==0.9.7
 faust-cchardet>=2.1.18
-git+https://github.com/coletdjnz/yt-dlp-youtube-oauth2.git
+git+https://github.com/MarvinSchenkel/yt-dlp-youtube-accesstoken.git
 hass-client==1.2.0
 ifaddr==0.2.0
 mashumaro==3.13.1

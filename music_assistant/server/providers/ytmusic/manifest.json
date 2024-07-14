@@ -4,7 +4,7 @@
   "name": "YouTube Music",
   "description": "Support for the YouTube Music streaming provider in Music Assistant.",
   "codeowners": ["@MarvinSchenkel"],
-  "requirements": ["ytmusicapi==1.7.3", "git+https://github.com/coletdjnz/yt-dlp-youtube-oauth2.git", "yt-dlp==2024.7.7"],
+  "requirements": ["ytmusicapi==1.7.3", "git+https://github.com/MarvinSchenkel/yt-dlp-youtube-accesstoken.git", "yt-dlp==2024.7.7"],
   "documentation": "https://music-assistant.io/music-providers/youtube-music/",
   "multi_instance": true
 }
