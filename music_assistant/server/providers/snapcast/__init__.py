@@ -381,7 +381,7 @@ class SnapCastProvider(PlayerProvider):
                     player.active_source = stream.name
             else:
                 player.active_source = player_id
-        self._can_sync_with(snap_client)
+        self._can_sync_with(player_id)
         self._group_childs(player_id)
         self.mass.players.update(player_id)
 
