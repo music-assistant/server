@@ -205,8 +205,6 @@ class YoutubeMusicProvider(MusicProvider):
                 break
         else:
             self.language = "en"
-        # Make sure to write the ytdlp cache on startup
-        await self._update_ytdlp_oauth_token_cache()
         if not await self._user_has_ytm_premium():
             raise LoginFailed("User does not have Youtube Music Premium")
 
@@ -573,7 +571,6 @@ class YoutubeMusicProvider(MusicProvider):
             self.config.update({CONF_EXPIRY_TIME: time() + token["expires_in"]})
             self.config.update({CONF_TOKEN_TYPE: token["token_type"]})
             self._initialize_headers()
-            await self._update_ytdlp_oauth_token_cache()
 
     def _initialize_headers(self) -> dict[str, str]:
         """Return headers to include in the requests."""
@@ -778,12 +775,14 @@ class YoutubeMusicProvider(MusicProvider):
 
         def _extract_best_stream_url_format() -> dict[str, Any]:
             url = f"{YTM_DOMAIN}/watch?v={item_id}"
+            auth = (
+                f"{self.config.get_value(CONF_TOKEN_TYPE)} {self.config.get_value(CONF_AUTH_TOKEN)}"
+            )
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,
-                # This enables the oauth2 plugin so we can grab the best
+                # This enables the access token plugin so we can grab the best
                 # available quality audio stream
-                "username": "oauth2",
-                "password": "",
+                "username": auth,
                 # This enforces a player client and skips unnecessary scraping to increase speed
                 "extractor_args": {
                     "youtube": {"skip": ["translated_subs", "dash"], "player_client": ["ios"]}
@@ -799,27 +798,6 @@ class YoutubeMusicProvider(MusicProvider):
                 return stream_format
 
         return await asyncio.to_thread(_extract_best_stream_url_format)
-
-    async def _update_ytdlp_oauth_token_cache(self) -> None:
-        """Update the ytdlp token so we can grab the best available quality audio stream."""
-
-        def _update_oauth_cache() -> None:
-            ydl_opts = {
-                "quiet": self.logger.level > logging.DEBUG,
-                "username": "oauth2",
-                "password": "",
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                token_data = {
-                    "access_token": self.config.get_value(CONF_AUTH_TOKEN),
-                    "expires": self.config.get_value(CONF_EXPIRY_TIME),
-                    "token_type": self.config.get_value(CONF_TOKEN_TYPE),
-                    "refresh_token": self.config.get_value(CONF_REFRESH_TOKEN),
-                }
-                ydl.cache.store(YT_DLP_CACHE_SECTION, YT_DLP_CACHE_KEY, token_data)
-                self.logger.debug("Updated ytdlp oauth token cache with new OAuth token.")
-
-        await asyncio.to_thread(_update_oauth_cache)
 
     def _get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         return ItemMapping(
