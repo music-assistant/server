@@ -280,7 +280,7 @@ class AppleMusicProvider(MusicProvider):
         else:
             endpoint = f"me/library/playlists/{prov_playlist_id}/tracks"
         result = []
-        page_size = 200
+        page_size = 100
         offset = page * page_size
         response = await self._get_data(
             endpoint, include="artists,catalog", limit=page_size, offset=offset
