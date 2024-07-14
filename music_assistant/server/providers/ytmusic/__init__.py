@@ -780,7 +780,7 @@ class YoutubeMusicProvider(MusicProvider):
             )
             ydl_opts = {
                 "quiet": self.logger.level > logging.DEBUG,
-                # This enables the oauth2 plugin so we can grab the best
+                # This enables the access token plugin so we can grab the best
                 # available quality audio stream
                 "username": auth,
                 # This enforces a player client and skips unnecessary scraping to increase speed
