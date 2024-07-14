@@ -65,11 +65,13 @@ def split_artists(
     # when not using the multi artist tag, the artist string may contain
     # multiple artists in freeform, even featuring artists may be included in this
     # string. Try to parse the featuring artists and separate them.
-    splitters = ("featuring", " feat. ", " feat ", "feat.", " & ")
+    splitters = ("featuring", " feat. ", " feat ", "feat.")
     if allow_ampersand:
         splitters = (*splitters, " & ")
     for item in split_items(org_artists):
         for splitter in splitters:
+            if splitter not in item:
+                continue
             for subitem in item.split(splitter):
                 final_artists.add(subitem.strip())
     return tuple(final_artists)
