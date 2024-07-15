@@ -68,12 +68,16 @@ def split_artists(
     splitters = ("featuring", " feat. ", " feat ", "feat.")
     if allow_ampersand:
         splitters = (*splitters, " & ")
-    for item in split_items(org_artists):
+    artists = split_items(org_artists)
+    for item in artists:
         for splitter in splitters:
             if splitter not in item:
                 continue
             for subitem in item.split(splitter):
                 final_artists.add(subitem.strip())
+    if not final_artists:
+        # none of the extra splitters was found
+        return artists
     return tuple(final_artists)
 
 
