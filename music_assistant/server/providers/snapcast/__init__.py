@@ -435,7 +435,7 @@ class SnapCastProvider(PlayerProvider):
         """Unsync Snapcast player."""
         mass_player = self.mass.players.get(player_id)
         if mass_player.synced_to is None:
-            for mass_child_id in list(mass_player.group_child):
+            for mass_child_id in list(mass_player.group_childs):
                 if mass_child_id != player_id:
                     await self.cmd_unsync(mass_child_id)
         else:
