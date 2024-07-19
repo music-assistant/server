@@ -305,11 +305,11 @@ class AirplayStream:
         """Stop playback and cleanup."""
         if self._stopped:
             return
+        if self.audio_source_task and not self.audio_source_task.done():
+            self.audio_source_task.cancel()
         if self._cliraop_proc.proc and not self._cliraop_proc.closed:
             await self.send_cli_command("ACTION=STOP")
         self._stopped = True  # set after send_cli command!
-        if self.audio_source_task and not self.audio_source_task.done():
-            self.audio_source_task.cancel()
         if self._cliraop_proc.proc:
             try:
                 await asyncio.wait_for(self._cliraop_proc.wait(), 5)
@@ -642,8 +642,8 @@ class AirplayProvider(PlayerProvider):
         # always stop existing stream first
         async with TaskManager(self.mass) as tg:
             for airplay_player in self._get_sync_clients(player_id):
-                if airplay_player.active_stream and airplay_player.active_stream:
-                    tg.create_task(airplay_player.active_stream.stop())
+                if active_stream := airplay_player.active_stream:
+                    tg.create_task(active_stream.stop())
         # select audio source
         if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
