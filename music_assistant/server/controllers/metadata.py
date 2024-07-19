@@ -532,7 +532,7 @@ class MetaDataController(CoreController):
                 continue
             unique_keys.add(prov.lookup_key)
             with suppress(MediaNotFoundError):
-                prov_item = await self.mass.music.albums.get_provider_item(
+                prov_item = await self.mass.music.tracks.get_provider_item(
                     prov_mapping.item_id, prov_mapping.provider_instance
                 )
                 track.metadata.update(prov_item.metadata)

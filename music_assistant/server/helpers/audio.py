@@ -477,7 +477,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
         async with mass.http_session.get(
-            url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout
+            url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout, encoded="%" in url
         ) as resp:
             resolved_url = str(resp.real_url)
             headers = resp.headers
@@ -519,7 +519,9 @@ async def get_icy_stream(
     """Get (radio) audio stream from HTTP, including ICY metadata retrieval."""
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
-    async with mass.http_session.get(url, headers=HTTP_HEADERS_ICY, timeout=timeout) as resp:
+    async with mass.http_session.get(
+        url, headers=HTTP_HEADERS_ICY, timeout=timeout, encoded="%" in url
+    ) as resp:
         headers = resp.headers
         meta_int = int(headers["icy-metaint"])
         while True:
@@ -574,7 +576,7 @@ async def get_hls_stream(
     while True:
         logger.log(VERBOSE_LOG_LEVEL, "start streaming chunks from substream %s", substream_url)
         async with mass.http_session.get(
-            substream_url, headers=HTTP_HEADERS, timeout=timeout
+            substream_url, headers=HTTP_HEADERS, timeout=timeout, encoded="%" in substream_url
         ) as resp:
             resp.raise_for_status()
             charset = resp.charset or "utf-8"
@@ -655,7 +657,9 @@ async def get_hls_substream(
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     # fetch master playlist and select (best) child playlist
     # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
-    async with mass.http_session.get(url, headers=HTTP_HEADERS, timeout=timeout) as resp:
+    async with mass.http_session.get(
+        url, headers=HTTP_HEADERS, timeout=timeout, encoded="%" in url
+    ) as resp:
         resp.raise_for_status()
         charset = resp.charset or "utf-8"
         master_m3u_data = await resp.text(charset)
@@ -684,7 +688,7 @@ async def get_http_stream(
     # try to get filesize with a head request
     seek_supported = streamdetails.can_seek
     if seek_position or not streamdetails.size:
-        async with mass.http_session.head(url, headers=HTTP_HEADERS) as resp:
+        async with mass.http_session.head(url, headers=HTTP_HEADERS, encoded="%" in url) as resp:
             resp.raise_for_status()
             if size := resp.headers.get("Content-Length"):
                 streamdetails.size = int(size)
@@ -717,7 +721,9 @@ async def get_http_stream(
 
     # start the streaming from http
     bytes_received = 0
-    async with mass.http_session.get(url, headers=headers, timeout=timeout) as resp:
+    async with mass.http_session.get(
+        url, headers=headers, timeout=timeout, encoded="%" in url
+    ) as resp:
         is_partial = resp.status == 206
         if seek_position and not is_partial:
             raise InvalidDataError("HTTP source does not support seeking!")
