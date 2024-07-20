@@ -21,6 +21,7 @@ from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi import UserPlaylist as TidalUserPlaylist
 from tidalapi.exceptions import MetadataNotAvailable, ObjectNotFound, TooManyRequests
+from tidalapi.media import Stream as TidalStream
 
 from music_assistant.common.models.enums import MediaType
 from music_assistant.common.models.errors import (
@@ -178,6 +179,22 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
             return TidalTrack(session, prov_track_id)
         except ObjectNotFound as err:
             msg = f"Track {prov_track_id} not found"
+            raise MediaNotFoundError(msg) from err
+        except TooManyRequests:
+            msg = "Tidal API rate limit reached"
+            raise ResourceTemporarilyUnavailable(msg)
+
+    return await asyncio.to_thread(inner)
+
+
+async def get_stream(track: TidalTrack) -> TidalStream:
+    """Async wrapper around the tidalapi Track.get_stream_url function."""
+
+    def inner() -> str:
+        try:
+            return track.get_stream()
+        except ObjectNotFound as err:
+            msg = f"Track {track.id} has no available stream"
             raise MediaNotFoundError(msg) from err
         except TooManyRequests:
             msg = "Tidal API rate limit reached"

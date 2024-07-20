@@ -71,8 +71,8 @@ from .helpers import (
     get_playlist,
     get_playlist_tracks,
     get_similar_tracks,
+    get_stream,
     get_track,
-    get_track_url,
     library_items_add_remove,
     remove_playlist_tracks,
     search,
@@ -82,6 +82,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
 
     from tidalapi.media import Lyrics as TidalLyrics
+    from tidalapi.media import Stream as TidalStream
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
@@ -112,8 +113,8 @@ RESOURCES_URL = "https://resources.tidal.com/images"
 class TidalQualityEnum(StrEnum):
     """Enum for Tidal Quality."""
 
-    HIGH_LOSSLESS = "High - 16bit, 44.1kHz"
-    HI_RES = "Max - Up to 24bit, 192kHz"
+    HIGH_LOSSLESS = "HIGH_LOSSLESS"  # "High - 16bit, 44.1kHz"
+    HI_RES = "HI_RES"  # "Max - Up to 24bit, 192kHz"
 
 
 async def setup(
@@ -502,8 +503,12 @@ class TidalProvider(MusicProvider):
         # make sure a valid track is requested.
         tidal_session = await self._get_tidal_session()
         track = await get_track(tidal_session, item_id)
-        url = await get_track_url(tidal_session, item_id)
-        media_info = await self._get_media_info(item_id=item_id, url=url)
+
+        # TODO - This is all wrong and needs to be fixed
+        stream: TidalStream = await get_stream(track)
+        manifest = stream.get_stream_manifest()
+        # url = await get_track_url(tidal_session, item_id)
+        # media_info = await self._get_media_info(item_id=item_id, url=url)
         if not track:
             msg = f"track {item_id} not found"
             raise MediaNotFoundError(msg)
@@ -511,14 +516,14 @@ class TidalProvider(MusicProvider):
             item_id=track.id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                channels=media_info.channels,
+                content_type=ContentType.try_parse(manifest.codecs),
+                sample_rate=manifest.sample_rate,
+                bit_depth=stream.bit_depth,
+                channels=2,
             ),
             stream_type=StreamType.HTTP,
             duration=track.duration,
-            path=url,
+            data=stream.get_manifest_data(),
         )
 
     @throttle_with_retries
