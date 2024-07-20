@@ -162,8 +162,7 @@ class BuiltinProvider(MusicProvider):
 
     async def get_track(self, prov_track_id: str) -> Track:
         """Get full track details by id."""
-        parsed_item = await self.parse_item(prov_track_id)
-        assert isinstance(parsed_item, Track)
+        parsed_item: Track = await self.parse_item(prov_track_id)
         stored_items: list[StoredItem] = self.mass.config.get(CONF_KEY_TRACKS, [])
         if stored_item := next((x for x in stored_items if x["item_id"] == prov_track_id), None):
             # always prefer the stored info, such as the name
