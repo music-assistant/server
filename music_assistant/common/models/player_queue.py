@@ -53,7 +53,6 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("current_item", None)
         d.pop("next_item", None)
         d.pop("index_in_buffer", None)
-        d.pop("announcement_in_progress", None)
         d.pop("flow_mode", None)
         d.pop("flow_mode_start_index", None)
         return d
@@ -64,7 +63,6 @@ class PlayerQueue(DataClassDictMixin):
         d.pop("current_item", None)
         d.pop("next_item", None)
         d.pop("index_in_buffer", None)
-        d.pop("announcement_in_progress", None)
         d.pop("flow_mode", None)
         d.pop("flow_mode_start_index", None)
         return cls.from_dict(d)

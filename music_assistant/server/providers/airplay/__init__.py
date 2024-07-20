@@ -17,7 +17,7 @@ from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceInfo
 
 from music_assistant.common.helpers.datetime import utc
-from music_assistant.common.helpers.util import empty_queue, get_ip_pton, select_free_port
+from music_assistant.common.helpers.util import get_ip_pton, select_free_port
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
@@ -299,7 +299,7 @@ class AirplayStream:
         await self._cliraop_proc.start()
         await asyncio.to_thread(os.close, read)
         self._started.set()
-        self._log_reader_task = asyncio.create_task(self._log_watcher())
+        self._log_reader_task = self.mass.create_task(self._log_watcher())
 
     async def stop(self):
         """Stop playback and cleanup."""
@@ -307,19 +307,9 @@ class AirplayStream:
             return
         if self.audio_source_task and not self.audio_source_task.done():
             self.audio_source_task.cancel()
-        if self._cliraop_proc.proc and not self._cliraop_proc.closed:
-            await self.send_cli_command("ACTION=STOP")
-        self._stopped = True  # set after send_cli command!
         if self._cliraop_proc.proc:
-            try:
-                await asyncio.wait_for(self._cliraop_proc.wait(), 5)
-            except TimeoutError:
-                self.prov.logger.warning(
-                    "Raop process for %s did not stop in time, is the player offline?",
-                    self.airplay_player.player_id,
-                )
-                await self._cliraop_proc.close(True)
-
+            await self._cliraop_proc.close(True)
+        self._stopped = True  # set after close command!
         # ffmpeg can sometimes hang due to the connected pipes
         # we handle closing it but it can be a bit slow so do that in the background
         if not self._ffmpeg_proc.closed:
@@ -609,7 +599,9 @@ class AirplayProvider(PlayerProvider):
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream and airplay_player.active_stream.running:
                     # prefer interactive command to our streamer
-                    tg.create_task(airplay_player.active_stream.send_cli_command("ACTION=PLAY"))
+                    tg.create_task(
+                        airplay_player.active_stream.send_cli_command("ACTION=PLAY"),
+                    )
 
     async def cmd_pause(self, player_id: str) -> None:
         """Send PAUSE command to given player.
@@ -699,38 +691,18 @@ class AirplayProvider(PlayerProvider):
                 self, airplay_player, input_format=input_format
             )
 
-        # use a buffer here to consume small hiccups as the
-        # raop streaming is pretty much realtime and without a buffer to stdin
-        buffer: asyncio.Queue[bytes] = asyncio.Queue(10)
-
-        async def fill_buffer() -> None:
-            async for chunk in audio_source:
-                await buffer.put(chunk)
-            await buffer.put(b"EOF")
-
-        fill_buffer_task = asyncio.create_task(fill_buffer())
-
         async def audio_streamer() -> None:
-            try:
-                while True:
-                    chunk = await buffer.get()
-                    if chunk == b"EOF":
-                        break
-                    await asyncio.gather(
-                        *[x.active_stream.write_chunk(chunk) for x in sync_clients],
-                        return_exceptions=True,
-                    )
-
-                # entire stream consumed: send EOF
+            async for chunk in audio_source:
                 await asyncio.gather(
-                    *[x.active_stream.write_eof() for x in sync_clients],
+                    *[x.active_stream.write_chunk(chunk) for x in sync_clients],
                     return_exceptions=True,
                 )
 
-            finally:
-                if not fill_buffer_task.done():
-                    fill_buffer_task.cancel()
-                empty_queue(buffer)
+            # entire stream consumed: send EOF
+            await asyncio.gather(
+                *[x.active_stream.write_eof() for x in sync_clients],
+                return_exceptions=True,
+            )
 
         # get current ntp and start cliraop
         _, stdout = await check_output(self.cliraop_bin, "-ntp")
@@ -740,7 +712,7 @@ class AirplayProvider(PlayerProvider):
             *[x.active_stream.start(start_ntp, wait_start) for x in sync_clients],
             return_exceptions=True,
         )
-        self._players[player_id].active_stream.audio_source_task = asyncio.create_task(
+        self._players[player_id].active_stream.audio_source_task = self.mass.create_task(
             audio_streamer()
         )
 
@@ -767,6 +739,8 @@ class AirplayProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
+        if player_id == target_player:
+            return
         child_player = self.mass.players.get(player_id)
         assert child_player  # guard
         parent_player = self.mass.players.get(target_player)
@@ -813,9 +787,6 @@ class AirplayProvider(PlayerProvider):
         group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
         group_leader.group_childs.remove(player_id)
         player.synced_to = None
-        # guard if this was the last sync child of the group player
-        if group_leader.group_childs == {group_leader.player_id}:
-            group_leader.group_childs.remove(group_leader.player_id)
         await self.cmd_stop(player_id)
         self.mass.players.update(player_id)
 

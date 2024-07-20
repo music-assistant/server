@@ -498,6 +498,9 @@ class StreamsController(CoreController):
         use_crossfade = await self.mass.config.get_player_config_value(
             queue.queue_id, CONF_CROSSFADE
         )
+        if not start_queue_item:
+            # this can happen in some (edge case) race conditions
+            return
         if start_queue_item.media_type != MediaType.TRACK:
             use_crossfade = False
         pcm_sample_size = int(
@@ -775,6 +778,9 @@ class StreamsController(CoreController):
                     # del chunk
                 finished = True
         finally:
+            if "ffmpeg_proc" not in locals():
+                # edge case: ffmpeg process was not yet started
+                return  # noqa: B012
             if finished and not ffmpeg_proc.closed:
                 await asyncio.wait_for(ffmpeg_proc.wait(), 60)
             elif not ffmpeg_proc.closed:
