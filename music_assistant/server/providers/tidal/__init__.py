@@ -5,13 +5,13 @@ from __future__ import annotations
 import asyncio
 from contextlib import suppress
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
 from tidalapi import Album as TidalAlbum
 from tidalapi import Artist as TidalArtist
 from tidalapi import Config as TidalConfig
 from tidalapi import Playlist as TidalPlaylist
-from tidalapi import Quality as TidalQuality
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
 from tidalapi import exceptions as tidal_exceptions
@@ -47,7 +47,10 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
+from music_assistant.server.helpers.throttle_retry import (
+    ThrottlerManager,
+    throttle_with_retries,
+)
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -95,6 +98,13 @@ BROWSE_URL = "https://tidal.com/browse"
 RESOURCES_URL = "https://resources.tidal.com/images"
 
 
+class TidalQualityEnum(StrEnum):
+    """Enum for Tidal Quality."""
+
+    HIGH_LOSSLESS = "High - 16bit, 44.1kHz"
+    HI_RES = "Max - Up to 24bit, 192kHz"
+
+
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
 ) -> ProviderInstanceType:
@@ -134,9 +144,7 @@ async def get_config_entries(
     # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_AUTH:
         async with AuthenticationHelper(mass, cast(str, values["session_id"])) as auth_helper:
-            quality: str | int | float | list[str] | list[int] | None = (
-                values.get(CONF_QUALITY) if values else None
-            )
+            quality: str = values.get(CONF_QUALITY) if values else None
             tidal_session = await tidal_code_login(auth_helper, cast(str, quality))
             if not tidal_session.check_login():
                 msg = "Authentication to Tidal failed"
@@ -159,16 +167,8 @@ async def get_config_entries(
             label="Quality",
             required=True,
             description="The Tidal Quality you wish to use",
-            options=(
-                ConfigValueOption(title=TidalQuality.low_96k, value=TidalQuality.low_96k),
-                ConfigValueOption(title=TidalQuality.low_320k, value=TidalQuality.low_320k),
-                ConfigValueOption(
-                    title=TidalQuality.high_lossless,
-                    value=TidalQuality.high_lossless,
-                ),
-                ConfigValueOption(title=TidalQuality.hi_res, value=TidalQuality.hi_res),
-            ),
-            default_value=TidalQuality.high_lossless,
+            options=tuple(ConfigValueOption(x.value, x.name) for x in TidalQualityEnum),
+            default_value=TidalQualityEnum.HIGH_LOSSLESS.value,
             value=values.get(CONF_QUALITY) if values else None,
         ),
         ConfigEntry(
