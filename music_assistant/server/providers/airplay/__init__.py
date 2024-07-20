@@ -301,7 +301,7 @@ class RaopStream:
         await self._cliraop_proc.start()
         await asyncio.to_thread(os.close, read)
         self._started.set()
-        self._log_reader_task = asyncio.create_task(self._log_watcher())
+        self._log_reader_task = self.mass.create_task(self._log_watcher())
 
     async def stop(self):
         """Stop playback and cleanup."""
@@ -757,6 +757,8 @@ class AirplayProvider(PlayerProvider):
             - player_id: player_id of the player to handle the command.
             - target_player: player_id of the syncgroup master or group player.
         """
+        if player_id == target_player:
+            return
         child_player = self.mass.players.get(player_id)
         assert child_player  # guard
         parent_player = self.mass.players.get(target_player)
@@ -803,9 +805,6 @@ class AirplayProvider(PlayerProvider):
         group_leader = self.mass.players.get(player.synced_to, raise_unavailable=True)
         group_leader.group_childs.remove(player_id)
         player.synced_to = None
-        # guard if this was the last sync child of the group player
-        if group_leader.group_childs == {group_leader.player_id}:
-            group_leader.group_childs.remove(group_leader.player_id)
         await self.cmd_stop(player_id)
         self.mass.players.update(player_id)
 
