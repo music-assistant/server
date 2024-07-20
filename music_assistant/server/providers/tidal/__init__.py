@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import pickle
 from contextlib import suppress
 from datetime import datetime, timedelta
 from enum import StrEnum
@@ -87,7 +89,16 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
 
 TOKEN_TYPE = "Bearer"
-CONF_ACTION_AUTH = "auth"
+
+# Actions
+CONF_ACTION_START_PKCE_LOGIN = "start_pkce_login"
+CONF_ACTION_COMPLETE_PKCE_LOGIN = "auth"
+
+# Intermediate steps
+CONF_TEMP_SESSION = "temp_session"
+CONF_OOPS_URL = "oops_url"
+
+# Config keys
 CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_USER_ID = "user_id"
@@ -114,15 +125,31 @@ async def setup(
     return prov
 
 
-async def tidal_code_login(auth_helper: AuthenticationHelper, quality: str) -> TidalSession:
+async def tidal_auth_url(auth_helper: AuthenticationHelper, quality: str) -> str:
+    """Generate the Tidal authentication URL."""
+
+    def inner() -> TidalSession:
+        # global glob_temp_session
+        config = TidalConfig(quality=quality, item_limit=10000, alac=False)
+        session = TidalSession(config=config)
+        url = session.pkce_login_url()
+        auth_helper.send_url(url)
+        session_bytes = pickle.dumps(session)
+        base64_bytes = base64.b64encode(session_bytes)
+        return base64_bytes.decode("utf-8")
+
+    return await asyncio.to_thread(inner)
+
+
+async def tidal_pkce_login(base64_session: str, url: str) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
 
     def inner() -> TidalSession:
-        config = TidalConfig(quality=quality, item_limit=10000, alac=False)
-        session = TidalSession(config=config)
-        login, future = session.login_oauth()
-        auth_helper.send_url(f"https://{login.verification_uri_complete}")
-        future.result()
+        base64_bytes = base64_session.encode("utf-8")
+        message_bytes = base64.b64decode(base64_bytes)
+        session = pickle.loads(message_bytes)  # noqa: S301
+        token = session.pkce_get_auth_token(url_redirect=url)
+        session.process_auth_token(token)
         return session
 
     return await asyncio.to_thread(inner)
@@ -142,18 +169,26 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # config flow auth action/step (authenticate button clicked)
-    if action == CONF_ACTION_AUTH:
+    if action == CONF_ACTION_START_PKCE_LOGIN:
         async with AuthenticationHelper(mass, cast(str, values["session_id"])) as auth_helper:
             quality: str = values.get(CONF_QUALITY) if values else None
-            tidal_session = await tidal_code_login(auth_helper, cast(str, quality))
-            if not tidal_session.check_login():
-                msg = "Authentication to Tidal failed"
-                raise LoginFailed(msg)
-            # set the retrieved token on the values object to pass along
-            values[CONF_AUTH_TOKEN] = tidal_session.access_token
-            values[CONF_REFRESH_TOKEN] = tidal_session.refresh_token
-            values[CONF_EXPIRY_TIME] = tidal_session.expiry_time.isoformat()
-            values[CONF_USER_ID] = str(tidal_session.user.id)
+            base64_session = await tidal_auth_url(auth_helper, cast(str, quality))
+            values[CONF_TEMP_SESSION] = base64_session
+
+    if action == CONF_ACTION_COMPLETE_PKCE_LOGIN:
+        quality: str = values.get(CONF_QUALITY) if values else None
+        pkce_url: str = values.get(CONF_OOPS_URL) if values else None
+        base64_session = values.get(CONF_TEMP_SESSION) if values else None
+        tidal_session = await tidal_pkce_login(base64_session, pkce_url)
+        if not tidal_session.check_login():
+            msg = "Authentication to Tidal failed"
+            raise LoginFailed(msg)
+        # set the retrieved token on the values object to pass along
+        values[CONF_AUTH_TOKEN] = tidal_session.access_token
+        values[CONF_REFRESH_TOKEN] = tidal_session.refresh_token
+        values[CONF_EXPIRY_TIME] = tidal_session.expiry_time.isoformat()
+        values[CONF_USER_ID] = str(tidal_session.user.id)
+        values[CONF_TEMP_SESSION] = ""
 
     # config flow auth action/step to pick the library to use
     # because this call is very slow, we only show/calculate the dropdown if we do
@@ -168,17 +203,52 @@ async def get_config_entries(
             required=True,
             description="The Tidal Quality you wish to use",
             options=tuple(ConfigValueOption(x.value, x.name) for x in TidalQualityEnum),
-            default_value=TidalQualityEnum.HIGH_LOSSLESS.value,
+            default_value=TidalQualityEnum.HI_RES.value,
             value=values.get(CONF_QUALITY) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_START_PKCE_LOGIN,
+            type=ConfigEntryType.ACTION,
+            label="Authenticate with Tidal.com",
+            description="Starts the auth process via PKCE on Tidal.com",
+            action=CONF_ACTION_START_PKCE_LOGIN,
+            depends_on=CONF_QUALITY,
+            action_label="Starts the auth process via PKCE on Tidal.com",
+            value=values.get(CONF_TEMP_SESSION) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_TEMP_SESSION,
+            type=ConfigEntryType.STRING,
+            label="Temporary session for Tidal",
+            hidden=True,
+            value=values.get(CONF_TEMP_SESSION) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_OOPS_URL,
+            type=ConfigEntryType.STRING,
+            label="Authentication URL for Tidal",
+            description="Add the 'Oops' URL from the previous step to this field.",
+            depends_on=CONF_ACTION_START_PKCE_LOGIN,
+            action_label="'Oops' redirect URL on Tidal.com",
+            value=values.get(CONF_OOPS_URL) if values else None,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
+            type=ConfigEntryType.ACTION,
+            label="Completes the auth process via PKCE on Tidal.com",
+            description="Click this after adding the 'Oops' URL above.",
+            action=CONF_ACTION_COMPLETE_PKCE_LOGIN,
+            depends_on=CONF_OOPS_URL,
+            action_label="Completes the auth process via PKCE on Tidal.com",
+            value=None,
         ),
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Authentication token for Tidal",
             description="You need to link Music Assistant to your Tidal account.",
-            action=CONF_ACTION_AUTH,
-            depends_on=CONF_QUALITY,
-            action_label="Authenticate on Tidal.com",
+            depends_on=CONF_ACTION_COMPLETE_PKCE_LOGIN,
+            hidden=True,
             value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
         ConfigEntry(
@@ -548,7 +618,13 @@ class TidalProvider(MusicProvider):
         def inner() -> TidalSession:
             config = TidalConfig(quality=quality, item_limit=10000, alac=False)
             session = TidalSession(config=config)
-            session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
+            session.load_oauth_session(
+                token_type=token_type,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expiry_time=expiry_time,
+                is_pkce=True,
+            )
             return session
 
         return await asyncio.to_thread(inner)
