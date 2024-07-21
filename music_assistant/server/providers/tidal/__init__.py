@@ -49,10 +49,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import (
-    ThrottlerManager,
-    throttle_with_retries,
-)
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -94,6 +91,7 @@ TOKEN_TYPE = "Bearer"
 # Actions
 CONF_ACTION_START_PKCE_LOGIN = "start_pkce_login"
 CONF_ACTION_COMPLETE_PKCE_LOGIN = "auth"
+CONF_ACTION_CLEAR_AUTH = "clear_auth"
 
 # Intermediate steps
 CONF_TEMP_SESSION = "temp_session"
@@ -174,7 +172,6 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # config flow auth action/step (authenticate button clicked)
     if action == CONF_ACTION_START_PKCE_LOGIN:
         async with AuthenticationHelper(mass, cast(str, values["session_id"])) as auth_helper:
             quality: str = values.get(CONF_QUALITY) if values else None
@@ -196,88 +193,111 @@ async def get_config_entries(
         values[CONF_USER_ID] = str(tidal_session.user.id)
         values[CONF_TEMP_SESSION] = ""
 
-    # config flow auth action/step to pick the library to use
-    # because this call is very slow, we only show/calculate the dropdown if we do
-    # not yet have this info or we/user invalidated it.
+    if action == CONF_ACTION_CLEAR_AUTH:
+        values[CONF_AUTH_TOKEN] = None
+
+    if values.get(CONF_AUTH_TOKEN):
+        auth_entries = (
+            ConfigEntry(
+                key=CONF_ACTION_CLEAR_AUTH,
+                type=ConfigEntryType.ACTION,
+                label="Reset authentication",
+                description="Reset the authentication for Tidal",
+                action=CONF_ACTION_CLEAR_AUTH,
+                value=None,
+            ),
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                label=CONF_QUALITY,
+                required=True,
+                hidden=True,
+                default_value=values.get(CONF_QUALITY, TidalQualityEnum.HI_RES.value),
+                value=values.get(CONF_QUALITY),
+            ),
+        )
+    else:
+        auth_entries = (
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                label="Quality setting for Tidal:",
+                required=True,
+                description="HIGH_LOSSLESS = 16bit 44.1kHz, HI_RES = Up to 24bit 192kHz",
+                options=tuple(ConfigValueOption(x.value, x.name) for x in TidalQualityEnum),
+                default_value=TidalQualityEnum.HI_RES.value,
+                value=values.get(CONF_QUALITY) if values else None,
+            ),
+            ConfigEntry(
+                key=LABEL_START_PKCE_LOGIN,
+                type=ConfigEntryType.LABEL,
+                label="The button below will redirect you to Tidal.com to authenticate."
+                " After authenticating, you will be redirected to a page that prominently displays"
+                " 'Oops' at the top.",
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_START_PKCE_LOGIN,
+                type=ConfigEntryType.ACTION,
+                label="Starts the auth process via PKCE on Tidal.com",
+                description="This button will redirect you to Tidal.com to authenticate."
+                " After authenticating, you will be redirected to a page that prominently displays"
+                " 'Oops' at the top.",
+                action=CONF_ACTION_START_PKCE_LOGIN,
+                depends_on=CONF_QUALITY,
+                action_label="Starts the auth process via PKCE on Tidal.com",
+                value=values.get(CONF_TEMP_SESSION) if values else None,
+            ),
+            ConfigEntry(
+                key=CONF_TEMP_SESSION,
+                type=ConfigEntryType.STRING,
+                label="Temporary session for Tidal",
+                hidden=True,
+                required=False,
+                value=values.get(CONF_TEMP_SESSION) if values else None,
+            ),
+            ConfigEntry(
+                key=LABEL_OOPS_URL,
+                type=ConfigEntryType.LABEL,
+                label="Copy the URL from the 'Oops' page that you were previously redirected to"
+                " and paste it in the field below",
+            ),
+            ConfigEntry(
+                key=CONF_OOPS_URL,
+                type=ConfigEntryType.STRING,
+                label="Oops URL from Tidal redirect",
+                description="This field should be filled manually by you after authenticating on"
+                " Tidal.com and being redirected to a page that prominently displays"
+                " 'Oops' at the top.",
+                depends_on=CONF_ACTION_START_PKCE_LOGIN,
+                value=values.get(CONF_OOPS_URL) if values else None,
+            ),
+            ConfigEntry(
+                key=LABEL_COMPLETE_PKCE_LOGIN,
+                type=ConfigEntryType.LABEL,
+                label="After pasting the URL in the field above, click the button below to complete"
+                " the process.",
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
+                type=ConfigEntryType.ACTION,
+                label="Complete the auth process via PKCE on Tidal.com",
+                description="Click this after adding the 'Oops' URL above, this will complete the"
+                " authentication process.",
+                action=CONF_ACTION_COMPLETE_PKCE_LOGIN,
+                depends_on=CONF_OOPS_URL,
+                action_label="Complete the auth process via PKCE on Tidal.com",
+                value=None,
+            ),
+        )
 
     # return the collected config entries
     return (
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            label="Quality setting for Tidal:",
-            required=True,
-            description="HIGH_LOSSLESS = 16bit 44.1kHz, HI_RES = Up to 24bit 192kHz",
-            options=tuple(ConfigValueOption(x.value, x.name) for x in TidalQualityEnum),
-            default_value=TidalQualityEnum.HI_RES.value,
-            value=values.get(CONF_QUALITY) if values else None,
-        ),
-        ConfigEntry(
-            key=LABEL_START_PKCE_LOGIN,
-            type=ConfigEntryType.LABEL,
-            label="The button below will redirect you to Tidal.com to authenticate."
-            " After authenticating, you will be redirected to a page that prominently displays"
-            " 'Oops' at the top.",
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_START_PKCE_LOGIN,
-            type=ConfigEntryType.ACTION,
-            label="Starts the auth process via PKCE on Tidal.com",
-            description="This button will redirect you to Tidal.com to authenticate."
-            " After authenticating, you will be redirected to a page that prominently displays"
-            " 'Oops' at the top.",
-            action=CONF_ACTION_START_PKCE_LOGIN,
-            depends_on=CONF_QUALITY,
-            action_label="Starts the auth process via PKCE on Tidal.com",
-            value=values.get(CONF_TEMP_SESSION) if values else None,
-        ),
-        ConfigEntry(
-            key=CONF_TEMP_SESSION,
-            type=ConfigEntryType.STRING,
-            label="Temporary session for Tidal",
-            hidden=True,
-            required=False,
-            value=values.get(CONF_TEMP_SESSION) if values else None,
-        ),
-        ConfigEntry(
-            key=LABEL_OOPS_URL,
-            type=ConfigEntryType.LABEL,
-            label="Copy the URL from the 'Oops' page that you were previously redirected to"
-            " and paste it in the field below",
-        ),
-        ConfigEntry(
-            key=CONF_OOPS_URL,
-            type=ConfigEntryType.STRING,
-            label="Oops URL from Tidal redirect",
-            description="This field should be filled manually by you after authenticating on"
-            " Tidal.com and being redirected to a page that prominently displays"
-            " 'Oops' at the top.",
-            depends_on=CONF_ACTION_START_PKCE_LOGIN,
-            value=values.get(CONF_OOPS_URL) if values else None,
-        ),
-        ConfigEntry(
-            key=LABEL_COMPLETE_PKCE_LOGIN,
-            type=ConfigEntryType.LABEL,
-            label="After pasting the URL in the field above, click the button below to complete"
-            " the process.",
-        ),
-        ConfigEntry(
-            key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
-            type=ConfigEntryType.ACTION,
-            label="Complete the auth process via PKCE on Tidal.com",
-            description="Click this after adding the 'Oops' URL above, this will complete the"
-            " authentication process.",
-            action=CONF_ACTION_COMPLETE_PKCE_LOGIN,
-            depends_on=CONF_OOPS_URL,
-            action_label="Complete the auth process via PKCE on Tidal.com",
-            value=None,
-        ),
+        *auth_entries,
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Authentication token for Tidal",
             description="You need to link Music Assistant to your Tidal account.",
-            depends_on=CONF_ACTION_COMPLETE_PKCE_LOGIN,
             hidden=True,
             value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
