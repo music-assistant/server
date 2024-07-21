@@ -47,12 +47,10 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
+from music_assistant.server.helpers.audio import HTTP_HEADERS
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
-from music_assistant.server.helpers.throttle_retry import (
-    ThrottlerManager,
-    throttle_with_retries,
-)
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
@@ -83,6 +81,7 @@ if TYPE_CHECKING:
 
     from tidalapi.media import Lyrics as TidalLyrics
     from tidalapi.media import Stream as TidalStream
+    from tidalapi.media import StreamManifest as TidalStreamManifest
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
@@ -222,6 +221,7 @@ async def get_config_entries(
             type=ConfigEntryType.STRING,
             label="Temporary session for Tidal",
             hidden=True,
+            required=False,
             value=values.get(CONF_TEMP_SESSION) if values else None,
         ),
         ConfigEntry(
@@ -500,18 +500,13 @@ class TidalProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        # make sure a valid track is requested.
         tidal_session = await self._get_tidal_session()
-        track = await get_track(tidal_session, item_id)
-
-        # TODO - This is all wrong and needs to be fixed
-        stream: TidalStream = await get_stream(track)
-        manifest = stream.get_stream_manifest()
-        # url = await get_track_url(tidal_session, item_id)
-        # media_info = await self._get_media_info(item_idis=item_id, url=url)
-        if not track:
+        # make sure a valid track is requested.
+        if not (track := await get_track(tidal_session, item_id)):
             msg = f"track {item_id} not found"
             raise MediaNotFoundError(msg)
+        stream: TidalStream = await get_stream(track)
+        manifest = stream.get_stream_manifest()
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
@@ -521,10 +516,22 @@ class TidalProvider(MusicProvider):
                 bit_depth=stream.bit_depth,
                 channels=2,
             ),
-            stream_type=StreamType.HLS if stream.is_MPD else StreamType.HTTP,
+            # use custom streaming to handle the mpeg dash stream
+            stream_type=StreamType.CUSTOM if manifest.is_MPD else StreamType.HTTP,
             duration=track.duration,
-            path=manifest.get_urls(),
+            # as far as I can oversee a BTS stream is just a single URL
+            path=manifest.urls[0] if manifest.is_BTS else None,
+            data=manifest if manifest.is_MPD else None,
         )
+
+    async def get_audio_stream(
+        self, streamdetails: StreamDetails, seek_position: int = 0
+    ) -> AsyncGenerator[bytes, None]:
+        """Return the audio stream for the provider item."""
+        manifest: TidalStreamManifest = streamdetails.data
+        for chunk_url in manifest.urls:
+            async with self.mass.http_session.get(chunk_url, headers=HTTP_HEADERS) as resp:
+                yield await resp.content.read()
 
     @throttle_with_retries
     async def get_artist(self, prov_artist_id: str) -> Artist:
