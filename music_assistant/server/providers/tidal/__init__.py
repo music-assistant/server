@@ -505,8 +505,12 @@ class TidalProvider(MusicProvider):
             raise MediaNotFoundError(msg)
         stream: TidalStream = await get_stream(track)
         manifest = stream.get_stream_manifest()
-        # for mpeg-dash streams we pass the base64 manifest
-        manifest_url = f"data:application/dash+xml;base64,{manifest.manifest}"
+        if manifest.is_MPD:
+            # for mpeg-dash streams we just pass the complete base64 manifest
+            url = f"data:application/dash+xml;base64,{manifest.manifest}"
+        else:
+            # as far as I can oversee a BTS stream is just a single URL
+            url = manifest.urls[0]
 
         return StreamDetails(
             item_id=track.id,
@@ -519,9 +523,7 @@ class TidalProvider(MusicProvider):
             ),
             stream_type=StreamType.HTTP,
             duration=track.duration,
-            # as far as I can oversee a BTS stream is just a single URL
-            path=manifest.urls[0] if manifest.is_BTS else manifest_url,
-            data=manifest if manifest.is_MPD else None,
+            path=url,
         )
 
     @throttle_with_retries
