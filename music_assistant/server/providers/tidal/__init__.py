@@ -507,10 +507,8 @@ class TidalProvider(MusicProvider):
         # TODO - This is all wrong and needs to be fixed
         stream: TidalStream = await get_stream(track)
         manifest = stream.get_stream_manifest()
-        hls = manifest.get_hls()
-
         # url = await get_track_url(tidal_session, item_id)
-        # media_info = await self._get_media_info(item_id=item_id, url=url)
+        # media_info = await self._get_media_info(item_idis=item_id, url=url)
         if not track:
             msg = f"track {item_id} not found"
             raise MediaNotFoundError(msg)
@@ -523,9 +521,9 @@ class TidalProvider(MusicProvider):
                 bit_depth=stream.bit_depth,
                 channels=2,
             ),
-            stream_type=StreamType.HLS,
+            stream_type=StreamType.HLS if stream.is_MPD else StreamType.HTTP,
             duration=track.duration,
-            path=hls,
+            path=manifest.get_urls(),
         )
 
     @throttle_with_retries
