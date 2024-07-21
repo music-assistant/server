@@ -1014,9 +1014,7 @@ class PlayerController(CoreController):
 
     async def _poll_players(self) -> None:
         """Background task that polls players for updates."""
-        count = 0
         while True:
-            count += 1
             for player in list(self._players.values()):
                 player_id = player.player_id
                 # if the player is playing, update elapsed time every tick
@@ -1029,9 +1027,10 @@ class PlayerController(CoreController):
                 # Poll player;
                 if not player.needs_poll:
                     continue
-                if count % player.poll_interval == 0 and (
-                    player_prov := self.get_player_provider(player_id)
-                ):
+                if (self.mass.loop.time() - player.last_poll) < player.poll_interval:
+                    continue
+                player.last_poll = self.mass.loop.time()
+                if player_prov := self.get_player_provider(player_id):
                     try:
                         await player_prov.poll_player(player_id)
                     except PlayerUnavailableError:
@@ -1048,8 +1047,6 @@ class PlayerController(CoreController):
                     finally:
                         # always update player state
                         self.mass.loop.call_soon(self.update, player_id)
-                    if count >= 120:
-                        count = 0
             await asyncio.sleep(1)
 
     # Syncgroup specific functions/helpers

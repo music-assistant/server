@@ -131,6 +131,9 @@ class Player(DataClassDictMixin):
     # announcement_in_progress boolean to indicate there's an announcement in progress.
     announcement_in_progress: bool = False
 
+    # last_poll: when was the player last polled (used with needs_poll)
+    last_poll: float = 0
+
     @property
     def corrected_elapsed_time(self) -> float:
         """Return the corrected/realtime elapsed time."""
