@@ -407,7 +407,7 @@ class StreamsController(CoreController):
         command = request.match_info["command"]
         if command == "next":
             self.mass.create_task(self.mass.player_queues.next(queue_id))
-        return web.FileResponse(SILENCE_FILE)
+        return web.FileResponse(SILENCE_FILE, headers={"icy-name": "Music Assistant"})
 
     async def serve_announcement_stream(self, request: web.Request) -> web.Response:
         """Stream announcement audio to a player."""

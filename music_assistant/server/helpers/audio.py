@@ -477,9 +477,8 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     timeout = ClientTimeout(total=0, connect=10, sock_read=5)
     try:
         async with mass.http_session.get(
-            url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout, encoded="%" in url
+            url, headers=HTTP_HEADERS_ICY, allow_redirects=True, timeout=timeout
         ) as resp:
-            resolved_url = str(resp.real_url)
             headers = resp.headers
             resp.raise_for_status()
             if not resp.headers:
@@ -491,24 +490,24 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
             or headers.get("content-type") == "audio/x-mpegurl"
         ):
             # url is playlist, we need to unfold it
-            substreams = await fetch_playlist(mass, resolved_url)
+            substreams = await fetch_playlist(mass, url)
             if not any(x for x in substreams if x.length):
                 try:
                     for line in substreams:
                         if not line.is_url:
                             continue
                         # unfold first url of playlist
-                        return await resolve_radio_stream(mass, line.path)
+                        resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, line.path)
                     raise InvalidDataError("No content found in playlist")
                 except IsHLSPlaylist:
                     is_hls = True
 
     except Exception as err:
         LOGGER.warning("Error while parsing radio URL %s: %s", url, err)
-        return (resolved_url, is_icy, is_hls)
+        return (url, is_icy, is_hls)
 
     result = (resolved_url, is_icy, is_hls)
-    cache_expiration = 30 * 24 * 3600 if url == resolved_url else 600
+    cache_expiration = 3600 * 3
     await mass.cache.set(cache_key, result, expiration=cache_expiration)
     return result
 
@@ -520,7 +519,7 @@ async def get_icy_stream(
     timeout = ClientTimeout(total=0, connect=30, sock_read=5 * 60)
     LOGGER.debug("Start streaming radio with ICY metadata from url %s", url)
     async with mass.http_session.get(
-        url, headers=HTTP_HEADERS_ICY, timeout=timeout, encoded="%" in url
+        url, allow_redirects=True, headers=HTTP_HEADERS_ICY, timeout=timeout
     ) as resp:
         headers = resp.headers
         meta_int = int(headers["icy-metaint"])
@@ -576,7 +575,7 @@ async def get_hls_stream(
     while True:
         logger.log(VERBOSE_LOG_LEVEL, "start streaming chunks from substream %s", substream_url)
         async with mass.http_session.get(
-            substream_url, headers=HTTP_HEADERS, timeout=timeout, encoded="%" in substream_url
+            substream_url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
         ) as resp:
             resp.raise_for_status()
             charset = resp.charset or "utf-8"
@@ -658,7 +657,7 @@ async def get_hls_substream(
     # fetch master playlist and select (best) child playlist
     # https://datatracker.ietf.org/doc/html/draft-pantos-http-live-streaming-19#section-10
     async with mass.http_session.get(
-        url, headers=HTTP_HEADERS, timeout=timeout, encoded="%" in url
+        url, allow_redirects=True, headers=HTTP_HEADERS, timeout=timeout
     ) as resp:
         resp.raise_for_status()
         charset = resp.charset or "utf-8"
@@ -688,7 +687,7 @@ async def get_http_stream(
     # try to get filesize with a head request
     seek_supported = streamdetails.can_seek
     if seek_position or not streamdetails.size:
-        async with mass.http_session.head(url, headers=HTTP_HEADERS, encoded="%" in url) as resp:
+        async with mass.http_session.head(url, allow_redirects=True, headers=HTTP_HEADERS) as resp:
             resp.raise_for_status()
             if size := resp.headers.get("Content-Length"):
                 streamdetails.size = int(size)
@@ -722,7 +721,7 @@ async def get_http_stream(
     # start the streaming from http
     bytes_received = 0
     async with mass.http_session.get(
-        url, headers=headers, timeout=timeout, encoded="%" in url
+        url, allow_redirects=True, headers=headers, timeout=timeout
     ) as resp:
         is_partial = resp.status == 206
         if seek_position and not is_partial:

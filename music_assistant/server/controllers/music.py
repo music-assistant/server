@@ -596,7 +596,10 @@ class MusicController(CoreController):
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
 
-        if provider_instance_id_or_domain == "builtin" and media_type != MediaType.PLAYLIST:
+        if (
+            provider_instance_id_or_domain.startswith("builtin")
+            and media_type != MediaType.PLAYLIST
+        ):
             # we deliberately skip builtin provider items as those are often
             # one-off items like TTS or some sound effect etc.
             return

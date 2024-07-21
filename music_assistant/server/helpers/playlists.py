@@ -142,7 +142,7 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
 async def fetch_playlist(mass: MusicAssistant, url: str) -> list[PlaylistItem]:
     """Parse an online m3u or pls playlist."""
     try:
-        async with mass.http_session.get(url, timeout=5) as resp:
+        async with mass.http_session.get(url, allow_redirects=True, timeout=5) as resp:
             charset = resp.charset or "utf-8"
             try:
                 playlist_data = (await resp.content.read(64 * 1024)).decode(charset)
