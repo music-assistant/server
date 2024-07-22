@@ -13,7 +13,7 @@ asyncio-throttle==1.0.2
 bidict==0.23.1
 certifi==2024.7.4
 colorlog==6.8.2
-cryptography==42.0.8
+cryptography==43.0.0
 deezer-python-async==0.3.0
 defusedxml==0.7.1
 eyeD3==0.9.7
