@@ -447,10 +447,11 @@ async def parse_tags(
             # this is actually a bug in ffmpeg/ffprobe which does not expose this tag
             # so we use this as alternative approach for mp3 files
             audiofile = await asyncio.to_thread(eyed3.load, file_path)
-            for uf_id in audiofile.tag.unique_file_ids:
-                if uf_id.owner_id == b"http://musicbrainz.org" and uf_id.uniq_id:
-                    tags.tags["musicbrainzrecordingid"] = uf_id.uniq_id.decode()
-                    break
+            if audiofile.tag is not None:
+                for uf_id in audiofile.tag.unique_file_ids:
+                    if uf_id.owner_id == b"http://musicbrainz.org" and uf_id.uniq_id:
+                        tags.tags["musicbrainzrecordingid"] = uf_id.uniq_id.decode()
+                        break
 
         return tags
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
