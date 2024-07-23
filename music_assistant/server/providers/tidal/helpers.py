@@ -50,7 +50,7 @@ async def library_items_add_remove(
     item_id: str,
     media_type: MediaType,
     add: bool = True,
-) -> None:
+) -> bool:
     """Async wrapper around the tidalapi Favorites.items add/remove function."""
 
     def inner() -> bool:
@@ -189,7 +189,7 @@ async def get_track(session: TidalSession, prov_track_id: str) -> TidalTrack:
 async def get_stream(track: TidalTrack) -> TidalStream:
     """Async wrapper around the tidalapi Track.get_stream_url function."""
 
-    def inner() -> str:
+    def inner() -> TidalStream:
         try:
             return track.get_stream()
         except ObjectNotFound as err:
