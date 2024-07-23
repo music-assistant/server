@@ -2,7 +2,8 @@
 
 from typing import Final
 
-from aiojellyfin.const import ImageType as JellyImageType
+from aiojellyfin import ImageType as JellyImageType
+from aiojellyfin import ItemFields
 
 from music_assistant.common.models.enums import ImageType, MediaType
 from music_assistant.common.models.media_items import ItemMapping
@@ -67,9 +68,23 @@ SUPPORTED_CONTAINER_FORMATS: Final = "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,m4
 
 PLAYABLE_ITEM_TYPES: Final = [ITEM_TYPE_AUDIO]
 
-ARTIST_FIELDS = ["Overview", "ProviderIds", "SortName"]
-ALBUM_FIELDS = ["ProductionYear", "Overview", "ProviderIds", "SortName"]
-TRACK_FIELDS = ["ProviderIds", "CanDownload", "SortName", "MediaSources", "MediaStreams"]
+ARTIST_FIELDS: Final = [
+    ItemFields.Overview,
+    ItemFields.ProviderIds,
+    ItemFields.SortName,
+]
+ALBUM_FIELDS: Final = [
+    ItemFields.Overview,
+    ItemFields.ProviderIds,
+    ItemFields.SortName,
+]
+TRACK_FIELDS: Final = [
+    ItemFields.ProviderIds,
+    ItemFields.CanDownload,
+    ItemFields.SortName,
+    ItemFields.MediaSources,
+    ItemFields.MediaStreams,
+]
 
 USER_APP_NAME: Final = "Music Assistant"
 USER_AGENT: Final = "Music-Assistant-1.0"
