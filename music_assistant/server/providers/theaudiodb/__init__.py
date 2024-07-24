@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from json import JSONDecodeError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp.client_exceptions
 from asyncio_throttle import Throttler
@@ -19,9 +19,10 @@ from music_assistant.common.models.media_items import (
     MediaItemLink,
     MediaItemMetadata,
     Track,
+    UniqueList,
 )
 from music_assistant.server.controllers.cache import use_cache
-from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
@@ -199,7 +200,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         else:
             metadata.description = artist_obj.get("strBiographyEN")
         # images
-        metadata.images = []
+        metadata.images = UniqueList()
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := artist_obj.get(f"{key}{postfix}"):
@@ -245,7 +246,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             metadata.description = album_obj.get("strDescriptionEN")
         metadata.review = album_obj.get("strReview")
         # images
-        metadata.images = []
+        metadata.images = UniqueList()
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := album_obj.get(f"{key}{postfix}"):
@@ -279,7 +280,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         else:
             metadata.description = track_obj.get("strDescriptionEN")
         # images
-        metadata.images = []
+        metadata.images = UniqueList([])
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := track_obj.get(f"{key}{postfix}"):
@@ -296,7 +297,7 @@ class AudioDbMetadataProvider(MetadataProvider):
         return metadata
 
     @use_cache(86400 * 30)
-    async def _get_data(self, endpoint, **kwargs) -> dict | None:
+    async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
         async with (
@@ -304,7 +305,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
         ):
             try:
-                result = await response.json()
+                result = cast(dict[str, Any], await response.json())
             except (
                 aiohttp.client_exceptions.ContentTypeError,
                 JSONDecodeError,
