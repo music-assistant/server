@@ -22,7 +22,7 @@ from music_assistant.common.models.media_items import (
     UniqueList,
 )
 from music_assistant.server.controllers.cache import use_cache
-from music_assistant.server.helpers.app_vars import app_var  # type: ignore[attr-defined]  # pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.server.helpers.compare import compare_strings
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
