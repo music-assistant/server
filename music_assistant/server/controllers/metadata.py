@@ -295,34 +295,8 @@ class MetaDataController(CoreController):
         media_item: MediaItemType,
         img_type: ImageType = ImageType.THUMB,
         resolve: bool = True,
-        ) -> str | None:
-        #"""Get url to image for given media media_item."""
-        #if not media_item:
-        #    return None
-        #if isinstance(media_item, ItemMapping):
-        #    media_item = await self.mass.music.get_item_by_uri(media_item.uri)
-        #if media_item and media_item.metadata.images:
-        #    for img in media_item.metadata.images:
-        #        if img.type != img_type:
-        #            continue
-        #        if img.remotely_accessible and not resolve:
-        #            continue
-        #        if img.remotely_accessible and resolve:
-        #            return self.get_image_url(img)
-        #        return img.path
-
-        # retry with track's album
-        #if media_item.media_type == MediaType.TRACK and media_item.album:
-        #    return await self.get_image_url_for_item(media_item.album, img_type, resolve)
-
-        # try artist instead for albums
-        #if media_item.media_type == MediaType.ALBUM and media_item.artists:
-        #    return await self.get_image_url_for_item(media_item.artists[0], img_type, resolve)
-
-        # last resort: track artist(s)
-        #if media_item.media_type == MediaType.TRACK and media_item.artists:
-        #    for artist in media_item.artists:
-        #        return await self.get_image_url_for_item(artist, img_type, resolve)
+    ) -> str | None:
+        """Get url to image for given media media_item."""
         return None
 
     def get_image_url(
@@ -360,30 +334,6 @@ class MetaDataController(CoreController):
         return thumbnail
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
-        #Handle request for image proxy
-        #path = request.query["path"]
-        #provider = request.query.get("provider", "builtin")
-        #if provider in ("url", "file"):
-        #    # temporary for backwards compatibility
-        #    provider = "builtin"
-        #size = int(request.query.get("size", "0"))
-        #image_format = request.query.get("fmt", "png")
-        #if not self.mass.get_provider(provider):
-        #    return web.Response(status=404)
-        #if "%" in path:
-        #    # assume (double) encoded url, decode it
-        #    path = urllib.parse.unquote(path)
-        #with suppress(FileNotFoundError):
-        #    image_data = await self.get_thumbnail(
-        #        path, size=size, provider=provider, image_format=image_format
-        #    )
-        #    # we set the cache header to 1 year (forever)
-        #    # assuming that images do not/rarely change
-        #    return web.Response(
-        #        body=image_data,
-        #        headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-        #        content_type=f"image/{image_format}",
-        #    )
         return web.Response(status=404)
 
     async def create_collage_image(
@@ -393,29 +343,6 @@ class MetaDataController(CoreController):
         fanart: bool = False,
     ) -> MediaItemImage | None:
         """Create collage thumb/fanart image for (in-library) playlist."""
-        if len(images) < 8 and fanart or len(images) < 3:
-            # require at least some images otherwise this does not make a lot of sense
-            return None
-        try:
-            # create collage thumb from playlist tracks
-            # if playlist has no default image (e.g. a local playlist)
-            dimensions = (2500, 1750) if fanart else (1500, 1500)
-            img_data = await create_collage(self.mass, images, dimensions)
-            # always overwrite existing path
-            async with aiofiles.open(img_path, "wb") as _file:
-                await _file.write(img_data)
-            return MediaItemImage(
-                type=ImageType.FANART if fanart else ImageType.THUMB,
-                path=img_path,
-                provider="builtin",
-                remotely_accessible=False,
-            )
-        except Exception as err:
-            self.logger.warning(
-                "Error while creating playlist image: %s",
-                str(err),
-                exc_info=err if self.logger.isEnabledFor(10) else None,
-            )
         return None
 
     async def _update_artist_metadata(self, artist: Artist, force_refresh: bool = False) -> None:

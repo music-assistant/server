@@ -24,32 +24,7 @@ if TYPE_CHECKING:
 
 
 async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
-    """Create thumbnail from image url.
-    # TODO: add local cache here !
-    if prov := mass.get_provider(provider):
-        prov: MusicProvider | MetadataProvider
-        if resolved_image := await prov.resolve_image(path_or_url):
-            if isinstance(resolved_image, bytes):
-                return resolved_image
-            if isinstance(resolved_image, str):
-                path_or_url = resolved_image
-    # handle HTTP location
-    if path_or_url.startswith("http"):
-        try:
-            async with mass.http_session.get(path_or_url, raise_for_status=True) as resp:
-                return await resp.read()
-        except ClientError as err:
-            raise FileNotFoundError from err
-    # handle FILE location (of type image)
-    if path_or_url.endswith(("jpg", "JPG", "png", "PNG", "jpeg")):
-        if await asyncio.to_thread(os.path.isfile, path_or_url):
-            async with aiofiles.open(path_or_url, "rb") as _file:
-                return await _file.read()
-    # use ffmpeg for embedded images
-    if img_data := await get_embedded_image(path_or_url):
-        return img_data
-    msg = f"Image not found: {path_or_url}"
-    """
+    """Create thumbnail from image url."""
     raise FileNotFoundError(msg)
 
 
