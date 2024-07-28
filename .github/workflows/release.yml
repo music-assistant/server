@@ -12,6 +12,9 @@ permissions:
   
 jobs:
   build-and-publish-pypi:
+    permissions:
+      id-token: write # This is required for requesting the JWT
+      contents: read  # This is required for actions/checkout
     name: Builds and publishes releases to PyPI
     runs-on: ubuntu-latest
     outputs:
