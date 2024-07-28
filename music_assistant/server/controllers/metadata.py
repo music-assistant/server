@@ -360,31 +360,30 @@ class MetaDataController(CoreController):
         return thumbnail
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
-        """Handle request for image proxy
-        path = request.query["path"]
-        provider = request.query.get("provider", "builtin")
-        if provider in ("url", "file"):
-            # temporary for backwards compatibility
-            provider = "builtin"
-        size = int(request.query.get("size", "0"))
-        image_format = request.query.get("fmt", "png")
-        if not self.mass.get_provider(provider):
-            return web.Response(status=404)
-        if "%" in path:
-            # assume (double) encoded url, decode it
-            path = urllib.parse.unquote(path)
-        with suppress(FileNotFoundError):
-            image_data = await self.get_thumbnail(
-                path, size=size, provider=provider, image_format=image_format
-            )
-            # we set the cache header to 1 year (forever)
-            # assuming that images do not/rarely change
-            return web.Response(
-                body=image_data,
-                headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
-                content_type=f"image/{image_format}",
-            )
-        """
+        #Handle request for image proxy
+        #path = request.query["path"]
+        #provider = request.query.get("provider", "builtin")
+        #if provider in ("url", "file"):
+        #    # temporary for backwards compatibility
+        #    provider = "builtin"
+        #size = int(request.query.get("size", "0"))
+        #image_format = request.query.get("fmt", "png")
+        #if not self.mass.get_provider(provider):
+        #    return web.Response(status=404)
+        #if "%" in path:
+        #    # assume (double) encoded url, decode it
+        #    path = urllib.parse.unquote(path)
+        #with suppress(FileNotFoundError):
+        #    image_data = await self.get_thumbnail(
+        #        path, size=size, provider=provider, image_format=image_format
+        #    )
+        #    # we set the cache header to 1 year (forever)
+        #    # assuming that images do not/rarely change
+        #    return web.Response(
+        #        body=image_data,
+        #        headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
+        #        content_type=f"image/{image_format}",
+        #    )
         return web.Response(status=404)
 
     async def create_collage_image(
