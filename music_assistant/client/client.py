@@ -143,7 +143,7 @@ class MusicAssistantClient:
                 f"&w=${size}&h=${size}&fit=cover&a=attention"
             )
         # return imageproxy url for images that need to be resolved
-        # the original path is double encoded
+        # the original path is double encoded 2
         encoded_url = urllib.parse.quote(urllib.parse.quote(image.path))
         return (
             f"{self.server_info.base_url}/imageproxy?path={encoded_url}"
