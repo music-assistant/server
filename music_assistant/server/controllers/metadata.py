@@ -291,11 +291,11 @@ class MetaDataController(CoreController):
         return await self.get_thumbnail(img_path, size)
 
     async def get_image_url_for_item(
-        #self,
-        #media_item: MediaItemType,
-        #img_type: ImageType = ImageType.THUMB,
-        #resolve: bool = True,
-        #) -> str | None:
+        self,
+        media_item: MediaItemType,
+        img_type: ImageType = ImageType.THUMB,
+        resolve: bool = True,
+        ) -> str | None:
         #"""Get url to image for given media media_item."""
         #if not media_item:
         #    return None
