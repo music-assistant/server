@@ -151,18 +151,18 @@ class MusicAssistantClient:
         )
 
     def get_media_item_image_url(
-        self,
-        item: MediaItemType | ItemMapping | QueueItem,
-        type: ImageType = ImageType.THUMB,  # noqa: A002
-        size: int = 0,
-    ) -> str | None:
-        """Get image URL for MediaItem, QueueItem or ItemMapping."""
-        # handle queueitem with media_item attribute
-        if media_item := getattr(item, "media_item", None):
-            if img := self.music.get_media_item_image(media_item, type):
-                return self.get_image_url(img, size)
-        if img := self.music.get_media_item_image(item, type):
-            return self.get_image_url(img, size)
+        #self,
+        #item: MediaItemType | ItemMapping | QueueItem,
+        #type: ImageType = ImageType.THUMB,  # noqa: A002
+        #size: int = 0,
+        #  ) -> str | None:
+        #"""Get image URL for MediaItem, QueueItem or ItemMapping."""
+        ## handle queueitem with media_item attribute
+        #if media_item := getattr(item, "media_item", None):
+        #    if img := self.music.get_media_item_image(media_item, type):
+        #        return self.get_image_url(img, size)
+        #if img := self.music.get_media_item_image(item, type):
+        #    return self.get_image_url(img, size)
         return None
 
     def subscribe(

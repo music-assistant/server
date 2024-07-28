@@ -527,35 +527,35 @@ class Music:
     # helpers
 
     def get_media_item_image(
-        self,
-        item: MediaItemType | ItemMapping | QueueItem,
-        type: ImageType = ImageType.THUMB,  # noqa: A002
-    ) -> MediaItemImage | None:
-        """Get MediaItemImage for MediaItem, ItemMapping."""
-        if not item:
-            # guard for unexpected bad things
-            return None
+        #self,
+        #item: MediaItemType | ItemMapping | QueueItem,
+        #type: ImageType = ImageType.THUMB,  # noqa: A002
+        #  ) -> MediaItemImage | None:
+        # Get MediaItemImage for MediaItem, ItemMapping
+        #if not item:
+        #    # guard for unexpected bad things
+        #    return None
         # handle image in itemmapping
-        if item.image and item.image.type == type:
-            return item.image
+        #if item.image and item.image.type == type:
+        #    return item.image
         # always prefer album image for tracks
-        album: Album | ItemMapping | None
-        if album := getattr(item, "album", None):
-            if album_image := self.get_media_item_image(album, type):
-                return album_image
+        #album: Album | ItemMapping | None
+        #if album := getattr(item, "album", None):
+        #    if album_image := self.get_media_item_image(album, type):
+        #        return album_image
         # handle regular image within mediaitem
-        metadata: MediaItemMetadata | None
-        if metadata := getattr(item, "metadata", None):
-            for img in metadata.images or []:
-                if img.type == type:
-                    return cast(MediaItemImage, img)
+        #metadata: MediaItemMetadata | None
+        #if metadata := getattr(item, "metadata", None):
+        #    for img in metadata.images or []:
+        #        if img.type == type:
+        #            return cast(MediaItemImage, img)
         # retry with album/track artist(s)
-        artists: list[Artist | ItemMapping] | None
-        if artists := getattr(item, "artists", None):
-            for artist in artists:
-                if artist_image := self.get_media_item_image(artist, type):
-                    return artist_image
+        #artists: list[Artist | ItemMapping] | None
+        #if artists := getattr(item, "artists", None):
+        #    for artist in artists:
+        #        if artist_image := self.get_media_item_image(artist, type):
+        #            return artist_image
         # allow landscape fallback
-        if type == ImageType.THUMB:
-            return self.get_media_item_image(item, ImageType.LANDSCAPE)
+        #if type == ImageType.THUMB:
+        #    return self.get_media_item_image(item, ImageType.LANDSCAPE)
         return None
