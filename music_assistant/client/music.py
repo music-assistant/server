@@ -527,10 +527,10 @@ class Music:
     # helpers
 
     def get_media_item_image(
-        #self,
-        #item: MediaItemType | ItemMapping | QueueItem,
-        #type: ImageType = ImageType.THUMB,  # noqa: A002
-        #  ) -> MediaItemImage | None:
+        self,
+        item: MediaItemType | ItemMapping | QueueItem,
+        type: ImageType = ImageType.THUMB,  # noqa: A002
+    ) -> MediaItemImage | None:
         # Get MediaItemImage for MediaItem, ItemMapping
         #if not item:
         #    # guard for unexpected bad things
