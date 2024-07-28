@@ -361,7 +361,8 @@ class MetaDataController(CoreController):
         return thumbnail
 
     async def handle_imageproxy(self, request: web.Request) -> web.Response:
-        """Handle request for image proxy."""
+        """
+        #Handle request for image proxy.
         path = request.query["path"]
         provider = request.query.get("provider", "builtin")
         if provider in ("url", "file"):
@@ -385,6 +386,7 @@ class MetaDataController(CoreController):
                 headers={"Cache-Control": "max-age=31536000", "Access-Control-Allow-Origin": "*"},
                 content_type=f"image/{image_format}",
             )
+        """
         return web.Response(status=404)
 
     async def create_collage_image(
