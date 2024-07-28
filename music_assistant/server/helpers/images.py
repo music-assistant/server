@@ -26,6 +26,7 @@ if TYPE_CHECKING:
 async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) -> bytes:
     """Create thumbnail from image url."""
     # TODO: add local cache here !
+    """
     if prov := mass.get_provider(provider):
         prov: MusicProvider | MetadataProvider
         if resolved_image := await prov.resolve_image(path_or_url):
@@ -49,6 +50,7 @@ async def get_image_data(mass: MusicAssistant, path_or_url: str, provider: str) 
     if img_data := await get_embedded_image(path_or_url):
         return img_data
     msg = f"Image not found: {path_or_url}"
+    """
     raise FileNotFoundError(msg)
 
 
