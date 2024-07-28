@@ -6,19 +6,14 @@ on:
 env:
   PYTHON_VERSION: "3.11"
   
-permissions:
-  id-token: write # This is required for requesting the JWT
-  contents: read  # This is required for actions/checkout
-  
 jobs:
   build-and-publish-pypi:
-    permissions:
-      id-token: write # This is required for requesting the JWT
-      contents: read  # This is required for actions/checkout
     name: Builds and publishes releases to PyPI
     runs-on: ubuntu-latest
     outputs:
       version: ${{ steps.vars.outputs.tag }}
+    permissions:
+      id-token: write
     steps:
       - uses: actions/checkout@v4.1.4
       - name: Get tag
