@@ -9,7 +9,6 @@ aiorun==2024.5.1
 aioslimproto==3.0.1
 aiosqlite==0.20.0
 async-upnp-client==0.39.0
-asyncio-throttle==1.0.2
 bidict==0.23.1
 certifi==2024.7.4
 colorlog==6.8.2

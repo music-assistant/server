@@ -22,7 +22,6 @@ server = [
   "aiodns>=3.0.0",
   "Brotli>=1.0.9",
   "aiohttp==3.9.5",
-  "asyncio-throttle==1.0.2",
   "aiofiles==24.1.0",
   "aiorun==2024.5.1",
   "certifi==2024.7.4",

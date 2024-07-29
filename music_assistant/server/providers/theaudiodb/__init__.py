@@ -6,7 +6,6 @@ from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp.client_exceptions
-from asyncio_throttle import Throttler
 
 from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.common.models.media_items import (
@@ -24,6 +23,7 @@ from music_assistant.common.models.media_items import (
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.server.helpers.compare import compare_strings
+from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
