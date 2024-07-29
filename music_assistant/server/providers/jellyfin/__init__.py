@@ -175,11 +175,12 @@ class JellyfinProvider(MusicProvider):
         return False
 
     async def _search_track(self, search_query: str, limit: int) -> list[Track]:
-        resultset = await self._client.tracks(
-            search_term=search_query,
-            limit=limit,
-            enable_user_data=True,
-            fields=TRACK_FIELDS,
+        resultset = (
+            await self._client.tracks.search_term(search_query)
+            .limit(limit)
+            .enable_userdata()
+            .fields(*TRACK_FIELDS)
+            .request()
         )
         tracks = []
         for item in resultset["Items"]:
@@ -192,11 +193,12 @@ class JellyfinProvider(MusicProvider):
             albumname = searchterms[1]
         else:
             albumname = search_query
-        resultset = await self._client.albums(
-            search_term=albumname,
-            limit=limit,
-            enable_user_data=True,
-            fields=ALBUM_FIELDS,
+        resultset = (
+            await self._client.albums.search_term(albumname)
+            .limit(limit)
+            .enable_userdata()
+            .fields(*ALBUM_FIELDS)
+            .request()
         )
         albums = []
         for item in resultset["Items"]:
@@ -204,11 +206,12 @@ class JellyfinProvider(MusicProvider):
         return albums
 
     async def _search_artist(self, search_query: str, limit: int) -> list[Artist]:
-        resultset = await self._client.artists(
-            search_term=search_query,
-            limit=limit,
-            enable_user_data=True,
-            fields=ARTIST_FIELDS,
+        resultset = (
+            await self._client.artists.search_term(search_query)
+            .limit(limit)
+            .enable_userdata()
+            .fields(*ARTIST_FIELDS)
+            .request()
         )
         artists = []
         for item in resultset["Items"]:
@@ -216,10 +219,11 @@ class JellyfinProvider(MusicProvider):
         return artists
 
     async def _search_playlist(self, search_query: str, limit: int) -> list[Playlist]:
-        resultset = await self._client.playlists(
-            search_term=search_query,
-            limit=limit,
-            enable_user_data=True,
+        resultset = (
+            await self._client.playlists.search_term(search_query)
+            .limit(limit)
+            .enable_userdata()
+            .request()
         )
         playlists = []
         for item in resultset["Items"]:
@@ -270,77 +274,39 @@ class JellyfinProvider(MusicProvider):
         """Retrieve all library artists from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            offset = 0
-            limit = 100
-
-            response = await self._client.artists(
-                jellyfin_library[ITEM_KEY_ID],
-                start_index=offset,
-                limit=limit,
-                enable_user_data=True,
-                fields=ARTIST_FIELDS,
+            stream = (
+                self._client.artists.parent(jellyfin_library[ITEM_KEY_ID])
+                .enable_userdata()
+                .fields(*ARTIST_FIELDS)
+                .stream(100)
             )
-            for artist in response["Items"]:
+            async for artist in stream:
                 yield parse_artist(self.logger, self.instance_id, self._client, artist)
-
-            while offset < response["TotalRecordCount"]:
-                response = await self._client.artists(
-                    jellyfin_library[ITEM_KEY_ID],
-                    start_index=offset,
-                    limit=limit,
-                    enable_user_data=True,
-                    fields=ARTIST_FIELDS,
-                )
-                for artist in response["Items"]:
-                    yield parse_artist(self.logger, self.instance_id, self._client, artist)
-
-                offset += limit
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            offset = 0
-            limit = 100
-
-            response = await self._client.albums(
-                jellyfin_library[ITEM_KEY_ID],
-                start_index=offset,
-                limit=limit,
-                enable_user_data=True,
-                fields=ALBUM_FIELDS,
+            stream = (
+                self._client.albums.parent(jellyfin_library[ITEM_KEY_ID])
+                .enable_userdata()
+                .fields(*ALBUM_FIELDS)
+                .stream(100)
             )
-            for artist in response["Items"]:
-                yield parse_album(self.logger, self.instance_id, self._client, artist)
-
-            while offset < response["TotalRecordCount"]:
-                response = await self._client.albums(
-                    jellyfin_library[ITEM_KEY_ID],
-                    start_index=offset,
-                    limit=limit,
-                    enable_user_data=True,
-                    fields=ALBUM_FIELDS,
-                )
-                for artist in response["Items"]:
-                    yield parse_album(self.logger, self.instance_id, self._client, artist)
-
-                offset += limit
+            async for album in stream:
+                yield parse_album(self.logger, self.instance_id, self._client, album)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Jellyfin Music."""
         jellyfin_libraries = await self._get_music_libraries()
         for jellyfin_library in jellyfin_libraries:
-            offset = 0
-            limit = 100
-
-            response = await self._client.tracks(
-                jellyfin_library[ITEM_KEY_ID],
-                start_index=offset,
-                limit=limit,
-                enable_user_data=True,
-                fields=TRACK_FIELDS,
+            stream = (
+                self._client.tracks.parent(jellyfin_library[ITEM_KEY_ID])
+                .enable_userdata()
+                .fields(*TRACK_FIELDS)
+                .stream(100)
             )
-            for track in response["Items"]:
+            async for track in stream:
                 if not len(track[ITEM_KEY_MEDIA_STREAMS]):
                     self.logger.warning(
                         "Invalid track %s: Does not have any media streams", track[ITEM_KEY_NAME]
@@ -348,31 +314,16 @@ class JellyfinProvider(MusicProvider):
                     continue
                 yield parse_track(self.logger, self.instance_id, self._client, track)
 
-            while offset < response["TotalRecordCount"]:
-                response = await self._client.tracks(
-                    jellyfin_library[ITEM_KEY_ID],
-                    start_index=offset,
-                    limit=limit,
-                    enable_user_data=True,
-                    fields=TRACK_FIELDS,
-                )
-                for track in response["Items"]:
-                    if not len(track[ITEM_KEY_MEDIA_STREAMS]):
-                        self.logger.warning(
-                            "Invalid track %s: Does not have any media streams",
-                            track[ITEM_KEY_NAME],
-                        )
-                        continue
-                    yield parse_track(self.logger, self.instance_id, self._client, track)
-
-                offset += limit
-
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
         playlist_libraries = await self._get_playlists()
         for playlist_library in playlist_libraries:
-            playlists_obj = await self._client.playlists(playlist_library[ITEM_KEY_ID])
-            for playlist in playlists_obj["Items"]:
+            stream = (
+                self._client.playlists.parent(playlist_library[ITEM_KEY_ID])
+                .enable_userdata()
+                .stream(100)
+            )
+            async for playlist in stream:
                 if "MediaType" in playlist:  # Only jellyfin has this property
                     if playlist["MediaType"] == "Audio":
                         yield parse_playlist(self.instance_id, self._client, playlist)
@@ -389,8 +340,11 @@ class JellyfinProvider(MusicProvider):
 
     async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
-        jellyfin_album_tracks = await self._client.tracks(
-            prov_album_id, enable_user_data=True, fields=TRACK_FIELDS
+        jellyfin_album_tracks = (
+            await self._client.tracks.parent(prov_album_id)
+            .enable_userdata()
+            .fields(*TRACK_FIELDS)
+            .request()
         )
         return [
             parse_track(self.logger, self.instance_id, self._client, jellyfin_album_track)
@@ -445,8 +399,11 @@ class JellyfinProvider(MusicProvider):
             return []
         # TODO: Does Jellyfin support paging here?
         jellyfin_playlist = await self._client.get_playlist(prov_playlist_id)
-        playlist_items = await self._client.tracks(
-            jellyfin_playlist[ITEM_KEY_ID], enable_user_data=True, fields=TRACK_FIELDS
+        playlist_items = (
+            await self._client.tracks.parent(jellyfin_playlist[ITEM_KEY_ID])
+            .enable_userdata()
+            .fields(*TRACK_FIELDS)
+            .request()
         )
         for index, jellyfin_track in enumerate(playlist_items["Items"], 1):
             try:
@@ -466,8 +423,11 @@ class JellyfinProvider(MusicProvider):
         """Get a list of albums for the given artist."""
         if not prov_artist_id.startswith(FAKE_ARTIST_PREFIX):
             return []
-        albums = await self._client.albums(
-            prov_artist_id, fields=ALBUM_FIELDS, enable_user_data=True
+        albums = (
+            await self._client.albums.parent(prov_artist_id)
+            .fields(*ALBUM_FIELDS)
+            .enable_userdata()
+            .request()
         )
         return [
             parse_album(self.logger, self.instance_id, self._client, album)

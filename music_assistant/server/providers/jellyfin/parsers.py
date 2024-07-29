@@ -6,7 +6,7 @@ import logging
 from logging import Logger
 from typing import TYPE_CHECKING
 
-from aiojellyfin.const import ImageType as JellyImageType
+from aiojellyfin import ImageType as JellyImageType
 
 from music_assistant.common.models.enums import ContentType, ExternalID, ImageType, MediaType
 from music_assistant.common.models.errors import InvalidDataError
