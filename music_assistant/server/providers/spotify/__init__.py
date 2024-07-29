@@ -731,7 +731,6 @@ class SpotifyProvider(MusicProvider):
             "user-library-modify",
             "user-read-private",
             "user-read-email",
-            "user-read-birthdate",
             "user-top-read",
         ]
         scope = ",".join(scopes)
