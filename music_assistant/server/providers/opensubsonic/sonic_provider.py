@@ -792,6 +792,13 @@ class OpenSonicProvider(MusicProvider):
         if mime_type.endswith("mpeg"):
             mime_type = sonic_song.suffix
 
+        self.logger.debug(
+            "Fetching stream details for id %s '%s' with format '%s'",
+            sonic_song.id,
+            sonic_song.title,
+            mime_type,
+        )
+
         return StreamDetails(
             item_id=sonic_song.id,
             provider=self.instance_id,
@@ -814,6 +821,8 @@ class OpenSonicProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Provide a generator for the stream data."""
         audio_buffer = asyncio.Queue(1)
+
+        self.logger.debug("Streaming %s", streamdetails.item_id)
 
         def _streamer() -> None:
             with self._conn.stream(
@@ -838,3 +847,5 @@ class OpenSonicProvider(MusicProvider):
         finally:
             if not streamer_task.done():
                 streamer_task.cancel()
+
+        self.logger.debug("Done streaming %s", streamdetails.item_id)

@@ -16,13 +16,13 @@ async def jellyfin_provider(mass: MusicAssistant) -> AsyncGenerator[ProviderConf
     """Configure an aiojellyfin test fixture, and add a provider to mass that uses it."""
     f = FixtureBuilder()
     async for _, artist in get_fixtures_dir("artists", "jellyfin"):
-        f.add_artist_bytes(artist)
+        f.add_json_bytes(artist)
 
     async for _, album in get_fixtures_dir("albums", "jellyfin"):
-        f.add_album_bytes(album)
+        f.add_json_bytes(album)
 
     async for _, track in get_fixtures_dir("tracks", "jellyfin"):
-        f.add_track_bytes(track)
+        f.add_json_bytes(track)
 
     authenticate_by_name = f.to_authenticate_by_name()
 
