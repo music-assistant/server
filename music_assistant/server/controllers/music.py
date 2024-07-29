@@ -251,7 +251,7 @@ class MusicController(CoreController):
                 for sublist in zip_longest(*[x.tracks for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             playlists=[
                 item
                 for sublist in zip_longest(*[x.playlists for x in results_per_provider])
