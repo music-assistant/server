@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
+CONF_CLIENT_ID = "client_id"
 
 CACHE_DIR = gettempdir()
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
@@ -118,6 +119,15 @@ async def get_config_entries(
             label="Password",
             required=True,
         ),
+        ConfigEntry(
+            key=CONF_CLIENT_ID,
+            type=ConfigEntryType.SECURE_STRING,
+            label="Client ID",
+            description="By default, a generic client ID is used which is heavy rate limited. "
+            "It is advised that you create your own Spotify Developer account and use "
+            "that client ID here to speedup performance.",
+            required=False,
+        ),
     )
 
 
@@ -135,8 +145,11 @@ class SpotifyProvider(MusicProvider):
         """Handle async initialization of the provider."""
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
-        # try to get a token, raise if that fails
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
+        if self.config.get_value(CONF_CLIENT_ID):
+            # loosen the throttler a bit when a custom client id is used
+            self.throttler.rate_limit = 45
+            self.throttler.period = 30
         # try login which will raise if it fails
         await self.login()
 
@@ -726,7 +739,7 @@ class SpotifyProvider(MusicProvider):
             "-O",
             "-t",
             "--client-id",
-            app_var(2),
+            self.config.get_value(CONF_CLIENT_ID) or app_var(2),
             "--scope",
             scope,
             "-c",
