@@ -9,7 +9,7 @@ import shutil
 from contextlib import suppress
 from itertools import zip_longest
 from math import inf
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant.common.helpers.datetime import utc_timestamp
 from music_assistant.common.helpers.global_cache import get_global_cache_value
@@ -510,9 +510,15 @@ class MusicController(CoreController):
         ctrl = self.get_controller(media_type)
         is_library_item = media_item.provider == "library"
 
+        available_providers = get_global_cache_value("unique_providers")
+        if TYPE_CHECKING:
+            available_providers = cast(set[str], available_providers)
+
         # fetch the first (available) provider item
         for prov_mapping in media_item.provider_mappings:
             provider = prov_mapping.provider_instance
+            if provider not in available_providers:
+                continue
             item_id = prov_mapping.item_id
             if prov_mapping.available:
                 break
