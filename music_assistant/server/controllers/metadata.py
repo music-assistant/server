@@ -246,6 +246,8 @@ class MetaDataController(CoreController):
                 limit=250, order_by="random", extra_query=query
             ):
                 await self._update_artist_metadata(artist)
+                # we really need to throttle this
+                await asyncio.sleep(10)
 
             query = (
                 f"WHERE json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
@@ -255,15 +257,8 @@ class MetaDataController(CoreController):
                 limit=250, order_by="random", extra_query=query
             ):
                 await self._update_album_metadata(album)
-
-            query = (
-                f"WHERE json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
-                f"OR json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') < {timestamp}"
-            )
-            for track in await self.mass.music.tracks.library_items(
-                limit=50, order_by="random", extra_query=query
-            ):
-                await self._update_track_metadata(track)
+                # we really need to throttle this
+                await asyncio.sleep(10)
 
             query = (
                 f"WHERE json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
@@ -273,6 +268,20 @@ class MetaDataController(CoreController):
                 limit=250, order_by="random", extra_query=query
             ):
                 await self._update_playlist_metadata(playlist)
+                # we really need to throttle this
+                await asyncio.sleep(10)
+
+            query = (
+                f"WHERE json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
+                f"OR json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') < {timestamp}"
+            )
+            for track in await self.mass.music.tracks.library_items(
+                limit=50, order_by="random", extra_query=query
+            ):
+                await self._update_track_metadata(track)
+                # we really need to throttle this
+                await asyncio.sleep(30)
+
         finally:
             self._scanner_running = False
 
