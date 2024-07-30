@@ -121,18 +121,18 @@ class ProviderMapping(DataClassDictMixin):
             quality += 1
         return quality
 
-    def __post_init__(self) -> None:
-        """Call after init."""
-        # having items for unavailable providers can have all sorts
-        # of unpredictable results so ensure we have accurate availability status
+    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
+        """Execute action(s) on serialization."""
+        # prevent sending back unavailable items in the api if a provider has been disabled.
+        # by overriding the available flag here.
         if not (available_providers := get_global_cache_value("unique_providers")):
             # this is probably the client
-            self.available = self.available
-            return
+            return d
         if TYPE_CHECKING:
             available_providers = cast(set[str], available_providers)
-        if not available_providers.intersection({self.provider_domain, self.provider_instance}):
-            self.available = False
+        if not available_providers.intersection({d["provider_domain"], d["provider_instance"]}):
+            d["available"] = False
+        return d
 
     def __hash__(self) -> int:
         """Return custom hash."""
