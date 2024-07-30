@@ -146,12 +146,12 @@ class SpotifyProvider(MusicProvider):
         self._cache_dir = CACHE_DIR
         self._ap_workaround = False
         self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
-        # try login which will raise if it fails
-        await self.login()
         if self.config.get_value(CONF_CLIENT_ID):
             # loosen the throttler a bit when a custom client id is used
             self.throttler.rate_limit = 45
             self.throttler.period = 30
+        # try login which will raise if it fails
+        await self.login()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
