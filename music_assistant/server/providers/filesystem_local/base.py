@@ -748,13 +748,14 @@ class FileSystemProviderBase(MusicProvider):
             # album artist(s)
             if tags.album_artists:
                 for index, album_artist_str in enumerate(tags.album_artists):
-                    artist = await self._parse_artist(album_artist_str, album_path=album_dir)
+                    artist = await self._parse_artist(
+                        album_artist_str, 
+                        album_path=album_dir,
+                        sort_name=tags.album_artist_sort_names[index] if index<len(tags.album_artist_sort_names) else None
+                    )
                     if not artist.mbid:
                         with contextlib.suppress(IndexError):
                             artist.mbid = tags.musicbrainz_albumartistids[index]
-                    # album artist sort name
-                    with contextlib.suppress(IndexError):
-                        artist.sort_name = tags.album_artist_sort_names[index]
                     album_artists.append(artist)
             else:
                 # album artist tag is missing, determine fallback
