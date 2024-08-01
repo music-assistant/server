@@ -753,9 +753,9 @@ class FileSystemProviderBase(MusicProvider):
                         album_path=album_dir,
                         sort_name=(
                             tags.album_artist_sort_names[index]
-                            if index<len(tags.album_artist_sort_names)
+                            if index < len(tags.album_artist_sort_names)
                             else None
-                        )
+                        ),
                     )
                     if not artist.mbid:
                         with contextlib.suppress(IndexError):
