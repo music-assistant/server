@@ -749,7 +749,7 @@ class FileSystemProviderBase(MusicProvider):
             if tags.album_artists:
                 for index, album_artist_str in enumerate(tags.album_artists):
                     artist = await self._parse_artist(
-                        album_artist_str, 
+                        album_artist_str,
                         album_path=album_dir,
                         sort_name=tags.album_artist_sort_names[index] if index<len(tags.album_artist_sort_names) else None
                     )
