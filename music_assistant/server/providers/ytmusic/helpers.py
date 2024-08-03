@@ -64,6 +64,8 @@ async def get_playlist(
         ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=None)
         playlist["checksum"] = get_playlist_checksum(playlist)
+        # Fix missing playlist id in some edge cases
+        playlist["id"] = prov_playlist_id if not playlist.get("id") else playlist["id"]
         return playlist
 
     return await asyncio.to_thread(_get_playlist)
