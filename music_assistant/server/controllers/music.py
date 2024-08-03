@@ -510,7 +510,7 @@ class MusicController(CoreController):
         ctrl = self.get_controller(media_type)
         is_library_item = media_item.provider == "library"
 
-        available_providers = get_global_cache_value("unique_providers")
+        available_providers = get_global_cache_value("provider_instance_ids")
         if TYPE_CHECKING:
             available_providers = cast(set[str], available_providers)
 
