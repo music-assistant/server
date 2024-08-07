@@ -5,11 +5,12 @@ from typing import Final
 
 API_SCHEMA_VERSION: Final[int] = 24
 MIN_SCHEMA_VERSION: Final[int] = 24
-DB_SCHEMA_VERSION: Final[int] = 28
+
 
 MASS_LOGGER_NAME: Final[str] = "music_assistant"
 
-UNKNOWN_ARTIST: Final[str] = "Unknown Artist"
+UNKNOWN_ARTIST: Final[str] = "[unknown]"
+UNKNOWN_ARTIST_ID_MBID: Final[str] = "125ec42a-7229-4250-afc5-e057484327fe"
 VARIOUS_ARTISTS_NAME: Final[str] = "Various Artists"
 VARIOUS_ARTISTS_ID_MBID: Final[str] = "89ad4ac3-39f7-470e-963a-56509c546377"
 
@@ -20,6 +21,8 @@ RESOURCES_DIR: Final[pathlib.Path] = (
 
 ANNOUNCE_ALERT_FILE: Final[str] = str(RESOURCES_DIR.joinpath("announce.mp3"))
 SILENCE_FILE: Final[str] = str(RESOURCES_DIR.joinpath("silence.mp3"))
+VARIOUS_ARTISTS_FANART: Final[str] = str(RESOURCES_DIR.joinpath("fallback_fanart.jpeg"))
+MASS_LOGO: Final[str] = str(RESOURCES_DIR.joinpath("logo.png"))
 
 # if duration is None (e.g. radio stream):Final[str] = 48 hours
 FALLBACK_DURATION: Final[int] = 172800
@@ -36,7 +39,6 @@ CONF_USERNAME: Final[str] = "username"
 CONF_PASSWORD: Final[str] = "password"
 CONF_VOLUME_NORMALIZATION: Final[str] = "volume_normalization"
 CONF_VOLUME_NORMALIZATION_TARGET: Final[str] = "volume_normalization_target"
-CONF_MAX_SAMPLE_RATE: Final[str] = "max_sample_rate"
 CONF_EQ_BASS: Final[str] = "eq_bass"
 CONF_EQ_MID: Final[str] = "eq_mid"
 CONF_EQ_TREBLE: Final[str] = "eq_treble"
@@ -61,6 +63,9 @@ CONF_ANNOUNCE_VOLUME: Final[str] = "announce_volume"
 CONF_ANNOUNCE_VOLUME_MIN: Final[str] = "announce_volume_min"
 CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
 CONF_ICON: Final[str] = "icon"
+CONF_LANGUAGE: Final[str] = "language"
+CONF_SAMPLE_RATES: Final[str] = "sample_rates"
+CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"
@@ -72,13 +77,16 @@ DB_TABLE_PLAYLOG: Final[str] = "playlog"
 DB_TABLE_ARTISTS: Final[str] = "artists"
 DB_TABLE_ALBUMS: Final[str] = "albums"
 DB_TABLE_TRACKS: Final[str] = "tracks"
-DB_TABLE_ALBUM_TRACKS: Final[str] = "albumtracks"
 DB_TABLE_PLAYLISTS: Final[str] = "playlists"
 DB_TABLE_RADIOS: Final[str] = "radios"
 DB_TABLE_CACHE: Final[str] = "cache"
 DB_TABLE_SETTINGS: Final[str] = "settings"
 DB_TABLE_THUMBS: Final[str] = "thumbnails"
 DB_TABLE_PROVIDER_MAPPINGS: Final[str] = "provider_mappings"
+DB_TABLE_ALBUM_TRACKS: Final[str] = "album_tracks"
+DB_TABLE_TRACK_ARTISTS: Final[str] = "track_artists"
+DB_TABLE_ALBUM_ARTISTS: Final[str] = "album_artists"
+
 
 # all other
 MASS_LOGO_ONLINE: Final[str] = (
@@ -97,4 +105,4 @@ CONFIGURABLE_CORE_CONTROLLERS = (
 )
 SYNCGROUP_PREFIX: Final[str] = "syncgroup_"
 VERBOSE_LOG_LEVEL: Final[int] = 5
-UGP_PREFIX: Final[str] = "ugp_"
+PROVIDERS_WITH_SHAREABLE_URLS = ("spotify", "qobuz")

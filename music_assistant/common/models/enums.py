@@ -3,13 +3,25 @@
 from __future__ import annotations
 
 import contextlib
-from enum import StrEnum
-from typing import Self
-
-from music_assistant.common.helpers.util import classproperty
+from enum import EnumType, StrEnum
 
 
-class MediaType(StrEnum):
+class MediaTypeMeta(EnumType):
+    """Class properties for MediaType."""
+
+    @property
+    def ALL(self) -> list[MediaType]:  # noqa: N802
+        """All MediaTypes."""
+        return [
+            MediaType.ARTIST,
+            MediaType.ALBUM,
+            MediaType.TRACK,
+            MediaType.PLAYLIST,
+            MediaType.RADIO,
+        ]
+
+
+class MediaType(StrEnum, metaclass=MediaTypeMeta):
     """Enum for MediaType."""
 
     ARTIST = "artist"
@@ -19,34 +31,24 @@ class MediaType(StrEnum):
     RADIO = "radio"
     FOLDER = "folder"
     ANNOUNCEMENT = "announcement"
+    FLOW_STREAM = "flow_stream"
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> MediaType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
-
-    @classproperty
-    def ALL(self) -> tuple[MediaType, ...]:  # noqa: N802
-        """Return all (default) MediaTypes as tuple."""
-        return (
-            MediaType.ARTIST,
-            MediaType.ALBUM,
-            MediaType.TRACK,
-            MediaType.PLAYLIST,
-            MediaType.RADIO,
-            MediaType.ANNOUNCEMENT,
-        )
 
 
 class ExternalID(StrEnum):
     """Enum with External ID types."""
 
-    # musicbrainz:
-    # for tracks this is the RecordingID
-    # for albums this is the ReleaseGroupID (NOT the release ID!)
-    # for artists this is the ArtistID
-    MUSICBRAINZ = "musicbrainz"
+    MB_ARTIST = "musicbrainz_artistid"  # MusicBrainz Artist ID (or AlbumArtist ID)
+    MB_ALBUM = "musicbrainz_albumid"  # MusicBrainz Album ID
+    MB_RELEASEGROUP = "musicbrainz_releasegroupid"  # MusicBrainz ReleaseGroupID
+    MB_TRACK = "musicbrainz_trackid"  # MusicBrainz Track ID
+    MB_RECORDING = "musicbrainz_recordingid"  # MusicBrainz Recording ID
+
     ISRC = "isrc"  # used to identify unique recordings
     BARCODE = "barcode"  # EAN-13 barcode for identifying albums
     ACOUSTID = "acoustid"  # unique fingerprint (id) for a recording
@@ -56,9 +58,29 @@ class ExternalID(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ExternalID:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
+
+    @property
+    def is_unique(self) -> bool:
+        """Return if the ExternalID is unique."""
+        return self.is_musicbrainz or self in (
+            ExternalID.ACOUSTID,
+            ExternalID.DISCOGS,
+            ExternalID.TADB,
+        )
+
+    @property
+    def is_musicbrainz(self) -> bool:
+        """Return if the ExternalID is a MusicBrainz identifier."""
+        return self in (
+            ExternalID.MB_RELEASEGROUP,
+            ExternalID.MB_ALBUM,
+            ExternalID.MB_TRACK,
+            ExternalID.MB_ARTIST,
+            ExternalID.MB_RECORDING,
+        )
 
 
 class LinkType(StrEnum):
@@ -78,7 +100,7 @@ class LinkType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> LinkType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -98,7 +120,7 @@ class ImageType(StrEnum):
     OTHER = "other"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ImageType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.OTHER
 
@@ -142,12 +164,12 @@ class ContentType(StrEnum):
     UNKNOWN = "?"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ContentType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
     @classmethod
-    def try_parse(cls: ContentType, string: str) -> ContentType:
+    def try_parse(cls, string: str) -> ContentType:
         """Try to parse ContentType from (url)string/extension."""
         tempstr = string.lower()
         if "audio/" in tempstr:
@@ -180,6 +202,8 @@ class ContentType(StrEnum):
             ContentType.FLAC,
             ContentType.AIFF,
             ContentType.WAV,
+            ContentType.ALAC,
+            ContentType.WAVPACK,
         )
 
     @classmethod
@@ -245,7 +269,7 @@ class PlayerType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> PlayerType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -273,7 +297,7 @@ class PlayerFeature(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> PlayerFeature:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -289,7 +313,6 @@ class EventType(StrEnum):
     QUEUE_UPDATED = "queue_updated"
     QUEUE_ITEMS_UPDATED = "queue_items_updated"
     QUEUE_TIME_UPDATED = "queue_time_updated"
-    QUEUE_SETTINGS_UPDATED = "queue_settings_updated"
     SHUTDOWN = "application_shutdown"
     MEDIA_ITEM_ADDED = "media_item_added"
     MEDIA_ITEM_UPDATED = "media_item_updated"
@@ -301,7 +324,7 @@ class EventType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> EventType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -363,7 +386,7 @@ class ProviderFeature(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ProviderFeature:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
 
@@ -387,6 +410,7 @@ class ConfigEntryType(StrEnum):
     INTEGER = "integer"
     FLOAT = "float"
     LABEL = "label"
+    INTEGER_TUPLE = "integer_tuple"
     DIVIDER = "divider"
     ACTION = "action"
     ICON = "icon"
@@ -394,6 +418,17 @@ class ConfigEntryType(StrEnum):
     UNKNOWN = "unknown"
 
     @classmethod
-    def _missing_(cls: Self, value: object) -> Self:  # noqa: ARG003
+    def _missing_(cls, value: object) -> ConfigEntryType:  # noqa: ARG003
         """Set default enum member if an unknown value is provided."""
         return cls.UNKNOWN
+
+
+class StreamType(StrEnum):
+    """Enum for the type of streamdetails."""
+
+    HTTP = "http"  # regular http stream
+    ENCRYPTED_HTTP = "encrypted_http"  # encrypted http stream
+    HLS = "hls"  # http HLS stream
+    ICY = "icy"  # http stream with icy metadata
+    LOCAL_FILE = "local_file"
+    CUSTOM = "custom"

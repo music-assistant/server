@@ -8,21 +8,19 @@ this webserver allows for more fine grained configuration to better secure it.
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
 import os
 import urllib.parse
 from concurrent import futures
 from contextlib import suppress
 from functools import partial
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Final
 
 from aiohttp import WSMsgType, web
 from music_assistant_frontend import where as locate_frontend
 
 from music_assistant.common.helpers.util import get_ip
 from music_assistant.common.models.api import (
-    ChunkedResultMessage,
     CommandMessage,
     ErrorResultMessage,
     MessageType,
@@ -155,7 +153,7 @@ class WebserverController(CoreController):
         # add info
         routes.append(("GET", "/info", self._handle_server_info))
         # add logging
-        routes.append(("GET", "/log", self._handle_application_log))
+        routes.append(("GET", "/music-assistant.log", self._handle_application_log))
         # add websocket api
         routes.append(("GET", "/ws", self._handle_ws_client))
         # also host the image proxy on the webserver
@@ -204,7 +202,7 @@ class WebserverController(CoreController):
         """Serve short preview sample."""
         provider_instance_id_or_domain = request.query["provider"]
         item_id = urllib.parse.unquote(request.query["item_id"])
-        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/mp3"})
+        resp = web.StreamResponse(status=200, reason="OK", headers={"Content-Type": "audio/aac"})
         await resp.prepare(request)
         async for chunk in get_preview_stream(self.mass, provider_instance_id_or_domain, item_id):
             await resp.write(chunk)
@@ -216,6 +214,8 @@ class WebserverController(CoreController):
 
     async def _handle_ws_client(self, request: web.Request) -> web.WebSocketResponse:
         connection = WebsocketClientHandler(self, request)
+        if lang := request.headers.get("Accept-Language"):
+            self.mass.metadata.set_default_preferred_language(lang.split(",")[0])
         try:
             self.clients.add(connection)
             return await connection.handle_client()
@@ -347,20 +347,10 @@ class WebsocketClientHandler:
         try:
             args = parse_arguments(handler.signature, handler.type_hints, msg.args)
             result = handler.target(**args)
-            if inspect.isasyncgen(result):
-                # async generator = send chunked response
-                chunk_size = 100
-                batch: list[Any] = []
-                async for item in result:
-                    batch.append(item)
-                    if len(batch) == chunk_size:
-                        self._send_message(ChunkedResultMessage(msg.message_id, batch))
-                        batch = []
-                # send last chunk
-                self._send_message(ChunkedResultMessage(msg.message_id, batch, True))
-                del batch
-                return
-            if asyncio.iscoroutine(result):
+            if hasattr(result, "__anext__"):
+                # handle async generator
+                result = [x async for x in result]
+            elif asyncio.iscoroutine(result):
                 result = await result
             self._send_message(SuccessResultMessage(msg.message_id, result))
         except Exception as err:  # pylint: disable=broad-except

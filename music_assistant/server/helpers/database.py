@@ -2,12 +2,69 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
+import os
+import time
+from contextlib import asynccontextmanager
+from sqlite3 import OperationalError
 from typing import TYPE_CHECKING, Any
 
 import aiosqlite
 
+from music_assistant.constants import MASS_LOGGER_NAME
+
 if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Mapping
+
+LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.database")
+
+ENABLE_DEBUG = os.environ.get("PYTHONDEVMODE") == "1"
+
+
+@asynccontextmanager
+async def debug_query(sql_query: str, query_params: dict | None = None):
+    """Time the processing time of an sql query."""
+    if not ENABLE_DEBUG:
+        yield
+        return
+    time_start = time.time()
+    try:
+        yield
+    except OperationalError as err:
+        LOGGER.error(f"{err}\n{sql_query}")
+        raise
+    finally:
+        process_time = time.time() - time_start
+        if process_time > 0.5:
+            # log slow queries
+            for key, value in (query_params or {}).items():
+                sql_query = sql_query.replace(f":{key}", repr(value))
+            LOGGER.warning("SQL Query took %s seconds! (\n%s\n", process_time, sql_query)
+
+
+def query_params(query: str, params: dict[str, Any] | None) -> tuple[str, dict[str, Any]]:
+    """Extend query parameters support."""
+    if params is None:
+        return (query, params)
+    count = 0
+    result_query = query
+    result_params = {}
+    for key, value in params.items():
+        # add support for a list within the query params
+        # recreates the params as (:_param_0, :_param_1) etc
+        if isinstance(value, list | tuple):
+            subparams = []
+            for subval in value:
+                subparam_name = f"_param_{count}"
+                result_params[subparam_name] = subval
+                subparams.append(subparam_name)
+                count += 1
+            params_str = ",".join(f":{x}" for x in subparams)
+            result_query = result_query.replace(f" :{key}", f" ({params_str})")
+        else:
+            result_params[key] = params[key]
+    return (result_query, result_params)
 
 
 class DatabaseConnection:
@@ -23,9 +80,14 @@ class DatabaseConnection:
         """Perform async initialization."""
         self._db = await aiosqlite.connect(self.db_path)
         self._db.row_factory = aiosqlite.Row
+        await self.execute("PRAGMA analysis_limit=400;")
+        await self.execute("PRAGMA optimize;")
+        await self.commit()
 
     async def close(self) -> None:
         """Close db connection on exit."""
+        await self.execute("PRAGMA optimize;")
+        await self.commit()
         await self._db.close()
 
     async def get_rows(
@@ -42,8 +104,10 @@ class DatabaseConnection:
             sql_query += " WHERE " + " AND ".join(f"{x} = :{x}" for x in match)
         if order_by is not None:
             sql_query += f" ORDER BY {order_by}"
-        sql_query += f" LIMIT {limit} OFFSET {offset}"
-        return await self._db.execute_fetchall(sql_query, match)
+        if limit:
+            sql_query += f" LIMIT {limit} OFFSET {offset}"
+        async with debug_query(sql_query):
+            return await self._db.execute_fetchall(sql_query, match)
 
     async def get_rows_from_query(
         self,
@@ -53,8 +117,11 @@ class DatabaseConnection:
         offset: int = 0,
     ) -> list[Mapping]:
         """Get all rows for given custom query."""
-        query = f"{query} LIMIT {limit} OFFSET {offset}"
-        return await self._db.execute_fetchall(query, params)
+        if limit:
+            query += f" LIMIT {limit} OFFSET {offset}"
+        _query, _params = query_params(query, params)
+        async with debug_query(_query, _params):
+            return await self._db.execute_fetchall(_query, _params)
 
     async def get_count_from_query(
         self,
@@ -63,10 +130,12 @@ class DatabaseConnection:
     ) -> int:
         """Get row count for given custom query."""
         query = f"SELECT count() FROM ({query})"
-        async with self._db.execute(query, params) as cursor:
-            if result := await cursor.fetchone():
-                return result[0]
-        return 0
+        _query, _params = query_params(query, params)
+        async with debug_query(_query):
+            async with self._db.execute(_query, _params) as cursor:
+                if result := await cursor.fetchone():
+                    return result[0]
+            return 0
 
     async def get_count(
         self,
@@ -74,22 +143,24 @@ class DatabaseConnection:
     ) -> int:
         """Get row count for given table."""
         query = f"SELECT count(*) FROM {table}"
-        async with self._db.execute(query) as cursor:
-            if result := await cursor.fetchone():
-                return result[0]
-        return 0
+        async with debug_query(query):
+            async with self._db.execute(query) as cursor:
+                if result := await cursor.fetchone():
+                    return result[0]
+            return 0
 
     async def search(self, table: str, search: str, column: str = "name") -> list[Mapping]:
         """Search table by column."""
         sql_query = f"SELECT * FROM {table} WHERE {table}.{column} LIKE :search"
         params = {"search": f"%{search}%"}
-        return await self._db.execute_fetchall(sql_query, params)
+        async with debug_query(sql_query, params):
+            return await self._db.execute_fetchall(sql_query, params)
 
     async def get_row(self, table: str, match: dict[str, Any]) -> Mapping | None:
         """Get single row for given table where column matches keys/values."""
         sql_query = f"SELECT * FROM {table} WHERE "
         sql_query += " AND ".join(f"{table}.{x} = :{x}" for x in match)
-        async with self._db.execute(sql_query, match) as cursor:
+        async with debug_query(sql_query, match), self._db.execute(sql_query, match) as cursor:
             return await cursor.fetchone()
 
     async def insert(
@@ -153,6 +224,10 @@ class DatabaseConnection:
         """Execute command on the database."""
         return await self._db.execute(query, values)
 
+    async def commit(self) -> None:
+        """Commit the current transaction."""
+        return await self._db.commit()
+
     async def iter_items(
         self,
         table: str,
@@ -172,6 +247,7 @@ class DatabaseConnection:
                 yield item
             if len(next_items) < limit:
                 break
+            await asyncio.sleep(0)  # yield to eventloop
             offset += limit
 
     async def vacuum(self) -> None:

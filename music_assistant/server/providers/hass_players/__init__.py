@@ -14,21 +14,21 @@ from typing import TYPE_CHECKING, Any
 from music_assistant.common.helpers.datetime import from_iso_string
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
+    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
+    CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,
     ConfigEntry,
     ConfigValueOption,
     ConfigValueType,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerState,
     PlayerType,
 )
 from music_assistant.common.models.errors import SetupFailedError
-from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import CONF_CROSSFADE, CONF_FLOW_MODE
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.server.models.player_provider import PlayerProvider
 from music_assistant.server.providers.hass import DOMAIN as HASS_DOMAIN
 
@@ -42,7 +42,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
     from music_assistant.server.providers.hass import HomeAssistant as HomeAssistantProvider
@@ -51,7 +50,7 @@ CONF_PLAYERS = "players"
 
 StateMap = {
     "playing": PlayerState.PLAYING,
-    "paused": PlayerState.PLAYING,
+    "paused": PlayerState.PAUSED,
     "buffering": PlayerState.PLAYING,
     "idle": PlayerState.IDLE,
     "off": PlayerState.IDLE,
@@ -90,31 +89,11 @@ class MediaPlayerEntityFeature(IntFlag):
 
 CONF_ENFORCE_MP3 = "enforce_mp3"
 
+
 PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade",
-        default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n\n"
-        "Note that you need to enable the 'flow mode' workaround to use "
-        "crossfading with Home Assistant players.",
-        category="audio",
-        depends_on=CONF_FLOW_MODE,
-    ),
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
-    ConfigEntry(
-        key=CONF_ENFORCE_MP3,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enforce (lossy) mp3 stream",
-        default_value=False,
-        description="By default, Music Assistant sends lossless, high quality audio "
-        "to all players. Some players can not deal with that and require the stream to be packed "
-        "into a lossy mp3 codec. \n\n "
-        "Only enable when needed. Saves some bandwidth at the cost of audio quality.",
-        category="audio",
-    ),
+    CONF_ENTRY_ENFORCE_MP3_DEFAULT_ENABLED,
 )
 
 
@@ -213,8 +192,12 @@ class HomeAssistantPlayers(PlayerProvider):
         player_id: str,
     ) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
-        base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+        entries = await super().get_player_config_entries(player_id)
+        entries = entries + PLAYER_CONFIG_ENTRIES
+        if player := self.mass.players.get(player_id):
+            if PlayerFeature.ENQUEUE_NEXT not in player.supported_features:
+                entries += (CONF_ENTRY_FLOW_MODE_DEFAULT_ENABLED,)
+        return entries
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
@@ -245,27 +228,29 @@ class HomeAssistantPlayers(PlayerProvider):
             target={"entity_id": player_id},
         )
 
-    async def play_media(
-        self,
-        player_id: str,
-        queue_item: QueueItem,
-    ) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            flow_mode=use_flow_mode,
-        )
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
+            media.uri = media.uri.replace(".flac", ".mp3")
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="play_media",
             service_data={
-                "media_content_id": url,
+                "media_content_id": media.uri,
                 "media_content_type": "music",
                 "enqueue": "replace",
+                "extra": {
+                    "metadata": {
+                        "title": media.title,
+                        "artist": media.artist,
+                        "metadataType": 3,
+                        "album": media.album,
+                        "albumName": media.album,
+                        "duration": media.duration,
+                        "images": [{"url": media.image_url}] if media.image_url else None,
+                        "imageUrl": media.image_url,
+                    }
+                },
             },
             target={"entity_id": player_id},
         )
@@ -274,30 +259,15 @@ class HomeAssistantPlayers(PlayerProvider):
             player.elapsed_time = 0
             player.elapsed_time_last_updated = time.time()
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
-        """
-        Handle enqueuing of the next queue item on the player.
-
-        Only called if the player supports PlayerFeature.ENQUE_NEXT.
-        Called about 1 second after a new track started playing.
-        Called about 15 seconds before the end of the current track.
-
-        A PlayerProvider implementation is in itself responsible for handling this
-        so that the queue items keep playing until its empty or the player stopped.
-
-        This will NOT be called if the end of the queue is reached (and repeat disabled).
-        This will NOT be called if the player is using flow mode to playback the queue.
-        """
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-        )
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next queue item on the player."""
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, True):
+            media.uri = media.uri.replace(".flac", ".mp3")
         await self.hass_prov.hass.call_service(
             domain="media_player",
             service="play_media",
             service_data={
-                "media_content_id": url,
+                "media_content_id": media.uri,
                 "media_content_type": "music",
                 "enqueue": "next",
             },
@@ -377,7 +347,6 @@ class HomeAssistantPlayers(PlayerProvider):
         device_registry: dict[str, HassDevice],
     ) -> None:
         """Handle setup of a Player from an hass entity."""
-        # fetch the entity registry entry for this entity to obtain more details
         hass_device: HassDevice | None = None
         platform_players: list[str] = []
         if entity_registry_entry := entity_registry.get(state["entity_id"]):
@@ -386,6 +355,7 @@ class HomeAssistantPlayers(PlayerProvider):
                 entity_id
                 for entity_id, entity in entity_registry.items()
                 if entity["platform"] == entity_registry_entry["platform"]
+                and state["entity_id"].startswith("media_player")
                 and entity_id != state["entity_id"]
             ]
             hass_device = device_registry.get(entity_registry_entry["device_id"])
@@ -395,6 +365,8 @@ class HomeAssistantPlayers(PlayerProvider):
         supported_features: list[PlayerFeature] = []
         if MediaPlayerEntityFeature.GROUPING in hass_supported_features:
             supported_features.append(PlayerFeature.SYNC)
+        if MediaPlayerEntityFeature.PAUSE in hass_supported_features:
+            supported_features.append(PlayerFeature.PAUSE)
         if MediaPlayerEntityFeature.MEDIA_ENQUEUE in hass_supported_features:
             supported_features.append(PlayerFeature.ENQUEUE_NEXT)
         if MediaPlayerEntityFeature.VOLUME_SET in hass_supported_features:
@@ -434,7 +406,13 @@ class HomeAssistantPlayers(PlayerProvider):
             """Handle updating MA player with updated info in a HA CompressedState."""
             player = self.mass.players.get(entity_id)
             if player is None:
-                return  # should not happen, but guard just in case
+                # edge case - one of our subscribed entities was not available at startup
+                # and now came available - we should still set it up
+                player_ids: list[str] = self.config.get_value(CONF_PLAYERS)
+                if entity_id not in player_ids:
+                    return  # should not happen, but guard just in case
+                self.mass.create_task(self._late_add_player(entity_id))
+                return
             if "s" in state:
                 player.state = StateMap.get(state["s"], PlayerState.IDLE)
                 player.powered = state["s"] not in (
@@ -479,3 +457,15 @@ class HomeAssistantPlayers(PlayerProvider):
                 else:
                     player.group_childs = set()
                     player.synced_to = None
+
+    async def _late_add_player(self, entity_id: str) -> None:
+        """Handle setup of Player from HA entity that became available after startup."""
+        # prefetch the device- and entity registry
+        device_registry = {x["id"]: x for x in await self.hass_prov.hass.get_device_registry()}
+        entity_registry = {
+            x["entity_id"]: x for x in await self.hass_prov.hass.get_entity_registry()
+        }
+        async for state in _get_hass_media_players(self.hass_prov):
+            if state["entity_id"] != entity_id:
+                continue
+            await self._setup_player(state, entity_registry, device_registry)

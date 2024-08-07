@@ -8,7 +8,6 @@ import logging
 import threading
 import time
 from dataclasses import dataclass
-from logging import Logger
 from typing import TYPE_CHECKING, Any
 from uuid import UUID
 
@@ -20,26 +19,15 @@ from pychromecast.socket_client import CONNECTION_STATUS_CONNECTED, CONNECTION_S
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
-from music_assistant.common.models.enums import (
-    ConfigEntryType,
-    ContentType,
-    MediaType,
-    PlayerFeature,
-    PlayerState,
-    PlayerType,
-)
+from music_assistant.common.models.enums import MediaType, PlayerFeature, PlayerState, PlayerType
 from music_assistant.common.models.errors import PlayerUnavailableError
-from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_FLOW_MODE,
-    CONF_PLAYERS,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.constants import CONF_PLAYERS, MASS_LOGO_ONLINE, VERBOSE_LOG_LEVEL
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import CastStatusListener, ChromecastInfo
@@ -52,29 +40,23 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
 
 PLAYER_CONFIG_ENTRIES = (
-    ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade",
-        default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n\n"
-        "Note that Cast does not natively support crossfading so you need to enable "
-        "the 'flow mode' workaround to use crossfading with Cast players.",
-        category="audio",
-        depends_on=CONF_FLOW_MODE,
-    ),
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
 )
 
-DEFAULT_APP_ID = "CC1AD845"
-ALT_APP_ID = "46C1A819"
+# originally/officially cast supports 96k sample rate (even for groups)
+# but it seems a (recent?) update broke this ?!
+# For now only set safe default values and let the user try out higher values
+CONF_ENTRY_SAMPLE_RATES_CAST = create_sample_rates_config_entry(96000, 24, 48000, 24)
+CONF_ENTRY_SAMPLE_RATES_CAST_GROUP = create_sample_rates_config_entry(96000, 24, 44100, 16)
+
+
+MASS_APP_ID = "C35B0678"
 
 
 # Monkey patch the Media controller here to store the queue items
@@ -125,10 +107,11 @@ class CastPlayer:
     cast_info: ChromecastInfo
     cc: pychromecast.Chromecast
     player: Player
-    logger: Logger
     status_listener: CastStatusListener | None = None
     mz_controller: MultizoneController | None = None
     active_group: str | None = None
+    last_poll: float = 0
+    flow_meta_checksum: str | None = None
 
 
 class ChromecastProvider(PlayerProvider):
@@ -188,8 +171,11 @@ class ChromecastProvider(PlayerProvider):
 
     async def get_player_config_entries(self, player_id: str) -> tuple[ConfigEntry, ...]:
         """Return all (provider/player specific) Config Entries for the given player (if any)."""
+        cast_player = self.castplayers.get(player_id)
         base_entries = await super().get_player_config_entries(player_id)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+        if cast_player and cast_player.cast_info.is_audio_group:
+            return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_CAST_GROUP)
+        return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_CAST)
 
     def on_player_config_changed(
         self,
@@ -237,41 +223,23 @@ class ChromecastProvider(PlayerProvider):
     async def play_media(
         self,
         player_id: str,
-        queue_item: QueueItem,
+        media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         castplayer = self.castplayers[player_id]
-        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-            flow_mode=use_flow_mode,
-        )
         queuedata = {
             "type": "LOAD",
-            "media": self._create_cc_media_item(queue_item, url),
+            "media": self._create_cc_media_item(media),
         }
-
-        # make sure that the media controller app is launched
-        app_id = ALT_APP_ID if use_flow_mode else DEFAULT_APP_ID
-        await self._launch_app(castplayer, app_id)
+        # make sure that our media controller app is launched
+        await self._launch_app(castplayer)
         # send queue info to the CC
         media_controller = castplayer.cc.media_controller
         await asyncio.to_thread(media_controller.send_message, data=queuedata, inc_session_id=True)
 
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
-        """Handle enqueuing of the next queue item on the player."""
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
+        """Handle enqueuing of the next item on the player."""
         castplayer = self.castplayers[player_id]
-        if isinstance(queue_item, str):
-            url = self.mass.streams.get_command_url(queue_item, "next")
-            queue_item = None
-        else:
-            url = self.mass.streams.resolve_stream_url(
-                player_id,
-                queue_item=queue_item,
-                output_codec=ContentType.FLAC,
-            )
         next_item_id = None
         status = castplayer.cc.media_controller.status
         # lookup position of current track in cast queue
@@ -286,7 +254,7 @@ class ChromecastProvider(PlayerProvider):
                 continue
             next_item_id = item["itemId"]
             # check if the next queue item isn't already queued
-            if item.get("media", {}).get("customData", {}).get("uri") == url:
+            if item.get("media", {}).get("customData", {}).get("uri") == media.uri:
                 return
         queuedata = {
             "type": "QUEUE_INSERT",
@@ -296,7 +264,7 @@ class ChromecastProvider(PlayerProvider):
                     "autoplay": True,
                     "startTime": 0,
                     "preloadTime": 0,
-                    "media": self._create_cc_media_item(queue_item, url),
+                    "media": self._create_cc_media_item(media),
                 }
             ],
         }
@@ -305,25 +273,12 @@ class ChromecastProvider(PlayerProvider):
         self.mass.create_task(media_controller.send_message, data=queuedata, inc_session_id=True)
         self.logger.debug(
             "Enqued next track (%s) to player %s",
-            queue_item.name if queue_item else url,
+            media.title or media.uri,
             castplayer.player.display_name,
         )
 
     async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates.
-
-        This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
-        """
+        """Poll player for state updates."""
         castplayer = self.castplayers[player_id]
         # only update status of media controller if player is on
         if not castplayer.player.powered:
@@ -331,7 +286,10 @@ class ChromecastProvider(PlayerProvider):
         if not castplayer.cc.media_controller.is_active:
             return
         try:
-            await asyncio.to_thread(castplayer.cc.media_controller.update_status)
+            now = time.time()
+            if (now - castplayer.last_poll) >= 60:
+                castplayer.last_poll = now
+                await asyncio.to_thread(castplayer.cc.media_controller.update_status)
             await self.update_flow_metadata(castplayer)
         except ConnectionResetError as err:
             raise PlayerUnavailableError from err
@@ -417,14 +375,9 @@ class ChromecastProvider(PlayerProvider):
                         PlayerFeature.ENQUEUE_NEXT,
                         PlayerFeature.PAUSE,
                     ),
-                    # originally/officially cast supports 96k sample rate
-                    # but it seems a (recent?) update broke this
-                    # for now use 48k as max sample rate to play safe
-                    max_sample_rate=44100 if cast_info.is_audio_group else 48000,
-                    supports_24bit=not cast_info.is_audio_group,
                     enabled_by_default=enabled_by_default,
+                    needs_poll=True,
                 ),
-                logger=self.logger.getChild(cast_info.friendly_name),
             )
             self.castplayers[player_id] = castplayer
 
@@ -452,8 +405,10 @@ class ChromecastProvider(PlayerProvider):
         """Handle updated CastStatus."""
         if status is None:
             return  # guard
-        castplayer.logger.debug(
-            "Received cast status - app_id: %s - volume: %s",
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Received cast status for %s - app_id: %s - volume: %s",
+            castplayer.player.display_name,
             status.app_id,
             status.volume_level,
         )
@@ -485,7 +440,18 @@ class ChromecastProvider(PlayerProvider):
 
     def on_new_media_status(self, castplayer: CastPlayer, status: MediaStatus) -> None:
         """Handle updated MediaStatus."""
-        castplayer.logger.debug("Received media status update: %s", status.player_state)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Received media status for %s update: %s",
+            castplayer.player.display_name,
+            status.player_state,
+        )
+        # handle castplayer playing from a group
+        if castplayer.active_group is not None:
+            if not (group_player := self.castplayers.get(castplayer.active_group)):
+                return
+            status = group_player.cc.media_controller.status
+
         # player state
         castplayer.player.elapsed_time_last_updated = time.time()
         if status.player_is_playing:
@@ -507,11 +473,7 @@ class ChromecastProvider(PlayerProvider):
             castplayer.player.elapsed_time = status.current_time
 
         # active source
-        if (
-            status.content_id
-            and self.mass.streams.base_url in status.content_id
-            and castplayer.player_id in status.content_id
-        ):
+        if castplayer.cc.app_id == MASS_APP_ID:
             castplayer.player.active_source = castplayer.player_id
         else:
             castplayer.player.active_source = castplayer.cc.app_display_name
@@ -521,7 +483,12 @@ class ChromecastProvider(PlayerProvider):
 
     def on_new_connection_status(self, castplayer: CastPlayer, status: ConnectionStatus) -> None:
         """Handle updated ConnectionStatus."""
-        castplayer.logger.debug("Received connection status update - status: %s", status.status)
+        self.logger.log(
+            VERBOSE_LOG_LEVEL,
+            "Received connection status update for %s - status: %s",
+            castplayer.player.display_name,
+            status.status,
+        )
 
         if status.status == CONNECTION_STATUS_DISCONNECTED:
             castplayer.player.available = False
@@ -551,7 +518,7 @@ class ChromecastProvider(PlayerProvider):
 
     ### Helpers / utils
 
-    async def _launch_app(self, castplayer: CastPlayer, app_id: str = DEFAULT_APP_ID) -> None:
+    async def _launch_app(self, castplayer: CastPlayer, app_id: str = MASS_APP_ID) -> None:
         """Launch the default Media Receiver App on a Chromecast."""
         event = asyncio.Event()
 
@@ -565,7 +532,7 @@ class ChromecastProvider(PlayerProvider):
             # Quit the previous app before starting splash screen or media player
             if castplayer.cc.app_id is not None:
                 castplayer.cc.quit_app()
-            castplayer.logger.debug("Launching App %s.", app_id)
+            self.logger.debug("Launching App %s.", app_id)
             castplayer.cc.socket_client.receiver_controller.launch_app(
                 app_id,
                 force_launch=True,
@@ -577,83 +544,99 @@ class ChromecastProvider(PlayerProvider):
 
     async def _disconnect_chromecast(self, castplayer: CastPlayer) -> None:
         """Disconnect Chromecast object if it is set."""
-        castplayer.logger.debug("Disconnecting from chromecast socket")
+        self.logger.debug("Disconnecting from chromecast socket %s", castplayer.player.display_name)
         await self.mass.loop.run_in_executor(None, castplayer.cc.disconnect, 10)
         castplayer.mz_controller = None
         castplayer.status_listener.invalidate()
         castplayer.status_listener = None
         self.castplayers.pop(castplayer.player_id, None)
 
-    def _create_cc_media_item(self, queue_item: QueueItem, stream_url: str) -> dict[str, Any]:
-        """Create CC media item from MA QueueItem."""
-        duration = int(queue_item.duration) if queue_item.duration else None
-        image_url = self.mass.metadata.get_image_url(queue_item.image) if queue_item.image else ""
-        if queue_item.media_type == MediaType.TRACK and queue_item.media_item:
+    def _create_cc_media_item(self, media: PlayerMedia) -> dict[str, Any]:
+        """Create CC media item from MA PlayerMedia."""
+        if media.media_type == MediaType.TRACK:
             stream_type = STREAM_TYPE_BUFFERED
-            metadata = {
-                "metadataType": 3,
-                "albumName": (
-                    queue_item.media_item.album.name if queue_item.media_item.album else ""
-                ),
-                "songName": queue_item.media_item.name,
-                "artist": (
-                    queue_item.media_item.artists[0].name if queue_item.media_item.artists else ""
-                ),
-                "title": queue_item.media_item.name,
-                "images": [{"url": image_url}] if image_url else None,
-            }
-        elif queue_item.streamdetails and queue_item.streamdetails.stream_title:
-            stream_type = STREAM_TYPE_LIVE
-            metadata = {
-                "metadataType": 3,
-                "songName": queue_item.streamdetails.stream_title.split(" - ")[-1],
-                "artist": queue_item.streamdetails.stream_title.split(" - ")[0],
-                "albumName": queue_item.name,
-                "images": [{"url": image_url}] if image_url else None,
-                "title": queue_item.streamdetails.stream_title.split(" - ")[-1],
-            }
         else:
             stream_type = STREAM_TYPE_LIVE
-            metadata = {
-                "metadataType": 0,
-                "title": queue_item.name,
-                "images": [{"url": image_url}] if image_url else None,
-            }
+        metadata = {
+            "metadataType": 3,
+            "albumName": media.album or "",
+            "songName": media.title or "",
+            "artist": media.artist or "",
+            "title": media.title or "",
+            "images": [{"url": media.image_url}] if media.image_url else None,
+        }
         return {
-            "contentId": stream_url,
+            "contentId": media.uri,
             "customData": {
-                "uri": queue_item.uri,
-                "queue_item_id": queue_item.queue_item_id,
+                "uri": media.uri,
+                "queue_item_id": media.uri,
                 "deviceName": "Music Assistant",
             },
             "contentType": "audio/flac",
             "streamType": stream_type,
             "metadata": metadata,
-            "duration": duration,
+            "duration": media.duration,
         }
 
     async def update_flow_metadata(self, castplayer: CastPlayer) -> None:
         """Update the metadata of a cast player running the flow stream."""
         if not castplayer.player.powered:
+            castplayer.player.poll_interval = 300
             return
         if not castplayer.cc.media_controller.status.player_is_playing:
             return
+        if castplayer.active_group:
+            return
         if castplayer.player.state != PlayerState.PLAYING:
             return
-        if castplayer.cc.app_id != ALT_APP_ID:
+        if castplayer.player.announcement_in_progress:
             return
-        queue = self.mass.player_queues.get_active_queue(castplayer.player_id)
+        if not (queue := self.mass.player_queues.get_active_queue(castplayer.player_id)):
+            return
         if not (current_item := queue.current_item):
             return
+        if not (queue.flow_mode or current_item.media_type == MediaType.RADIO):
+            return
+        castplayer.player.poll_interval = 10
         media_controller = castplayer.cc.media_controller
         # update metadata of current item chromecast
         if media_controller.status.media_custom_data["queue_item_id"] != current_item.queue_item_id:
-            cc_item = self._create_cc_media_item(current_item, "")
+            image_url = (
+                self.mass.metadata.get_image_url(current_item.image)
+                if current_item.image
+                else MASS_LOGO_ONLINE
+            )
+            if (streamdetails := current_item.streamdetails) and streamdetails.stream_title:
+                album = current_item.media_item.name
+                if " - " in streamdetails.stream_title:
+                    artist, title = streamdetails.stream_title.split(" - ", 1)
+                else:
+                    artist = ""
+                    title = streamdetails.stream_title
+            elif media_item := current_item.media_item:
+                album = _album.name if (_album := getattr(media_item, "album", None)) else ""
+                artist = getattr(media_item, "artist_str", "")
+                title = media_item.name
+            else:
+                album = ""
+                artist = ""
+                title = current_item.name
+            flow_meta_checksum = title + image_url
+            if castplayer.flow_meta_checksum == flow_meta_checksum:
+                return
+            castplayer.flow_meta_checksum = flow_meta_checksum
             queuedata = {
                 "type": "PLAY",
                 "mediaSessionId": media_controller.status.media_session_id,
                 "customData": {
-                    "metadata": cc_item["metadata"],
+                    "metadata": {
+                        "metadataType": 3,
+                        "albumName": album,
+                        "songName": title,
+                        "artist": artist,
+                        "title": title,
+                        "images": [{"url": image_url}],
+                    }
                 },
             }
             self.mass.create_task(

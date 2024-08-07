@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import random
 import time
-from collections.abc import AsyncGenerator
 from contextlib import suppress
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, TypedDict
 
 from music_assistant.common.helpers.util import get_changed_keys
 from music_assistant.common.models.config_entries import (
@@ -30,9 +30,10 @@ from music_assistant.common.models.errors import (
     QueueEmpty,
 )
 from music_assistant.common.models.media_items import MediaItemType, media_from_dict
+from music_assistant.common.models.player import PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
 from music_assistant.common.models.queue_item import QueueItem
-from music_assistant.constants import FALLBACK_DURATION
+from music_assistant.constants import CONF_FLOW_MODE, FALLBACK_DURATION, MASS_LOGO_ONLINE
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.audio import get_stream_details
 from music_assistant.server.models.core_controller import CoreController
@@ -50,11 +51,24 @@ CONF_DEFAULT_ENQUEUE_SELECT_ALBUM = "default_enqueue_select_album"
 ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE = "all_tracks"
 ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE = "all_tracks"
 
-CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_action_artist"
-CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_action_album"
-CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_action_track"
-CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_action_radio"
-CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_action_playlist"
+CONF_DEFAULT_ENQUEUE_OPTION_ARTIST = "default_enqueue_option_artist"
+CONF_DEFAULT_ENQUEUE_OPTION_ALBUM = "default_enqueue_option_album"
+CONF_DEFAULT_ENQUEUE_OPTION_TRACK = "default_enqueue_option_track"
+CONF_DEFAULT_ENQUEUE_OPTION_RADIO = "default_enqueue_option_radio"
+CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST = "default_enqueue_option_playlist"
+
+
+class CompareState(TypedDict):
+    """Simple object where we store the (previous) state of a queue.
+
+    Used for compare actions.
+    """
+
+    queue_id: str
+    state: PlayerState
+    current_index: int | None
+    elapsed_time: int
+    stream_title: str | None
 
 
 class PlayerQueuesController(CoreController):
@@ -67,7 +81,7 @@ class PlayerQueuesController(CoreController):
         super().__init__(*args, **kwargs)
         self._queues: dict[str, PlayerQueue] = {}
         self._queue_items: dict[str, list[QueueItem]] = {}
-        self._prev_states: dict[str, dict] = {}
+        self._prev_states: dict[str, CompareState] = {}
         self.manifest.name = "Player Queues controller"
         self.manifest.description = (
             "Music Assistant's core controller which manages the queues for all players."
@@ -133,7 +147,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_ARTIST,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Artist item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -141,7 +155,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_ALBUM,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Album item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -149,7 +163,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_TRACK,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.PLAY,
+                default_value=QueueOption.PLAY.value,
                 label="Default enqueue option for Track item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -157,7 +171,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_RADIO,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Track item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -165,7 +179,7 @@ class PlayerQueuesController(CoreController):
             ConfigEntry(
                 key=CONF_DEFAULT_ENQUEUE_OPTION_PLAYLIST,
                 type=ConfigEntryType.STRING,
-                default_value=QueueOption.REPLACE,
+                default_value=QueueOption.REPLACE.value,
                 label="Default enqueue option for Playlist item(s).",
                 options=enqueue_options,
                 description="Define the default enqueue action for this mediatype.",
@@ -176,31 +190,34 @@ class PlayerQueuesController(CoreController):
         """Iterate over (available) players."""
         return iter(self._queues.values())
 
-    @api_command("players/queue/all")
+    @api_command("player_queues/all")
     def all(self) -> tuple[PlayerQueue, ...]:
         """Return all registered PlayerQueues."""
         return tuple(self._queues.values())
 
-    @api_command("players/queue/get")
+    @api_command("player_queues/get")
     def get(self, queue_id: str) -> PlayerQueue | None:
         """Return PlayerQueue by queue_id or None if not found."""
         return self._queues.get(queue_id)
 
-    @api_command("players/queue/items")
-    async def items(self, queue_id: str) -> AsyncGenerator[QueueItem, None]:
+    @api_command("player_queues/items")
+    def items(self, queue_id: str, limit: int = 500, offset: int = 0) -> list[QueueItem]:
         """Return all QueueItems for given PlayerQueue."""
-        # because the QueueItems can potentially be a very large list, this is a async generator
-        for index, queue_item in enumerate(self._queue_items.get(queue_id, [])):
-            queue_item.index = index
-            yield queue_item
+        if queue_id not in self._queue_items:
+            return []
 
-    @api_command("players/queue/get_active_queue")
+        return self._queue_items[queue_id][offset : offset + limit]
+
+    @api_command("player_queues/get_active_queue")
     def get_active_queue(self, player_id: str) -> PlayerQueue:
         """Return the current active/synced queue for a player."""
         if player := self.mass.players.get(player_id):
             # account for player that is synced (sync child)
-            if player.synced_to:
+            if player.synced_to and player.synced_to != player.player_id:
                 return self.get_active_queue(player.synced_to)
+            # handle active group player
+            if player.active_group and player.active_group != player.player_id:
+                return self.get_active_queue(player.active_group)
             # active_source may be filled with other queue id
             if player.active_source != player_id and (
                 queue := self.get_active_queue(player.active_source)
@@ -210,10 +227,12 @@ class PlayerQueuesController(CoreController):
 
     # Queue commands
 
-    @api_command("players/queue/shuffle")
+    @api_command("player_queues/shuffle")
     def set_shuffle(self, queue_id: str, shuffle_enabled: bool) -> None:
         """Configure shuffle setting on the the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
@@ -241,10 +260,12 @@ class PlayerQueuesController(CoreController):
             shuffle=shuffle_enabled,
         )
 
-    @api_command("players/queue/repeat")
+    @api_command("player_queues/repeat")
     def set_repeat(self, queue_id: str, repeat_mode: RepeatMode) -> None:
         """Configure repeat setting on the the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
@@ -253,7 +274,7 @@ class PlayerQueuesController(CoreController):
         queue.repeat_mode = repeat_mode
         self.signal_update(queue_id)
 
-    @api_command("players/queue/play_media")
+    @api_command("player_queues/play_media")
     async def play_media(
         self,
         queue_id: str,
@@ -271,7 +292,9 @@ class PlayerQueuesController(CoreController):
         """
         # ruff: noqa: PLR0915,PLR0912
         queue = self._queues[queue_id]
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
 
@@ -290,64 +313,93 @@ class PlayerQueuesController(CoreController):
         tracks: list[MediaItemType] = []
         radio_source: list[MediaItemType] = []
         for item in media:
-            # parse provided uri into a MA MediaItem or Basic QueueItem from URL
-            if isinstance(item, str):
-                try:
+            try:
+                # parse provided uri into a MA MediaItem or Basic QueueItem from URL
+                if isinstance(item, str):
                     media_item = await self.mass.music.get_item_by_uri(item)
-                except MusicAssistantError as err:
-                    # invalid MA uri or item not found error
-                    msg = f"Invalid uri: {item}"
-                    raise MediaNotFoundError(msg) from err
-            elif isinstance(item, dict):
-                media_item = media_from_dict(item)
-            else:
-                media_item = item
+                elif isinstance(item, dict):
+                    media_item = media_from_dict(item)
+                else:
+                    media_item = item
 
-            # handle default enqueue option if needed
-            if option is None:
-                option = QueueOption(
-                    await self.mass.config.get_core_config_value(
-                        self.domain,
-                        f"default_enqueue_action_{media_item.media_type.value}",
+                # handle default enqueue option if needed
+                if option is None:
+                    option = QueueOption(
+                        await self.mass.config.get_core_config_value(
+                            self.domain,
+                            f"default_enqueue_option_{media_item.media_type.value}",
+                        )
                     )
-                )
-                if option == QueueOption.REPLACE:
-                    self.clear(queue_id)
+                    if option == QueueOption.REPLACE:
+                        self.clear(queue_id)
 
-            # collect tracks to play
-            ctrl = self.mass.music.get_controller(media_item.media_type)
-            if radio_mode:
-                radio_source.append(media_item)
-            elif media_item.media_type == MediaType.PLAYLIST:
-                async for playlist_track in ctrl.tracks(media_item.item_id, media_item.provider):
-                    tracks.append(playlist_track)
-                await self.mass.music.mark_item_played(
-                    media_item.media_type, media_item.item_id, media_item.provider
-                )
-            elif media_item.media_type == MediaType.ARTIST:
-                tracks += await self._get_artist_tracks(media_item)
-                await self.mass.music.mark_item_played(
-                    media_item.media_type, media_item.item_id, media_item.provider
-                )
-            elif media_item.media_type == MediaType.ALBUM:
-                tracks += await self._get_album_tracks(media_item)
-                await self.mass.music.mark_item_played(
-                    media_item.media_type, media_item.item_id, media_item.provider
-                )
-            else:
-                # single track or radio item
-                tracks += [media_item]
+                # collect tracks to play
+                if radio_mode:
+                    radio_source.append(media_item)
+                elif media_item.media_type == MediaType.PLAYLIST:
+                    first_track_seen: bool = False
+                    async for playlist_track in self.mass.music.playlists.tracks(
+                        media_item.item_id, media_item.provider
+                    ):
+                        if not playlist_track.available:
+                            continue
+                        # allow first track to start playing immediately while we still
+                        # work out the rest of the queue
+                        if (
+                            not queue.shuffle_enabled
+                            and not first_track_seen
+                            and option == QueueOption.REPLACE
+                            and not start_item
+                        ):
+                            first_track_seen = True
+                            self.load(
+                                queue_id,
+                                queue_items=[QueueItem.from_media_item(queue_id, playlist_track)],
+                                keep_remaining=False,
+                                keep_played=False,
+                            )
+                            await self.play_index(queue_id, 0)
+                            # add the remaining items
+                            option = QueueOption.ADD
+                        else:
+                            tracks.append(playlist_track)
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item.media_type, media_item.item_id, media_item.provider
+                        )
+                    )
+                elif media_item.media_type == MediaType.ARTIST:
+                    tracks += await self.get_artist_tracks(media_item)
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item.media_type, media_item.item_id, media_item.provider
+                        )
+                    )
+                elif media_item.media_type == MediaType.ALBUM:
+                    tracks += await self.get_album_tracks(media_item)
+                    self.mass.create_task(
+                        self.mass.music.mark_item_played(
+                            media_item.media_type, media_item.item_id, media_item.provider
+                        )
+                    )
+                else:
+                    # single track or radio item
+                    tracks += [media_item]
 
-            # handle optional start item (play playlist from here feature)
-            if start_item is not None:
-                prev_items = []
-                next_items = []
-                for track in tracks:
-                    if next_items or track.item_id == start_item:
-                        next_items.append(track)
-                    else:
-                        prev_items.append(track)
-                tracks = next_items + prev_items
+                # handle optional start item (play playlist/album from here feature)
+                if start_item is not None:
+                    prev_items = []
+                    next_items = []
+                    for track in tracks:
+                        if next_items or track.item_id == start_item:
+                            next_items.append(track)
+                        else:
+                            prev_items.append(track)
+                    tracks = next_items + prev_items
+
+            except MusicAssistantError as err:
+                # invalid MA uri or item not found error
+                self.logger.warning("Skipping %s: %s", item, str(err))
 
         # overwrite or append radio source items
         if option not in (QueueOption.ADD, QueueOption.PLAY, QueueOption.NEXT):
@@ -360,6 +412,9 @@ class PlayerQueuesController(CoreController):
 
         # only add valid/available items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x and x.available]
+
+        if not queue_items:
+            raise MediaNotFoundError("No playable items found")
 
         # load the items into the queue
         if queue.state in (PlayerState.PLAYING, PlayerState.PAUSED):
@@ -427,7 +482,7 @@ class PlayerQueuesController(CoreController):
                 queue.items = len(queue_items)
                 self.signal_update(queue_id)
 
-    @api_command("players/queue/move_item")
+    @api_command("player_queues/move_item")
     def move_item(self, queue_id: str, queue_item_id: str, pos_shift: int = 1) -> None:
         """
         Move queue item x up/down the queue.
@@ -438,7 +493,9 @@ class PlayerQueuesController(CoreController):
         - pos_shift: move item x positions up if negative value
         - pos_shift:  move item to top of queue as next item if 0.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
@@ -462,10 +519,12 @@ class PlayerQueuesController(CoreController):
         queue_items.insert(new_index, queue_items.pop(item_index))
         self.update_items(queue_id, queue_items)
 
-    @api_command("players/queue/delete_item")
+    @api_command("player_queues/delete_item")
     def delete_item(self, queue_id: str, item_id_or_index: int | str) -> None:
         """Delete item (by id or index) from the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         if isinstance(item_id_or_index, str):
@@ -482,14 +541,18 @@ class PlayerQueuesController(CoreController):
         queue_items.pop(item_index)
         self.update_items(queue_id, queue_items)
 
-    @api_command("players/queue/clear")
+    @api_command("player_queues/clear")
     def clear(self, queue_id: str) -> None:
         """Clear all items in the queue."""
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        # always fetch the underlying player so we can raise early if its not available
+        player = self.mass.players.get(queue_id, True)
+        if player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
         queue = self._queues[queue_id]
         queue.radio_source = []
+        queue.stream_finished = None
+        queue.end_of_track_reached = None
         if queue.state != PlayerState.IDLE:
             self.mass.create_task(self.stop(queue_id))
         queue.current_index = None
@@ -498,122 +561,128 @@ class PlayerQueuesController(CoreController):
         queue.index_in_buffer = None
         self.update_items(queue_id, [])
 
-    @api_command("players/queue/stop")
+    @api_command("player_queues/stop")
     async def stop(self, queue_id: str) -> None:
         """
         Handle STOP command for given queue.
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
-        # simply forward the command to underlying player
-        await self.mass.players.cmd_stop(queue_id)
+        if queue := self.get(queue_id):
+            queue.stream_finished = None
+            queue.end_of_track_reached = None
+        # forward the actual command to the player controller
+        await self.mass.players.cmd_stop(queue_id, skip_forward=True)
 
-    @api_command("players/queue/play")
+    @api_command("player_queues/play")
     async def play(self, queue_id: str) -> None:
         """
         Handle PLAY command for given queue.
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        queue_player: Player = self.mass.players.get(queue_id, True)
+        if queue_player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        if self._queues[queue_id].state == PlayerState.PAUSED:
-            # simply forward the command to underlying player
-            await self.mass.players.cmd_play(queue_id)
+        if (queue := self._queues.get(queue_id)) and queue.state == PlayerState.PAUSED:
+            # forward the actual command to the player controller
+            await self.mass.players.cmd_play(queue_id, skip_forward=True)
         else:
             await self.resume(queue_id)
 
-    @api_command("players/queue/pause")
+    @api_command("player_queues/pause")
     async def pause(self, queue_id: str) -> None:
         """Handle PAUSE command for given queue.
 
         - queue_id: queue_id of the playerqueue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
-            self.logger.warning("Ignore queue command: An announcement is in progress")
-            return
-        player = self.mass.players.get(queue_id, True)
-        if PlayerFeature.PAUSE not in player.supported_features:
-            # if player does not support pause, we need to send stop
-            await self.stop(queue_id)
-            return
-        # simply forward the command to underlying player
+        # forward the actual command to the player controller
         await self.mass.players.cmd_pause(queue_id)
 
-    @api_command("players/queue/play_pause")
+    @api_command("player_queues/play_pause")
     async def play_pause(self, queue_id: str) -> None:
         """Toggle play/pause on given playerqueue.
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        if self._queues[queue_id].state == PlayerState.PLAYING:
+        if (queue := self._queues.get(queue_id)) and queue.state == PlayerState.PLAYING:
             await self.pause(queue_id)
             return
         await self.play(queue_id)
 
-    @api_command("players/queue/next")
+    @api_command("player_queues/next")
     async def next(self, queue_id: str) -> None:
         """Handle NEXT TRACK command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        queue_player: Player = self.mass.players.get(queue_id, True)
+        if queue_player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        current_index = self._queues[queue_id].current_index
-        next_index = self._get_next_index(queue_id, current_index, True)
-        if next_index is None:
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            # TODO: forward to underlying player if not active
             return
-        await self.play_index(queue_id, next_index)
+        current_index = self._queues[queue_id].current_index
+        if (next_index := self._get_next_index(queue_id, current_index, True)) is not None:
+            await self.play_index(queue_id, next_index)
 
-    @api_command("players/queue/previous")
+    @api_command("player_queues/previous")
     async def previous(self, queue_id: str) -> None:
         """Handle PREVIOUS TRACK command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        queue_player: Player = self.mass.players.get(queue_id, True)
+        if queue_player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            # TODO: forward to underlying player if not active
             return
         current_index = self._queues[queue_id].current_index
         if current_index is None:
             return
         await self.play_index(queue_id, max(current_index - 1, 0))
 
-    @api_command("players/queue/skip")
+    @api_command("player_queues/skip")
     async def skip(self, queue_id: str, seconds: int = 10) -> None:
         """Handle SKIP command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         - seconds: number of seconds to skip in track. Use negative value to skip back.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        queue_player: Player = self.mass.players.get(queue_id, True)
+        if queue_player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
+            return
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            # TODO: forward to underlying player if not active
             return
         await self.seek(queue_id, self._queues[queue_id].elapsed_time + seconds)
 
-    @api_command("players/queue/seek")
+    @api_command("player_queues/seek")
     async def seek(self, queue_id: str, position: int = 10) -> None:
         """Handle SEEK command for given queue.
 
         - queue_id: queue_id of the queue to handle the command.
         - position: position in seconds to seek to in the current playing item.
         """
-        if (player := self.mass.players.get(queue_id)) and player.announcement_in_progress:
+        queue_player: Player = self.mass.players.get(queue_id, True)
+        if queue_player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
             return
-        queue = self._queues[queue_id]
+        if (queue := self.get(queue_id)) is None or not queue.active:
+            # TODO: forward to underlying player if not active
+            return
         assert queue.current_item, "No item loaded"
         assert queue.current_item.media_item.media_type == MediaType.TRACK
         assert queue.current_item.duration
         assert position < queue.current_item.duration
         await self.play_index(queue_id, queue.current_index, position)
 
-    @api_command("players/queue/resume")
+    @api_command("player_queues/resume")
     async def resume(self, queue_id: str, fade_in: bool | None = None) -> None:
         """Handle RESUME command for given queue.
 
@@ -622,18 +691,9 @@ class PlayerQueuesController(CoreController):
         queue = self._queues[queue_id]
         queue_items = self._queue_items[queue_id]
         resume_item = queue.current_item
-        next_item = queue.next_item
         resume_pos = queue.elapsed_time
-        if (
-            resume_item
-            and next_item
-            and resume_item.duration
-            and resume_pos > (resume_item.duration * 0.9)
-        ):
-            # track is already played for > 90% - skip to next
-            resume_item = next_item
-            resume_pos = 0
-        elif not resume_item and queue.current_index is not None and len(queue_items) > 0:
+
+        if not resume_item and queue.current_index is not None and len(queue_items) > 0:
             resume_item = self.get_item(queue_id, queue.current_index)
             resume_pos = 0
         elif not resume_item and queue.current_index is None and len(queue_items) > 0:
@@ -649,10 +709,10 @@ class PlayerQueuesController(CoreController):
                 resume_pos = 0
             await self.play_index(queue_id, resume_item.queue_item_id, resume_pos, fade_in)
         else:
-            msg = f"Resume queue requested but queue {queue_id} is empty"
+            msg = f"Resume queue requested but queue {queue.display_name} is empty"
             raise QueueEmpty(msg)
 
-    @api_command("players/queue/play_index")
+    @api_command("player_queues/play_index")
     async def play_index(
         self,
         queue_id: str,
@@ -671,14 +731,22 @@ class PlayerQueuesController(CoreController):
         queue.current_index = index
         queue.index_in_buffer = index
         queue.flow_mode_start_index = index
-        queue.flow_mode = False  # reset
+        player_needs_flow_mode = await self.mass.config.get_player_config_value(
+            queue_id, CONF_FLOW_MODE
+        )
+        next_index = self._get_next_index(queue_id, index, allow_repeat=False)
+        queue.flow_mode = player_needs_flow_mode and next_index is not None
+        queue.stream_finished = False
+        queue.end_of_track_reached = False
         # get streamdetails - do this here to catch unavailable items early
         queue_item.streamdetails = await get_stream_details(
             self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
         )
+        # send play_media request to player
         await self.mass.players.play_media(
             player_id=queue_id,
-            queue_item=queue_item,
+            # transform into PlayerMedia to send to the actual player implementation
+            media=self.player_media_from_queue_item(queue_item, queue.flow_mode),
         )
 
     # Interaction with player
@@ -713,6 +781,7 @@ class PlayerQueuesController(CoreController):
         self._queue_items[queue_id] = queue_items
         # always call update to calculate state etc
         self.on_player_update(player, {})
+        self.mass.signal_event(EventType.QUEUE_ADDED, object_id=queue_id, data=queue)
 
     def on_player_update(
         self,
@@ -775,16 +844,41 @@ class PlayerQueuesController(CoreController):
             queue.elapsed_time += queue.current_item.streamdetails.seek_position
 
         # basic throttle: do not send state changed events if queue did not actually change
-        prev_state = self._prev_states.get(queue_id, {})
-        new_state = queue.to_dict()
-        new_state.pop("elapsed_time_last_updated", None)
+        prev_state = self._prev_states.get(
+            queue_id,
+            CompareState(
+                queue_id=queue_id,
+                state=PlayerState.IDLE,
+                current_index=None,
+                elapsed_time=0,
+                stream_title=None,
+            ),
+        )
+        new_state = CompareState(
+            queue_id=queue_id,
+            state=queue.state,
+            current_index=queue.current_index,
+            elapsed_time=queue.elapsed_time,
+            stream_title=queue.current_item.streamdetails.stream_title
+            if queue.current_item and queue.current_item.streamdetails
+            else None,
+        )
         changed_keys = get_changed_keys(prev_state, new_state)
-
         # return early if nothing changed
         if len(changed_keys) == 0:
             return
+        # check if we've reached the end of (the current) track
+        if (
+            queue.current_item
+            and (duration := queue.current_item.duration)
+            and (duration - queue.elapsed_time) < 10
+        ):
+            queue.end_of_track_reached = True
+        elif prev_state["current_index"] != new_state["current_index"]:
+            queue.end_of_track_reached = False
+
         # handle enqueuing of next item to play
-        if not queue.flow_mode:
+        if not queue.flow_mode or queue.stream_finished:
             self._check_enqueue_next(player, queue, prev_state, new_state)
         # do not send full updates if only time was updated
         if changed_keys == {"elapsed_time"}:
@@ -796,15 +890,14 @@ class PlayerQueuesController(CoreController):
             self._prev_states[queue_id] = new_state
             return
         # handle player was playing and is now stopped
-        # if player finished playing a track for 85%, mark current item as finished
+        # if player finished playing a track for 90%, mark current item as finished
         if (
-            prev_state.get("state") == "playing"
+            prev_state["state"] == "playing"
             and queue.state == PlayerState.IDLE
             and (
                 queue.current_item
                 and queue.current_item.duration
-                and prev_state.get("elapsed_time", queue.elapsed_time)
-                > (queue.current_item.duration * 0.85)
+                and prev_state["elapsed_time"] > (queue.current_item.duration * 0.90)
             )
         ):
             queue.current_index += 1
@@ -815,8 +908,11 @@ class PlayerQueuesController(CoreController):
         self._prev_states[queue_id] = new_state
         # watch dynamic radio items refill if needed
         if "current_index" in changed_keys:
-            fill_index = len(self._queue_items[queue_id]) - 5
-            if queue.radio_source and queue.current_index and (queue.current_index >= fill_index):
+            if (
+                queue.radio_source
+                and queue.current_index
+                and (queue.items - queue.current_index) < 5
+            ):
                 self.mass.create_task(self._fill_radio_tracks(queue_id))
 
     def on_player_remove(self, player_id: str) -> None:
@@ -827,7 +923,10 @@ class PlayerQueuesController(CoreController):
         self._queue_items.pop(player_id, None)
 
     async def preload_next_item(
-        self, queue_id: str, current_item_id_or_index: str | int | None = None
+        self,
+        queue_id: str,
+        current_item_id_or_index: str | int | None = None,
+        allow_repeat: bool = True,
     ) -> QueueItem:
         """Call when a player wants to (pre)load the next item into the buffer.
 
@@ -845,10 +944,9 @@ class PlayerQueuesController(CoreController):
             cur_index = current_item_id_or_index
         idx = 0
         while True:
-            next_index = self._get_next_index(queue_id, cur_index + idx)
+            next_index = self._get_next_index(queue_id, cur_index + idx, allow_repeat=allow_repeat)
             if next_index is None:
-                msg = "No more tracks left in the queue."
-                raise QueueEmpty(msg)
+                raise QueueEmpty("No more tracks left in the queue.")
             next_item = self.get_item(queue_id, next_index)
             try:
                 # Check if the QueueItem is playable. For example, YT Music returns Radio Items
@@ -865,8 +963,7 @@ class PlayerQueuesController(CoreController):
                 next_item = None
                 idx += 1
         if next_item is None:
-            msg = "No more (playable) tracks left in the queue."
-            raise QueueEmpty(msg)
+            raise QueueEmpty("No more (playable) tracks left in the queue.")
         return next_item
 
     # Main queue manipulation methods
@@ -953,8 +1050,29 @@ class PlayerQueuesController(CoreController):
                 return index
         return None
 
+    def player_media_from_queue_item(self, queue_item: QueueItem, flow_mode: bool) -> PlayerMedia:
+        """Parse PlayerMedia from QueueItem."""
+        media = PlayerMedia(
+            uri=self.mass.streams.resolve_stream_url(queue_item, flow_mode=flow_mode),
+            media_type=MediaType.FLOW_STREAM if flow_mode else queue_item.media_type,
+            title="Music Assistant" if flow_mode else queue_item.name,
+            image_url=MASS_LOGO_ONLINE,
+            duration=queue_item.duration,
+            queue_id=queue_item.queue_id,
+            queue_item_id=queue_item.queue_item_id,
+        )
+        if not flow_mode and queue_item.media_item:
+            media.title = queue_item.media_item.name
+            media.artist = getattr(queue_item.media_item, "artist_str", "")
+            media.album = (
+                album.name if (album := getattr(queue_item.media_item, "album", None)) else ""
+            )
+            if queue_item.image:
+                media.image_url = self.mass.metadata.get_image_url(queue_item.image)
+        return media
+
     def _get_next_index(
-        self, queue_id: str, cur_index: int | None, is_skip: bool = False
+        self, queue_id: str, cur_index: int | None, is_skip: bool = False, allow_repeat: bool = True
     ) -> int | None:
         """
         Return the next index for the queue, accounting for repeat settings.
@@ -968,11 +1086,14 @@ class PlayerQueuesController(CoreController):
             return None
         # handle repeat single track
         if queue.repeat_mode == RepeatMode.ONE and not is_skip:
-            return cur_index
+            return cur_index if allow_repeat else None
         # handle cur_index is last index of the queue
         if cur_index >= (len(queue_items) - 1):
-            # if repeat all is enabled, we simply start again from the beginning
-            return 0 if queue.repeat_mode == RepeatMode.ALL else None
+            if allow_repeat and queue.repeat_mode == RepeatMode.ALL:
+                # if repeat all is enabled, we simply start again from the beginning
+                return 0
+            return None
+        # all other: just the next index
         return cur_index + 1
 
     def _get_next_item(self, queue_id: str, cur_index: int | None = None) -> QueueItem | None:
@@ -983,26 +1104,33 @@ class PlayerQueuesController(CoreController):
 
     async def _fill_radio_tracks(self, queue_id: str) -> None:
         """Fill a Queue with (additional) Radio tracks."""
+        # we need to debounce, if we're called twice within a short timeframe
+        debounce_key = f"fill_radio_{queue_id}"
+        if getattr(self, debounce_key, None):
+            return
+        setattr(self, debounce_key, True)
         tracks = await self._get_radio_tracks(queue_id)
         # fill queue - filter out unavailable items
         queue_items = [QueueItem.from_media_item(queue_id, x) for x in tracks if x.available]
         self.load(
             queue_id,
             queue_items,
-            insert_at_index=len(self._queue_items[queue_id]) - 1,
+            insert_at_index=len(self._queue_items[queue_id]) + 1,
         )
+        await asyncio.sleep(5)
+        setattr(self, debounce_key, None)
 
     def _check_enqueue_next(
         self,
         player: Player,
         queue: PlayerQueue,
-        prev_state: dict[str, Any],
-        new_state: dict[str, Any],
+        prev_state: CompareState,
+        new_state: CompareState,
     ) -> None:
         """Check if we need to enqueue the next item to the player itself."""
         if not queue.active:
             return
-        if prev_state.get("state") != PlayerState.PLAYING:
+        if prev_state["state"] != PlayerState.PLAYING:
             return
         if (player := self.mass.players.get(queue.queue_id)) and player.announcement_in_progress:
             self.logger.warning("Ignore queue command: An announcement is in progress")
@@ -1019,28 +1147,40 @@ class PlayerQueuesController(CoreController):
             duration = current_item.duration
         seconds_remaining = int(duration - player.corrected_elapsed_time)
 
-        async def _enqueue_next(index: int, supports_enqueue: bool = False) -> None:
+        async def _enqueue_next(current_index: int, supports_enqueue: bool = False) -> None:
             if (
                 player := self.mass.players.get(queue.queue_id)
             ) and player.announcement_in_progress:
                 self.logger.warning("Ignore queue command: An announcement is in progress")
                 return
             with suppress(QueueEmpty):
-                next_item = await self.preload_next_item(queue.queue_id, index)
+                next_item = await self.preload_next_item(queue.queue_id, current_index)
                 if supports_enqueue:
-                    await self.mass.players.enqueue_next_queue_item(
-                        player_id=player.player_id, queue_item=next_item
+                    await self.mass.players.enqueue_next_media(
+                        player_id=player.player_id,
+                        media=self.player_media_from_queue_item(next_item, queue.flow_mode),
                     )
                     return
                 await self.play_index(queue.queue_id, next_item.queue_item_id)
 
+        # handle queue fully played - clear it completely once the player stopped
+        if (
+            queue.stream_finished
+            and queue.state == PlayerState.IDLE
+            and self._get_next_index(queue.queue_id, queue.current_index) is None
+        ):
+            self.logger.debug("End of queue reached for %s", queue.display_name)
+            self.clear(queue.queue_id)
+            return
+
+        # handle native enqueue next support of player
         if PlayerFeature.ENQUEUE_NEXT in player.supported_features:
-            # player supports enqueue next feature.
             # we enqueue the next track after a new track
             # has started playing and (repeat) before the current track ends
-            new_track_started = new_state.get("state") == PlayerState.PLAYING and prev_state.get(
-                "current_index"
-            ) != new_state.get("current_index")
+            new_track_started = (
+                new_state["state"] == PlayerState.PLAYING
+                and prev_state["current_index"] != new_state["current_index"]
+            )
             if (
                 new_track_started
                 or seconds_remaining == 15
@@ -1051,12 +1191,17 @@ class PlayerQueuesController(CoreController):
 
         # player does not support enqueue next feature.
         # we wait for the player to stop after it reaches the end of the track
-        prev_seconds_remaining = prev_state.get("seconds_remaining", seconds_remaining)
-        if prev_seconds_remaining <= 6 and queue.state == PlayerState.IDLE:
+        if (
+            (not queue.flow_mode or queue.repeat_mode == RepeatMode.ALL)
+            # we have a couple of guards here to prevent the player starting
+            # playback again when its stopped outside of MA's control
+            and queue.stream_finished
+            and queue.end_of_track_reached
+            and queue.state == PlayerState.IDLE
+        ):
+            queue.stream_finished = None
             self.mass.create_task(_enqueue_next(queue.current_index, False))
             return
-
-        new_state["seconds_remaining"] = seconds_remaining
 
     async def _get_radio_tracks(self, queue_id: str) -> list[MediaItemType]:
         """Call the registered music providers for dynamic tracks."""
@@ -1073,98 +1218,59 @@ class PlayerQueuesController(CoreController):
                 break
         return tracks
 
-    async def _get_artist_tracks(self, artist: Artist) -> list[Track]:
+    async def get_artist_tracks(self, artist: Artist) -> list[Track]:
         """Return tracks for given artist, based on user preference."""
         artist_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
             CONF_DEFAULT_ENQUEUE_SELECT_ARTIST,
             ENQUEUE_SELECT_ARTIST_DEFAULT_VALUE,
         )
-        if artist_items_conf == "library_tracks":
-            # make sure we have an in-library artist
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, lazy=False, details=artist
+        self.logger.debug(
+            "Fetching tracks to play for artist %s",
+            artist.name,
+        )
+        if artist_items_conf in ("library_tracks", "all_tracks"):
+            all_items = await self.mass.music.artists.tracks(
+                artist.item_id,
+                artist.provider,
+                in_library_only=artist_items_conf == "library_tracks",
             )
-            return await self.mass.music.artists.get_library_artist_tracks(artist.item_id)
-        if artist_items_conf == "library_album_tracks":
-            # make sure we have an in-library artist
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, lazy=False, details=artist
-            )
+            random.shuffle(all_items)
+            return all_items
+
+        if artist_items_conf in ("library_album_tracks", "all_album_tracks"):
             all_items: list[Track] = []
-            for library_album in await self.mass.music.artists.get_library_artist_albums(
-                artist.item_id
+            for library_album in await self.mass.music.artists.albums(
+                artist.item_id,
+                artist.provider,
+                in_library_only=artist_items_conf == "library_album_tracks",
             ):
-                for album_track in self.mass.music.albums.tracks(
+                for album_track in await self.mass.music.albums.tracks(
                     library_album.item_id, library_album.provider
                 ):
                     if album_track not in all_items:
                         all_items.append(album_track)
             random.shuffle(all_items)
             return all_items
-        if artist_items_conf == "all_tracks":
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, details=artist
-            )
-            all_items: list[Track] = []
-            unique_tracks = set()
-            for provider in artist.provider_mappings:
-                for artist_track in await self.mass.music.artists.tracks(
-                    provider.item_id, provider.provider_instance
-                ):
-                    if artist_track in all_items:
-                        continue
-                    unique_key = f"{artist_track.name.lower()}.{artist_track.version.lower()}"
-                    if unique_key in unique_tracks:
-                        continue
-                    all_items.append(artist_track)
-                    unique_tracks.add(unique_key)
-            random.shuffle(all_items)
-            return all_items
-        if artist_items_conf == "all_album_tracks":
-            artist = await self.mass.music.artists.get(
-                artist.item_id, artist.provider, details=artist
-            )
-            all_items: list[Track] = []
-            unique_tracks = set()
-            for provider in artist.provider_mappings:
-                for album in await self.mass.music.artists.albums(
-                    provider.item_id, provider.provider_instance
-                ):
-                    for album_track in await self.mass.music.albums.tracks(
-                        album.item_id, album.provider
-                    ):
-                        if album_track in all_items:
-                            continue
-                        unique_key = f"{album_track.name.lower()}.{album_track.version.lower()}.{album_track.duration}"  # noqa: E501
-                        if unique_key in unique_tracks:
-                            continue
-                        all_items.append(album_track)
-                        unique_tracks.add(unique_key)
-            random.shuffle(all_items)
-            return all_items
+
         return []
 
-    async def _get_album_tracks(self, album: Album) -> list[Track]:
+    async def get_album_tracks(self, album: Album) -> list[Track]:
         """Return tracks for given album, based on user preference."""
         album_items_conf = self.mass.config.get_raw_core_config_value(
             self.domain,
             CONF_DEFAULT_ENQUEUE_SELECT_ALBUM,
             ENQUEUE_SELECT_ALBUM_DEFAULT_VALUE,
         )
-        if album_items_conf == "library_tracks":
-            # make sure we have an in-library album
-            album = await self.mass.music.albums.get(
-                album.item_id, album.provider, lazy=False, details=album
-            )
-            return await self.mass.music.albums.tracks(album.item_id, album.provider)
-        if album_items_conf == "all_tracks":
-            for provider in album.provider_mappings:
-                if album_tracks := await self.mass.music.albums.tracks(
-                    provider.item_id, provider.provider_instance
-                ):
-                    return album_tracks
-        return []
+        self.logger.debug(
+            "Fetching tracks to play for album %s",
+            album.name,
+        )
+        return await self.mass.music.albums.tracks(
+            item_id=album.item_id,
+            provider_instance_id_or_domain=album.provider,
+            in_library_only=album_items_conf == "library_tracks",
+        )
 
     def __get_queue_stream_index(self, queue: PlayerQueue, player: Player) -> tuple[int, int]:
         """Calculate current queue index and current track elapsed time."""

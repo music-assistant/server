@@ -23,53 +23,62 @@ from ytmusicapi.constants import (
 from music_assistant.server.helpers.auth import AuthenticationHelper
 
 
-async def get_artist(prov_artist_id: str, headers: dict[str, str]) -> dict[str, str]:
+async def get_artist(
+    prov_artist_id: str, headers: dict[str, str], language: str = "en"
+) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_artist function."""
 
     def _get_artist():
-        ytm = ytmusicapi.YTMusic(auth=headers)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         try:
             artist = ytm.get_artist(channelId=prov_artist_id)
             # ChannelId can sometimes be different and original ID is not part of the response
             artist["channelId"] = prov_artist_id
         except KeyError:
-            user = ytm.get_user(channelId=prov_artist_id)
-            artist = {"channelId": prov_artist_id, "name": user["name"]}
+            try:
+                user = ytm.get_user(channelId=prov_artist_id)
+                artist = {"channelId": prov_artist_id, "name": user["name"]}
+            except KeyError:
+                artist = {"channelId": prov_artist_id, "name": "Unknown"}
         return artist
 
     return await asyncio.to_thread(_get_artist)
 
 
-async def get_album(prov_album_id: str) -> dict[str, str]:
+async def get_album(prov_album_id: str, language: str = "en") -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_album function."""
 
     def _get_album():
-        ytm = ytmusicapi.YTMusic()
+        ytm = ytmusicapi.YTMusic(language=language)
         return ytm.get_album(browseId=prov_album_id)
 
     return await asyncio.to_thread(_get_album)
 
 
-async def get_playlist(prov_playlist_id: str, headers: dict[str, str]) -> dict[str, str]:
+async def get_playlist(
+    prov_playlist_id: str, headers: dict[str, str], language: str = "en"
+) -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_playlist():
-        ytm = ytmusicapi.YTMusic(auth=headers)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         playlist = ytm.get_playlist(playlistId=prov_playlist_id, limit=None)
         playlist["checksum"] = get_playlist_checksum(playlist)
+        # Fix missing playlist id in some edge cases
+        playlist["id"] = prov_playlist_id if not playlist.get("id") else playlist["id"]
         return playlist
 
     return await asyncio.to_thread(_get_playlist)
 
 
 async def get_track(
-    prov_track_id: str, headers: dict[str, str], signature_timestamp: str
+    prov_track_id: str, headers: dict[str, str], language: str = "en"
 ) -> dict[str, str] | None:
     """Async wrapper around the ytmusicapi get_playlist function."""
 
     def _get_song():
-        ytm = ytmusicapi.YTMusic(auth=headers)
-        track_obj = ytm.get_song(videoId=prov_track_id, signatureTimestamp=signature_timestamp)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
+        track_obj = ytm.get_song(videoId=prov_track_id)
         track = {}
         if "videoDetails" not in track_obj:
             # video that no longer exists
@@ -87,17 +96,16 @@ async def get_track(
             "thumbnails"
         ]
         track["isAvailable"] = track_obj["playabilityStatus"]["status"] == "OK"
-        track["streamingData"] = track_obj["streamingData"]
         return track
 
     return await asyncio.to_thread(_get_song)
 
 
-async def get_library_artists(headers: dict[str, str]) -> dict[str, str]:
+async def get_library_artists(headers: dict[str, str], language: str = "en") -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_artists function."""
 
     def _get_library_artists():
-        ytm = ytmusicapi.YTMusic(auth=headers)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         artists = ytm.get_library_subscriptions(limit=9999)
         # Sync properties with uniformal artist object
         for artist in artists:
@@ -110,21 +118,21 @@ async def get_library_artists(headers: dict[str, str]) -> dict[str, str]:
     return await asyncio.to_thread(_get_library_artists)
 
 
-async def get_library_albums(headers: dict[str, str]) -> dict[str, str]:
+async def get_library_albums(headers: dict[str, str], language: str = "en") -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_albums function."""
 
     def _get_library_albums():
-        ytm = ytmusicapi.YTMusic(auth=headers)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         return ytm.get_library_albums(limit=9999)
 
     return await asyncio.to_thread(_get_library_albums)
 
 
-async def get_library_playlists(headers: dict[str, str]) -> dict[str, str]:
+async def get_library_playlists(headers: dict[str, str], language: str = "en") -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_playlists function."""
 
     def _get_library_playlists():
-        ytm = ytmusicapi.YTMusic(auth=headers)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         playlists = ytm.get_library_playlists(limit=9999)
         # Sync properties with uniformal playlist object
         for playlist in playlists:
@@ -136,11 +144,11 @@ async def get_library_playlists(headers: dict[str, str]) -> dict[str, str]:
     return await asyncio.to_thread(_get_library_playlists)
 
 
-async def get_library_tracks(headers: dict[str, str]) -> dict[str, str]:
+async def get_library_tracks(headers: dict[str, str], language: str = "en") -> dict[str, str]:
     """Async wrapper around the ytmusicapi get_library_tracks function."""
 
     def _get_library_tracks():
-        ytm = ytmusicapi.YTMusic(auth=headers)
+        ytm = ytmusicapi.YTMusic(auth=headers, language=language)
         return ytm.get_library_songs(limit=9999)
 
     return await asyncio.to_thread(_get_library_tracks)
@@ -235,11 +243,13 @@ async def get_song_radio_tracks(
     return await asyncio.to_thread(_get_song_radio_tracks)
 
 
-async def search(query: str, ytm_filter: str | None = None, limit: int = 20) -> list[dict]:
+async def search(
+    query: str, ytm_filter: str | None = None, limit: int = 20, language: str = "en"
+) -> list[dict]:
     """Async wrapper around the ytmusicapi search function."""
 
     def _search():
-        ytm = ytmusicapi.YTMusic()
+        ytm = ytmusicapi.YTMusic(language=language)
         results = ytm.search(query=query, filter=ytm_filter, limit=limit)
         # Sync result properties with uniformal objects
         for result in results:

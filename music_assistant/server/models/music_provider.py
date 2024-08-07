@@ -2,18 +2,19 @@
 
 from __future__ import annotations
 
+import asyncio
+from collections.abc import Sequence
 from typing import TYPE_CHECKING
 
 from music_assistant.common.models.enums import MediaType, ProviderFeature
 from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     BrowseFolder,
+    ItemMapping,
     MediaItemType,
     Playlist,
-    PlaylistTrack,
     Radio,
     SearchResults,
     Track,
@@ -51,19 +52,21 @@ class MusicProvider(Provider):
 
     @property
     def lookup_key(self) -> str:
-        """Return domain if streaming_provider or instance_id otherwise."""
-        return self.domain if self.is_streaming_provider else self.instance_id
+        """Return domain if (multi-instance) streaming_provider or instance_id otherwise."""
+        if self.is_streaming_provider or not self.manifest.multi_instance:
+            return self.domain
+        return self.instance_id
 
     async def search(
         self,
         search_query: str,
-        media_types: list[MediaType] | None = None,
+        media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
         if ProviderFeature.SEARCH in self.supported_features:
@@ -82,7 +85,7 @@ class MusicProvider(Provider):
             raise NotImplementedError
         yield  # type: ignore
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from the provider."""
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
             raise NotImplementedError
@@ -139,43 +142,44 @@ class MusicProvider(Provider):
     async def get_album_tracks(
         self,
         prov_album_id: str,  # type: ignore[return]
-    ) -> list[AlbumTrack]:
+    ) -> list[Track]:
         """Get album tracks for given album id."""
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
             raise NotImplementedError
 
-    async def get_playlist_tracks(  # type: ignore[return]
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
+    async def get_playlist_tracks(
+        self,
+        prov_playlist_id: str,
+        page: int = 0,
+    ) -> list[Track]:
         """Get all playlist tracks for given playlist id."""
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
             raise NotImplementedError
-        yield  # type: ignore
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to provider's library. Return true on success."""
         if (
-            media_type == MediaType.ARTIST
+            item.media_type == MediaType.ARTIST
             and ProviderFeature.LIBRARY_ARTISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.ALBUM
+            item.media_type == MediaType.ALBUM
             and ProviderFeature.LIBRARY_ALBUMS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.TRACK
+            item.media_type == MediaType.TRACK
             and ProviderFeature.LIBRARY_TRACKS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.PLAYLIST
+            item.media_type == MediaType.PLAYLIST
             and ProviderFeature.LIBRARY_PLAYLISTS_EDIT in self.supported_features
         ):
             raise NotImplementedError
         if (
-            media_type == MediaType.RADIO
+            item.media_type == MediaType.RADIO
             and ProviderFeature.LIBRARY_RADIOS_EDIT in self.supported_features
         ):
             raise NotImplementedError
@@ -251,20 +255,26 @@ class MusicProvider(Provider):
     async def get_audio_stream(  # type: ignore[return]
         self, streamdetails: StreamDetails, seek_position: int = 0
     ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
+        """
+        Return the (custom) audio stream for the provider item.
+
+        Will only be called when the stream_type is set to CUSTOM.
+        """
+        if False:
+            yield
         raise NotImplementedError
 
     async def on_streamed(self, streamdetails: StreamDetails, seconds_streamed: int) -> None:
         """Handle callback when an item completed streaming."""
 
-    async def resolve_image(self, path: str) -> str | bytes | AsyncGenerator[bytes, None]:
+    async def resolve_image(self, path: str) -> str | bytes:
         """
         Resolve an image from an image path.
 
         This either returns (a generator to get) raw bytes of the image or
         a string with an http(s) URL or local path that is accessible from the server.
         """
-        raise NotImplementedError
+        return path
 
     async def get_item(self, media_type: MediaType, prov_item_id: str) -> MediaItemType:
         """Get single MediaItem from provider."""
@@ -278,7 +288,7 @@ class MusicProvider(Provider):
             return await self.get_radio(prov_item_id)
         return await self.get_track(prov_item_id)
 
-    async def browse(self, path: str) -> AsyncGenerator[MediaItemType, None]:
+    async def browse(self, path: str) -> Sequence[MediaItemType | ItemMapping]:
         """Browse this provider's items.
 
         :param path: The path to browse, (e.g. provider_id://artists).
@@ -290,70 +300,73 @@ class MusicProvider(Provider):
         subpath = path.split("://", 1)[1]
         # this reference implementation can be overridden with a provider specific approach
         if subpath == "artists":
-            async for artist in self.get_library_artists():
-                yield artist
-            return
+            return await self.mass.music.artists.library_items(provider=self.instance_id)
         if subpath == "albums":
-            async for album in self.get_library_albums():
-                yield album
-            return
+            return await self.mass.music.albums.library_items(provider=self.instance_id)
         if subpath == "tracks":
-            async for track in self.get_library_tracks():
-                yield track
-            return
+            return await self.mass.music.tracks.library_items(provider=self.instance_id)
         if subpath == "radios":
-            async for radio in self.get_library_radios():
-                yield radio
-            return
+            return await self.mass.music.radio.library_items(provider=self.instance_id)
         if subpath == "playlists":
-            async for playlist in self.get_library_playlists():
-                yield playlist
-            return
+            return await self.mass.music.playlists.library_items(provider=self.instance_id)
         if subpath:
             # unknown path
             msg = "Invalid subpath"
             raise KeyError(msg)
+
         # no subpath: return main listing
+        items: list[MediaItemType] = []
         if ProviderFeature.LIBRARY_ARTISTS in self.supported_features:
-            yield BrowseFolder(
-                item_id="artists",
-                provider=self.domain,
-                path=path + "artists",
-                name="",
-                label="artists",
+            items.append(
+                BrowseFolder(
+                    item_id="artists",
+                    provider=self.domain,
+                    path=path + "artists",
+                    name="",
+                    label="artists",
+                )
             )
         if ProviderFeature.LIBRARY_ALBUMS in self.supported_features:
-            yield BrowseFolder(
-                item_id="albums",
-                provider=self.domain,
-                path=path + "albums",
-                name="",
-                label="albums",
+            items.append(
+                BrowseFolder(
+                    item_id="albums",
+                    provider=self.domain,
+                    path=path + "albums",
+                    name="",
+                    label="albums",
+                )
             )
         if ProviderFeature.LIBRARY_TRACKS in self.supported_features:
-            yield BrowseFolder(
-                item_id="tracks",
-                provider=self.domain,
-                path=path + "tracks",
-                name="",
-                label="tracks",
+            items.append(
+                BrowseFolder(
+                    item_id="tracks",
+                    provider=self.domain,
+                    path=path + "tracks",
+                    name="",
+                    label="tracks",
+                )
             )
         if ProviderFeature.LIBRARY_PLAYLISTS in self.supported_features:
-            yield BrowseFolder(
-                item_id="playlists",
-                provider=self.domain,
-                path=path + "playlists",
-                name="",
-                label="playlists",
+            items.append(
+                BrowseFolder(
+                    item_id="playlists",
+                    provider=self.domain,
+                    path=path + "playlists",
+                    name="",
+                    label="playlists",
+                )
             )
         if ProviderFeature.LIBRARY_RADIOS in self.supported_features:
-            yield BrowseFolder(
-                item_id="radios",
-                provider=self.domain,
-                path=path + "radios",
-                name="",
-                label="radios",
+            items.append(
+                BrowseFolder(
+                    item_id="radios",
+                    provider=self.domain,
+                    path=path + "radios",
+                    name="",
+                    label="radios",
+                )
             )
+        return items
 
     async def recommendations(self) -> list[MediaItemType]:
         """Get this provider's recommendations.
@@ -391,22 +404,18 @@ class MusicProvider(Provider):
                         # create full db item
                         # note that we skip the metadata lookup purely to speed up the sync
                         # the additional metadata is then lazy retrieved afterwards
-
-                        prov_item.favorite = True
-                        extra_kwargs = (
-                            {"add_album_tracks": True} if media_type == MediaType.ALBUM else {}
-                        )
-                        library_item = await controller.add_item_to_library(
-                            prov_item, metadata_lookup=False, **extra_kwargs
-                        )
-                    elif (
-                        library_item.metadata.checksum and prov_item.metadata.checksum
-                    ) and library_item.metadata.checksum != prov_item.metadata.checksum:
-                        # existing dbitem checksum changed
+                        if self.is_streaming_provider:
+                            prov_item.favorite = True
+                        library_item = await controller.add_item_to_library(prov_item)
+                    elif getattr(library_item, "cache_checksum", None) != getattr(
+                        prov_item, "cache_checksum", None
+                    ):
+                        # existing dbitem checksum changed (playlists only)
                         library_item = await controller.update_item_in_library(
                             library_item.item_id, prov_item
                         )
                     cur_db_ids.add(library_item.item_id)
+                    await asyncio.sleep(0)  # yield to eventloop
                 except MusicAssistantError as err:
                     self.logger.warning(
                         "Skipping sync of item %s - error details: %s", prov_item.uri, str(err)
@@ -438,6 +447,7 @@ class MusicProvider(Provider):
                         else:
                             # otherwise: just unmark favorite
                             await controller.set_favorite(db_id, False)
+                await asyncio.sleep(0)  # yield to eventloop
             await self.mass.cache.set(cache_key, list(cur_db_ids))
 
     # DO NOT OVERRIDE BELOW

@@ -8,7 +8,7 @@ from typing import Any
 
 from mashumaro import DataClassDictMixin
 
-from .enums import PlayerFeature, PlayerState, PlayerType
+from .enums import MediaType, PlayerFeature, PlayerState, PlayerType
 
 
 @dataclass(frozen=True)
@@ -18,6 +18,22 @@ class DeviceInfo(DataClassDictMixin):
     model: str = "Unknown model"
     address: str = ""
     manufacturer: str = "Unknown Manufacturer"
+
+
+@dataclass
+class PlayerMedia(DataClassDictMixin):
+    """Metadata of Media loading/loaded into a player."""
+
+    uri: str  # uri or other identifier of the loaded media
+    media_type: MediaType = MediaType.UNKNOWN
+    title: str | None = None  # optional
+    artist: str | None = None  # optional
+    album: str | None = None  # optional
+    image_url: str | None = None  # optional
+    duration: int | None = None  # optional
+    queue_id: str | None = None  # only present for requests from queue controller
+    queue_item_id: str | None = None  # only present for requests from queue controller
+    custom_data: dict[str, Any] | None = None  # optional
 
 
 @dataclass
@@ -48,15 +64,18 @@ class Player(DataClassDictMixin):
     #   and this may include the player's own id.
     group_childs: set[str] = field(default_factory=set)
 
-    # active_source: return player_id of the active queue for this player
-    # if the player is grouped and a group is active, this will be set to the group's player_id
-    # otherwise it will be set to the own player_id
-    # can also be an actual different source if the player supports that
+    # active_source: return active source for this player
+    # can be set to a MA queue id or some player specific source
     active_source: str | None = None
 
-    # current_item_id: return item_id/uri of the current active/loaded item on the player
-    # this may be a MA queue_item_id, url, uri or some provider specific string
-    current_item_id: str | None = None
+    # active_source: return player_id of the active group for this player (if any)
+    # if the player is grouped and a group is active, this will be set to the group's player_id
+    active_group: str | None = None
+
+    # current_media: return current active/loaded item on the player
+    # this may be a MA queue item, url, uri or some provider specific string
+    # includes metadata if supported by the provider/player
+    current_media: PlayerMedia | None = None
 
     # can_sync_with: return tuple of player_ids that can be synced to/with this player
     # usually this is just a list of all player_ids within the playerprovider
@@ -66,15 +85,16 @@ class Player(DataClassDictMixin):
     # also referred to as "sync master"
     synced_to: str | None = None
 
-    # max_sample_rate: maximum supported sample rate the player supports
-    max_sample_rate: int = 48000
-
-    # supports_24bit: bool if player supports 24bits (hi res) audio
-    supports_24bit: bool = True
-
     # enabled_by_default: if the player is enabled by default
     # can be used by a player provider to exclude some sort of players
     enabled_by_default: bool = True
+
+    # needs_poll: bool that can be set by the player(provider)
+    # if this player needs to be polled for state changes by the player manager
+    needs_poll: bool = False
+
+    # poll_interval: a (dynamic) interval in seconds to poll the player (used with needs_poll)
+    poll_interval: int = 30
 
     #
     # THE BELOW ATTRIBUTES ARE MANAGED BY CONFIG AND THE PLAYER MANAGER
@@ -111,9 +131,24 @@ class Player(DataClassDictMixin):
     # announcement_in_progress boolean to indicate there's an announcement in progress.
     announcement_in_progress: bool = False
 
+    # last_poll: when was the player last polled (used with needs_poll)
+    last_poll: float = 0
+
     @property
     def corrected_elapsed_time(self) -> float:
         """Return the corrected/realtime elapsed time."""
         if self.state == PlayerState.PLAYING:
             return self.elapsed_time + (time.time() - self.elapsed_time_last_updated)
         return self.elapsed_time
+
+    @property
+    def current_item_id(self) -> str | None:
+        """Return current_item_id from current_media (if exists)."""
+        if self.current_media:
+            return self.current_media.uri
+        return None
+
+    @current_item_id.setter
+    def current_item_id(self, uri: str) -> None:
+        """Set current_item_id (for backwards compatibility)."""
+        self.current_media = PlayerMedia(uri)

@@ -37,6 +37,7 @@ class PlaylistItem:
     length: str | None = None
     title: str | None = None
     stream_info: dict[str, str] | None = None
+    key: str | None = None
 
     @property
     def is_url(self) -> bool:
@@ -59,6 +60,7 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
     length = None
     title = None
     stream_info = None
+    key = None
 
     for line in m3u_lines:
         line = line.strip()  # noqa: PLW2901
@@ -78,13 +80,22 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
                     continue
                 kev_value_parts = part.strip().split("=")
                 stream_info[kev_value_parts[0]] = kev_value_parts[1]
+        elif line.startswith("#EXT-X-KEY:"):
+            key = line.split(",URI=")[1].strip('"')
         elif line.startswith("#"):
             # Ignore other extensions
             continue
         elif len(line) != 0:
-            # Get song path from all other, non-blank lines
+            filepath = line
+            if "%20" in filepath:
+                # apparently VLC manages to encode spaces in filenames
+                filepath = filepath.replace("%20", " ")
+            # replace Windows directory separators
+            filepath = filepath.replace("\\", "/")
             playlist.append(
-                PlaylistItem(path=line, length=length, title=title, stream_info=stream_info)
+                PlaylistItem(
+                    path=filepath, length=length, title=title, stream_info=stream_info, key=key
+                )
             )
             # reset the song variables so it doesn't use the same EXTINF more than once
             length = None
@@ -131,7 +142,7 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
 async def fetch_playlist(mass: MusicAssistant, url: str) -> list[PlaylistItem]:
     """Parse an online m3u or pls playlist."""
     try:
-        async with mass.http_session.get(url, timeout=5) as resp:
+        async with mass.http_session.get(url, allow_redirects=True, timeout=5) as resp:
             charset = resp.charset or "utf-8"
             try:
                 playlist_data = (await resp.content.read(64 * 1024)).decode(charset)

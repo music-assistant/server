@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from libopensonic.connection import Connection as SonicConnection
 from libopensonic.errors import (
@@ -15,18 +15,26 @@ from libopensonic.errors import (
     SonicError,
 )
 
-from music_assistant.common.models.enums import ContentType, ImageType, MediaType, ProviderFeature
-from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
+from music_assistant.common.models.enums import (
+    ContentType,
+    ImageType,
+    MediaType,
+    ProviderFeature,
+    StreamType,
+)
+from music_assistant.common.models.errors import (
+    LoginFailed,
+    MediaNotFoundError,
+    ProviderPermissionDenied,
+)
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     AlbumType,
     Artist,
     AudioFormat,
     ItemMapping,
     MediaItemImage,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
@@ -58,6 +66,11 @@ CONF_ENABLE_PODCASTS = "enable_podcasts"
 CONF_ENABLE_LEGACY_AUTH = "enable_legacy_auth"
 
 UNKNOWN_ARTIST_ID = "fake_artist_unknown"
+
+# We need the following prefix because of the way that Navidrome reports artists for individual
+# tracks on Various Artists albums, see the note in the _parse_track() method and the handling
+# in get_artist()
+NAVI_VARIOUS_PREFIX = "MA-NAVIDROME-"
 
 
 class OpenSonicProvider(MusicProvider):
@@ -119,11 +132,14 @@ class OpenSonicProvider(MusicProvider):
             ProviderFeature.LIBRARY_ALBUMS,
             ProviderFeature.LIBRARY_TRACKS,
             ProviderFeature.LIBRARY_PLAYLISTS,
+            ProviderFeature.LIBRARY_PLAYLISTS_EDIT,
             ProviderFeature.BROWSE,
             ProviderFeature.SEARCH,
             ProviderFeature.ARTIST_ALBUMS,
             ProviderFeature.ARTIST_TOPTRACKS,
             ProviderFeature.SIMILAR_TRACKS,
+            ProviderFeature.PLAYLIST_TRACKS_EDIT,
+            ProviderFeature.PLAYLIST_CREATE,
         )
 
     @property
@@ -154,6 +170,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=sonic_channel.id,
             name=sonic_channel.title,
             provider=self.instance_id,
+            favorite=bool(sonic_channel.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_channel.id,
@@ -166,7 +183,12 @@ class OpenSonicProvider(MusicProvider):
             artist.metadata.description = sonic_channel.description
         if sonic_channel.original_image_url:
             artist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=sonic_channel.original_image_url)
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=sonic_channel.original_image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         return artist
 
@@ -196,6 +218,7 @@ class OpenSonicProvider(MusicProvider):
             album=self._parse_podcast_album(sonic_channel=sonic_channel),
             artists=[self._parse_podcast_artist(sonic_channel=sonic_channel)],
             duration=sonic_episode.duration if sonic_episode.duration is not None else 0,
+            favorite=bool(sonic_episode.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_episode.id,
@@ -228,6 +251,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=sonic_artist.id,
             name=sonic_artist.name,
             provider=self.domain,
+            favorite=bool(sonic_artist.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_artist.id,
@@ -240,7 +264,10 @@ class OpenSonicProvider(MusicProvider):
         if sonic_artist.cover_id:
             artist.metadata.images = [
                 MediaItemImage(
-                    type=ImageType.THUMB, path=sonic_artist.cover_id, provider=self.instance_id
+                    type=ImageType.THUMB,
+                    path=sonic_artist.cover_id,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
                 )
             ]
         else:
@@ -251,7 +278,12 @@ class OpenSonicProvider(MusicProvider):
                 artist.metadata.description = sonic_info.biography
             if sonic_info.small_url:
                 artist.metadata.images.append(
-                    MediaItemImage(type=ImageType.THUMB, path=sonic_info.small_url)
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=sonic_info.small_url,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
+                    )
                 )
         return artist
 
@@ -261,6 +293,7 @@ class OpenSonicProvider(MusicProvider):
             item_id=album_id,
             provider=self.domain,
             name=sonic_album.name,
+            favorite=bool(sonic_album.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=album_id,
@@ -274,7 +307,10 @@ class OpenSonicProvider(MusicProvider):
         if sonic_album.cover_id:
             album.metadata.images = [
                 MediaItemImage(
-                    type=ImageType.THUMB, path=sonic_album.cover_id, provider=self.instance_id
+                    type=ImageType.THUMB,
+                    path=sonic_album.cover_id,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
                 ),
             ]
         else:
@@ -289,6 +325,10 @@ class OpenSonicProvider(MusicProvider):
                 )
             )
         else:
+            logging.getLogger("libopensonic").info(
+                f"Unable to find an artist ID for album '{sonic_album.name}' with "
+                f"ID '{sonic_album.id}'."
+            )
             album.artists.append(
                 Artist(
                     item_id=UNKNOWN_ARTIST_ID,
@@ -307,32 +347,34 @@ class OpenSonicProvider(MusicProvider):
         if sonic_info:
             if sonic_info.small_url:
                 album.metadata.images.append(
-                    MediaItemImage(type=ImageType.THUMB, path=sonic_info.small_url)
+                    MediaItemImage(
+                        type=ImageType.THUMB,
+                        path=sonic_info.small_url,
+                        remotely_accessible=False,
+                        provider=self.instance_id,
+                    )
                 )
             if sonic_info.notes:
                 album.metadata.description = sonic_info.notes
 
         return album
 
-    def _parse_track(
-        self, sonic_song: SonicSong, extra_init_kwargs: dict[str, Any] | None = None
-    ) -> AlbumTrack | PlaylistTrack:
-        if extra_init_kwargs and "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        else:
-            track_class = AlbumTrack
-
+    def _parse_track(self, sonic_song: SonicSong) -> Track:
         mapping = None
         if sonic_song.album_id is not None and sonic_song.album is not None:
             mapping = self._get_item_mapping(MediaType.ALBUM, sonic_song.album_id, sonic_song.album)
 
-        track = track_class(
+        track = Track(
             item_id=sonic_song.id,
             provider=self.instance_id,
             name=sonic_song.title,
             album=mapping,
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
-            **extra_init_kwargs or {},
+            # We are setting disc number to 0 because the standard for what is part of
+            # a Open Subsonic Song is not yet set and the implementations I have checked
+            # do not contain this field. We should revisit this when the spec is finished
+            disc_number=0,
+            favorite=bool(sonic_song.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_song.id,
@@ -344,10 +386,8 @@ class OpenSonicProvider(MusicProvider):
                     ),
                 )
             },
+            track_number=getattr(sonic_song, "track", 0),
         )
-
-        if not extra_init_kwargs:
-            track.track_number = int(sonic_song.track) if sonic_song.track is not None else 1
 
         # We need to find an artist for this track but various implementations seem to disagree
         # about where the artist with the valid ID needs to be found. We will add any artist with
@@ -369,8 +409,30 @@ class OpenSonicProvider(MusicProvider):
                 track.artists.append(self._get_item_mapping(MediaType.ARTIST, entry.id, entry.name))
 
         if not track.artists:
-            track.artists.append(
-                Artist(
+            if sonic_song.artist and not sonic_song.artist_id:
+                # This is how Navidrome handles tracks from albums which are marked
+                # 'Various Artists'. Unfortunately, we cannot lookup this artist independently
+                # because it will not have an entry in the artists table so the best we can do it
+                # add a 'fake' id with the proper artist name and have get_artist() check for this
+                # id and handle it locally.
+                artist = Artist(
+                    item_id=f"{NAVI_VARIOUS_PREFIX}{sonic_song.artist}",
+                    provider=self.domain,
+                    name=sonic_song.artist,
+                    provider_mappings={
+                        ProviderMapping(
+                            item_id=UNKNOWN_ARTIST_ID,
+                            provider_domain=self.domain,
+                            provider_instance=self.instance_id,
+                        )
+                    },
+                )
+            else:
+                logging.getLogger("libopensonic").info(
+                    f"Unable to find artist ID for track '{sonic_song.title}' with "
+                    f"ID '{sonic_song.id}'."
+                )
+                artist = Artist(
                     item_id=UNKNOWN_ARTIST_ID,
                     name=UNKNOWN_ARTIST,
                     provider=self.instance_id,
@@ -382,7 +444,8 @@ class OpenSonicProvider(MusicProvider):
                         )
                     },
                 )
-            )
+
+            track.artists.append(artist)
         return track
 
     def _parse_playlist(self, sonic_playlist: SonicPlaylist) -> Playlist:
@@ -391,6 +454,7 @@ class OpenSonicProvider(MusicProvider):
             provider=self.domain,
             name=sonic_playlist.name,
             is_editable=True,
+            favorite=bool(sonic_playlist.starred),
             provider_mappings={
                 ProviderMapping(
                     item_id=sonic_playlist.id,
@@ -402,7 +466,10 @@ class OpenSonicProvider(MusicProvider):
         if sonic_playlist.cover_id:
             playlist.metadata.images = [
                 MediaItemImage(
-                    type=ImageType.THUMB, path=sonic_playlist.cover_id, provider=self.instance_id
+                    type=ImageType.THUMB,
+                    path=sonic_playlist.cover_id,
+                    provider=self.instance_id,
+                    remotely_accessible=False,
                 )
             ]
         return playlist
@@ -420,19 +487,14 @@ class OpenSonicProvider(MusicProvider):
         return await asyncio.to_thread(_get_cover_art)
 
     async def search(
-        self, search_query: str, media_types: list[MediaType] | None = None, limit: int = 20
+        self, search_query: str, media_types: list[MediaType], limit: int = 20
     ) -> SearchResults:
         """Search the sonic library."""
-        artists = limit
-        albums = limit
-        songs = limit
-        if media_types:
-            if MediaType.ARTIST not in media_types:
-                artists = 0
-            if MediaType.ALBUM not in media_types:
-                albums = 0
-            if MediaType.TRACK not in media_types:
-                songs = 0
+        artists = limit if MediaType.ARTIST in media_types else 0
+        albums = limit if MediaType.ALBUM in media_types else 0
+        songs = limit if MediaType.TRACK in media_types else 0
+        if not (artists or albums or songs):
+            return SearchResults()
         answer = await self._run_async(
             self._conn.search3,
             query=search_query,
@@ -483,7 +545,7 @@ class OpenSonicProvider(MusicProvider):
         for entry in results:
             yield self._parse_playlist(entry)
 
-    async def get_library_tracks(self) -> AsyncGenerator[Track | AlbumTrack, None]:
+    async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """
         Provide a generator for library tracks.
 
@@ -545,7 +607,7 @@ class OpenSonicProvider(MusicProvider):
 
         return self._parse_album(sonic_album, sonic_info)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Return a list of tracks on the specified Album."""
         try:
             sonic_album: SonicAlbum = await self._run_async(self._conn.getAlbum, prov_album_id)
@@ -567,6 +629,20 @@ class OpenSonicProvider(MusicProvider):
                 provider_mappings={
                     ProviderMapping(
                         item_id=UNKNOWN_ARTIST_ID,
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                    )
+                },
+            )
+        elif prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
+            # Special case for handling track artists on various artists album for Navidrome.
+            return Artist(
+                item_id=prov_artist_id,
+                name=prov_artist_id.removeprefix(NAVI_VARIOUS_PREFIX),
+                provider=self.instance_id,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=prov_artist_id,
                         provider_domain=self.domain,
                         provider_instance=self.instance_id,
                     )
@@ -603,7 +679,7 @@ class OpenSonicProvider(MusicProvider):
 
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Return a list of all Albums by specified Artist."""
-        if prov_artist_id == UNKNOWN_ARTIST_ID:
+        if prov_artist_id == UNKNOWN_ARTIST_ID or prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
             return []
 
         try:
@@ -627,8 +703,12 @@ class OpenSonicProvider(MusicProvider):
             raise MediaNotFoundError(msg) from e
         return self._parse_playlist(sonic_playlist)
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[Track, None]:
-        """Provide a generator for the tracks on a specified Playlist."""
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        if page > 0:
+            # paging not supported, we always return the whole list at once
+            return result
         try:
             sonic_playlist: SonicPlaylist = await self._run_async(
                 self._conn.getPlaylist, prov_playlist_id
@@ -636,12 +716,25 @@ class OpenSonicProvider(MusicProvider):
         except (ParameterError, DataNotFoundError) as e:
             msg = f"Playlist {prov_playlist_id} not found"
             raise MediaNotFoundError(msg) from e
-        for index, sonic_song in enumerate(sonic_playlist.songs):
-            yield self._parse_track(sonic_song, {"position": index + 1})
+
+        # TODO: figure out if subsonic supports paging here
+        for index, sonic_song in enumerate(sonic_playlist.songs, 1):
+            track = self._parse_track(sonic_song)
+            track.position = index
+            result.append(track)
+        return result
 
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get the top listed tracks for a specified artist."""
-        sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
+        # We have seen top tracks requested for the UNKNOWN_ARTIST ID, protect against that
+        if prov_artist_id == UNKNOWN_ARTIST_ID or prov_artist_id.startswith(NAVI_VARIOUS_PREFIX):
+            return []
+
+        try:
+            sonic_artist: SonicArtist = await self._run_async(self._conn.getArtist, prov_artist_id)
+        except DataNotFoundError as e:
+            msg = f"Artist {prov_artist_id} not found"
+            raise MediaNotFoundError(msg) from e
         songs: list[SonicSong] = await self._run_async(self._conn.getTopSongs, sonic_artist.name)
         return [self._parse_track(entry) for entry in songs]
 
@@ -651,6 +744,39 @@ class OpenSonicProvider(MusicProvider):
             self._conn.getSimilarSongs2, iid=prov_track_id, count=limit
         )
         return [self._parse_track(entry) for entry in songs]
+
+    async def create_playlist(self, name: str) -> Playlist:
+        """Create a new empty playlist on the server."""
+        playlist: SonicPlaylist = await self._run_async(self._conn.createPlaylist, name=name)
+        return self._parse_playlist(playlist)
+
+    async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
+        """Append the listed tracks to the selected playlist.
+
+        Note that the configured user must own the playlist to edit this way.
+        """
+        try:
+            await self._run_async(
+                self._conn.updatePlaylist, lid=prov_playlist_id, songIdsToAdd=prov_track_ids
+            )
+        except SonicError:
+            msg = f"Failed to add songs to {prov_playlist_id}, check your permissions."
+            raise ProviderPermissionDenied(msg)
+
+    async def remove_playlist_tracks(
+        self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
+    ) -> None:
+        """Remove selected positions from the playlist."""
+        idx_to_remove = [pos - 1 for pos in positions_to_remove]
+        try:
+            await self._run_async(
+                self._conn.updatePlaylist,
+                lid=prov_playlist_id,
+                songIndexesToRemove=idx_to_remove,
+            )
+        except SonicError:
+            msg = f"Failed to remove songs from {prov_playlist_id}, check your permissions."
+            raise ProviderPermissionDenied(msg)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get the details needed to process a specified track."""
@@ -666,11 +792,19 @@ class OpenSonicProvider(MusicProvider):
         if mime_type.endswith("mpeg"):
             mime_type = sonic_song.suffix
 
+        self.logger.debug(
+            "Fetching stream details for id %s '%s' with format '%s'",
+            sonic_song.id,
+            sonic_song.title,
+            mime_type,
+        )
+
         return StreamDetails(
             item_id=sonic_song.id,
             provider=self.instance_id,
             can_seek=self._seek_support,
             audio_format=AudioFormat(content_type=ContentType.try_parse(mime_type)),
+            stream_type=StreamType.CUSTOM,
             duration=sonic_song.duration if sonic_song.duration is not None else 0,
         )
 
@@ -687,6 +821,8 @@ class OpenSonicProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Provide a generator for the stream data."""
         audio_buffer = asyncio.Queue(1)
+
+        self.logger.debug("Streaming %s", streamdetails.item_id)
 
         def _streamer() -> None:
             with self._conn.stream(
@@ -711,3 +847,5 @@ class OpenSonicProvider(MusicProvider):
         finally:
             if not streamer_task.done():
                 streamer_task.cancel()
+
+        self.logger.debug("Done streaming %s", streamdetails.item_id)

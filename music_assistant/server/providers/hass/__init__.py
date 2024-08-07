@@ -9,11 +9,13 @@ communication over the HA api for more flexibility as well as security.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import TYPE_CHECKING
 
 import shortuuid
 from hass_client import HomeAssistantClient
+from hass_client.exceptions import BaseHassClientError
 from hass_client.utils import (
     async_is_supervisor,
     base_url,
@@ -25,7 +27,7 @@ from hass_client.utils import (
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.common.models.errors import LoginFailed
+from music_assistant.common.models.errors import LoginFailed, SetupFailedError
 from music_assistant.constants import MASS_LOGO_ONLINE
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.models.plugin import PluginProvider
@@ -40,6 +42,7 @@ DOMAIN = "hass"
 CONF_URL = "url"
 CONF_AUTH_TOKEN = "token"
 CONF_ACTION_AUTH = "auth"
+CONF_VERIFY_SSL = "verify_ssl"
 
 
 async def setup(
@@ -114,6 +117,14 @@ async def get_config_entries(
                 value=None,
                 hidden=True,
             ),
+            ConfigEntry(
+                key=CONF_VERIFY_SSL,
+                type=ConfigEntryType.BOOLEAN,
+                label=CONF_VERIFY_SSL,
+                required=False,
+                default_value=False,
+                hidden=True,
+            ),
         )
     # manual configuration
     return (
@@ -145,6 +156,15 @@ async def get_config_entries(
             value=values.get(CONF_AUTH_TOKEN) if values else None,
             category="advanced",
         ),
+        ConfigEntry(
+            key=CONF_VERIFY_SSL,
+            type=ConfigEntryType.BOOLEAN,
+            label="Verify SSL",
+            required=False,
+            description="Whether or not to verify the certificate of SSL/TLS connections.",
+            category="advanced",
+            default_value=True,
+        ),
     )
 
 
@@ -152,6 +172,7 @@ class HomeAssistant(PluginProvider):
     """Home Assistant Plugin for Music Assistant."""
 
     hass: HomeAssistantClient
+    _listen_task: asyncio.Task | None = None
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the plugin."""
@@ -159,7 +180,12 @@ class HomeAssistant(PluginProvider):
         token = self.config.get_value(CONF_AUTH_TOKEN)
         logging.getLogger("hass_client").setLevel(self.logger.level + 10)
         self.hass = HomeAssistantClient(url, token, self.mass.http_session)
-        await self.hass.connect()
+        try:
+            await self.hass.connect(ssl=bool(self.config.get_value(CONF_VERIFY_SSL)))
+        except BaseHassClientError as err:
+            err_msg = str(err) or err.__class__.__name__
+            raise SetupFailedError(err_msg) from err
+        self._listen_task = self.mass.create_task(self._hass_listener())
 
     async def unload(self) -> None:
         """
@@ -167,4 +193,17 @@ class HomeAssistant(PluginProvider):
 
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
+        if self._listen_task and not self._listen_task.done():
+            self._listen_task.cancel()
         await self.hass.disconnect()
+
+    async def _hass_listener(self) -> None:
+        """Start listening on the HA websockets."""
+        try:
+            # start listening will block until the connection is lost/closed
+            await self.hass.start_listening()
+        except BaseHassClientError as err:
+            self.logger.warning("Connection to HA lost due to error: %s", err)
+        self.logger.info("Connection to HA lost. Reloading provider in 5 seconds.")
+        # schedule a reload of the provider
+        self.mass.call_later(5, self.mass.config.reload_provider(self.instance_id))

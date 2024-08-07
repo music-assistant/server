@@ -15,7 +15,6 @@ import time
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-import defusedxml.ElementTree as ET  # noqa: N817
 from soco import SoCoException
 from soco.core import (
     MUSIC_SRC_AIRPLAY,
@@ -82,21 +81,6 @@ SOURCE_MAPPING = {
     MUSIC_SRC_LINE_IN: SOURCE_LINEIN,
     MUSIC_SRC_SPOTIFY_CONNECT: SOURCE_SPOTIFY_CONNECT,
 }
-
-HIRES_MODELS = (
-    "Sonos Roam",
-    "Sonos Arc",
-    "Sonos Beam",
-    "Sonos Five",
-    "Sonos Move",
-    "Sonos One SL",
-    "Sonos Port",
-    "Sonos Amp",
-    "SYMFONISK Bookshelf",
-    "SYMFONISK Table Lamp",
-    "Sonos Era 100",
-    "Sonos Era 300",
-)
 
 
 class SonosSubscriptionsFailed(PlayerCommandFailed):
@@ -533,29 +517,9 @@ class SonosPlayer:
 
     def _handle_zone_group_topology_event(self, event: SonosEvent) -> None:
         """Handle callback for topology change event."""
-        if xml := event.variables.get("zone_group_state"):
-            zgs = ET.fromstring(xml)
-            for vanished_device in zgs.find("VanishedDevices") or []:
-                if (reason := vanished_device.get("Reason")) not in SUPPORTED_VANISH_REASONS:
-                    self.logger.debug(
-                        "Ignoring %s marked %s as vanished with reason: %s",
-                        self.zone_name,
-                        vanished_device.get("ZoneName"),
-                        reason,
-                    )
-                    continue
-                self.mass.create_task(self._vanished(reason))
-
         if "zone_player_uui_ds_in_group" not in event.variables:
             return
         asyncio.run_coroutine_threadsafe(self.create_update_groups_coro(event), self.mass.loop)
-
-    async def _vanished(self, reason: str) -> None:
-        """Handle removal of speaker when marked as vanished."""
-        if not self.available:
-            return
-        self.logger.debug("%s has vanished (%s), marking unavailable", self.zone_name, reason)
-        await self.offline()
 
     async def _rebooted(self) -> None:
         """Handle a detected speaker reboot."""
@@ -724,7 +688,7 @@ class SonosPlayer:
         self.mass_player.can_sync_with = tuple(
             x.player_id
             for x in self.sonos_prov.sonosplayers.values()
-            if x.sync_coordinator is None and x.player_id != self.player_id
+            if x.player_id != self.player_id
         )
         if self.sync_coordinator:
             # player is syned to another player

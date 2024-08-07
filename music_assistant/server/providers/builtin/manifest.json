@@ -1,0 +1,14 @@
+{
+  "type": "music",
+  "domain": "builtin",
+  "name": "Music Assistant",
+  "description": "Built-in/generic provider that handles generic urls and playlists.",
+  "codeowners": [
+    "@music-assistant"
+  ],
+  "requirements": [],
+  "documentation": "https://music-assistant.io/music-providers/builtin/",
+  "multi_instance": false,
+  "builtin": true,
+  "hidden": false
+}

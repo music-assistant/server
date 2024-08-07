@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
+import os
 import platform
 from collections.abc import AsyncGenerator
 from typing import TYPE_CHECKING
@@ -14,6 +14,7 @@ from music_assistant.common.models.errors import LoginFailed
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 from music_assistant.server.helpers.audio import get_file_stream
+from music_assistant.server.helpers.process import check_output
 from music_assistant.server.providers.filesystem_local import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
     LocalFileSystemProvider,
@@ -39,17 +40,18 @@ async def setup(
 ) -> ProviderInstanceType:
     """Initialize provider(instance) with given configuration."""
     # check if valid dns name is given for the host
-    server: str = config.get_value(CONF_HOST)
+    server = str(config.get_value(CONF_HOST))
     if not await get_ip_from_host(server):
         msg = f"Unable to resolve {server}, make sure the address is resolveable."
         raise LoginFailed(msg)
     # check if share is valid
-    share: str = config.get_value(CONF_SHARE)
+    share = str(config.get_value(CONF_SHARE))
     if not share or "/" in share or "\\" in share:
         msg = "Invalid share name"
         raise LoginFailed(msg)
     prov = SMBFileSystemProvider(mass, manifest, config)
     await prov.handle_async_init()
+    await prov.check_write_access()
     return prov
 
 
@@ -168,13 +170,13 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
 
     async def mount(self) -> None:
         """Mount the SMB location to a temporary folder."""
-        server: str = self.config.get_value(CONF_HOST)
-        username: str = self.config.get_value(CONF_USERNAME)
-        password: str = self.config.get_value(CONF_PASSWORD)
-        share: str = self.config.get_value(CONF_SHARE)
+        server = str(self.config.get_value(CONF_HOST))
+        username = str(self.config.get_value(CONF_USERNAME))
+        password = self.config.get_value(CONF_PASSWORD)
+        share = str(self.config.get_value(CONF_SHARE))
 
         # handle optional subfolder
-        subfolder: str = self.config.get_value(CONF_SUBFOLDER)
+        subfolder = str(self.config.get_value(CONF_SUBFOLDER))
         if subfolder:
             subfolder = subfolder.replace("\\", "/")
             if not subfolder.startswith("/"):
@@ -183,42 +185,55 @@ class SMBFileSystemProvider(LocalFileSystemProvider):
                 subfolder = subfolder[:-1]
 
         if platform.system() == "Darwin":
+            # NOTE: MacOS does not support special characters in the username/password
             password_str = f":{password}" if password else ""
-            mount_cmd = f"mount -t smbfs //{username}{password_str}@{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
+            mount_cmd = [
+                "mount",
+                "-t",
+                "smbfs",
+                f"//{username}{password_str}@{server}/{share}{subfolder}",
+                self.base_path,
+            ]
 
         elif platform.system() == "Linux":
-            options = [
-                "rw",
-                f'username="{username}"',
-            ]
-            if password:
-                options.append(f'password="{password}"')
-            if mount_options := self.config.get_value(CONF_MOUNT_OPTIONS):
+            options = ["rw"]
+            if mount_options := str(self.config.get_value(CONF_MOUNT_OPTIONS)):
                 options += mount_options.split(",")
-            mount_cmd = f"mount -t cifs -o {','.join(options)} //{server}/{share}{subfolder} {self.base_path}"  # noqa: E501
+
+            options_str = ",".join(options)
+            mount_cmd = [
+                "mount",
+                "-t",
+                "cifs",
+                "-o",
+                options_str,
+                f"//{server}/{share}{subfolder}",
+                self.base_path,
+            ]
 
         else:
             msg = f"SMB provider is not supported on {platform.system()}"
             raise LoginFailed(msg)
 
         self.logger.info("Mounting //%s/%s%s to %s", server, share, subfolder, self.base_path)
-        self.logger.debug("Using mount command: %s", mount_cmd.replace(password, "########"))
-
-        proc = await asyncio.create_subprocess_shell(
-            mount_cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
+        self.logger.debug(
+            "Using mount command: %s",
+            [m.replace(str(password), "########") if password else m for m in mount_cmd],
         )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0:
-            msg = f"SMB mount failed with error: {stderr.decode()}"
+        env_vars = {
+            **os.environ,
+            "USER": username,
+        }
+        if password:
+            env_vars["PASSWD"] = str(password)
+
+        returncode, output = await check_output(*mount_cmd, env=env_vars)
+        if returncode != 0:
+            msg = f"SMB mount failed with error: {output.decode()}"
             raise LoginFailed(msg)
 
     async def unmount(self, ignore_error: bool = False) -> None:
         """Unmount the remote share."""
-        proc = await asyncio.create_subprocess_shell(
-            f"umount {self.base_path}",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await proc.communicate()
-        if proc.returncode != 0 and not ignore_error:
-            self.logger.warning("SMB unmount failed with error: %s", stderr.decode())
+        returncode, output = await check_output("umount", self.base_path)
+        if returncode != 0 and not ignore_error:
+            self.logger.warning("SMB unmount failed with error: %s", output.decode())

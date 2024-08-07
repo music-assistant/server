@@ -92,3 +92,38 @@ class UnplayableMediaError(MusicAssistantError):
     """Error thrown when a MediaItem cannot be played properly."""
 
     error_code = 13
+
+
+class InvalidProviderURI(MusicAssistantError):
+    """Error thrown when a provider URI does not match a known format."""
+
+    error_code = 14
+
+
+class InvalidProviderID(MusicAssistantError):
+    """Error thrown when a provider media item identifier does not match a known format."""
+
+    error_code = 15
+
+
+class RetriesExhausted(MusicAssistantError):
+    """Error thrown when a retries to a given provider URI have been exhausted."""
+
+    error_code = 16
+
+
+class ResourceTemporarilyUnavailable(MusicAssistantError):
+    """Error thrown when a resource is temporarily unavailable."""
+
+    def __init__(self, *args: object, backoff_time: int = 0) -> None:
+        """Initialize."""
+        super().__init__(*args)
+        self.backoff_time = backoff_time
+
+    error_code = 17
+
+
+class ProviderPermissionDenied(MusicAssistantError):
+    """Error thrown when a provider action is denied because of permissions."""
+
+    error_code = 18

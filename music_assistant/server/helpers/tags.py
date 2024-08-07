@@ -6,9 +6,12 @@ import asyncio
 import json
 import logging
 import os
+from collections.abc import Iterable
 from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import TYPE_CHECKING, Any
+
+import eyed3
 
 from music_assistant.common.helpers.util import try_parse_int
 from music_assistant.common.models.enums import AlbumType
@@ -22,14 +25,23 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.tags")
 
+# silence the eyed3 logger because it is too verbose
+logging.getLogger("eyed3").setLevel(logging.ERROR)
+
+
 # the only multi-item splitter we accept is the semicolon,
 # which is also the default in Musicbrainz Picard.
 # the slash is also a common splitter but causes collisions with
-# artists actually containing a slash in the name, such as ACDC
+# artists actually containing a slash in the name, such as AC/DC
 TAG_SPLITTER = ";"
 
 
-def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
+def clean_tuple(values: Iterable[str]) -> tuple:
+    """Return a tuple with all empty values removed."""
+    return tuple(x.strip() for x in values if x not in (None, "", " "))
+
+
+def split_items(org_str: str, allow_unsafe_splitters: bool = False) -> tuple[str, ...]:
     """Split up a tags string by common splitter."""
     if org_str is None:
         return ()
@@ -37,23 +49,35 @@ def split_items(org_str: str, split_slash: bool = False) -> tuple[str, ...]:
         return (x.strip() for x in org_str)
     org_str = org_str.strip()
     if TAG_SPLITTER in org_str:
-        return tuple(x.strip() for x in org_str.split(TAG_SPLITTER))
-    if split_slash and "/" in org_str:
-        return tuple(x.strip() for x in org_str.split("/"))
-    return (org_str.strip(),)
+        return clean_tuple(org_str.split(TAG_SPLITTER))
+    if allow_unsafe_splitters and "/" in org_str:
+        return clean_tuple(org_str.split("/"))
+    if allow_unsafe_splitters and ", " in org_str:
+        return clean_tuple(org_str.split(", "))
+    return clean_tuple((org_str,))
 
 
-def split_artists(org_artists: str | tuple[str, ...]) -> tuple[str, ...]:
+def split_artists(
+    org_artists: str | tuple[str, ...], allow_ampersand: bool = False
+) -> tuple[str, ...]:
     """Parse all artists from a string."""
     final_artists = set()
     # when not using the multi artist tag, the artist string may contain
     # multiple artists in freeform, even featuring artists may be included in this
     # string. Try to parse the featuring artists and separate them.
     splitters = ("featuring", " feat. ", " feat ", "feat.")
-    for item in split_items(org_artists):
+    if allow_ampersand:
+        splitters = (*splitters, " & ")
+    artists = split_items(org_artists)
+    for item in artists:
         for splitter in splitters:
+            if splitter not in item:
+                continue
             for subitem in item.split(splitter):
                 final_artists.add(subitem.strip())
+    if not final_artists:
+        # none of the extra splitters was found
+        return artists
     return tuple(final_artists)
 
 
@@ -67,7 +91,7 @@ class AudioTags:
     bits_per_sample: int
     format: str
     bit_rate: int
-    duration: int | None
+    duration: float | None
     tags: dict[str, str]
     has_cover_image: bool
     filename: str
@@ -101,7 +125,7 @@ class AudioTags:
         return ""
 
     @property
-    def album(self) -> str:
+    def album(self) -> str | None:
         """Return album tag (as-is) if present."""
         return self.tags.get("album")
 
@@ -134,6 +158,11 @@ class AudioTags:
         if tag := self.tags.get("albumartist"):
             if TAG_SPLITTER in tag:
                 return split_items(tag)
+            if len(self.musicbrainz_albumartistids) > 1:
+                # special case: album artist noted as 2 artists with ampersand
+                # but with 2 mb ids so they should be treated as 2 artists
+                # example: John Travolta & Olivia Newton John on the Grease album
+                return split_artists(tag, allow_ampersand=True)
             return split_artists(tag)
         return ()
 
@@ -185,8 +214,8 @@ class AudioTags:
         return self.tags.get("musicbrainzreleasegroupid")
 
     @property
-    def musicbrainz_releaseid(self) -> str | None:
-        """Return musicbrainz_releaseid tag if present."""
+    def musicbrainz_albumid(self) -> str | None:
+        """Return musicbrainz_albumid tag if present."""
         return self.tags.get("musicbrainzreleaseid", self.tags.get("musicbrainzalbumid"))
 
     @property
@@ -197,8 +226,6 @@ class AudioTags:
         if tag := self.tags.get("musicbrainz.org"):
             return tag
         if tag := self.tags.get("musicbrainzrecordingid"):
-            return tag
-        if tag := self.tags.get("musicbrainzreleasetrackid"):
             return tag
         return self.tags.get("musicbrainztrackid")
 
@@ -312,7 +339,9 @@ class AudioTags:
         if audio_stream is None:
             msg = "No audio stream found"
             raise InvalidDataError(msg)
-        has_cover_image = any(x for x in raw["streams"] if x["codec_name"] in ("mjpeg", "png"))
+        has_cover_image = any(
+            x for x in raw["streams"] if x.get("codec_name", "") in ("mjpeg", "png")
+        )
         # convert all tag-keys (gathered from all streams) to lowercase without spaces
         tags = {}
         for stream in raw["streams"] + [raw["format"]]:
@@ -329,7 +358,7 @@ class AudioTags:
             ),
             format=raw["format"]["format_name"],
             bit_rate=int(raw["format"].get("bit_rate", 320)),
-            duration=int(float(raw["format"].get("duration", 0))) or None,
+            duration=float(raw["format"].get("duration", 0)) or None,
             tags=tags,
             has_cover_image=has_cover_image,
             filename=raw["format"]["filename"],
@@ -405,6 +434,25 @@ async def parse_tags(
         if not tags.duration and file_size and tags.bit_rate:
             # estimate duration from filesize/bitrate
             tags.duration = int((file_size * 8) / tags.bit_rate)
+        if not tags.duration and tags.raw.get("format", {}).get("duration"):
+            tags.duration = float(tags.raw["format"]["duration"])
+
+        if (
+            not file_path.startswith("http")
+            and file_path.endswith(".mp3")
+            and "musicbrainzrecordingid" not in tags.tags
+            and await asyncio.to_thread(os.path.isfile, file_path)
+        ):
+            # eyed3 is able to extract the musicbrainzrecordingid from the unique file id
+            # this is actually a bug in ffmpeg/ffprobe which does not expose this tag
+            # so we use this as alternative approach for mp3 files
+            audiofile = await asyncio.to_thread(eyed3.load, file_path)
+            if audiofile.tag is not None:
+                for uf_id in audiofile.tag.unique_file_ids:
+                    if uf_id.owner_id == b"http://musicbrainz.org" and uf_id.uniq_id:
+                        tags.tags["musicbrainzrecordingid"] = uf_id.uniq_id.decode()
+                        break
+
         return tags
     except (KeyError, ValueError, JSONDecodeError, InvalidDataError) as err:
         msg = f"Unable to retrieve info for {file_path}: {err!s}"
@@ -426,20 +474,21 @@ async def get_embedded_image(input_file: str | AsyncGenerator[bytes, None]) -> b
         "ffmpeg",
         "-hide_banner",
         "-loglevel",
-        "fatal",
+        "error",
         "-i",
         file_path,
-        "-map",
-        "0:v",
-        "-c",
-        "copy",
+        "-an",
+        "-vcodec",
+        "mjpeg",
         "-f",
         "mjpeg",
         "-",
     )
 
     writer_task: asyncio.Task | None = None
-    ffmpeg_proc = AsyncProcess(args, stdin=file_path == "-", stdout=True)
+    ffmpeg_proc = AsyncProcess(
+        args, stdin=file_path == "-", stdout=True, stderr=None, name="ffmpeg_image"
+    )
     await ffmpeg_proc.start()
 
     async def writer() -> None:

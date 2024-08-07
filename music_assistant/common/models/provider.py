@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from typing import Any, TypedDict
+from typing import Any
 
 from mashumaro.mixins.orjson import DataClassORJSONMixin
 
@@ -53,13 +53,14 @@ class ProviderManifest(DataClassORJSONMixin):
     mdns_discovery: list[str] | None = None
 
     @classmethod
-    async def parse(cls: ProviderManifest, manifest_file: str) -> ProviderManifest:
+    async def parse(cls, manifest_file: str) -> ProviderManifest:
         """Parse ProviderManifest from file."""
         return await load_json_file(manifest_file, ProviderManifest)
 
 
-class ProviderInstance(TypedDict):
-    """Provider instance detailed dict when a provider is serialized over the api."""
+@dataclass
+class ProviderInstance(DataClassORJSONMixin):
+    """Provider instance details when a provider is serialized over the api."""
 
     type: ProviderType
     domain: str
@@ -67,7 +68,8 @@ class ProviderInstance(TypedDict):
     instance_id: str
     supported_features: list[ProviderFeature]
     available: bool
-    icon: str | None
+    icon: str | None = None
+    is_streaming_provider: bool | None = None  # music providers only
 
 
 @dataclass
@@ -77,9 +79,9 @@ class SyncTask:
     provider_domain: str
     provider_instance: str
     media_types: tuple[MediaType, ...]
-    task: asyncio.Task
+    task: asyncio.Task[None] | None
 
-    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
+    def to_dict(self) -> dict[str, Any]:
         """Return SyncTask as (serializable) dict."""
         # ruff: noqa:ARG002
         return {

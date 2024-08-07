@@ -3,15 +3,11 @@
   "domain": "hass",
   "name": "Home Assistant",
   "description": "Connect Music Assistant to Home Assistant.",
-  "codeowners": [
-    "@music-assistant"
-  ],
+  "codeowners": ["@music-assistant"],
   "documentation": "",
   "multi_instance": false,
   "builtin": false,
   "load_by_default": false,
   "icon": "md:webhook",
-  "requirements": [
-    "hass-client==1.0.1"
-  ]
+  "requirements": ["hass-client==1.2.0"]
 }

@@ -1,0 +1,10 @@
+{
+  "type": "music",
+  "domain": "apple_music",
+  "name": "Apple Music",
+  "description": "Support for the Apple Music streaming provider in Music Assistant.",
+  "codeowners": ["@MarvinSchenkel"],
+  "requirements": ["pywidevine==1.8.0"],
+  "documentation": "https://music-assistant.io/music-providers/apple-music/",
+  "multi_instance": true
+}

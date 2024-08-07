@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from itertools import zip_longest
-from typing import TYPE_CHECKING
+from math import inf
+from typing import TYPE_CHECKING, Final, cast
 
 from music_assistant.common.helpers.datetime import utc_timestamp
+from music_assistant.common.helpers.global_cache import get_global_cache_value
 from music_assistant.common.helpers.uri import parse_uri
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import (
@@ -20,12 +22,18 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
     ProviderType,
 )
-from music_assistant.common.models.errors import MediaNotFoundError, MusicAssistantError
+from music_assistant.common.models.errors import (
+    InvalidProviderID,
+    InvalidProviderURI,
+    MediaNotFoundError,
+    MusicAssistantError,
+    ProviderUnavailableError,
+)
 from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
-    DB_SCHEMA_VERSION,
+    DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ALBUM_TRACKS,
     DB_TABLE_ALBUMS,
     DB_TABLE_ARTISTS,
@@ -34,11 +42,14 @@ from music_assistant.constants import (
     DB_TABLE_PROVIDER_MAPPINGS,
     DB_TABLE_RADIOS,
     DB_TABLE_SETTINGS,
+    DB_TABLE_TRACK_ARTISTS,
     DB_TABLE_TRACK_LOUDNESS,
     DB_TABLE_TRACKS,
+    PROVIDERS_WITH_SHAREABLE_URLS,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.database import DatabaseConnection
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.core_controller import CoreController
 
 from .media.albums import AlbumsController
@@ -53,6 +64,9 @@ if TYPE_CHECKING:
 
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
+CONF_DELETED_PROVIDERS = "deleted_providers"
+CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
+DB_SCHEMA_VERSION: Final[int] = 3
 
 
 class MusicController(CoreController):
@@ -96,6 +110,14 @@ class MusicController(CoreController):
                 description="Interval (in minutes) that a (delta) sync "
                 "of all providers should be performed.",
             ),
+            ConfigEntry(
+                key=CONF_ADD_LIBRARY_ON_PLAY,
+                type=ConfigEntryType.BOOLEAN,
+                default_value=False,
+                label="Add item to the library as soon as its played",
+                description="Automatically add a track or radio station to "
+                "the library when played (if its not already in the library).",
+            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
@@ -105,6 +127,11 @@ class MusicController(CoreController):
         await self._setup_database()
         sync_interval = config.get_value(CONF_SYNC_INTERVAL)
         self.logger.info("Using a sync interval of %s minutes.", sync_interval)
+        # make sure to finish any removal jobs
+        for removed_provider in self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_DELETED_PROVIDERS, []
+        ):
+            await self.cleanup_provider(removed_provider)
         self._schedule_sync()
 
     async def close(self) -> None:
@@ -149,7 +176,7 @@ class MusicController(CoreController):
         self,
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
-        limit: int = 50,
+        limit: int = 25,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
@@ -157,6 +184,41 @@ class MusicController(CoreController):
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
+        if not media_types:
+            media_types = MediaType.ALL
+        # Check if the search query is a streaming provider public shareable URL
+        try:
+            media_type, provider_instance_id_or_domain, item_id = await parse_uri(
+                search_query, validate_id=True
+            )
+        except InvalidProviderURI:
+            pass
+        except InvalidProviderID as err:
+            self.logger.warning("%s", str(err))
+            return SearchResults()
+        else:
+            if provider_instance_id_or_domain in PROVIDERS_WITH_SHAREABLE_URLS:
+                try:
+                    item = await self.get_item(
+                        media_type=media_type,
+                        item_id=item_id,
+                        provider_instance_id_or_domain=provider_instance_id_or_domain,
+                    )
+                except MusicAssistantError as err:
+                    self.logger.warning("%s", str(err))
+                    return SearchResults()
+                else:
+                    if media_type == MediaType.ARTIST:
+                        return SearchResults(artists=[item])
+                    elif media_type == MediaType.ALBUM:
+                        return SearchResults(albums=[item])
+                    elif media_type == MediaType.TRACK:
+                        return SearchResults(tracks=[item])
+                    elif media_type == MediaType.PLAYLIST:
+                        return SearchResults(playlists=[item])
+                    else:
+                        return SearchResults()
+
         # include results from all (unique) music providers
         results_per_provider: list[SearchResults] = await asyncio.gather(
             *[
@@ -177,38 +239,38 @@ class MusicController(CoreController):
                 for sublist in zip_longest(*[x.artists for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             albums=[
                 item
                 for sublist in zip_longest(*[x.albums for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             tracks=[
                 item
                 for sublist in zip_longest(*[x.tracks for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             playlists=[
                 item
                 for sublist in zip_longest(*[x.playlists for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
             radio=[
                 item
                 for sublist in zip_longest(*[x.radio for x in results_per_provider])
                 for item in sublist
                 if item is not None
-            ],
+            ][:limit],
         )
 
     async def search_provider(
         self,
         search_query: str,
         provider_instance_id_or_domain: str,
-        media_types: list[MediaType] = MediaType.ALL,
+        media_types: list[MediaType],
         limit: int = 10,
     ) -> SearchResults:
         """Perform search on given provider.
@@ -217,7 +279,7 @@ class MusicController(CoreController):
         :param provider_instance_id_or_domain: instance_id or domain of the provider
                                                to perform the search on.
         :param provider_instance: instance id of the provider to perform the search on.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
         prov = self.mass.get_provider(provider_instance_id_or_domain)
@@ -250,35 +312,44 @@ class MusicController(CoreController):
         return result
 
     @api_command("music/browse")
-    async def browse(self, path: str | None = None) -> AsyncGenerator[MediaItemType, None]:
+    async def browse(self, path: str | None = None) -> list[MediaItemType]:
         """Browse Music providers."""
         if not path or path == "root":
             # root level; folder per provider
+            root_items: list[MediaItemType] = []
             for prov in self.providers:
                 if ProviderFeature.BROWSE not in prov.supported_features:
                     continue
-                yield BrowseFolder(
-                    item_id="root",
-                    provider=prov.domain,
-                    path=f"{prov.instance_id}://",
-                    uri=f"{prov.instance_id}://",
-                    name=prov.name,
+                root_items.append(
+                    BrowseFolder(
+                        item_id="root",
+                        provider=prov.domain,
+                        path=f"{prov.instance_id}://",
+                        uri=f"{prov.instance_id}://",
+                        name=prov.name,
+                    )
                 )
-            return
+            return root_items
 
         # provider level
+        prepend_items: list[MediaItemType] = []
         provider_instance, sub_path = path.split("://", 1)
         prov = self.mass.get_provider(provider_instance)
         # handle regular provider listing, always add back folder first
         if not prov or not sub_path:
-            yield BrowseFolder(item_id="root", provider="library", path="root", name="..")
+            prepend_items.append(
+                BrowseFolder(item_id="root", provider="library", path="root", name="..")
+            )
+            if not prov:
+                return prepend_items
         else:
             back_path = f"{provider_instance}://" + "/".join(sub_path.split("/")[:-1])
-            yield BrowseFolder(
-                item_id="back", provider=provider_instance, path=back_path, name=".."
+            prepend_items.append(
+                BrowseFolder(item_id="back", provider=provider_instance, path=back_path, name="..")
             )
-        async for item in prov.browse(path):
-            yield item
+        # limit -1 to account for the prepended items
+        prov_items = await prov.browse(path=path)
+        return prepend_items + prov_items
 
     @api_command("music/recently_played_items")
     async def recently_played(
@@ -286,7 +357,7 @@ class MusicController(CoreController):
     ) -> list[MediaItemType]:
         """Return a list of the last played items."""
         if media_types is None:
-            media_types = [MediaType.TRACK, MediaType.RADIO]
+            media_types = MediaType.ALL
         media_types_str = "(" + ",".join(f'"{x}"' for x in media_types) + ")"
         query = (
             f"SELECT * FROM {DB_TABLE_PLAYLOG} WHERE media_type "
@@ -295,16 +366,22 @@ class MusicController(CoreController):
         db_rows = await self.mass.music.database.get_rows_from_query(query, limit=limit)
         result: list[MediaItemType] = []
         for db_row in db_rows:
-            with suppress(MediaNotFoundError):
+            if db_row["provider"] not in get_global_cache_value("unique_providers", []):
+                continue
+            with suppress(MediaNotFoundError, ProviderUnavailableError):
                 media_type = MediaType(db_row["media_type"])
-                item = await self.get_item(media_type, db_row["item_id"], db_row["provider"])
+                ctrl = self.get_controller(media_type)
+                item = await ctrl.get(
+                    db_row["item_id"],
+                    db_row["provider"],
+                )
                 result.append(item)
         return result
 
     @api_command("music/item_by_uri")
     async def get_item_by_uri(self, uri: str) -> MediaItemType:
         """Fetch MediaItem by uri."""
-        media_type, provider_instance_id_or_domain, item_id = parse_uri(uri)
+        media_type, provider_instance_id_or_domain, item_id = await parse_uri(uri)
         return await self.get_item(
             media_type=media_type,
             item_id=item_id,
@@ -317,24 +394,18 @@ class MusicController(CoreController):
         media_type: MediaType,
         item_id: str,
         provider_instance_id_or_domain: str,
-        force_refresh: bool = False,
-        lazy: bool = True,
-        add_to_library: bool = False,
     ) -> MediaItemType:
         """Get single music item by id and media type."""
         if provider_instance_id_or_domain == "database":
             # backwards compatibility - to remove when 2.0 stable is released
             provider_instance_id_or_domain = "library"
-        if provider_instance_id_or_domain == "url":
-            # handle special case of 'URL' MusicProvider which allows us to play regular url's
-            return await self.mass.get_provider("url").parse_item(item_id)
+        if provider_instance_id_or_domain == "builtin":
+            # handle special case of 'builtin' MusicProvider which allows us to play regular url's
+            return await self.mass.get_provider("builtin").parse_item(item_id)
         ctrl = self.get_controller(media_type)
         return await ctrl.get(
             item_id=item_id,
             provider_instance_id_or_domain=provider_instance_id_or_domain,
-            force_refresh=force_refresh,
-            lazy=lazy,
-            add_to_library=add_to_library,
         )
 
     @api_command("music/favorites/add_item")
@@ -345,15 +416,22 @@ class MusicController(CoreController):
         """Add an item to the favorites."""
         if isinstance(item, str):
             item = await self.get_item_by_uri(item)
+        # ensure item is added to streaming provider library
+        if (
+            (provider := self.mass.get_provider(item.provider))
+            and provider.is_streaming_provider
+            and provider.library_edit_supported(item.media_type)
+        ):
+            await provider.library_add(item)
         # make sure we have a full library item
         # a favorite must always be in the library
         full_item = await self.get_item(
             item.media_type,
             item.item_id,
             item.provider,
-            lazy=False,
-            add_to_library=True,
         )
+        if full_item.provider != "library":
+            full_item = await self.add_item_to_library(full_item)
         # set favorite in library db
         ctrl = self.get_controller(item.media_type)
         await ctrl.set_favorite(
@@ -387,9 +465,9 @@ class MusicController(CoreController):
         item = await ctrl.get_library_item(library_item_id)
         # remove from all providers
         for provider_mapping in item.provider_mappings:
-            prov_controller = self.mass.get_provider(provider_mapping.provider_instance)
-            with suppress(NotImplementedError):
-                await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
+            if prov_controller := self.mass.get_provider(provider_mapping.provider_instance):
+                with suppress(NotImplementedError):
+                    await prov_controller.library_remove(provider_mapping.item_id, item.media_type)
         await ctrl.remove_item_from_library(library_item_id)
 
     @api_command("music/library/add_item")
@@ -401,61 +479,79 @@ class MusicController(CoreController):
         # add to provider's library first
         provider = self.mass.get_provider(item.provider)
         if provider.library_edit_supported(item.media_type):
-            await provider.library_add(item.item_id, item.media_type)
-        return await ctrl.get(
-            item_id=item.item_id,
-            provider_instance_id_or_domain=item.provider,
-            details=item,
-            add_to_library=True,
-        )
+            await provider.library_add(item)
+        # ensure a full item
+        item = await ctrl.get(item.item_id, item.provider)
+        library_item = await ctrl.add_item_to_library(item)
+        # perform full metadata scan (and provider match)
+        await self.mass.metadata.update_metadata(library_item)
+        return library_item
 
     async def refresh_items(self, items: list[MediaItemType]) -> None:
         """Refresh MediaItems to force retrieval of full info and matches.
 
         Creates background tasks to process the action.
         """
-        for media_item in items:
-            self.mass.create_task(self.refresh_item(media_item))
+        async with TaskManager(self.mass) as tg:
+            for media_item in items:
+                tg.create_task(self.refresh_item(media_item))
 
     @api_command("music/refresh_item")
     async def refresh_item(
         self,
-        media_item: MediaItemType,
+        media_item: str | MediaItemType,
     ) -> MediaItemType | None:
         """Try to refresh a mediaitem by requesting it's full object or search for substitutes."""
-        try:
-            return await self.get_item(
-                media_item.media_type,
-                media_item.item_id,
-                media_item.provider,
-                force_refresh=True,
-                lazy=False,
-                add_to_library=True,
-            )
-        except MusicAssistantError:
-            pass
+        if isinstance(media_item, str):
+            # media item uri given
+            media_item = await self.get_item_by_uri(media_item)
 
-        searchresult = await self.search(media_item.name, [media_item.media_type], 20)
-        if media_item.media_type == MediaType.ARTIST:
-            result = searchresult.artists
-        elif media_item.media_type == MediaType.ALBUM:
-            result = searchresult.albums
-        elif media_item.media_type == MediaType.TRACK:
-            result = searchresult.tracks
-        elif media_item.media_type == MediaType.PLAYLIST:
-            result = searchresult.playlists
+        media_type = media_item.media_type
+        ctrl = self.get_controller(media_type)
+        is_library_item = media_item.provider == "library"
+
+        available_providers = get_global_cache_value("provider_instance_ids")
+        if TYPE_CHECKING:
+            available_providers = cast(set[str], available_providers)
+
+        # fetch the first (available) provider item
+        for prov_mapping in media_item.provider_mappings:
+            provider = prov_mapping.provider_instance
+            if provider not in available_providers:
+                continue
+            item_id = prov_mapping.item_id
+            if prov_mapping.available:
+                break
         else:
-            result = searchresult.radio
-        for item in result:
-            if item.available:
-                return await self.get_item(
-                    item.media_type,
-                    item.item_id,
-                    item.provider,
-                    lazy=False,
-                    add_to_library=True,
-                )
-        return None
+            # try to find a substitute
+            searchresult = await self.search(media_item.name, [media_item.media_type], 20)
+            if media_item.media_type == MediaType.ARTIST:
+                result = searchresult.artists
+            elif media_item.media_type == MediaType.ALBUM:
+                result = searchresult.albums
+            elif media_item.media_type == MediaType.TRACK:
+                result = searchresult.tracks
+            elif media_item.media_type == MediaType.PLAYLIST:
+                result = searchresult.playlists
+            else:
+                result = searchresult.radio
+            for item in result:
+                if item.available:
+                    provider = item.provider
+                    item_id = item.item_id
+                    break
+            else:
+                # raise if we didn't find a substitute
+                raise MediaNotFoundError(f"Could not find a substitute for {media_item.name}")
+        # fetch full (provider) item
+        media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
+        # update library item if needed (including refresh of the metadata etc.)
+        if is_library_item:
+            library_item = await ctrl.add_item_to_library(media_item)
+            await self.mass.metadata.update_metadata(library_item, force_refresh=True)
+            return library_item
+
+        return media_item
 
     async def set_track_loudness(
         self, item_id: str, provider_instance_id_or_domain: str, loudness: LoudnessMeasurement
@@ -467,10 +563,11 @@ class MusicController(CoreController):
                 {
                     "item_id": item_id,
                     "provider": provider.lookup_key,
-                    "integrated": loudness.integrated,
-                    "true_peak": loudness.true_peak,
-                    "lra": loudness.lra,
-                    "threshold": loudness.threshold,
+                    "integrated": round(loudness.integrated, 2),
+                    "true_peak": round(loudness.true_peak, 2),
+                    "lra": round(loudness.lra, 2),
+                    "threshold": round(loudness.threshold, 2),
+                    "target_offset": round(loudness.target_offset, 2),
                 },
                 allow_replace=True,
             )
@@ -487,11 +584,15 @@ class MusicController(CoreController):
                     "provider": provider.lookup_key,
                 },
             ):
+                if result["integrated"] == inf or result["integrated"] == -inf:
+                    return None
+
                 return LoudnessMeasurement(
                     integrated=result["integrated"],
                     true_peak=result["true_peak"],
                     lra=result["lra"],
                     threshold=result["threshold"],
+                    target_offset=result["target_offset"],
                 )
         return None
 
@@ -500,16 +601,52 @@ class MusicController(CoreController):
     ) -> None:
         """Mark item as played in playlog."""
         timestamp = utc_timestamp()
+
+        if (
+            provider_instance_id_or_domain.startswith("builtin")
+            and media_type != MediaType.PLAYLIST
+        ):
+            # we deliberately skip builtin provider items as those are often
+            # one-off items like TTS or some sound effect etc.
+            return
+
+        if provider_instance_id_or_domain == "library":
+            prov_key = "library"
+        elif prov := self.mass.get_provider(provider_instance_id_or_domain):
+            prov_key = prov.lookup_key
+        else:
+            prov_key = provider_instance_id_or_domain
+
+        # update generic playlog table
         await self.database.insert(
             DB_TABLE_PLAYLOG,
             {
                 "item_id": item_id,
-                "provider": provider_instance_id_or_domain,
+                "provider": prov_key,
                 "media_type": media_type.value,
                 "timestamp": timestamp,
             },
             allow_replace=True,
         )
+
+        # also update playcount in library table
+        ctrl = self.get_controller(media_type)
+        db_item = await ctrl.get_library_item_by_prov_id(item_id, provider_instance_id_or_domain)
+        if (
+            not db_item
+            and media_type in (MediaType.TRACK, MediaType.RADIO)
+            and self.mass.config.get_raw_core_config_value(self.domain, CONF_ADD_LIBRARY_ON_PLAY)
+        ):
+            # handle feature to add to the lib on playback
+            full_item = await ctrl.get(item_id, provider_instance_id_or_domain)
+            db_item = await ctrl.add_item_to_library(full_item)
+
+        if db_item:
+            await self.database.execute(
+                f"UPDATE {ctrl.db_table} SET play_count = play_count + 1, "
+                f"last_played = {timestamp} WHERE item_id = {db_item.item_id}"
+            )
+        await self.database.commit()
 
     def get_controller(
         self, media_type: MediaType
@@ -571,6 +708,11 @@ class MusicController(CoreController):
             # race conditions when multiple providers are syncing at the same time.
             async with self._sync_lock:
                 await provider.sync_library(media_types)
+            # precache playlist tracks
+            if MediaType.PLAYLIST in media_types:
+                for playlist in await self.playlists.library_items(provider=provider_instance):
+                    async for _ in self.playlists.tracks(playlist.item_id, playlist.provider):
+                        pass
 
         # we keep track of running sync tasks
         task = self.mass.create_task(run_sync())
@@ -597,18 +739,35 @@ class MusicController(CoreController):
             else:
                 self.logger.info("Sync task for %s completed", provider.name)
             self.mass.signal_event(EventType.SYNC_TASKS_UPDATED, data=self.in_progress_syncs)
-            # trigger metadata scan after all provider syncs completed
-            if len(self.in_progress_syncs) == 0:
-                self.mass.metadata.start_scan()
+            # schedule db cleanup + metadata scan after sync
+            if not self.in_progress_syncs:
+                self.mass.create_task(self._cleanup_database())
+                self.mass.create_task(self.mass.metadata.metadata_scanner())
 
         task.add_done_callback(on_sync_task_done)
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""
+        deleted_providers = self.mass.config.get_raw_core_config_value(
+            self.domain, CONF_DELETED_PROVIDERS, []
+        )
+        # we add the provider to this hidden config setting just to make sure that
+        # we can survive this over a restart to make sure that entries are cleaned up
+        if provider_instance not in deleted_providers:
+            deleted_providers.append(provider_instance)
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_DELETED_PROVIDERS, deleted_providers
+            )
+            self.mass.config.save(True)
+
         # clean cache items from deleted provider(s)
         await self.mass.cache.clear(provider_instance)
 
         # cleanup media items from db matched to deleted provider
+        self.logger.info(
+            "Removing provider %s from library, this can take a a while...", provider_instance
+        )
+        errors = 0
         for ctrl in (
             # order is important here to recursively cleanup bottom up
             self.mass.music.radio,
@@ -616,10 +775,57 @@ class MusicController(CoreController):
             self.mass.music.tracks,
             self.mass.music.albums,
             self.mass.music.artists,
+            # run main controllers twice to rule out relations
+            self.mass.music.tracks,
+            self.mass.music.albums,
+            self.mass.music.artists,
         ):
-            prov_items = await ctrl.get_library_items_by_prov_id(provider_instance)
-            for item in prov_items:
-                await ctrl.remove_provider_mappings(item.item_id, provider_instance)
+            query = (
+                f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = '{ctrl.media_type}' "
+                f"AND provider_instance = '{provider_instance}'"
+            )
+            for db_row in await self.database.get_rows_from_query(query, limit=100000):
+                try:
+                    await ctrl.remove_provider_mappings(db_row["item_id"], provider_instance)
+                except Exception as err:
+                    # we dont want the whole removal process to stall on one item
+                    # so in case of an unexpected error, we log and move on.
+                    self.logger.warning(
+                        "Error while removing %s: %s",
+                        db_row["item_id"],
+                        str(err),
+                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                    )
+                    errors += 1
+
+        # remove all orphaned items (not in provider mappings table anymore)
+        query = (
+            f"SELECT item_id FROM {DB_TABLE_PROVIDER_MAPPINGS} "
+            f"WHERE provider_instance = '{provider_instance}'"
+        )
+        if remaining_items_count := await self.database.get_count_from_query(query):
+            errors += remaining_items_count
+
+        # cleanup playlog table
+        await self.mass.music.database.delete(
+            DB_TABLE_PLAYLOG,
+            {
+                "provider": provider_instance,
+            },
+        )
+
+        if errors == 0:
+            # cleanup successful, remove from the deleted_providers setting
+            self.logger.info("Provider %s removed from library", provider_instance)
+            deleted_providers.remove(provider_instance)
+            self.mass.config.set_raw_core_config_value(
+                self.domain, CONF_DELETED_PROVIDERS, deleted_providers
+            )
+        else:
+            self.logger.warning(
+                "Provider %s was not not fully removed from library", provider_instance
+            )
 
     def _schedule_sync(self) -> None:
         """Schedule the periodic sync."""
@@ -628,6 +834,35 @@ class MusicController(CoreController):
         # we reschedule ourselves right after execution
         # NOTE: sync_interval is stored in minutes, we need seconds
         self.mass.loop.call_later(sync_interval * 60, self._schedule_sync)
+
+    async def _cleanup_database(self) -> None:
+        """Perform database cleanup/maintenance."""
+        self.logger.debug("Performing database cleanup...")
+        # Remove playlog entries older than 90 days
+        await self.database.delete_where_query(
+            DB_TABLE_PLAYLOG, f"timestamp < strftime('%s','now') - {3600 * 24  * 90}"
+        )
+        # db tables cleanup
+        for ctrl in (self.albums, self.artists, self.tracks, self.playlists, self.radio):
+            # Provider mappings where the db item is removed
+            query = (
+                f"item_id not in (SELECT item_id from {ctrl.db_table}) "
+                f"AND media_type = '{ctrl.media_type}'"
+            )
+            await self.database.delete_where_query(DB_TABLE_PROVIDER_MAPPINGS, query)
+            # Orphaned db items
+            query = (
+                f"item_id not in (SELECT item_id from {DB_TABLE_PROVIDER_MAPPINGS} "
+                f"WHERE media_type = '{ctrl.media_type}')"
+            )
+            await self.database.delete_where_query(ctrl.db_table, query)
+            # Cleanup removed db items from the playlog
+            where_clause = (
+                f"media_type = '{ctrl.media_type}' AND provider = 'library' "
+                f"AND item_id not in (select item_id from {ctrl.db_table})"
+            )
+            await self.mass.music.database.delete_where_query(DB_TABLE_PLAYLOG, where_clause)
+        self.logger.debug("Database cleanup done")
 
     async def _setup_database(self) -> None:
         """Initialize database."""
@@ -651,210 +886,364 @@ class MusicController(CoreController):
             db_path_backup = db_path + ".backup"
             await asyncio.to_thread(shutil.copyfile, db_path, db_path_backup)
 
-            # handle db migration from previous schema to this one
-            if prev_version == 27:
-                self.logger.info(
-                    "Performing database migration from %s to %s",
-                    prev_version,
-                    DB_SCHEMA_VERSION,
+            # handle db migration from previous schema(s) to this one
+            try:
+                await self.__migrate_database(prev_version)
+            except Exception as err:
+                self.logger.fatal(
+                    "Database migration failed - setup can not continue. "
+                    "Try restarting the server. If this issue persists, create an issue report "
+                    " on Github and/or re-install the server (or restore a backup).",
+                    exc_info=err,
                 )
-                self.logger.warning("DATABASE MIGRATION IN PROGRESS - THIS CAN TAKE A WHILE")
-
-                # migrate loudness measurements table
-                await self.database.execute(f"DROP TABLE IF EXISTS {DB_TABLE_TRACK_LOUDNESS}")
-                await self.__create_database_tables()
-
-                # db migration succeeded
-                self.logger.info(
-                    "Database migration to version %s completed",
-                    DB_SCHEMA_VERSION,
-                )
-            # handle all other schema versions
-            else:
-                # we keep it simple and just recreate the tables
-                # if the schema is too old (or too new)
-                # we do migrations only for up to 1 schema version behind
-                self.logger.warning(
-                    "Database schema too old - Resetting library/database - "
-                    "a full rescan will be performed!"
-                )
-                for table in (
-                    DB_TABLE_TRACKS,
-                    DB_TABLE_ALBUMS,
-                    DB_TABLE_ARTISTS,
-                    DB_TABLE_TRACKS,
-                    DB_TABLE_PLAYLISTS,
-                    DB_TABLE_RADIOS,
-                    DB_TABLE_PROVIDER_MAPPINGS,
-                ):
-                    await self.database.execute(f"DROP TABLE IF EXISTS {table}")
-                # recreate missing tables
-                await self.__create_database_tables()
+                # restore backup file
+                await asyncio.to_thread(shutil.copyfile, db_path_backup, db_path)
+                raise RuntimeError("Database migration failed") from err
 
         # store current schema version
         await self.database.insert_or_replace(
             DB_TABLE_SETTINGS,
             {"key": "version", "value": str(DB_SCHEMA_VERSION), "type": "str"},
         )
-        # create indexes if needed
+        # create indexes and triggers if needed
         await self.__create_database_indexes()
+        await self.__create_database_triggers()
         # compact db
         self.logger.debug("Compacting database...")
-        await self.database.vacuum()
-        self.logger.debug("Compacting database done")
+        try:
+            await self.database.vacuum()
+        except Exception as err:
+            self.logger.warning("Database vacuum failed: %s", str(err))
+        else:
+            self.logger.debug("Compacting database done")
+
+    async def __migrate_database(self, prev_version: int) -> None:
+        """Perform a database migration."""
+        self.logger.info(
+            "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
+        )
+        if prev_version == 2:
+            # migrate from version 2 to 3
+            # convert musicbrainz external id's
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_ARTISTS} SET external_ids = "
+                "replace(external_ids, 'musicbrainz', 'musicbrainz_artistid')"
+            )
+            # convert musicbrainz external id's
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_ALBUMS} SET external_ids = "
+                "replace(external_ids, 'musicbrainz', 'musicbrainz_releasegroupid')"
+            )
+            await self.database.execute(
+                f"UPDATE {DB_TABLE_TRACKS} SET external_ids = "
+                "replace(external_ids, 'musicbrainz', 'musicbrainz_recordingid')"
+            )
+            await self.database.commit()
+            return
+
+        # all other versions: reset the database
+        # we only migrate from prtev version to current we do not try to handle
+        # more complex migrations
+        self.logger.warning(
+            "Database schema too old - Resetting library/database - "
+            "a full rescan will be performed, this can take a while!"
+        )
+        for table in (
+            DB_TABLE_TRACKS,
+            DB_TABLE_ALBUMS,
+            DB_TABLE_ARTISTS,
+            DB_TABLE_PLAYLISTS,
+            DB_TABLE_RADIOS,
+            DB_TABLE_ALBUM_TRACKS,
+            DB_TABLE_PLAYLOG,
+            DB_TABLE_TRACK_LOUDNESS,
+            DB_TABLE_PROVIDER_MAPPINGS,
+        ):
+            await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+        await self.database.commit()
+        # recreate missing tables
+        await self.__create_database_tables()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_SETTINGS}(
-                    key TEXT PRIMARY KEY,
-                    value TEXT,
-                    type TEXT
+                    [key] TEXT PRIMARY KEY,
+                    [value] TEXT,
+                    [type] TEXT
                 );"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_LOUDNESS}(
-                    item_id INTEGER NOT NULL,
-                    provider TEXT NOT NULL,
-                    integrated REAL,
-                    true_peak REAL,
-                    lra REAL,
-                    threshold REAL,
+                    [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [item_id] TEXT NOT NULL,
+                    [provider] TEXT NOT NULL,
+                    [integrated] REAL,
+                    [true_peak] REAL,
+                    [lra] REAL,
+                    [threshold] REAL,
+                    [target_offset] REAL,
                     UNIQUE(item_id, provider));"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLOG}(
-                item_id INTEGER NOT NULL,
-                provider TEXT NOT NULL,
-                media_type TEXT NOT NULL DEFAULT 'track',
-                timestamp INTEGER DEFAULT 0,
+                [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                [item_id] TEXT NOT NULL,
+                [provider] TEXT NOT NULL,
+                [media_type] TEXT NOT NULL DEFAULT 'track',
+                [timestamp] INTEGER DEFAULT 0,
                 UNIQUE(item_id, provider, media_type));"""
         )
         await self.database.execute(
             f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUMS}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    sort_artist TEXT,
-                    album_type TEXT NOT NULL,
-                    year INTEGER,
-                    version TEXT,
-                    favorite BOOLEAN DEFAULT 0,
-                    artists json NOT NULL,
-                    metadata json NOT NULL,
-                    provider_mappings json NOT NULL,
-                    external_ids json NOT NULL,
-                    timestamp_added INTEGER NOT NULL,
-                    timestamp_modified INTEGER NOT NULL
+                    [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+                    [name] TEXT NOT NULL,
+                    [sort_name] TEXT NOT NULL,
+                    [version] TEXT,
+                    [album_type] TEXT NOT NULL,
+                    [year] INTEGER,
+                    [favorite] BOOLEAN DEFAULT 0,
+                    [metadata] json NOT NULL,
+                    [external_ids] json NOT NULL,
+                    [play_count] INTEGER DEFAULT 0,
+                    [last_played] INTEGER DEFAULT 0,
+                    [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+                    [timestamp_modified] INTEGER,
+
+                    [artists] json DEFAULT '[]',
+                    [provider_mappings] json DEFAULT '[]'
                 );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ARTISTS}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    favorite BOOLEAN DEFAULT 0,
-                    metadata json NOT NULL,
-                    provider_mappings json NOT NULL,
-                    external_ids json NOT NULL,
-                    timestamp_added INTEGER NOT NULL,
-                    timestamp_modified INTEGER NOT NULL
-                    );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_ARTISTS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [provider_mappings] json DEFAULT '[]'
+            );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACKS}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    sort_artist TEXT,
-                    version TEXT,
-                    duration INTEGER,
-                    favorite BOOLEAN DEFAULT 0,
-                    artists json NOT NULL,
-                    metadata json NOT NULL,
-                    provider_mappings json NOT NULL,
-                    external_ids json NOT NULL,
-                    timestamp_added INTEGER NOT NULL,
-                    timestamp_modified INTEGER NOT NULL
-                );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACKS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [version] TEXT,
+            [duration] INTEGER,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [artists] json DEFAULT '[]',
+            [provider_mappings] json DEFAULT '[]'
+            );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
-                    track_id INTEGER NOT NULL,
-                    album_id INTEGER NOT NULL,
-                    disc_number INTEGER NOT NULL,
-                    track_number INTEGER NOT NULL,
-                    UNIQUE(track_id, album_id)
-                );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLISTS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [owner] TEXT NOT NULL,
+            [is_editable] BOOLEAN NOT NULL,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [provider_mappings] json DEFAULT '[]'
+            );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PLAYLISTS}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL,
-                    sort_name TEXT NOT NULL,
-                    owner TEXT NOT NULL,
-                    is_editable BOOLEAN NOT NULL,
-                    favorite BOOLEAN DEFAULT 0,
-                    metadata json,
-                    provider_mappings json,
-                    external_ids json NOT NULL,
-                    timestamp_added INTEGER NOT NULL,
-                    timestamp_modified INTEGER NOT NULL
-                );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_RADIOS}(
+            [item_id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [name] TEXT NOT NULL,
+            [sort_name] TEXT NOT NULL,
+            [favorite] BOOLEAN DEFAULT 0,
+            [metadata] json NOT NULL,
+            [external_ids] json NOT NULL,
+            [play_count] INTEGER DEFAULT 0,
+            [last_played] INTEGER DEFAULT 0,
+            [timestamp_added] INTEGER DEFAULT (cast(strftime('%s','now') as int)),
+            [timestamp_modified] INTEGER,
+
+            [provider_mappings] json DEFAULT '[]'
+            );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_RADIOS}(
-                    item_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    name TEXT NOT NULL UNIQUE,
-                    sort_name TEXT NOT NULL,
-                    favorite BOOLEAN DEFAULT 0,
-                    metadata json,
-                    provider_mappings json,
-                    external_ids json NOT NULL,
-                    timestamp_added INTEGER NOT NULL,
-                    timestamp_modified INTEGER NOT NULL
-                );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_TRACKS}(
+            [id] INTEGER PRIMARY KEY AUTOINCREMENT,
+            [track_id] INTEGER NOT NULL,
+            [album_id] INTEGER NOT NULL,
+            [disc_number] INTEGER NOT NULL,
+            [track_number] INTEGER NOT NULL,
+            FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
+            FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
+            UNIQUE(track_id, album_id)
+            );"""
         )
         await self.database.execute(
-            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}(
-                    media_type TEXT NOT NULL,
-                    item_id INTEGER NOT NULL,
-                    provider_domain TEXT NOT NULL,
-                    provider_instance TEXT NOT NULL,
-                    provider_item_id TEXT NOT NULL,
-                    UNIQUE(media_type, provider_instance, provider_item_id)
-                );"""
+            f"""
+            CREATE TABLE IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}(
+            [media_type] TEXT NOT NULL,
+            [item_id] INTEGER NOT NULL,
+            [provider_domain] TEXT NOT NULL,
+            [provider_instance] TEXT NOT NULL,
+            [provider_item_id] TEXT NOT NULL,
+            [available] BOOLEAN DEFAULT 1,
+            [url] text,
+            [audio_format] json,
+            [details] TEXT,
+            UNIQUE(media_type, provider_instance, provider_item_id)
+            );"""
         )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}(
+            [track_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([track_id]) REFERENCES [tracks]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(track_id, artist_id)
+            );"""
+        )
+        await self.database.execute(
+            f"""CREATE TABLE IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}(
+            [album_id] INTEGER NOT NULL,
+            [artist_id] INTEGER NOT NULL,
+            FOREIGN KEY([album_id]) REFERENCES [albums]([item_id]),
+            FOREIGN KEY([artist_id]) REFERENCES [artists]([item_id]),
+            UNIQUE(album_id, artist_id)
+            );"""
+        )
+        await self.database.commit()
 
     async def __create_database_indexes(self) -> None:
         """Create database indexes."""
+        for db_table in (
+            DB_TABLE_ARTISTS,
+            DB_TABLE_ALBUMS,
+            DB_TABLE_TRACKS,
+            DB_TABLE_PLAYLISTS,
+            DB_TABLE_RADIOS,
+        ):
+            # index on favorite column
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_favorite_idx on {db_table}(favorite);"
+            )
+            # index on name
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_name_idx on {db_table}(name);"
+            )
+            # index on name (without case sensitivity)
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_name_nocase_idx "
+                f"ON {db_table}(name COLLATE NOCASE);"
+            )
+            # index on sort_name
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_sort_name_idx on {db_table}(sort_name);"
+            )
+            # index on sort_name (without case sensitivity)
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_sort_name_nocase_idx "
+                f"ON {db_table}(sort_name COLLATE NOCASE);"
+            )
+            # index on external_ids
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_external_ids_idx "
+                f"ON {db_table}(external_ids);"
+            )
+            # index on timestamp_added
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_timestamp_added_idx "
+                f"on {db_table}(timestamp_added);"
+            )
+            # index on play_count
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_play_count_idx "
+                f"on {db_table}(play_count);"
+            )
+            # index on last_played
+            await self.database.execute(
+                f"CREATE INDEX IF NOT EXISTS {db_table}_last_played_idx "
+                f"on {db_table}(last_played);"
+            )
+
+        # indexes on provider_mappings table
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS artists_in_library_idx on artists(favorite);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_media_type_item_id_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,item_id);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_in_library_idx on albums(favorite);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_provider_domain_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain,provider_item_id);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS tracks_in_library_idx on tracks(favorite);"
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_PROVIDER_MAPPINGS}_provider_instance_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance,provider_item_id);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS playlists_in_library_idx on playlists(favorite);"
+            "CREATE INDEX IF NOT EXISTS "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_instance_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_instance);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS radios_in_library_idx on radios(favorite);"
+            "CREATE INDEX IF NOT EXISTS "
+            f"{DB_TABLE_PROVIDER_MAPPINGS}_media_type_provider_domain_idx "
+            f"on {DB_TABLE_PROVIDER_MAPPINGS}(media_type,provider_domain);"
+        )
+
+        # indexes on track_artists table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_track_id_idx "
+            f"on {DB_TABLE_TRACK_ARTISTS}(track_id);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS artists_sort_name_idx on artists(sort_name);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_TRACK_ARTISTS}_artist_id_idx "
+            f"on {DB_TABLE_TRACK_ARTISTS}(artist_id);"
+        )
+        # indexes on album_artists table
+        await self.database.execute(
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_album_id_idx "
+            f"on {DB_TABLE_ALBUM_ARTISTS}(album_id);"
         )
         await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS albums_sort_name_idx on albums(sort_name);"
+            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_ALBUM_ARTISTS}_artist_id_idx "
+            f"on {DB_TABLE_ALBUM_ARTISTS}(artist_id);"
         )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS tracks_sort_name_idx on tracks(sort_name);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS playlists_sort_name_idx on playlists(sort_name);"
-        )
-        await self.database.execute(
-            "CREATE INDEX IF NOT EXISTS radios_sort_name_idx on radios(sort_name);"
-        )
+        await self.database.commit()
+
+    async def __create_database_triggers(self) -> None:
+        """Create database triggers."""
+        # triggers to auto update timestamps
+        for db_table in ("artists", "albums", "tracks", "playlists", "radios"):
+            await self.database.execute(
+                f"""
+                CREATE TRIGGER IF NOT EXISTS update_{db_table}_timestamp
+                AFTER UPDATE ON {db_table} FOR EACH ROW
+                WHEN NEW.timestamp_modified <= OLD.timestamp_modified
+                BEGIN
+                    UPDATE {db_table} set timestamp_modified=cast(strftime('%s','now') as int)
+                    WHERE item_id=OLD.item_id;
+                END;
+                """
+            )
+        await self.database.commit()

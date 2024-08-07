@@ -3,12 +3,11 @@
 from __future__ import annotations
 
 from json import JSONDecodeError
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp.client_exceptions
-from asyncio_throttle import Throttler
 
-from music_assistant.common.models.enums import ProviderFeature
+from music_assistant.common.models.enums import ExternalID, ProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -19,10 +18,12 @@ from music_assistant.common.models.media_items import (
     MediaItemLink,
     MediaItemMetadata,
     Track,
+    UniqueList,
 )
 from music_assistant.server.controllers.cache import use_cache
-from music_assistant.server.helpers.app_vars import app_var  # pylint: disable=no-name-in-module
+from music_assistant.server.helpers.app_vars import app_var  # type: ignore[attr-defined]
 from music_assistant.server.helpers.compare import compare_strings
+from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
@@ -109,7 +110,7 @@ class AudioDbMetadataProvider(MetadataProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
-        self.throttler = Throttler(rate_limit=2, period=1)
+        self.throttler = Throttler(rate_limit=1, period=30)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -128,10 +129,9 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on theaudiodb."""
-        if not album.mbid:
-            # for 100% accuracy we require the musicbrainz id for all lookups
+        if (mbid := album.get_external_id(ExternalID.MB_RELEASEGROUP)) is None:
             return None
-        result = await self._get_data("album-mb.php", i=album.mbid)
+        result = await self._get_data("album-mb.php", i=mbid)
         if result and result.get("album"):
             adb_album = result["album"][0]
             # fill in some missing album info if needed
@@ -166,8 +166,9 @@ class AudioDbMetadataProvider(MetadataProvider):
                         continue
                     if (
                         track.album
-                        and track.album.mbid
-                        and track.album.mbid != item["strMusicBrainzAlbumID"]
+                        and (mb_rgid := track.album.get_external_id(ExternalID.MB_RELEASEGROUP))
+                        # AudioDb swapped MB Album ID and ReleaseGroup ID ?!
+                        and mb_rgid != item["strMusicBrainzAlbumID"]
                     ):
                         continue
                     if not compare_strings(track_artist.name, item["strArtist"]):
@@ -191,16 +192,26 @@ class AudioDbMetadataProvider(MetadataProvider):
             if link := artist_obj.get(key):
                 metadata.links.add(MediaItemLink(type=link_type, url=link))
         # description/biography
-        if desc := artist_obj.get(f"strBiography{self.mass.metadata.preferred_language}"):
+        lang_code, lang_country = self.mass.metadata.locale.split("_")
+        if desc := artist_obj.get(f"strBiography{lang_country}") or (
+            desc := artist_obj.get(f"strBiography{lang_code.upper()}")
+        ):
             metadata.description = desc
         else:
             metadata.description = artist_obj.get("strBiographyEN")
         # images
-        metadata.images = []
+        metadata.images = UniqueList()
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := artist_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(type=img_type, path=img))
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
                 else:
                     break
         return metadata
@@ -226,17 +237,27 @@ class AudioDbMetadataProvider(MetadataProvider):
             )
 
         # description
-        if desc := album_obj.get(f"strDescription{self.mass.metadata.preferred_language}"):
+        lang_code, lang_country = self.mass.metadata.locale.split("_")
+        if desc := album_obj.get(f"strDescription{lang_country}") or (
+            desc := album_obj.get(f"strDescription{lang_code.upper()}")
+        ):
             metadata.description = desc
         else:
             metadata.description = album_obj.get("strDescriptionEN")
         metadata.review = album_obj.get("strReview")
         # images
-        metadata.images = []
+        metadata.images = UniqueList()
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := album_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(type=img_type, path=img))
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
                 else:
                     break
         return metadata
@@ -251,22 +272,32 @@ class AudioDbMetadataProvider(MetadataProvider):
             metadata.genres = {genre}
         metadata.mood = track_obj.get("strMood")
         # description
-        if desc := track_obj.get(f"strDescription{self.mass.metadata.preferred_language}"):
+        lang_code, lang_country = self.mass.metadata.locale.split("_")
+        if desc := track_obj.get(f"strDescription{lang_country}") or (
+            desc := track_obj.get(f"strDescription{lang_code.upper()}")
+        ):
             metadata.description = desc
         else:
             metadata.description = track_obj.get("strDescriptionEN")
         # images
-        metadata.images = []
+        metadata.images = UniqueList([])
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
                 if img := track_obj.get(f"{key}{postfix}"):
-                    metadata.images.append(MediaItemImage(type=img_type, path=img))
+                    metadata.images.append(
+                        MediaItemImage(
+                            type=img_type,
+                            path=img,
+                            provider=self.instance_id,
+                            remotely_accessible=True,
+                        )
+                    )
                 else:
                     break
         return metadata
 
-    @use_cache(86400 * 14)
-    async def _get_data(self, endpoint, **kwargs) -> dict | None:
+    @use_cache(86400 * 30)
+    async def _get_data(self, endpoint: str, **kwargs: Any) -> dict[str, Any] | None:
         """Get data from api."""
         url = f"https://theaudiodb.com/api/v1/json/{app_var(3)}/{endpoint}"
         async with (
@@ -274,7 +305,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
         ):
             try:
-                result = await response.json()
+                result = cast(dict[str, Any], await response.json())
             except (
                 aiohttp.client_exceptions.ContentTypeError,
                 JSONDecodeError,
@@ -286,6 +317,7 @@ class AudioDbMetadataProvider(MetadataProvider):
             except (
                 aiohttp.client_exceptions.ClientConnectorError,
                 aiohttp.client_exceptions.ServerDisconnectedError,
+                TimeoutError,
             ):
                 self.logger.warning("Failed to retrieve %s", endpoint)
                 return None

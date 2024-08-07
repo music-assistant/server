@@ -8,7 +8,6 @@ import os
 import platform
 import socket
 import time
-from collections.abc import AsyncGenerator
 from contextlib import suppress
 from dataclasses import dataclass
 from random import randint, randrange
@@ -25,10 +24,12 @@ from music_assistant.common.models.config_entries import (
     CONF_ENTRY_EQ_BASS,
     CONF_ENTRY_EQ_MID,
     CONF_ENTRY_EQ_TREBLE,
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_OUTPUT_CHANNELS,
     CONF_ENTRY_SYNC_ADJUST,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
@@ -40,19 +41,20 @@ from music_assistant.common.models.enums import (
     ProviderFeature,
 )
 from music_assistant.common.models.media_items import AudioFormat
-from music_assistant.common.models.player import DeviceInfo, Player
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
 from music_assistant.common.models.player_queue import PlayerQueue
-from music_assistant.constants import CONF_SYNC_ADJUST, UGP_PREFIX, VERBOSE_LOG_LEVEL
-from music_assistant.server.helpers.audio import get_ffmpeg_args, get_player_filter_params
+from music_assistant.constants import CONF_SYNC_ADJUST, VERBOSE_LOG_LEVEL
+from music_assistant.server.helpers.audio import FFMpeg, get_ffmpeg_stream, get_player_filter_params
 from music_assistant.server.helpers.process import AsyncProcess, check_output
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
 if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+    from music_assistant.server.providers.ugp import UniversalGroupProvider
 
 DOMAIN = "airplay"
 
@@ -60,9 +62,10 @@ CONF_ENCRYPTION = "encryption"
 CONF_ALAC_ENCODE = "alac_encode"
 CONF_VOLUME_START = "volume_start"
 CONF_PASSWORD = "password"
-
+CONF_BIND_INTERFACE = "bind_interface"
 
 PLAYER_CONFIG_ENTRIES = (
+    CONF_ENTRY_FLOW_MODE_ENFORCED,
     CONF_ENTRY_CROSSFADE,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_EQ_BASS,
@@ -109,6 +112,18 @@ AIRPLAY_PCM_FORMAT = AudioFormat(
     content_type=ContentType.from_bit_depth(16), sample_rate=44100, bit_depth=16
 )
 
+# airplay has fixed sample rate/bit depth so make this config entry static and hidden
+CONF_ENTRY_SAMPLE_RATES_AIRPLAY = create_sample_rates_config_entry(44100, 16, 44100, 16, True)
+
+
+# TODO: Airplay provider
+# - split up and cleanup the code into more digestable parts
+# - Implement authentication for Apple TV
+# - Implement volume control for Apple devices using pyatv
+# - Implement metadata for Apple Apple devices using pyatv
+# - Use pyatv for communicating with original Apple devices
+# and use cliraop for actual streaming
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -133,7 +148,16 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            key=CONF_BIND_INTERFACE,
+            type=ConfigEntryType.STRING,
+            default_value=mass.streams.publish_ip,
+            label="Bind interface",
+            description="Interface to bind to for Airplay streaming.",
+            category="advanced",
+        ),
+    )
 
 
 def convert_airplay_volume(value: float) -> int:
@@ -192,21 +216,29 @@ class AirplayStream:
         # always generate a new active remote id to prevent race conditions
         # with the named pipe used to send audio
         self.active_remote_id: str = str(randint(1000, 8000))
-        self.start_ntp: int | None = None  # use as checksum
         self.prevent_playback: bool = False
-        self.running = True
+        # audio_source_task will only exist for the main player in a sync group
+        self.audio_source_task: asyncio.Task | None = None
         self._log_reader_task: asyncio.Task | None = None
-        self._audio_reader_task: asyncio.Task | None = None
         self._cliraop_proc: AsyncProcess | None = None
         self._ffmpeg_proc: AsyncProcess | None = None
-        self._buffer = asyncio.Queue(10)
+        self._started = asyncio.Event()
+        self._stopped = False
 
-    async def start(self, start_ntp: int) -> None:
+    @property
+    def running(self) -> bool:
+        """Return boolean if this stream is running."""
+        return not self._stopped and self._started.is_set()
+
+    async def start(self, start_ntp: int, wait_start: int = 1000) -> None:
         """Initialize CLIRaop process for a player."""
-        self.start_ntp = start_ntp
         extra_args = []
         player_id = self.airplay_player.player_id
         mass_player = self.mass.players.get(player_id)
+        bind_ip = await self.mass.config.get_provider_config_value(
+            self.prov.instance_id, CONF_BIND_INTERFACE
+        )
+        extra_args += ["-if", bind_ip]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ENCRYPTION, False):
             extra_args += ["-encrypt"]
         if self.mass.config.get_raw_player_config_value(player_id, CONF_ALAC_ENCODE, True):
@@ -224,6 +256,23 @@ class AirplayStream:
         elif self.prov.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             extra_args += ["-debug", "10"]
 
+        # create os pipes to pipe ffmpeg to cliraop
+        read, write = await asyncio.to_thread(os.pipe)
+
+        # ffmpeg handles the player specific stream + filters and pipes
+        # audio to the cliraop process
+        self._ffmpeg_proc = FFMpeg(
+            audio_input="-",
+            input_format=self.input_format,
+            output_format=AIRPLAY_PCM_FORMAT,
+            filter_params=get_player_filter_params(self.mass, player_id),
+            audio_output=write,
+            logger=self.airplay_player.logger.getChild("ffmpeg"),
+        )
+        await self._ffmpeg_proc.start()
+        await asyncio.to_thread(os.close, write)
+
+        # cliraop is the binary that handles the actual raop streaming to the player
         cliraop_args = [
             self.prov.cliraop_bin,
             "-ntpstart",
@@ -231,7 +280,7 @@ class AirplayStream:
             "-port",
             str(self.airplay_player.discovery_info.port),
             "-wait",
-            str(2500 - sync_adjust),
+            str(wait_start - sync_adjust),
             "-volume",
             str(mass_player.volume_level),
             *extra_args,
@@ -244,80 +293,58 @@ class AirplayStream:
             self.airplay_player.address,
             "-",
         ]
+        self._cliraop_proc = AsyncProcess(cliraop_args, stdin=read, stderr=True, name="cliraop")
         if platform.system() == "Darwin":
             os.environ["DYLD_LIBRARY_PATH"] = "/usr/local/lib"
-
-        # launch ffmpeg, feeding (player specific) audio chunks on stdout
-        # one could argue that the intermediate ffmpeg towards cliraop is not needed
-        # when there are no player specific filters or extras but in this case
-        # ffmpeg serves as a small buffer towards the realtime cliraop streamer
-        read, write = os.pipe()
-
-        async def read_from_buffer() -> AsyncGenerator[bytes, None]:
-            while True:
-                next_chunk = await self._buffer.get()
-                if not next_chunk:
-                    break
-                yield next_chunk
-                del next_chunk
-
-        ffmpeg_args = get_ffmpeg_args(
-            input_format=self.input_format,
-            output_format=AIRPLAY_PCM_FORMAT,
-            filter_params=get_player_filter_params(self.mass, player_id),
-            loglevel="fatal",
-        )
-        self._ffmpeg_proc = AsyncProcess(
-            ffmpeg_args,
-            stdin=read_from_buffer(),
-            stdout=write,
-            name="cliraop_ffmpeg",
-        )
-        await self._ffmpeg_proc.start()
-        os.close(write)
-
-        self._cliraop_proc = AsyncProcess(
-            cliraop_args, stdin=read, stdout=False, stderr=True, name="cliraop"
-        )
         await self._cliraop_proc.start()
-        os.close(read)
+        await asyncio.to_thread(os.close, read)
+        self._started.set()
         self._log_reader_task = asyncio.create_task(self._log_watcher())
 
-    async def stop(self, wait: bool = True):
+    async def stop(self):
         """Stop playback and cleanup."""
-        self.running = False
-        empty_queue(self._buffer)
+        if self._stopped:
+            return
+        if self.audio_source_task and not self.audio_source_task.done():
+            self.audio_source_task.cancel()
+        if self._cliraop_proc.proc and not self._cliraop_proc.closed:
+            await self.send_cli_command("ACTION=STOP")
+        self._stopped = True  # set after send_cli command!
+        if self._cliraop_proc.proc:
+            try:
+                await asyncio.wait_for(self._cliraop_proc.wait(), 5)
+            except TimeoutError:
+                self.prov.logger.warning(
+                    "Raop process for %s did not stop in time, is the player offline?",
+                    self.airplay_player.player_id,
+                )
+                await self._cliraop_proc.close(True)
 
-        async def _stop() -> None:
-            # ffmpeg MUST be stopped before cliraop due to the chained pipes
-            if not self._ffmpeg_proc.closed:
-                await self._ffmpeg_proc.close(True)
-            # allow the cliraop process to stop gracefully first
-            if not self._cliraop_proc.closed:
-                await self.send_cli_command("ACTION=STOP")
-                with suppress(TimeoutError):
-                    await asyncio.wait_for(self._cliraop_proc.wait(), 5)
-            # send regular close anyway (which also logs the returncode)
-            await self._cliraop_proc.close(True)
-
-        task = self.mass.create_task(_stop())
-        if wait:
-            await task
+        # ffmpeg can sometimes hang due to the connected pipes
+        # we handle closing it but it can be a bit slow so do that in the background
+        if not self._ffmpeg_proc.closed:
+            self.mass.create_task(self._ffmpeg_proc.close(True))
 
     async def write_chunk(self, chunk: bytes) -> None:
-        """Write a (pcm) audio chunk to ffmpeg."""
-        await self._buffer.put(chunk)
+        """Write a (pcm) audio chunk."""
+        if self._stopped:
+            return
+        await self._started.wait()
+        await self._ffmpeg_proc.write(chunk)
 
     async def write_eof(self) -> None:
-        """Write EOF to the ffmpeg stdin."""
-        await self._buffer.put(b"")
+        """Write EOF."""
+        if self._stopped:
+            return
+        await self._started.wait()
+        await self._ffmpeg_proc.write_eof()
 
     async def send_cli_command(self, command: str) -> None:
         """Send an interactive command to the running CLIRaop binary."""
-        if not self._cliraop_proc or self._cliraop_proc.closed:
+        if self._stopped:
             return
+        await self._started.wait()
 
-        named_pipe = f"/tmp/fifo-{self.active_remote_id}"  # noqa: S108
         if not command.endswith("\n"):
             command += "\n"
 
@@ -325,6 +352,7 @@ class AirplayStream:
             with suppress(BrokenPipeError), open(named_pipe, "w") as f:
                 f.write(command)
 
+        named_pipe = f"/tmp/raop-{self.active_remote_id}"  # noqa: S108
         self.airplay_player.logger.log(VERBOSE_LOG_LEVEL, "sending command %s", command)
         await self.mass.create_task(send_data)
 
@@ -338,9 +366,6 @@ class AirplayStream:
         prev_metadata_checksum: str = ""
         prev_progress_report: float = 0
         async for line in self._cliraop_proc.iter_stderr():
-            line = line.decode().strip()  # noqa: PLW2901
-            if not line:
-                continue
             if "elapsed milliseconds:" in line:
                 # this is received more or less every second while playing
                 millis = int(line.split("elapsed milliseconds: ")[1])
@@ -382,21 +407,19 @@ class AirplayStream:
             if "lost packet out of backlog" in line:
                 lost_packets += 1
                 if lost_packets == 100:
-                    logger.error("High packet loss detected, stopping playback...")
-                    await self.stop(False)
-                elif lost_packets % 10 == 0:
+                    logger.error("High packet loss detected, restarting playback...")
+                    self.mass.create_task(self.mass.player_queues.resume(queue.queue_id))
+                else:
                     logger.warning("Packet loss detected!")
 
             logger.log(VERBOSE_LOG_LEVEL, line)
 
         # if we reach this point, the process exited
-        self.running = False
         if airplay_player.active_stream == self:
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(airplay_player.player_id)
-        # ensure we're cleaned up afterwards
-        if self._ffmpeg_proc.returncode is None or self._cliraop_proc.returncode is None:
-            await self.stop()
+        # ensure we're cleaned up afterwards (this also logs the returncode)
+        await self.stop()
 
     async def _send_metadata(self, queue: PlayerQueue) -> None:
         """Send metadata to player (and connected sync childs)."""
@@ -467,7 +490,7 @@ class AirplayProvider(PlayerProvider):
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
         """Return the features supported by this Provider."""
-        return (ProviderFeature.SYNC_PLAYERS,)
+        return (ProviderFeature.SYNC_PLAYERS, ProviderFeature.PLAYER_GROUP_CREATE)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
@@ -495,7 +518,6 @@ class AirplayProvider(PlayerProvider):
             server=f"{socket.gethostname()}.local",
         )
         await self.mass.aiozc.async_register_service(self._dacp_info)
-        self._resync_handle: asyncio.TimerHandle | None = None
 
     async def on_mdns_service_state_change(
         self, name: str, state_change: ServiceStateChange, info: AsyncServiceInfo | None
@@ -509,7 +531,7 @@ class AirplayProvider(PlayerProvider):
                 if not mass_player.available:
                     return
                 # the player has become unavailable
-                self.logger.info("Player offline: %s", display_name)
+                self.logger.debug("Player offline: %s", display_name)
                 mass_player.available = False
                 self.mass.players.update(player_id)
             return
@@ -528,6 +550,7 @@ class AirplayProvider(PlayerProvider):
                         address=str(cur_address),
                     )
                 if not mass_player.available:
+                    self.logger.debug("Player back online: %s", display_name)
                     mass_player.available = True
             # always update the latest discovery info
             airplay_player.discovery_info = info
@@ -553,8 +576,14 @@ class AirplayProvider(PlayerProvider):
         base_entries = await super().get_player_config_entries(player_id)
         if player_id not in self._players:
             # most probably a syncgroup
-            return (*base_entries, CONF_ENTRY_CROSSFADE, CONF_ENTRY_CROSSFADE_DURATION)
-        return base_entries + PLAYER_CONFIG_ENTRIES
+            return (
+                *base_entries,
+                CONF_ENTRY_CROSSFADE,
+                CONF_ENTRY_CROSSFADE_DURATION,
+                CONF_ENTRY_SAMPLE_RATES_AIRPLAY,
+                CONF_ENTRY_FLOW_MODE_ENFORCED,
+            )
+        return (*base_entries, *PLAYER_CONFIG_ENTRIES, CONF_ENTRY_SAMPLE_RATES_AIRPLAY)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player.
@@ -562,10 +591,13 @@ class AirplayProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         """
         # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream:
                     tg.create_task(airplay_player.active_stream.stop())
+                if mass_player := self.mass.players.get(airplay_player.player_id):
+                    mass_player.state = PlayerState.IDLE
+                    self.mass.players.update(mass_player.player_id)
 
     async def cmd_play(self, player_id: str) -> None:
         """Send PLAY (unpause) command to given player.
@@ -573,7 +605,7 @@ class AirplayProvider(PlayerProvider):
         - player_id: player_id of the player to handle the command.
         """
         # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for airplay_player in self._get_sync_clients(player_id):
                 if airplay_player.active_stream and airplay_player.active_stream.running:
                     # prefer interactive command to our streamer
@@ -584,97 +616,133 @@ class AirplayProvider(PlayerProvider):
 
         - player_id: player_id of the player to handle the command.
         """
-        # forward command to player and any connected sync members
-        async with asyncio.TaskGroup() as tg:
-            for airplay_player in self._get_sync_clients(player_id):
-                if airplay_player.active_stream and airplay_player.active_stream.running:
-                    # prefer interactive command to our streamer
-                    tg.create_task(airplay_player.active_stream.send_cli_command("ACTION=PAUSE"))
+        player = self.mass.players.get(player_id)
+        if player.synced_to:
+            # should not happen, but just in case
+            raise RuntimeError("Player is synced")
+        if player.group_childs:
+            # pause is not supported while synced, use stop instead
+            await self.cmd_stop(player_id)
+            return
+        airplay_player = self._players[player_id]
+        if airplay_player.active_stream and airplay_player.active_stream.running:
+            # prefer interactive command to our streamer
+            await airplay_player.active_stream.send_cli_command("ACTION=PAUSE")
 
     async def play_media(
         self,
         player_id: str,
-        queue_item: QueueItem,
+        media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
         player = self.mass.players.get(player_id)
         if player.synced_to:
             # should not happen, but just in case
             raise RuntimeError("Player is synced")
-        # fix race condition where resync and play media are called at more or less the same time
-        if self._resync_handle:
-            self._resync_handle.cancel()
-            self._resync_handle = None
         # always stop existing stream first
-        wait_stopped = not queue_item.streamdetails or queue_item.streamdetails.seek_position == 0
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for airplay_player in self._get_sync_clients(player_id):
-                if airplay_player.active_stream and airplay_player.active_stream.running:
-                    tg.create_task(airplay_player.active_stream.stop(wait=wait_stopped))
+                if active_stream := airplay_player.active_stream:
+                    tg.create_task(active_stream.stop())
         # select audio source
-        if queue_item.queue_id.startswith(UGP_PREFIX):
-            # special case: we got forwarded a request from the UGP
-            # use the existing stream job that was already created by UGP
-            stream_job = self.mass.streams.multi_client_jobs[queue_item.queue_id]
-            stream_job.expected_players.add(player_id)
-            input_format = stream_job.pcm_format
-            audio_source = stream_job.subscribe(player_id)
-        elif queue_item.media_type == MediaType.ANNOUNCEMENT:
+        if media.media_type == MediaType.ANNOUNCEMENT:
             # special case: stream announcement
             input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_announcement_stream(
-                queue_item.streamdetails.data["url"],
+                media.custom_data["url"],
                 output_format=AIRPLAY_PCM_FORMAT,
-                use_pre_announce=queue_item.streamdetails.data["use_pre_announce"],
+                use_pre_announce=media.custom_data["use_pre_announce"],
             )
-        else:
-            queue = self.mass.player_queues.get(queue_item.queue_id)
+        elif media.queue_id.startswith("ugp_"):
+            # special case: UGP stream
+            ugp_provider: UniversalGroupProvider = self.mass.get_provider("ugp")
+            ugp_stream = ugp_provider.streams[media.queue_id]
+            input_format = ugp_stream.audio_format
+            audio_source = ugp_stream.subscribe_raw()
+        elif media.media_type == MediaType.RADIO and media.queue_id and media.queue_item_id:
+            # radio stream - consume media stream directly
+            input_format = AIRPLAY_PCM_FORMAT
+            queue_item = self.mass.player_queues.get_item(media.queue_id, media.queue_item_id)
+            audio_source = self.mass.streams.get_media_stream(
+                streamdetails=queue_item.streamdetails,
+                pcm_format=AIRPLAY_PCM_FORMAT,
+            )
+        elif media.queue_id and media.queue_item_id:
+            # regular queue (flow) stream request
             input_format = AIRPLAY_PCM_FORMAT
             audio_source = self.mass.streams.get_flow_stream(
-                queue, start_queue_item=queue_item, pcm_format=AIRPLAY_PCM_FORMAT
+                queue=self.mass.player_queues.get(media.queue_id),
+                start_queue_item=self.mass.player_queues.get_item(
+                    media.queue_id, media.queue_item_id
+                ),
+                pcm_format=AIRPLAY_PCM_FORMAT,
             )
-        self.mass.create_task(self._handle_stream_audio, player_id, audio_source, input_format)
+        else:
+            # assume url or some other direct path
+            # NOTE: this will fail if its an uri not playable by ffmpeg
+            input_format = AIRPLAY_PCM_FORMAT
+            audio_source = get_ffmpeg_stream(
+                audio_input=media.uri,
+                input_format=AudioFormat(ContentType.try_parse(media.uri)),
+                output_format=AIRPLAY_PCM_FORMAT,
+            )
 
-    async def _handle_stream_audio(
-        self, player_id: str, audio_source: AsyncGenerator[bytes, None], input_format: AudioFormat
-    ) -> None:
-        """Handle streaming of audio to one or more airplay players."""
         # Python is not suitable for realtime audio streaming so we do the actual streaming
         # of (RAOP) audio using a small executable written in C based on libraop to do the actual
         # timestamped playback, which reads pcm audio from stdin
         # and we can send some interactive commands using a named pipe.
 
-        # get current ntp before we start
-        _, stdout = await check_output(f"{self.cliraop_bin} -ntp")
-        start_ntp = int(stdout.strip())
-
-        # setup Raop process for player and its sync childs
-        for airplay_player in self._get_sync_clients(player_id):
+        # setup AirplayStream for player and its sync childs
+        sync_clients = self._get_sync_clients(player_id)
+        for airplay_player in sync_clients:
             airplay_player.active_stream = AirplayStream(
                 self, airplay_player, input_format=input_format
             )
-            self.mass.create_task(airplay_player.active_stream.start(start_ntp))
 
-        async for chunk in audio_source:
-            active_clients = 0
-            async with asyncio.TaskGroup() as tg:
-                for airplay_player in self._get_sync_clients(player_id):
-                    if not airplay_player.active_stream or not airplay_player.active_stream.running:
-                        # player stopped or switched to a new stream
-                        continue
-                    if airplay_player.active_stream.start_ntp != start_ntp:
-                        # checksum mismatch
-                        continue
-                    tg.create_task(airplay_player.active_stream.write_chunk(chunk))
-                    active_clients += 1
+        # use a buffer here to consume small hiccups as the
+        # raop streaming is pretty much realtime and without a buffer to stdin
+        buffer: asyncio.Queue[bytes] = asyncio.Queue(10)
 
-            if active_clients == 0:
-                # no more clients
-                return
-        # entire stream consumed: send EOF (empty chunk)
-        async with asyncio.TaskGroup() as tg:
-            for airplay_player in self._get_sync_clients(player_id):
-                tg.create_task(airplay_player.active_stream.write_eof())
+        async def fill_buffer() -> None:
+            async for chunk in audio_source:
+                await buffer.put(chunk)
+            await buffer.put(b"EOF")
+
+        fill_buffer_task = asyncio.create_task(fill_buffer())
+
+        async def audio_streamer() -> None:
+            try:
+                while True:
+                    chunk = await buffer.get()
+                    if chunk == b"EOF":
+                        break
+                    await asyncio.gather(
+                        *[x.active_stream.write_chunk(chunk) for x in sync_clients],
+                        return_exceptions=True,
+                    )
+
+                # entire stream consumed: send EOF
+                await asyncio.gather(
+                    *[x.active_stream.write_eof() for x in sync_clients],
+                    return_exceptions=True,
+                )
+
+            finally:
+                if not fill_buffer_task.done():
+                    fill_buffer_task.cancel()
+                empty_queue(buffer)
+
+        # get current ntp and start cliraop
+        _, stdout = await check_output(self.cliraop_bin, "-ntp")
+        start_ntp = int(stdout.strip())
+        wait_start = 1250 + (250 * len(sync_clients))
+        await asyncio.gather(
+            *[x.active_stream.start(start_ntp, wait_start) for x in sync_clients],
+            return_exceptions=True,
+        )
+        self._players[player_id].active_stream.audio_source_task = asyncio.create_task(
+            audio_streamer()
+        )
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
@@ -718,17 +786,15 @@ class AirplayProvider(PlayerProvider):
         active_queue = self.mass.player_queues.get_active_queue(parent_player.player_id)
         if active_queue.state == PlayerState.PLAYING:
             # playback needs to be restarted to form a new multi client stream session
-            def resync() -> None:
-                self._resync_handle = None
-                self.mass.create_task(
-                    self.mass.player_queues.resume(active_queue.queue_id, fade_in=False)
-                )
-
             # this could potentially be called by multiple players at the exact same time
             # so we debounce the resync a bit here with a timer
-            if self._resync_handle:
-                self._resync_handle.cancel()
-            self._resync_handle = self.mass.loop.call_later(0.5, resync)
+            self.mass.call_later(
+                1,
+                self.mass.player_queues.resume,
+                active_queue.queue_id,
+                fade_in=False,
+                task_id=f"resume_{active_queue.queue_id}",
+            )
         else:
             # make sure that the player manager gets an update
             self.mass.players.update(child_player.player_id, skip_forward=True)
@@ -761,14 +827,11 @@ class AirplayProvider(PlayerProvider):
 
         async def check_binary(cliraop_path: str) -> str | None:
             try:
-                cliraop = await asyncio.create_subprocess_exec(
-                    *[cliraop_path, "-check"],
-                    stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.STDOUT,
+                returncode, output = await check_output(
+                    cliraop_path,
+                    "-check",
                 )
-                stdout, _ = await cliraop.communicate()
-                stdout = stdout.strip().decode()
-                if cliraop.returncode == 0 and stdout == "cliraop check":
+                if returncode == 0 and output.strip().decode() == "cliraop check":
                     self.cliraop_bin = cliraop_path
                     return cliraop_path
             except OSError:
@@ -840,13 +903,13 @@ class AirplayProvider(PlayerProvider):
                 PlayerFeature.SYNC,
                 PlayerFeature.VOLUME_SET,
             ),
-            max_sample_rate=44100,
-            supports_24bit=False,
             can_sync_with=tuple(x for x in self._players if x != player_id),
             volume_level=volume,
         )
         self.mass.players.register_or_update(mass_player)
         # update can_sync_with field of all other players
+        # this ensure that the field always contains all player ids,
+        # even when a player joins later on
         for player in self.players:
             if player.player_id == player_id:
                 continue
@@ -924,14 +987,21 @@ class AirplayProvider(PlayerProvider):
             elif path in ("/ctrl-int/1/pause", "/ctrl-int/1/discrete-pause"):
                 self.mass.create_task(self.mass.player_queues.pause(active_queue.queue_id))
             elif "dmcp.device-volume=" in path:
+                if mass_player.device_info.manufacturer.lower() == "apple":
+                    # Apple devices only report their (new) volume level, they dont request it
+                    return
                 raop_volume = float(path.split("dmcp.device-volume=", 1)[-1])
                 volume = convert_airplay_volume(raop_volume)
-                if abs(volume - mass_player.volume_level) > 2:
+                if volume != mass_player.volume_level:
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))
+                    # optimistically set the new volume to prevent bouncing around
+                    mass_player.volume_level = volume
             elif "dmcp.volume=" in path:
                 volume = int(path.split("dmcp.volume=", 1)[-1])
-                if abs(volume - mass_player.volume_level) > 2:
+                if volume != mass_player.volume_level:
                     self.mass.create_task(self.cmd_volume_set(player_id, volume))
+                    # optimistically set the new volume to prevent bouncing around
+                    mass_player.volume_level = volume
             elif "device-prevent-playback=1" in path:
                 # device switched to another source (or is powered off)
                 if active_stream := airplay_player.active_stream:
@@ -943,12 +1013,6 @@ class AirplayProvider(PlayerProvider):
                 # device reports that its ready for playback again
                 if active_stream := airplay_player.active_stream:
                     active_stream.prevent_playback = False
-            else:
-                self.logger.info(
-                    "Unknown DACP request for %s: %s",
-                    airplay_player.discovery_info.name,
-                    path,
-                )
 
             # send response
             date_str = utc().strftime("%a, %-d %b %Y %H:%M:%S")
@@ -968,14 +1032,14 @@ class AirplayProvider(PlayerProvider):
         count = 0
         if not (airplay_player := self._players.get(player_id)):
             return
-        prev_ntp = airplay_player.active_stream.start_ntp
+        prev_active_remote_id = airplay_player.active_stream.active_remote_id
         while count < 40:
             count += 1
             if not (airplay_player := self._players.get(player_id)):
                 return
             if not (active_stream := airplay_player.active_stream):
                 return
-            if active_stream.start_ntp != prev_ntp:
+            if active_stream.active_remote_id != prev_active_remote_id:
                 # checksum
                 return
             if not active_stream.prevent_playback:

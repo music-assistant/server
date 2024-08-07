@@ -39,6 +39,8 @@ class PlayerQueue(DataClassDictMixin):
     flow_mode: bool = False
     # flow_mode_start_index: index of the first item of the flow stream
     flow_mode_start_index: int = 0
+    stream_finished: bool | None = None
+    end_of_track_reached: bool | None = None
 
     @property
     def corrected_elapsed_time(self) -> float:
@@ -57,7 +59,7 @@ class PlayerQueue(DataClassDictMixin):
         return d
 
     @classmethod
-    def from_cache(cls: Self, d: dict[Any, Any]) -> Self:
+    def from_cache(cls, d: dict[Any, Any]) -> Self:
         """Restore a PlayerQueue from a cache dict."""
         d.pop("current_item", None)
         d.pop("next_item", None)

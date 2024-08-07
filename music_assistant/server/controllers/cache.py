@@ -8,18 +8,13 @@ import logging
 import os
 import time
 from collections import OrderedDict
-from collections.abc import Iterator, MutableMapping
-from typing import TYPE_CHECKING, Any
+from collections.abc import Callable, Iterator, MutableMapping
+from typing import TYPE_CHECKING, Any, ParamSpec, TypeVar
 
 from music_assistant.common.helpers.json import json_dumps, json_loads
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
-from music_assistant.constants import (
-    DB_SCHEMA_VERSION,
-    DB_TABLE_CACHE,
-    DB_TABLE_SETTINGS,
-    MASS_LOGGER_NAME,
-)
+from music_assistant.constants import DB_TABLE_CACHE, DB_TABLE_SETTINGS, MASS_LOGGER_NAME
 from music_assistant.server.helpers.database import DatabaseConnection
 from music_assistant.server.models.core_controller import CoreController
 
@@ -28,6 +23,7 @@ if TYPE_CHECKING:
 
 LOGGER = logging.getLogger(f"{MASS_LOGGER_NAME}.cache")
 CONF_CLEAR_CACHE = "clear_cache"
+DB_SCHEMA_VERSION = 3
 
 
 class CacheController(CoreController):
@@ -153,7 +149,7 @@ class CacheController(CoreController):
         self.logger.info("Clearing database DONE")
 
     async def auto_cleanup(self) -> None:
-        """Sceduled auto cleanup task."""
+        """Run scheduled auto cleanup task."""
         self.logger.debug("Running automatic cleanup...")
         # for now we simply reset the memory cache
         self._mem_cache = {}
@@ -164,6 +160,7 @@ class CacheController(CoreController):
             if db_row["expires"] < cur_timestamp:
                 await self.delete(db_row["key"])
                 cleaned_records += 1
+            await asyncio.sleep(0)  # yield to eventloop
         if cleaned_records > 50:
             self.logger.debug("Compacting database...")
             await self.database.vacuum()
@@ -223,8 +220,9 @@ class CacheController(CoreController):
 
         # create indexes
         await self.database.execute(
-            f"CREATE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
+            f"CREATE UNIQUE INDEX IF NOT EXISTS {DB_TABLE_CACHE}_key_idx on {DB_TABLE_CACHE}(key);"
         )
+        await self.database.commit()
 
     def __schedule_cleanup_task(self) -> None:
         """Schedule the cleanup task."""
@@ -233,12 +231,18 @@ class CacheController(CoreController):
         self.mass.loop.call_later(3600, self.__schedule_cleanup_task)
 
 
-def use_cache(expiration=86400 * 30):
+Param = ParamSpec("Param")
+RetType = TypeVar("RetType")
+
+
+def use_cache(
+    expiration: int = 86400 * 30,
+) -> Callable[[Callable[Param, RetType]], Callable[Param, RetType]]:
     """Return decorator that can be used to cache a method's result."""
 
-    def wrapper(func):
+    def wrapper(func: Callable[Param, RetType]) -> Callable[Param, RetType]:
         @functools.wraps(func)
-        async def wrapped(*args, **kwargs):
+        async def wrapped(*args: Param.args, **kwargs: Param.kwargs):
             method_class = args[0]
             method_class_name = method_class.__class__.__name__
             cache_key_parts = [method_class_name, func.__name__]

@@ -1,0 +1,105 @@
+{
+    "Name": "Infest",
+    "ServerId": "58f180d8d2b34927bcfd73eee400ffad",
+    "Id": "70b7288088b42d318f75dbcc41fd0091",
+    "Etag": "ecf97edd78eb2b76a30ae2adba6b66e5",
+    "DateCreated": "2023-12-11T12:10:40.7607527Z",
+    "CanDelete": false,
+    "CanDownload": false,
+    "SortName": "infest",
+    "PremiereDate": "2000-04-25T00:00:00.0000000Z",
+    "ExternalUrls": [
+        {
+            "Name": "MusicBrainz",
+            "Url": "https://musicbrainz.org/release/bf25b030-0cbb-495a-8d79-6c7fee20a089"
+        },
+        {
+            "Name": "MusicBrainz",
+            "Url": "https://musicbrainz.org/release-group/0193355a-cdfb-3936-afd2-44d651eb006d"
+        }
+    ],
+    "Path": "/media/music/Papa Roach/Infest",
+    "EnableMediaSourceDisplay": true,
+    "ChannelId": null,
+    "Taglines": [],
+    "Genres": [
+        "Alt Metal"
+    ],
+    "CumulativeRunTimeTicks": 27614273019,
+    "RunTimeTicks": 27614273019,
+    "PlayAccess": "Full",
+    "ProductionYear": 2000,
+    "RemoteTrailers": [],
+    "ProviderIds": {
+        "MusicBrainzAlbum": "bf25b030-0cbb-495a-8d79-6c7fee20a089",
+        "MusicBrainzReleaseGroup": "0193355a-cdfb-3936-afd2-44d651eb006d",
+        "MusicBrainzAlbumArtist": "c5eb9407-caeb-4303-b383-6929aa94021c"
+    },
+    "IsFolder": true,
+    "ParentId": "e439648e08ade14e27d5de48fa97c88e",
+    "Type": "MusicAlbum",
+    "People": [],
+    "Studios": [],
+    "GenreItems": [
+        {
+            "Name": "Alt Metal",
+            "Id": "7fae6ce8290515d5dfedc4e1894c1522"
+        }
+    ],
+    "ParentLogoItemId": "e439648e08ade14e27d5de48fa97c88e",
+    "ParentBackdropItemId": "e439648e08ade14e27d5de48fa97c88e",
+    "ParentBackdropImageTags": [
+        "c3d584db117d4c2bba5a975f391a965e"
+    ],
+    "LocalTrailerCount": 0,
+    "UserData": {
+        "PlaybackPositionTicks": 0,
+        "PlayCount": 0,
+        "IsFavorite": false,
+        "Played": false,
+        "Key": "MusicAlbum-MusicBrainzReleaseGroup-0193355a-cdfb-3936-afd2-44d651eb006d"
+    },
+    "RecursiveItemCount": 11,
+    "ChildCount": 11,
+    "SpecialFeatureCount": 0,
+    "DisplayPreferencesId": "f13d7f51d4f1f8b6fcd620855eb88c1e",
+    "Tags": [],
+    "PrimaryImageAspectRatio": 1,
+    "Artists": [
+        "Papa Roach"
+    ],
+    "ArtistItems": [
+        {
+            "Name": "Papa Roach",
+            "Id": "e439648e08ade14e27d5de48fa97c88e"
+        }
+    ],
+    "AlbumArtist": "Papa Roach",
+    "AlbumArtists": [
+        {
+            "Name": "Papa Roach",
+            "Id": "e439648e08ade14e27d5de48fa97c88e"
+        }
+    ],
+    "ImageTags": {
+        "Primary": "bcbe1ac159b0522743c9a0fe5401f948"
+    },
+    "BackdropImageTags": [],
+    "ParentLogoImageTag": "d58ea3bfadfb34e66033f55b8b2198c4",
+    "ImageBlurHashes": {
+        "Primary": {
+            "bcbe1ac159b0522743c9a0fe5401f948": "ecQb^8vf.S_2xY*0%hxDV[kXyYx^IUNGxt=ZsSNGV@njxuxuaKayS2"
+        },
+        "Logo": {
+            "d58ea3bfadfb34e66033f55b8b2198c4": "OQBftnWXD%WBNHoft7xaWBaej[fkoLay0Lax-:ofxZazRj"
+        },
+        "Backdrop": {
+            "c3d584db117d4c2bba5a975f391a965e": "W%F~5FodtRNGkCt6~Woet8Rkazs:-;j@ofoLWBkCxuWBays:axof"
+        }
+    },
+    "LocationType": "FileSystem",
+    "MediaType": "Unknown",
+    "LockedFields": [],
+    "LockData": false,
+    "NormalizationGain": -11
+}

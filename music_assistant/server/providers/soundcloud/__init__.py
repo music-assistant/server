@@ -6,9 +6,11 @@ import asyncio
 import time
 from typing import TYPE_CHECKING
 
+from soundcloudpy import SoundcloudAsyncAPI
+
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed
 from music_assistant.common.models.media_items import (
     Artist,
@@ -18,20 +20,12 @@ from music_assistant.common.models.media_items import (
     MediaItemImage,
     MediaType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import (
-    get_hls_stream,
-    get_http_stream,
-    resolve_radio_stream,
-)
 from music_assistant.server.models.music_provider import MusicProvider
-
-from .soundcloudpy.asyncsoundcloudpy import SoundcloudAsyncAPI
 
 CONF_CLIENT_ID = "client_id"
 CONF_AUTHORIZATION = "authorization"
@@ -129,12 +123,12 @@ class SoundcloudMusicProvider(MusicProvider):
         return await asyncio.to_thread(call, *args, **kwargs)
 
     async def search(
-        self, search_query: str, media_types=list[MediaType] | None, limit: int = 10
+        self, search_query: str, media_types=list[MediaType], limit: int = 10
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
         result = SearchResults()
@@ -146,23 +140,25 @@ class SoundcloudMusicProvider(MusicProvider):
         if MediaType.PLAYLIST in media_types:
             searchtypes.append("playlist")
 
-        time_start = time.time()
+        media_types = [
+            x for x in media_types if x in (MediaType.ARTIST, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return result
 
         searchresult = await self._soundcloud.search(search_query, limit)
-
-        self.logger.debug(
-            "Processing Soundcloud search took %s seconds",
-            round(time.time() - time_start, 2),
-        )
 
         for item in searchresult["collection"]:
             media_type = item["kind"]
             if media_type == "user":
-                result.artists.append(await self._parse_artist(item))
+                if MediaType.ARTIST in media_types:
+                    result.artists.append(await self._parse_artist(item))
             elif media_type == "track":
-                result.tracks.append(await self._parse_track(item))
+                if MediaType.TRACK in media_types:
+                    result.tracks.append(await self._parse_track(item))
             elif media_type == "playlist":
-                result.playlists.append(await self._parse_playlist(item))
+                if MediaType.PLAYLIST in media_types:
+                    result.playlists.append(await self._parse_playlist(item))
 
         return result
 
@@ -259,19 +255,25 @@ class SoundcloudMusicProvider(MusicProvider):
             self.logger.debug("Parse playlist failed: %s", playlist_obj, exc_info=error)
         return playlist
 
-    async def get_playlist_tracks(self, prov_playlist_id) -> AsyncGenerator[PlaylistTrack, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Get playlist tracks."""
+        result: list[Track] = []
+        if page > 0:
+            # TODO: soundcloud doesn't seem to support paging for playlist tracks ?!
+            return result
         playlist_obj = await self._soundcloud.get_playlist_details(playlist_id=prov_playlist_id)
         if "tracks" not in playlist_obj:
-            return
-        for index, item in enumerate(playlist_obj["tracks"]):
+            return result
+        for index, item in enumerate(playlist_obj["tracks"], 1):
+            # TODO: is it really needed to grab the entire track with an api call ?
             song = await self._soundcloud.get_track_details(item["id"])
             try:
-                if track := await self._parse_track(song[0], index + 1):
-                    yield track
+                if track := await self._parse_track(song[0], index):
+                    result.append(track)
             except (KeyError, TypeError, InvalidDataError, IndexError) as error:
                 self.logger.debug("Parse track failed: %s", song, exc_info=error)
                 continue
+        return result
 
     async def get_artist_toptracks(self, prov_artist_id) -> list[Track]:
         """Get a list of 25 most popular tracks for the given artist."""
@@ -306,33 +308,20 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        track_details = await self._soundcloud.get_track_details(track_id=item_id)
-        stream_format = track_details[0]["media"]["transcodings"][0]["format"]["mime_type"]
-        url = await self._soundcloud.get_stream_url(track_id=item_id)
+        url: str = await self._soundcloud.get_stream_url(track_id=item_id)
         return StreamDetails(
             provider=self.instance_id,
             item_id=item_id,
+            # let ffmpeg work out the details itself as
+            # soundcloud uses a mix of different content types and streaming methods
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(stream_format),
+                content_type=ContentType.UNKNOWN,
             ),
-            data=url,
+            stream_type=StreamType.HLS
+            if url.startswith("https://cf-hls-media.sndcdn.com")
+            else StreamType.HTTP,
+            path=url,
         )
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        _, _, is_hls = await resolve_radio_stream(self.mass, streamdetails.data)
-        if is_hls:
-            # some soundcloud streams are HLS, prefer the radio streamer
-            async for chunk in get_hls_stream(self.mass, streamdetails.data, streamdetails):
-                yield chunk
-            return
-        # regular stream from http
-        async for chunk in get_http_stream(
-            self.mass, streamdetails.data, streamdetails, seek_position
-        ):
-            yield chunk
 
     async def _parse_artist(self, artist_obj: dict) -> Artist:
         """Parse a Soundcloud user response to Artist model object."""
@@ -360,7 +349,14 @@ class SoundcloudMusicProvider(MusicProvider):
             artist.metadata.description = artist_obj["description"]
         if artist_obj.get("avatar_url"):
             img_url = artist_obj["avatar_url"]
-            artist.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img_url)]
+            artist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
         return artist
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
@@ -382,7 +378,12 @@ class SoundcloudMusicProvider(MusicProvider):
             playlist.metadata.description = playlist_obj["description"]
         if playlist_obj.get("artwork_url"):
             playlist.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=playlist_obj["artwork_url"])
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=self._transform_artwork_url(playlist_obj["artwork_url"]),
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         if playlist_obj.get("genre"):
             playlist.metadata.genres = playlist_obj["genre"]
@@ -390,13 +391,10 @@ class SoundcloudMusicProvider(MusicProvider):
             playlist.metadata.style = playlist_obj["tag_list"]
         return playlist
 
-    async def _parse_track(
-        self, track_obj: dict, playlist_position: int | None = None
-    ) -> Track | PlaylistTrack:
+    async def _parse_track(self, track_obj: dict, playlist_position: int = 0) -> Track:
         """Parse a Soundcloud Track response to a Track model object."""
         name, version = parse_title_and_version(track_obj["title"])
-        track_class = PlaylistTrack if playlist_position is not None else Track
-        track = track_class(  # pylint: disable=missing-kwoa
+        track = Track(
             item_id=track_obj["id"],
             provider=self.domain,
             name=name,
@@ -413,7 +411,7 @@ class SoundcloudMusicProvider(MusicProvider):
                     url=track_obj["permalink_url"],
                 )
             },
-            **{"position": playlist_position} if playlist_position else {},
+            position=playlist_position,
         )
         user_id = track_obj["user"]["id"]
         user = await self._soundcloud.get_user_details(user_id)
@@ -423,7 +421,12 @@ class SoundcloudMusicProvider(MusicProvider):
 
         if track_obj.get("artwork_url"):
             track.metadata.images = [
-                MediaItemImage(type=ImageType.THUMB, path=track_obj["artwork_url"])
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=self._transform_artwork_url(track_obj["artwork_url"]),
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
             ]
         if track_obj.get("description"):
             track.metadata.description = track_obj["description"]
@@ -432,3 +435,8 @@ class SoundcloudMusicProvider(MusicProvider):
         if track_obj.get("tag_list"):
             track.metadata.style = track_obj["tag_list"]
         return track
+
+    def _transform_artwork_url(self, artwork_url: str) -> str:
+        """Patch artwork URL to a high quality thumbnail."""
+        # This is undocumented in their API docs, but was previously
+        return artwork_url.replace("large", "t500x500")

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from music_assistant.constants import CONF_LOG_LEVEL, MASS_LOGGER_NAME
 
@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.enums import ProviderFeature, ProviderType
-    from music_assistant.common.models.provider import ProviderInstance, ProviderManifest
+    from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
 
 
@@ -90,7 +90,7 @@ class Provider:
             return f"{self.manifest.name}.{postfix}"
         return self.manifest.name
 
-    def to_dict(self, *args, **kwargs) -> ProviderInstance:
+    def to_dict(self, *args, **kwargs) -> dict[str, Any]:
         """Return Provider(instance) as serializable dict."""
         return {
             "type": self.type.value,
@@ -99,4 +99,5 @@ class Provider:
             "instance_id": self.instance_id,
             "supported_features": [x.value for x in self.supported_features],
             "available": self.available,
+            "is_streaming_provider": getattr(self, "is_streaming_provider", None),
         }

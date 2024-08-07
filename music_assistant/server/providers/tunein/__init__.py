@@ -2,14 +2,10 @@
 
 from __future__ import annotations
 
-from time import time
 from typing import TYPE_CHECKING
 
-from asyncio_throttle import Throttler
-
-from music_assistant.common.helpers.util import create_sort_name
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature
+from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     AudioFormat,
@@ -22,8 +18,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
-from music_assistant.server.helpers.audio import get_radio_stream
-from music_assistant.server.helpers.tags import parse_tags
+from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (
@@ -94,7 +89,7 @@ class TuneInProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._throttler = Throttler(rate_limit=1, period=1)
+        self._throttler = Throttler(rate_limit=1, period=2)
 
     async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
         """Retrieve library/subscribed radio stations from the provider."""
@@ -104,21 +99,20 @@ class TuneInProvider(MusicProvider):
         ) -> AsyncGenerator[Radio, None]:
             for item in items:
                 item_type = item.get("type", "")
+                if "unavailable" in item.get("key", ""):
+                    continue
+                if not item.get("is_available", True):
+                    continue
                 if item_type == "audio":
                     if "preset_id" not in item:
                         continue
-                    if "- Not Supported" in item.get("name", ""):
-                        continue
-                    if "- Not Supported" in item.get("text", ""):
-                        continue
                     # each radio station can have multiple streams add each one as different quality
-                    stream_info = await self.__get_data("Tune.ashx", id=item["preset_id"])
-                    for stream in stream_info["body"]:
-                        yield await self._parse_radio(item, stream, folder)
+                    stream_info = await self._get_stream_info(item["preset_id"])
+                    yield self._parse_radio(item, stream_info, folder)
                 elif item_type == "link" and item.get("item") == "url":
                     # custom url
                     try:
-                        yield await self._parse_radio(item)
+                        yield self._parse_radio(item)
                     except InvalidDataError as err:
                         # there may be invalid custom urls, ignore those
                         self.logger.warning(str(err))
@@ -140,16 +134,19 @@ class TuneInProvider(MusicProvider):
     async def get_radio(self, prov_radio_id: str) -> Radio:
         """Get radio station details."""
         if not prov_radio_id.startswith("http"):
-            prov_radio_id, media_type = prov_radio_id.split("--", 1)
+            if "--" in prov_radio_id:
+                prov_radio_id, media_type = prov_radio_id.split("--", 1)
+            else:
+                media_type = None
             params = {"c": "composite", "detail": "listing", "id": prov_radio_id}
             result = await self.__get_data("Describe.ashx", **params)
             if result and result.get("body") and result["body"][0].get("children"):
                 item = result["body"][0]["children"][0]
-                stream_info = await self.__get_data("Tune.ashx", id=prov_radio_id)
-                for stream in stream_info["body"]:
-                    if stream["media_type"] != media_type:
+                stream_info = await self._get_stream_info(prov_radio_id)
+                for stream in stream_info:
+                    if media_type and stream["media_type"] != media_type:
                         continue
-                    return await self._parse_radio(item, stream)
+                    return self._parse_radio(item, [stream])
         # fallback - e.g. for handle custom urls ...
         async for radio in self.get_library_radios():
             if radio.item_id == prov_radio_id:
@@ -157,8 +154,8 @@ class TuneInProvider(MusicProvider):
         msg = f"Item {prov_radio_id} not found"
         raise MediaNotFoundError(msg)
 
-    async def _parse_radio(
-        self, details: dict, stream: dict | None = None, folder: str | None = None
+    def _parse_radio(
+        self, details: dict, stream_info: list[dict] | None = None, folder: str | None = None
     ) -> Radio:
         """Parse Radio object from json obj returned from api."""
         if "name" in details:
@@ -170,51 +167,72 @@ class TuneInProvider(MusicProvider):
                 name = name.split(" | ")[1]
             name = name.split(" (")[0]
 
-        if stream is None:
-            # custom url (no stream object present)
-            url = details["URL"]
-            item_id = url
-            media_info = await parse_tags(url)
-            content_type = ContentType.try_parse(media_info.format)
-            bit_rate = media_info.bit_rate
+        if stream_info is not None:
+            # stream info is provided: parse stream objects into provider mappings
+            radio = Radio(
+                item_id=details["preset_id"],
+                provider=self.lookup_key,
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=f'{details["preset_id"]}--{stream["media_type"]}',
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        audio_format=AudioFormat(
+                            content_type=ContentType.try_parse(stream["media_type"]),
+                            bit_rate=stream.get("bitrate", 128),
+                        ),
+                        details=stream["url"],
+                        available=details.get("is_available", True),
+                    )
+                    for stream in stream_info
+                },
+            )
         else:
-            url = stream["url"]
-            item_id = f'{details["preset_id"]}--{stream["media_type"]}'
-            content_type = ContentType.try_parse(stream["media_type"])
-            bit_rate = stream.get("bitrate", 128)  # TODO !
+            # custom url (no stream object present)
+            radio = Radio(
+                item_id=details["URL"],
+                provider=self.lookup_key,
+                name=name,
+                provider_mappings={
+                    ProviderMapping(
+                        item_id=details["URL"],
+                        provider_domain=self.domain,
+                        provider_instance=self.instance_id,
+                        audio_format=AudioFormat(
+                            content_type=ContentType.UNKNOWN,
+                        ),
+                        details=details["URL"],
+                        available=details.get("is_available", True),
+                    )
+                },
+            )
 
-        radio = Radio(
-            item_id=item_id,
-            provider=self.domain,
-            name=name,
-            provider_mappings={
-                ProviderMapping(
-                    item_id=item_id,
-                    provider_domain=self.domain,
-                    provider_instance=self.instance_id,
-                    audio_format=AudioFormat(
-                        content_type=content_type,
-                        bit_rate=bit_rate,
-                    ),
-                    details=url,
-                )
-            },
-        )
         # preset number is used for sorting (not present at stream time)
-        preset_number = details.get("preset_number")
-        if preset_number and folder:
-            radio.sort_name = f'{folder}-{details["preset_number"]}'
-        elif preset_number:
-            radio.sort_name = details["preset_number"]
-        radio.sort_name += create_sort_name(name)
+        preset_number = details.get("preset_number", 0)
+        radio.position = preset_number
         if "text" in details:
             radio.metadata.description = details["text"]
-        # images
-        if img := details.get("image"):
-            radio.metadata.images = [MediaItemImage(type=ImageType.THUMB, path=img)]
-        if img := details.get("logo"):
-            radio.metadata.images = [MediaItemImage(type=ImageType.LOGO, path=img)]
+        # image
+        if img := details.get("image") or details.get("logo"):
+            radio.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=img,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
         return radio
+
+    async def _get_stream_info(self, preset_id: str) -> list[dict]:
+        """Get stream info for a radio station."""
+        cache_key = f"tunein_stream_{preset_id}"
+        if cache := await self.mass.cache.get(cache_key):
+            return cache
+        result = (await self.__get_data("Tune.ashx", id=preset_id))["body"]
+        await self.mass.cache.set(cache_key, result)
+        return result
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Get streamdetails for a radio station."""
@@ -227,34 +245,30 @@ class TuneInProvider(MusicProvider):
                     content_type=ContentType.UNKNOWN,
                 ),
                 media_type=MediaType.RADIO,
-                data=item_id,
-                expires=time() + 3600,
+                stream_type=StreamType.HTTP,
+                path=item_id,
+                can_seek=False,
             )
-        stream_item_id, media_type = item_id.split("--", 1)
-        stream_info = await self.__get_data("Tune.ashx", id=stream_item_id)
-        for stream in stream_info["body"]:
-            if stream["media_type"] != media_type:
+        if "--" in item_id:
+            stream_item_id, media_type = item_id.split("--", 1)
+        else:
+            media_type = None
+            stream_item_id = item_id
+        for stream in await self._get_stream_info(stream_item_id):
+            if media_type and stream["media_type"] != media_type:
                 continue
             return StreamDetails(
                 provider=self.domain,
                 item_id=item_id,
-                audio_format=AudioFormat(
-                    content_type=ContentType(stream["media_type"]),
-                ),
+                # set contenttype to unknown so ffmpeg can auto detect it
+                audio_format=AudioFormat(content_type=ContentType.UNKNOWN),
                 media_type=MediaType.RADIO,
-                data=stream["url"],
-                expires=time() + 3600,
+                stream_type=StreamType.HTTP,
+                path=stream["url"],
+                can_seek=False,
             )
         msg = f"Unable to retrieve stream details for {item_id}"
         raise MediaNotFoundError(msg)
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        # report playback started as soon as we start streaming
-        async for chunk in get_radio_stream(self.mass, streamdetails.data, streamdetails):
-            yield chunk
 
     async def __get_data(self, endpoint: str, **kwargs):
         """Get data from api."""
@@ -266,9 +280,12 @@ class TuneInProvider(MusicProvider):
             kwargs["username"] = self.config.get_value(CONF_USERNAME)
             kwargs["partnerId"] = "1"
             kwargs["render"] = "json"
+        locale = self.mass.metadata.locale.replace("_", "-")
+        language = locale.split("-")[0]
+        headers = {"Accept-Language": f"{locale}, {language};q=0.9, *;q=0.5"}
         async with (
             self._throttler,
-            self.mass.http_session.get(url, params=kwargs, ssl=False) as response,
+            self.mass.http_session.get(url, params=kwargs, headers=headers, ssl=False) as response,
         ):
             result = await response.json()
             if not result or "error" in result:

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import requests
 from plexapi.gdm import GDM
@@ -17,7 +17,7 @@ if TYPE_CHECKING:
 
 async def get_libraries(
     mass: MusicAssistant,
-    auth_token: str,
+    auth_token: str | None,
     local_server_ssl: bool,
     local_server_ip: str,
     local_server_port: str,
@@ -30,19 +30,24 @@ async def get_libraries(
     """
     cache_key = "plex_libraries"
 
-    def _get_libraries():
+    def _get_libraries() -> list[str]:
         # create a listing of available music libraries on all servers
         all_libraries: list[str] = []
         session = requests.Session()
         session.verify = local_server_verify_cert
         local_server_protocol = "https" if local_server_ssl else "http"
-        plex_server: PlexServer = PlexServer(
-            f"{local_server_protocol}://{local_server_ip}:{local_server_port}",
-            auth_token,
-            session=session,
-        )
-        for media_section in plex_server.library.sections():
-            media_section: PlexLibrarySection
+        plex_server: PlexServer
+        if auth_token is None:
+            plex_server = PlexServer(
+                f"{local_server_protocol}://{local_server_ip}:{local_server_port}"
+            )
+        else:
+            plex_server = PlexServer(
+                f"{local_server_protocol}://{local_server_ip}:{local_server_port}",
+                auth_token,
+                session=session,
+            )
+        for media_section in cast(list[PlexLibrarySection], plex_server.library.sections()):
             if media_section.type != PlexMusicSection.TYPE:
                 continue
             # TODO: figure out what plex uses as stable id and use that instead of names
@@ -50,7 +55,7 @@ async def get_libraries(
         return all_libraries
 
     if cache := await mass.cache.get(cache_key, checksum=auth_token):
-        return cache
+        return cast(list[str], cache)
 
     result = await asyncio.to_thread(_get_libraries)
     # use short expiration for in-memory cache
@@ -58,10 +63,10 @@ async def get_libraries(
     return result
 
 
-async def discover_local_servers():
+async def discover_local_servers() -> tuple[str, int] | tuple[None, None]:
     """Discover all local plex servers on the network."""
 
-    def _discover_local_servers():
+    def _discover_local_servers() -> tuple[str, int] | tuple[None, None]:
         gdm = GDM()
         gdm.scan()
         if len(gdm.entries) > 0:

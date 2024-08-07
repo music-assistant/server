@@ -37,18 +37,10 @@ class SuccessResultMessage(ResultMessageBase):
 
 
 @dataclass
-class ChunkedResultMessage(ResultMessageBase):
-    """Message sent when the result of a command is sent in multiple chunks."""
-
-    result: Any = field(default=None, metadata={"serialize": lambda v: get_serializable_value(v)})
-    is_last_chunk: bool = False
-
-
-@dataclass
 class ErrorResultMessage(ResultMessageBase):
     """Message sent when a command did not execute successfully."""
 
-    error_code: str
+    error_code: int
     details: str | None = None
 
 
@@ -66,6 +58,7 @@ class ServerInfoMessage(DataClassORJSONMixin):
     min_supported_schema_version: int
     base_url: str
     homeassistant_addon: bool = False
+    onboard_done: bool = False
 
 
 MessageType = (
@@ -73,14 +66,12 @@ MessageType = (
 )
 
 
-def parse_message(raw: dict) -> MessageType:
+def parse_message(raw: dict[Any, Any]) -> MessageType:
     """Parse Message from raw dict object."""
     if "event" in raw:
         return EventMessage.from_dict(raw)
     if "error_code" in raw:
         return ErrorResultMessage.from_dict(raw)
-    if "result" in raw and "is_last_chunk" in raw:
-        return ChunkedResultMessage.from_dict(raw)
     if "result" in raw:
         return SuccessResultMessage.from_dict(raw)
     if "sdk_version" in raw:

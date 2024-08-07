@@ -45,3 +45,12 @@ class MetadataProvider(Provider):
         """Retrieve metadata for a track on this Metadata provider."""
         if ProviderFeature.TRACK_METADATA in self.supported_features:
             raise NotImplementedError
+
+    async def resolve_image(self, path: str) -> str | bytes:
+        """
+        Resolve an image from an image path.
+
+        This either returns (a generator to get) raw bytes of the image or
+        a string with an http(s) URL or local path that is accessible from the server.
+        """
+        return path

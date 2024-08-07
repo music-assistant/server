@@ -72,6 +72,9 @@ RUN set -x \
     && rm -rf /tmp/* \
     && rm -rf /var/lib/apt/lists/*
 
+# Copy widevine client files to container
+RUN mkdir -p /usr/local/bin/widevine_cdm
+COPY widevine_cdm/* /usr/local/bin/widevine_cdm/
 
 # https://github.com/moby/buildkit/blob/master/frontend/dockerfile/docs/syntax.md#build-mounts-run---mount
 # Install all built wheels
@@ -93,7 +96,7 @@ RUN \
 
 # Set some labels
 LABEL \
-    org.opencontainers.image.title="Music Assistant" \
+    org.opencontainers.image.title="Music Assistant Server" \
     org.opencontainers.image.description="Music Assistant Server/Core" \
     org.opencontainers.image.source="https://github.com/music-assistant/server" \
     org.opencontainers.image.authors="The Music Assistant Team" \
@@ -101,7 +104,7 @@ LABEL \
     org.opencontainers.image.licenses="Apache License 2.0" \
     io.hass.version="${MASS_VERSION}" \
     io.hass.type="addon" \
-    io.hass.name="Music Assistant" \
+    io.hass.name="Music Assistant Server" \
     io.hass.description="Music Assistant Server/Core" \
     io.hass.platform="${TARGETPLATFORM}" \
     io.hass.type="addon"

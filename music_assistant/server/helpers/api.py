@@ -62,7 +62,7 @@ def parse_arguments(
     if strict:
         for key, value in args.items():
             if key not in func_sig.parameters:
-                raise KeyError("Invalid parameter: '%s'" % key)
+                raise KeyError(f"Invalid parameter: '{key}'")
     # parse arguments to correct type
     for name, param in func_sig.parameters.items():
         value = args.get(name)
@@ -125,7 +125,7 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
             # raise exception, we have no idea how to handle this value
             raise TypeError(err)
         # failed to parse the (sub) value but None allowed, log only
-        logging.getLogger(__name__).warn(err)
+        logging.getLogger(__name__).warning(err)
         return None
     if origin is type:
         return eval(value)  # pylint: disable=eval-used

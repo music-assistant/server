@@ -25,28 +25,23 @@ from async_upnp_client.search import async_search
 
 from music_assistant.common.models.config_entries import (
     CONF_ENTRY_CROSSFADE_DURATION,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_ENFORCE_MP3,
-    CONF_ENTRY_FLOW_MODE,
     ConfigEntry,
     ConfigValueType,
+    create_sample_rates_config_entry,
 )
 from music_assistant.common.models.enums import (
     ConfigEntryType,
-    ContentType,
     PlayerFeature,
     PlayerState,
     PlayerType,
 )
 from music_assistant.common.models.errors import PlayerUnavailableError
-from music_assistant.common.models.player import DeviceInfo, Player
-from music_assistant.constants import (
-    CONF_CROSSFADE,
-    CONF_ENFORCE_MP3,
-    CONF_FLOW_MODE,
-    CONF_PLAYERS,
-    VERBOSE_LOG_LEVEL,
-)
+from music_assistant.common.models.player import DeviceInfo, Player, PlayerMedia
+from music_assistant.constants import CONF_ENFORCE_MP3, CONF_PLAYERS, VERBOSE_LOG_LEVEL
 from music_assistant.server.helpers.didl_lite import create_didl_metadata
+from music_assistant.server.helpers.util import TaskManager
 from music_assistant.server.models.player_provider import PlayerProvider
 
 from .helpers import DLNANotifyServer
@@ -59,7 +54,6 @@ if TYPE_CHECKING:
 
     from music_assistant.common.models.config_entries import PlayerConfig, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
-    from music_assistant.common.models.queue_item import QueueItem
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
 
@@ -79,23 +73,15 @@ PLAYER_CONFIG_ENTRIES = (
         default_value=False,
         description="If the player supports enqueuing the next item for fluid/gapless playback. "
         "\n\nUnfortunately this feature is missing or broken on many DLNA players. \n"
-        "Enable it with care. If music stops after one song, disable this setting.",
+        "Enable it with care. If music stops after one song, "
+        "disable this setting (and use flow-mode instead).",
     ),
-    ConfigEntry(
-        key=CONF_CROSSFADE,
-        type=ConfigEntryType.BOOLEAN,
-        label="Enable crossfade",
-        default_value=False,
-        description="Enable a crossfade transition between (queue) tracks. \n\n"
-        "Note that DLNA does not natively support crossfading so you need to enable "
-        "the 'flow mode' workaround to use crossfading with DLNA players.",
-        category="audio",
-        depends_on=CONF_FLOW_MODE,
-    ),
-    CONF_ENTRY_FLOW_MODE,
+    CONF_ENTRY_CROSSFADE_FLOW_MODE_REQUIRED,
     CONF_ENTRY_CROSSFADE_DURATION,
     CONF_ENTRY_ENFORCE_MP3,
+    create_sample_rates_config_entry(192000, 24, 96000, 24),
 )
+
 
 CONF_NETWORK_SCAN = "network_scan"
 
@@ -301,7 +287,7 @@ class DLNAPlayerProvider(PlayerProvider):
         Called when provider is deregistered (e.g. MA exiting or config reloading).
         """
         self.mass.streams.unregister_dynamic_route("/notify", "NOTIFY")
-        async with asyncio.TaskGroup() as tg:
+        async with TaskManager(self.mass) as tg:
             for dlna_player in self.dlnaplayers.values():
                 tg.create_task(self._device_disconnect(dlna_player))
 
@@ -342,27 +328,17 @@ class DLNAPlayerProvider(PlayerProvider):
         await dlna_player.device.async_play()
 
     @catch_request_errors
-    async def play_media(
-        self,
-        player_id: str,
-        queue_item: QueueItem,
-    ) -> None:
+    async def play_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle PLAY MEDIA on given player."""
-        use_flow_mode = await self.mass.config.get_player_config_value(player_id, CONF_FLOW_MODE)
-        enforce_mp3 = await self.mass.config.get_player_config_value(player_id, CONF_ENFORCE_MP3)
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.MP3 if enforce_mp3 else ContentType.FLAC,
-            flow_mode=use_flow_mode,
-        )
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
         dlna_player = self.dlnaplayers[player_id]
         # always clear queue (by sending stop) first
         if dlna_player.device.can_stop:
             await self.cmd_stop(player_id)
-        didl_metadata = create_didl_metadata(self.mass, url, queue_item)
-        title = queue_item.name if queue_item else "Music Assistant"
-        await dlna_player.device.async_set_transport_uri(url, title, didl_metadata)
+        didl_metadata = create_didl_metadata(media)
+        title = media.title or media.uri
+        await dlna_player.device.async_set_transport_uri(media.uri, title, didl_metadata)
         # Play it
         await dlna_player.device.async_wait_for_can_play(10)
         # optimistically set this timestamp to help in case of a player
@@ -378,17 +354,14 @@ class DLNAPlayerProvider(PlayerProvider):
             await self.poll_player(dlna_player.udn)
 
     @catch_request_errors
-    async def enqueue_next_queue_item(self, player_id: str, queue_item: QueueItem) -> None:
+    async def enqueue_next_media(self, player_id: str, media: PlayerMedia) -> None:
         """Handle enqueuing of the next queue item on the player."""
         dlna_player = self.dlnaplayers[player_id]
-        url = self.mass.streams.resolve_stream_url(
-            player_id,
-            queue_item=queue_item,
-            output_codec=ContentType.FLAC,
-        )
-        didl_metadata = create_didl_metadata(self.mass, url, queue_item)
-        title = queue_item.name
-        await dlna_player.device.async_set_next_transport_uri(url, title, didl_metadata)
+        if self.mass.config.get_raw_player_config_value(player_id, CONF_ENFORCE_MP3, False):
+            media.uri = media.uri.replace(".flac", ".mp3")
+        didl_metadata = create_didl_metadata(media)
+        title = media.title or media.uri
+        await dlna_player.device.async_set_next_transport_uri(media.uri, title, didl_metadata)
         self.logger.debug(
             "Enqued next track (%s) to player %s",
             title,
@@ -420,20 +393,7 @@ class DLNAPlayerProvider(PlayerProvider):
         await dlna_player.device.async_mute_volume(muted)
 
     async def poll_player(self, player_id: str) -> None:
-        """Poll player for state updates.
-
-        This is called by the Player Manager;
-        - every 360 seconds if the player if not powered
-        - every 30 seconds if the player is powered
-        - every 10 seconds if the player is playing
-
-        Use this method to request any info that is not automatically updated and/or
-        to detect if the player is still alive.
-        If this method raises the PlayerUnavailable exception,
-        the player is marked as unavailable until
-        the next successful poll or event where it becomes available again.
-        If the player does not need any polling, simply do not override this method.
-        """
+        """Poll player for state updates."""
         dlna_player = self.dlnaplayers[player_id]
 
         # try to reconnect the device if the connection was lost
@@ -548,8 +508,6 @@ class DLNAPlayerProvider(PlayerProvider):
                     self.logger.debug("Ignoring disabled player: %s", udn)
                     return
 
-                is_sonos = "rincon" in udn.lower()
-
                 dlna_player = DLNAPlayer(
                     udn=udn,
                     player=Player(
@@ -565,10 +523,8 @@ class DLNAPlayerProvider(PlayerProvider):
                             address=description_url,
                             manufacturer="unknown",
                         ),
-                        max_sample_rate=48000 if is_sonos else 192000,
-                        supports_24bit=True,
-                        # disable sonos players by default in dlna
-                        enabled_by_default=not is_sonos,
+                        needs_poll=True,
+                        poll_interval=30,
                     ),
                     description_url=description_url,
                 )

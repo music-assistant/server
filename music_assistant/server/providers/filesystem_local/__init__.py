@@ -5,17 +5,17 @@ from __future__ import annotations
 import asyncio
 import os
 import os.path
+import re
 from typing import TYPE_CHECKING
 
 import aiofiles
+import shortuuid
 from aiofiles.os import wrap
 
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType
 from music_assistant.common.models.errors import SetupFailedError
-from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_PATH
-from music_assistant.server.helpers.audio import get_file_stream
 
 from .base import (
     CONF_ENTRY_MISSING_ALBUM_ARTIST,
@@ -50,7 +50,8 @@ async def setup(
         msg = f"Music Directory {conf_path} does not exist"
         raise SetupFailedError(msg)
     prov = LocalFileSystemProvider(mass, manifest, config)
-    prov.base_path = config.get_value(CONF_PATH)
+    prov.base_path = str(config.get_value(CONF_PATH))
+    await prov.check_write_access()
     return prov
 
 
@@ -74,14 +75,19 @@ async def get_config_entries(
     )
 
 
-async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
-    """Create FileSystemItem from os.DirEntry."""
+def sorted_scandir(base_path: str, sub_path: str) -> list[FileSystemItem]:
+    """Implement os.scandir that returns (naturally) sorted entries."""
 
-    def _create_item():
+    def nat_key(name: str) -> tuple[int | str, ...]:
+        """Sort key for natural sorting."""
+        return tuple(int(s) if s.isdigit() else s for s in re.split(r"(\d+)", name))
+
+    def create_item(entry: os.DirEntry) -> FileSystemItem:
+        """Create FileSystemItem from os.DirEntry."""
         absolute_path = get_absolute_path(base_path, entry.path)
         stat = entry.stat(follow_symlinks=False)
         return FileSystemItem(
-            name=entry.name,
+            filename=entry.name,
             path=get_relative_path(base_path, entry.path),
             absolute_path=absolute_path,
             is_file=entry.is_file(follow_symlinks=False),
@@ -92,14 +98,34 @@ async def create_item(base_path: str, entry: os.DirEntry) -> FileSystemItem:
             local_path=absolute_path,
         )
 
-    # run in thread because strictly taken this may be blocking IO
-    return await asyncio.to_thread(_create_item)
+    return sorted(
+        # filter out invalid dirs and hidden files
+        [
+            create_item(x)
+            for x in os.scandir(sub_path)
+            if x.name not in IGNORE_DIRS and not x.name.startswith(".")
+        ],
+        # sort by (natural) name
+        key=lambda x: nat_key(x.name),
+    )
 
 
 class LocalFileSystemProvider(FileSystemProviderBase):
     """Implementation of a musicprovider for local files."""
 
     base_path: str
+
+    async def check_write_access(self) -> None:
+        """Perform check if we have write access."""
+        # verify write access to determine we have playlist create/edit support
+        # overwrite with provider specific implementation if needed
+        temp_file_name = get_absolute_path(self.base_path, f"{shortuuid.random(8)}.txt")
+        try:
+            await self.write_file_content(temp_file_name, b"")
+            await asyncio.to_thread(os.remove, temp_file_name)
+            self.write_access = True
+        except Exception as err:
+            self.logger.debug("Write access disabled: %s", str(err))
 
     async def listdir(
         self, path: str, recursive: bool = False
@@ -118,20 +144,15 @@ class LocalFileSystemProvider(FileSystemProviderBase):
 
         """
         abs_path = get_absolute_path(self.base_path, path)
-        entries = await asyncio.to_thread(os.scandir, abs_path)
-        for entry in entries:
-            if entry.name.startswith(".") or any(x in entry.name for x in IGNORE_DIRS):
-                # skip invalid/system files and dirs
-                continue
-            item = await create_item(self.base_path, entry)
-            if recursive and item.is_dir:
+        for entry in await asyncio.to_thread(sorted_scandir, self.base_path, abs_path):
+            if recursive and entry.is_dir:
                 try:
-                    async for subitem in self.listdir(item.absolute_path, True):
+                    async for subitem in self.listdir(entry.absolute_path, True):
                         yield subitem
                 except (OSError, PermissionError) as err:
-                    self.logger.warning("Skip folder %s: %s", item.path, str(err))
+                    self.logger.warning("Skip folder %s: %s", entry.path, str(err))
             else:
-                yield item
+                yield entry
 
     async def resolve(
         self,
@@ -145,10 +166,10 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         """
         absolute_path = get_absolute_path(self.base_path, file_path)
 
-        def _create_item():
+        def _create_item() -> FileSystemItem:
             stat = os.stat(absolute_path, follow_symlinks=False)
             return FileSystemItem(
-                name=os.path.basename(file_path),
+                filename=os.path.basename(file_path),
                 path=get_relative_path(self.base_path, file_path),
                 absolute_path=absolute_path,
                 is_dir=os.path.isdir(absolute_path),
@@ -167,15 +188,7 @@ class LocalFileSystemProvider(FileSystemProviderBase):
         if not file_path:
             return False  # guard
         abs_path = get_absolute_path(self.base_path, file_path)
-        return await exists(abs_path)
-
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        abs_path = get_absolute_path(self.base_path, streamdetails.item_id)
-        async for chunk in get_file_stream(self.mass, abs_path, streamdetails, seek_position):
-            yield chunk
+        return bool(await exists(abs_path))
 
     async def read_file_content(self, file_path: str, seek: int = 0) -> AsyncGenerator[bytes, None]:
         """Yield (binary) contents of file in chunks of bytes."""

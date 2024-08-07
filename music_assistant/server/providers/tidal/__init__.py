@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import pickle
+from contextlib import suppress
 from datetime import datetime, timedelta
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any, cast
 
-from asyncio_throttle import Throttler
 from tidalapi import Album as TidalAlbum
 from tidalapi import Artist as TidalArtist
 from tidalapi import Config as TidalConfig
 from tidalapi import Playlist as TidalPlaylist
-from tidalapi import Quality as TidalQuality
 from tidalapi import Session as TidalSession
 from tidalapi import Track as TidalTrack
+from tidalapi import exceptions as tidal_exceptions
 
 from music_assistant.common.models.config_entries import (
     ConfigEntry,
@@ -27,31 +30,31 @@ from music_assistant.common.models.enums import (
     ImageType,
     MediaType,
     ProviderFeature,
+    StreamType,
 )
 from music_assistant.common.models.errors import LoginFailed, MediaNotFoundError
 from music_assistant.common.models.media_items import (
     Album,
-    AlbumTrack,
     Artist,
     AudioFormat,
     ContentType,
     ItemMapping,
     MediaItemImage,
+    MediaItemType,
     Playlist,
-    PlaylistTrack,
     ProviderMapping,
     SearchResults,
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.server.helpers.audio import get_http_stream
 from music_assistant.server.helpers.auth import AuthenticationHelper
 from music_assistant.server.helpers.tags import AudioTags, parse_tags
+from music_assistant.server.helpers.throttle_retry import ThrottlerManager, throttle_with_retries
 from music_assistant.server.models.music_provider import MusicProvider
 
 from .helpers import (
     DEFAULT_LIMIT,
-    add_remove_playlist_tracks,
+    add_playlist_tracks,
     create_playlist,
     get_album,
     get_album_tracks,
@@ -65,9 +68,10 @@ from .helpers import (
     get_playlist,
     get_playlist_tracks,
     get_similar_tracks,
+    get_stream,
     get_track,
-    get_track_url,
     library_items_add_remove,
+    remove_playlist_tracks,
     search,
 )
 
@@ -75,6 +79,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncGenerator, Awaitable, Callable
 
     from tidalapi.media import Lyrics as TidalLyrics
+    from tidalapi.media import Stream as TidalStream
 
     from music_assistant.common.models.config_entries import ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
@@ -82,14 +87,37 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
 
 TOKEN_TYPE = "Bearer"
-CONF_ACTION_AUTH = "auth"
+
+# Actions
+CONF_ACTION_START_PKCE_LOGIN = "start_pkce_login"
+CONF_ACTION_COMPLETE_PKCE_LOGIN = "auth"
+CONF_ACTION_CLEAR_AUTH = "clear_auth"
+
+# Intermediate steps
+CONF_TEMP_SESSION = "temp_session"
+CONF_OOPS_URL = "oops_url"
+
+# Config keys
 CONF_AUTH_TOKEN = "auth_token"
 CONF_REFRESH_TOKEN = "refresh_token"
 CONF_USER_ID = "user_id"
 CONF_EXPIRY_TIME = "expiry_time"
 CONF_QUALITY = "quality"
 
+# Labels
+LABEL_START_PKCE_LOGIN = "start_pkce_login_label"
+LABEL_OOPS_URL = "oops_url_label"
+LABEL_COMPLETE_PKCE_LOGIN = "complete_pkce_login_label"
+
 BROWSE_URL = "https://tidal.com/browse"
+RESOURCES_URL = "https://resources.tidal.com/images"
+
+
+class TidalQualityEnum(StrEnum):
+    """Enum for Tidal Quality."""
+
+    HIGH_LOSSLESS = "HIGH_LOSSLESS"  # "High - 16bit, 44.1kHz"
+    HI_RES = "HI_RES"  # "Max - Up to 24bit, 192kHz"
 
 
 async def setup(
@@ -101,15 +129,31 @@ async def setup(
     return prov
 
 
-async def tidal_code_login(auth_helper: AuthenticationHelper, quality: str) -> TidalSession:
+async def tidal_auth_url(auth_helper: AuthenticationHelper, quality: str) -> str:
+    """Generate the Tidal authentication URL."""
+
+    def inner() -> TidalSession:
+        # global glob_temp_session
+        config = TidalConfig(quality=quality, item_limit=10000, alac=False)
+        session = TidalSession(config=config)
+        url = session.pkce_login_url()
+        auth_helper.send_url(url)
+        session_bytes = pickle.dumps(session)
+        base64_bytes = base64.b64encode(session_bytes)
+        return base64_bytes.decode("utf-8")
+
+    return await asyncio.to_thread(inner)
+
+
+async def tidal_pkce_login(base64_session: str, url: str) -> TidalSession:
     """Async wrapper around the tidalapi Session function."""
 
     def inner() -> TidalSession:
-        config = TidalConfig(quality=quality, item_limit=10000, alac=False)
-        session = TidalSession(config=config)
-        login, future = session.login_oauth()
-        auth_helper.send_url(f"https://{login.verification_uri_complete}")
-        future.result()
+        base64_bytes = base64_session.encode("utf-8")
+        message_bytes = base64.b64decode(base64_bytes)
+        session = pickle.loads(message_bytes)  # noqa: S301
+        token = session.pkce_get_auth_token(url_redirect=url)
+        session.process_auth_token(token)
         return session
 
     return await asyncio.to_thread(inner)
@@ -128,54 +172,133 @@ async def get_config_entries(
     action: [optional] action key called from config entries UI.
     values: the (intermediate) raw values for config entries sent with the action.
     """
-    # config flow auth action/step (authenticate button clicked)
-    if action == CONF_ACTION_AUTH:
+    if action == CONF_ACTION_START_PKCE_LOGIN:
         async with AuthenticationHelper(mass, cast(str, values["session_id"])) as auth_helper:
-            quality: str | int | float | list[str] | list[int] | None = (
-                values.get(CONF_QUALITY) if values else None
-            )
-            tidal_session = await tidal_code_login(auth_helper, cast(str, quality))
-            if not tidal_session.check_login():
-                msg = "Authentication to Tidal failed"
-                raise LoginFailed(msg)
-            # set the retrieved token on the values object to pass along
-            values[CONF_AUTH_TOKEN] = tidal_session.access_token
-            values[CONF_REFRESH_TOKEN] = tidal_session.refresh_token
-            values[CONF_EXPIRY_TIME] = tidal_session.expiry_time.isoformat()
-            values[CONF_USER_ID] = str(tidal_session.user.id)
+            quality: str = values.get(CONF_QUALITY) if values else None
+            base64_session = await tidal_auth_url(auth_helper, cast(str, quality))
+            values[CONF_TEMP_SESSION] = base64_session
 
-    # config flow auth action/step to pick the library to use
-    # because this call is very slow, we only show/calculate the dropdown if we do
-    # not yet have this info or we/user invalidated it.
+    if action == CONF_ACTION_COMPLETE_PKCE_LOGIN:
+        quality: str = values.get(CONF_QUALITY) if values else None
+        pkce_url: str = values.get(CONF_OOPS_URL) if values else None
+        base64_session = values.get(CONF_TEMP_SESSION) if values else None
+        tidal_session = await tidal_pkce_login(base64_session, pkce_url)
+        if not tidal_session.check_login():
+            msg = "Authentication to Tidal failed"
+            raise LoginFailed(msg)
+        # set the retrieved token on the values object to pass along
+        values[CONF_AUTH_TOKEN] = tidal_session.access_token
+        values[CONF_REFRESH_TOKEN] = tidal_session.refresh_token
+        values[CONF_EXPIRY_TIME] = tidal_session.expiry_time.isoformat()
+        values[CONF_USER_ID] = str(tidal_session.user.id)
+        values[CONF_TEMP_SESSION] = ""
+
+    if action == CONF_ACTION_CLEAR_AUTH:
+        values[CONF_AUTH_TOKEN] = None
+
+    if values.get(CONF_AUTH_TOKEN):
+        auth_entries = (
+            ConfigEntry(
+                key=CONF_ACTION_CLEAR_AUTH,
+                type=ConfigEntryType.ACTION,
+                label="Reset authentication",
+                description="Reset the authentication for Tidal",
+                action=CONF_ACTION_CLEAR_AUTH,
+                value=None,
+            ),
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                label=CONF_QUALITY,
+                required=True,
+                hidden=True,
+                default_value=values.get(CONF_QUALITY, TidalQualityEnum.HI_RES.value),
+                value=values.get(CONF_QUALITY),
+            ),
+        )
+    else:
+        auth_entries = (
+            ConfigEntry(
+                key=CONF_QUALITY,
+                type=ConfigEntryType.STRING,
+                label="Quality setting for Tidal:",
+                required=True,
+                description="HIGH_LOSSLESS = 16bit 44.1kHz, HI_RES = Up to 24bit 192kHz",
+                options=tuple(ConfigValueOption(x.value, x.name) for x in TidalQualityEnum),
+                default_value=TidalQualityEnum.HI_RES.value,
+                value=values.get(CONF_QUALITY) if values else None,
+            ),
+            ConfigEntry(
+                key=LABEL_START_PKCE_LOGIN,
+                type=ConfigEntryType.LABEL,
+                label="The button below will redirect you to Tidal.com to authenticate."
+                " After authenticating, you will be redirected to a page that prominently displays"
+                " 'Oops' at the top.",
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_START_PKCE_LOGIN,
+                type=ConfigEntryType.ACTION,
+                label="Starts the auth process via PKCE on Tidal.com",
+                description="This button will redirect you to Tidal.com to authenticate."
+                " After authenticating, you will be redirected to a page that prominently displays"
+                " 'Oops' at the top.",
+                action=CONF_ACTION_START_PKCE_LOGIN,
+                depends_on=CONF_QUALITY,
+                action_label="Starts the auth process via PKCE on Tidal.com",
+                value=values.get(CONF_TEMP_SESSION) if values else None,
+            ),
+            ConfigEntry(
+                key=CONF_TEMP_SESSION,
+                type=ConfigEntryType.STRING,
+                label="Temporary session for Tidal",
+                hidden=True,
+                required=False,
+                value=values.get(CONF_TEMP_SESSION) if values else None,
+            ),
+            ConfigEntry(
+                key=LABEL_OOPS_URL,
+                type=ConfigEntryType.LABEL,
+                label="Copy the URL from the 'Oops' page that you were previously redirected to"
+                " and paste it in the field below",
+            ),
+            ConfigEntry(
+                key=CONF_OOPS_URL,
+                type=ConfigEntryType.STRING,
+                label="Oops URL from Tidal redirect",
+                description="This field should be filled manually by you after authenticating on"
+                " Tidal.com and being redirected to a page that prominently displays"
+                " 'Oops' at the top.",
+                depends_on=CONF_ACTION_START_PKCE_LOGIN,
+                value=values.get(CONF_OOPS_URL) if values else None,
+            ),
+            ConfigEntry(
+                key=LABEL_COMPLETE_PKCE_LOGIN,
+                type=ConfigEntryType.LABEL,
+                label="After pasting the URL in the field above, click the button below to complete"
+                " the process.",
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_COMPLETE_PKCE_LOGIN,
+                type=ConfigEntryType.ACTION,
+                label="Complete the auth process via PKCE on Tidal.com",
+                description="Click this after adding the 'Oops' URL above, this will complete the"
+                " authentication process.",
+                action=CONF_ACTION_COMPLETE_PKCE_LOGIN,
+                depends_on=CONF_OOPS_URL,
+                action_label="Complete the auth process via PKCE on Tidal.com",
+                value=None,
+            ),
+        )
 
     # return the collected config entries
     return (
-        ConfigEntry(
-            key=CONF_QUALITY,
-            type=ConfigEntryType.STRING,
-            label="Quality",
-            required=True,
-            description="The Tidal Quality you wish to use",
-            options=(
-                ConfigValueOption(title=TidalQuality.low_96k, value=TidalQuality.low_96k),
-                ConfigValueOption(title=TidalQuality.low_320k, value=TidalQuality.low_320k),
-                ConfigValueOption(
-                    title=TidalQuality.high_lossless,
-                    value=TidalQuality.high_lossless,
-                ),
-                ConfigValueOption(title=TidalQuality.hi_res, value=TidalQuality.hi_res),
-            ),
-            default_value=TidalQuality.high_lossless,
-            value=values.get(CONF_QUALITY) if values else None,
-        ),
+        *auth_entries,
         ConfigEntry(
             key=CONF_AUTH_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label="Authentication token for Tidal",
             description="You need to link Music Assistant to your Tidal account.",
-            action=CONF_ACTION_AUTH,
-            depends_on=CONF_QUALITY,
-            action_label="Authenticate on Tidal.com",
+            hidden=True,
             value=values.get(CONF_AUTH_TOKEN) if values else None,
         ),
         ConfigEntry(
@@ -209,12 +332,25 @@ class TidalProvider(MusicProvider):
 
     _tidal_session: TidalSession | None = None
     _tidal_user_id: str | None = None
+    # rate limiter needs to be specified on provider-level,
+    # so make it an instance attribute
+    throttler = ThrottlerManager(rate_limit=1, period=2)
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self._tidal_user_id: str = self.config.get_value(CONF_USER_ID)
-        self._tidal_session = await self._get_tidal_session()
-        self._throttler = Throttler(rate_limit=1, period=0.1)
+        try:
+            self._tidal_session = await self._get_tidal_session()
+        except Exception as err:
+            if "401 Client Error: Unauthorized" in str(err):
+                self.mass.config.set_raw_provider_config_value(
+                    self.instance_id, CONF_AUTH_TOKEN, None
+                )
+                self.mass.config.set_raw_provider_config_value(
+                    self.instance_id, CONF_REFRESH_TOKEN, None
+                )
+                raise LoginFailed("Credentials, expired, you need to re-setup")
+            raise
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -240,31 +376,40 @@ class TidalProvider(MusicProvider):
     async def search(
         self,
         search_query: str,
-        media_types: list[MediaType] | None = None,
+        media_types: list[MediaType],
         limit: int = 5,
     ) -> SearchResults:
         """Perform search on musicprovider.
 
         :param search_query: Search query.
-        :param media_types: A list of media_types to include. All types if None.
+        :param media_types: A list of media_types to include.
         :param limit: Number of items to return in the search (per type).
         """
+        parsed_results = SearchResults()
+        media_types = [
+            x
+            for x in media_types
+            if x in (MediaType.ARTIST, MediaType.ALBUM, MediaType.TRACK, MediaType.PLAYLIST)
+        ]
+        if not media_types:
+            return parsed_results
+
         tidal_session = await self._get_tidal_session()
         search_query = search_query.replace("'", "")
         results = await search(tidal_session, search_query, media_types, limit)
-        parsed_results = SearchResults()
+
         if results["artists"]:
             for artist in results["artists"]:
-                parsed_results.artists.append(await self._parse_artist(artist_obj=artist))
+                parsed_results.artists.append(self._parse_artist(artist))
         if results["albums"]:
             for album in results["albums"]:
-                parsed_results.albums.append(await self._parse_album(album_obj=album))
+                parsed_results.albums.append(self._parse_album(album))
         if results["playlists"]:
             for playlist in results["playlists"]:
-                parsed_results.playlists.append(await self._parse_playlist(playlist_obj=playlist))
+                parsed_results.playlists.append(self._parse_playlist(playlist))
         if results["tracks"]:
             for track in results["tracks"]:
-                parsed_results.tracks.append(await self._parse_track(track_obj=track))
+                parsed_results.tracks.append(self._parse_track(track))
         return parsed_results
 
     async def get_library_artists(self) -> AsyncGenerator[Artist, None]:
@@ -274,7 +419,7 @@ class TidalProvider(MusicProvider):
         async for artist in self._iter_items(
             get_library_artists, tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT
         ):
-            yield await self._parse_artist(artist_obj=artist)
+            yield self._parse_artist(artist)
 
     async def get_library_albums(self) -> AsyncGenerator[Album, None]:
         """Retrieve all library albums from Tidal."""
@@ -283,7 +428,7 @@ class TidalProvider(MusicProvider):
         async for album in self._iter_items(
             get_library_albums, tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT
         ):
-            yield await self._parse_album(album_obj=album)
+            yield self._parse_album(album)
 
     async def get_library_tracks(self) -> AsyncGenerator[Track, None]:
         """Retrieve library tracks from Tidal."""
@@ -292,7 +437,7 @@ class TidalProvider(MusicProvider):
         async for track in self._iter_items(
             get_library_tracks, tidal_session, self._tidal_user_id, limit=DEFAULT_LIMIT
         ):
-            yield await self._parse_track(track_obj=track)
+            yield self._parse_track(track)
 
     async def get_library_playlists(self) -> AsyncGenerator[Playlist, None]:
         """Retrieve all library playlists from the provider."""
@@ -301,78 +446,64 @@ class TidalProvider(MusicProvider):
         async for playlist in self._iter_items(
             get_library_playlists, tidal_session, self._tidal_user_id
         ):
-            yield await self._parse_playlist(playlist_obj=playlist)
+            yield self._parse_playlist(playlist)
 
-    async def get_album_tracks(self, prov_album_id: str) -> list[AlbumTrack]:
+    @throttle_with_retries
+    async def get_album_tracks(self, prov_album_id: str) -> list[Track]:
         """Get album tracks for given album id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return cast(
-                list[AlbumTrack],
-                [
-                    await self._parse_track(
-                        track_obj=track_obj,
-                        extra_init_kwargs={
-                            "disc_number": track_obj.volume_num,
-                            "track_number": track_obj.track_num,
-                        },
-                    )
-                    for track_obj in await get_album_tracks(tidal_session, prov_album_id)
-                ],
-            )
+        tracks_obj = await get_album_tracks(tidal_session, prov_album_id)
+        return [self._parse_track(track_obj=track_obj) for track_obj in tracks_obj]
 
+    @throttle_with_retries
     async def get_artist_albums(self, prov_artist_id: str) -> list[Album]:
         """Get a list of all albums for the given artist."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return [
-                await self._parse_album(album_obj=album)
-                for album in await get_artist_albums(tidal_session, prov_artist_id)
-            ]
+        artist_albums_obj = await get_artist_albums(tidal_session, prov_artist_id)
+        return [self._parse_album(album) for album in artist_albums_obj]
 
+    @throttle_with_retries
     async def get_artist_toptracks(self, prov_artist_id: str) -> list[Track]:
         """Get a list of 10 most popular tracks for the given artist."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return [
-                await self._parse_track(track_obj=track)
-                for track in await get_artist_toptracks(tidal_session, prov_artist_id)
-            ]
+        try:
+            artist_toptracks_obj = await get_artist_toptracks(tidal_session, prov_artist_id)
+            return [self._parse_track(track) for track in artist_toptracks_obj]
+        except tidal_exceptions.ObjectNotFound as err:
+            self.logger.warning(f"Failed to get toptracks for artist {prov_artist_id}: {err}")
+            return []
 
-    async def get_playlist_tracks(
-        self, prov_playlist_id: str
-    ) -> AsyncGenerator[PlaylistTrack, None]:
-        """Get all playlist tracks for given playlist id."""
+    async def get_playlist_tracks(self, prov_playlist_id: str, page: int = 0) -> list[Track]:
+        """Get playlist tracks."""
         tidal_session = await self._get_tidal_session()
-        total_playlist_tracks = 0
-        track: TidalTrack  # satisfy the type checker
-        async for track_obj in self._iter_items(
-            get_playlist_tracks, tidal_session, prov_playlist_id, limit=DEFAULT_LIMIT
-        ):
-            total_playlist_tracks += 1
-            track = await self._parse_track(
-                track_obj=track_obj,
-                extra_init_kwargs={"position": total_playlist_tracks},
-            )
-            yield track
+        result: list[Track] = []
+        page_size = 200
+        offset = page * page_size
+        track_obj: TidalTrack  # satisfy the type checker
+        tidal_tracks = await get_playlist_tracks(
+            tidal_session, prov_playlist_id, limit=page_size, offset=offset
+        )
+        for index, track_obj in enumerate(tidal_tracks, 1):
+            track = self._parse_track(track_obj=track_obj)
+            track.position = offset + index
+            result.append(track)
+        return result
 
+    @throttle_with_retries
     async def get_similar_tracks(self, prov_track_id: str, limit: int = 25) -> list[Track]:
         """Get similar tracks for given track id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return [
-                await self._parse_track(track_obj=track)
-                for track in await get_similar_tracks(tidal_session, prov_track_id, limit)
-            ]
+        similar_tracks_obj = await get_similar_tracks(tidal_session, prov_track_id, limit)
+        return [self._parse_track(track) for track in similar_tracks_obj]
 
-    async def library_add(self, prov_item_id: str, media_type: MediaType) -> bool:
+    async def library_add(self, item: MediaItemType) -> bool:
         """Add item to library."""
         tidal_session = await self._get_tidal_session()
         return await library_items_add_remove(
             tidal_session,
             str(self._tidal_user_id),
-            prov_item_id,
-            media_type,
+            item.item_id,
+            item.media_type,
             add=True,
         )
 
@@ -390,9 +521,7 @@ class TidalProvider(MusicProvider):
     async def add_playlist_tracks(self, prov_playlist_id: str, prov_track_ids: list[str]) -> None:
         """Add track(s) to playlist."""
         tidal_session = await self._get_tidal_session()
-        return await add_remove_playlist_tracks(
-            tidal_session, prov_playlist_id, prov_track_ids, add=True
-        )
+        return await add_playlist_tracks(tidal_session, prov_playlist_id, prov_track_ids)
 
     async def remove_playlist_tracks(
         self, prov_playlist_id: str, positions_to_remove: tuple[int, ...]
@@ -400,14 +529,12 @@ class TidalProvider(MusicProvider):
         """Remove track(s) from playlist."""
         prov_track_ids = []
         tidal_session = await self._get_tidal_session()
-        async for track in self.get_playlist_tracks(prov_playlist_id):
-            if track.position in positions_to_remove:
-                prov_track_ids.append(track.item_id)
-            if len(prov_track_ids) == len(positions_to_remove):
-                break
-        return await add_remove_playlist_tracks(
-            tidal_session, prov_playlist_id, prov_track_ids, add=False
-        )
+        for pos in positions_to_remove:
+            for tidal_track in await get_playlist_tracks(
+                tidal_session, prov_playlist_id, limit=1, offset=pos - 1
+            ):
+                prov_track_ids.append(tidal_track.id)
+        return await remove_playlist_tracks(tidal_session, prov_playlist_id, prov_track_ids)
 
     async def create_playlist(self, name: str) -> Playlist:
         """Create a new playlist on provider with given name."""
@@ -418,76 +545,79 @@ class TidalProvider(MusicProvider):
             title=name,
             description="",
         )
-        return await self._parse_playlist(playlist_obj=playlist_obj)
+        return self._parse_playlist(playlist_obj)
 
     async def get_stream_details(self, item_id: str) -> StreamDetails:
         """Return the content details for the given track when it will be streamed."""
-        # make sure a valid track is requested.
         tidal_session = await self._get_tidal_session()
-        track = await get_track(tidal_session, item_id)
-        url = await get_track_url(tidal_session, item_id)
-        media_info = await self._get_media_info(item_id=item_id, url=url)
-        if not track:
+        # make sure a valid track is requested.
+        if not (track := await get_track(tidal_session, item_id)):
             msg = f"track {item_id} not found"
             raise MediaNotFoundError(msg)
+        stream: TidalStream = await get_stream(track)
+        manifest = stream.get_stream_manifest()
+        if manifest.is_MPD:
+            # for mpeg-dash streams we just pass the complete base64 manifest
+            url = f"data:application/dash+xml;base64,{manifest.manifest}"
+        else:
+            # as far as I can oversee a BTS stream is just a single URL
+            url = manifest.urls[0]
+
         return StreamDetails(
             item_id=track.id,
             provider=self.instance_id,
             audio_format=AudioFormat(
-                content_type=ContentType.try_parse(media_info.format),
-                sample_rate=media_info.sample_rate,
-                bit_depth=media_info.bits_per_sample,
-                channels=media_info.channels,
+                content_type=ContentType.try_parse(manifest.codecs),
+                sample_rate=manifest.sample_rate,
+                bit_depth=stream.bit_depth,
+                channels=2,
             ),
+            stream_type=StreamType.HTTP,
             duration=track.duration,
-            data=url,
+            path=url,
         )
 
-    async def get_audio_stream(
-        self, streamdetails: StreamDetails, seek_position: int = 0
-    ) -> AsyncGenerator[bytes, None]:
-        """Return the audio stream for the provider item."""
-        # report playback started as soon as we start streaming
-        async for chunk in get_http_stream(
-            self.mass, streamdetails.data, streamdetails, seek_position
-        ):
-            yield chunk
-
+    @throttle_with_retries
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get artist details for given artist id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return await self._parse_artist(
-                artist_obj=await get_artist(tidal_session, prov_artist_id),
-                full_details=True,
-            )
+        try:
+            artist_obj = await get_artist(tidal_session, prov_artist_id)
+            return self._parse_artist(artist_obj)
+        except tidal_exceptions.ObjectNotFound as err:
+            raise MediaNotFoundError from err
 
+    @throttle_with_retries
     async def get_album(self, prov_album_id: str) -> Album:
         """Get album details for given album id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return await self._parse_album(
-                album_obj=await get_album(tidal_session, prov_album_id),
-                full_details=True,
-            )
+        try:
+            album_obj = await get_album(tidal_session, prov_album_id)
+            return self._parse_album(album_obj)
+        except tidal_exceptions.ObjectNotFound as err:
+            raise MediaNotFoundError from err
 
+    @throttle_with_retries
     async def get_track(self, prov_track_id: str) -> Track:
         """Get track details for given track id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return await self._parse_track(
-                track_obj=await get_track(tidal_session, prov_track_id),
-                full_details=True,
-            )
+        track_obj = await get_track(tidal_session, prov_track_id)
+        try:
+            track = self._parse_track(track_obj)
+            # get some extra details for the full track info
+            with suppress(tidal_exceptions.MetadataNotAvailable, AttributeError):
+                lyrics: TidalLyrics = await asyncio.to_thread(track.lyrics)
+                track.metadata.lyrics = lyrics.text
+            return track
+        except tidal_exceptions.ObjectNotFound as err:
+            raise MediaNotFoundError from err
 
+    @throttle_with_retries
     async def get_playlist(self, prov_playlist_id: str) -> Playlist:
         """Get playlist details for given playlist id."""
         tidal_session = await self._get_tidal_session()
-        async with self._throttler:
-            return await self._parse_playlist(
-                playlist_obj=await get_playlist(tidal_session, prov_playlist_id),
-                full_details=True,
-            )
+        playlist_obj = await get_playlist(tidal_session, prov_playlist_id)
+        return self._parse_playlist(playlist_obj)
 
     def get_item_mapping(self, media_type: MediaType, key: str, name: str) -> ItemMapping:
         """Create a generic item mapping."""
@@ -544,14 +674,20 @@ class TidalProvider(MusicProvider):
         def inner() -> TidalSession:
             config = TidalConfig(quality=quality, item_limit=10000, alac=False)
             session = TidalSession(config=config)
-            session.load_oauth_session(token_type, access_token, refresh_token, expiry_time)
+            session.load_oauth_session(
+                token_type=token_type,
+                access_token=access_token,
+                refresh_token=refresh_token,
+                expiry_time=expiry_time,
+                is_pkce=True,
+            )
             return session
 
         return await asyncio.to_thread(inner)
 
     # Parsers
 
-    async def _parse_artist(self, artist_obj: TidalArtist, full_details: bool = False) -> Artist:
+    def _parse_artist(self, artist_obj: TidalArtist) -> Artist:
         """Parse tidal artist object to generic layout."""
         artist_id = artist_obj.id
         artist = Artist(
@@ -568,21 +704,21 @@ class TidalProvider(MusicProvider):
             },
         )
         # metadata
-        if full_details and artist_obj.name != "Various Artists":
-            try:
-                image_url = await self._get_image_url(artist_obj, size=750)
-                artist.metadata.images = [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                    )
-                ]
-            except Exception:
-                self.logger.info(f"Artist {artist_obj.id} has no available picture")
+        if artist_obj.picture:
+            picture_id = artist_obj.picture.replace("-", "/")
+            image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
+            artist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
 
         return artist
 
-    async def _parse_album(self, album_obj: TidalAlbum, full_details: bool = False) -> Album:
+    def _parse_album(self, album_obj: TidalAlbum) -> Album:
         """Parse tidal album object to generic layout."""
         name = album_obj.name
         version = album_obj.version or ""
@@ -605,55 +741,50 @@ class TidalProvider(MusicProvider):
                 )
             },
         )
+        various_artist_album: bool = False
         for artist_obj in album_obj.artists:
-            album.artists.append(await self._parse_artist(artist_obj=artist_obj))
-        if album_obj.type == "ALBUM":
-            album.album_type = AlbumType.ALBUM
-        elif album_obj.type == "COMPILATION":
+            if artist_obj.name == "Various Artists":
+                various_artist_album = True
+            album.artists.append(self._parse_artist(artist_obj))
+
+        if album_obj.type == "COMPILATION" or various_artist_album:
             album.album_type = AlbumType.COMPILATION
+        elif album_obj.type == "ALBUM":
+            album.album_type = AlbumType.ALBUM
         elif album_obj.type == "EP":
             album.album_type = AlbumType.EP
         elif album_obj.type == "SINGLE":
             album.album_type = AlbumType.SINGLE
 
-        # album.upc = album_obj.universal_product_number
         album.year = int(album_obj.year)
         # metadata
+        if album_obj.universal_product_number:
+            album.external_ids.add((ExternalID.BARCODE, album_obj.universal_product_number))
         album.metadata.copyright = album_obj.copyright
         album.metadata.explicit = album_obj.explicit
         album.metadata.popularity = album_obj.popularity
-        if full_details:
-            try:
-                image_url = await self._get_image_url(album_obj, size=1280)
-                album.metadata.images = [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                    )
-                ]
-            except Exception:
-                self.logger.info(f"Album {album_obj.id} has no available picture")
+        if album_obj.cover:
+            picture_id = album_obj.cover.replace("-", "/")
+            image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
+            album.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
 
         return album
 
-    async def _parse_track(
+    def _parse_track(
         self,
         track_obj: TidalTrack,
-        full_details: bool = False,
-        extra_init_kwargs: dict[str, Any] | None = None,
-    ) -> Track | AlbumTrack | PlaylistTrack:
+    ) -> Track:
         """Parse tidal track object to generic layout."""
         version = track_obj.version or ""
         track_id = str(track_obj.id)
-        if extra_init_kwargs is None:
-            extra_init_kwargs = {}
-        if "position" in extra_init_kwargs:
-            track_class = PlaylistTrack
-        elif "disc_number" in extra_init_kwargs and "track_number" in extra_init_kwargs:
-            track_class = AlbumTrack
-        else:
-            track_class = Track
-        track = track_class(
+        track = Track(
             item_id=str(track_id),
             provider=self.instance_id,
             name=track_obj.name,
@@ -666,64 +797,47 @@ class TidalProvider(MusicProvider):
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
                         content_type=ContentType.FLAC,
-                        bit_depth=24 if self._is_hi_res(track_obj=track_obj) else 16,
+                        bit_depth=24 if track_obj.is_HiRes else 16,
                     ),
                     url=f"{BROWSE_URL}/track/{track_id}",
                     available=track_obj.available,
                 )
             },
-            **extra_init_kwargs,
+            disc_number=track_obj.volume_num or 0,
+            track_number=track_obj.track_num or 0,
         )
         if track_obj.isrc:
             track.external_ids.add((ExternalID.ISRC, track_obj.isrc))
-        # Here we use an ItemMapping as Tidal return minimal data when getting an Album from a Track
-        track.album = self.get_item_mapping(
-            media_type=MediaType.ALBUM,
-            key=str(track_obj.album.id),
-            name=track_obj.album.name,
-        )
         track.artists = []
         for track_artist in track_obj.artists:
-            artist = await self._parse_artist(artist_obj=track_artist)
+            artist = self._parse_artist(track_artist)
             track.artists.append(artist)
         # metadata
         track.metadata.explicit = track_obj.explicit
         track.metadata.popularity = track_obj.popularity
         track.metadata.copyright = track_obj.copyright
-        if full_details:
-            image_url = None
-            try:
-                if lyrics_obj := await self._get_lyrics(track_obj):
-                    track.metadata.lyrics = lyrics_obj.text
-            except Exception:
-                self.logger.info(f"Track {track_obj.id} has no available lyrics")
-            try:
-                image_url = await self._get_track_image_url(track_obj, width=1080, height=720)
+        if track_obj.album:
+            # Here we use an ItemMapping as Tidal returns
+            # minimal data when getting an Album from a Track
+            track.album = self.get_item_mapping(
+                media_type=MediaType.ALBUM,
+                key=str(track_obj.album.id),
+                name=track_obj.album.name,
+            )
+            if track_obj.album.cover:
+                picture_id = track_obj.album.cover.replace("-", "/")
+                image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
                 track.metadata.images = [
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
+                        provider=self.instance_id,
+                        remotely_accessible=True,
                     )
                 ]
-            except Exception:
-                self.logger.info(f"Track {track_obj.id} has no available picture")
-            if image_url is None:
-                try:
-                    image_url = await self._get_image_url(track_obj.album, size=1280)
-                    track_obj.album.metadata.images = [
-                        MediaItemImage(
-                            type=ImageType.THUMB,
-                            path=image_url,
-                        )
-                    ]
-                except Exception:
-                    self.logger.info(f"Album {track_obj.album.id} has no available picture")
-
         return track
 
-    async def _parse_playlist(
-        self, playlist_obj: TidalPlaylist, full_details: bool = False
-    ) -> Playlist:
+    def _parse_playlist(self, playlist_obj: TidalPlaylist) -> Playlist:
         """Parse tidal playlist object to generic layout."""
         playlist_id = playlist_obj.id
         creator_id = playlist_obj.creator.id if playlist_obj.creator else None
@@ -745,63 +859,37 @@ class TidalProvider(MusicProvider):
         is_editable = bool(creator_id and str(creator_id) == self._tidal_user_id)
         playlist.is_editable = is_editable
         # metadata
-        playlist.metadata.checksum = str(playlist_obj.last_updated)
+        playlist.cache_checksum = str(playlist_obj.last_updated)
         playlist.metadata.popularity = playlist_obj.popularity
-        if full_details:
-            try:
-                image_url = await self._get_image_url(playlist_obj, size=1080)
-                playlist.metadata.images = [
-                    MediaItemImage(
-                        type=ImageType.THUMB,
-                        path=image_url,
-                    )
-                ]
-            except Exception:
-                self.logger.info(f"Playlist {playlist_obj.id} has no available picture")
+        if picture := (playlist_obj.square_picture or playlist_obj.picture):
+            picture_id = picture.replace("-", "/")
+            image_url = f"{RESOURCES_URL}/{picture_id}/750x750.jpg"
+            playlist.metadata.images = [
+                MediaItemImage(
+                    type=ImageType.THUMB,
+                    path=image_url,
+                    provider=self.instance_id,
+                    remotely_accessible=True,
+                )
+            ]
 
         return playlist
-
-    async def _get_image_url(
-        self, item: TidalArtist | TidalAlbum | TidalPlaylist, size: int = 0
-    ) -> str:
-        def inner() -> str:
-            return item.image(size)
-
-        return await asyncio.to_thread(inner)
-
-    async def _get_track_image_url(
-        self,
-        item: TidalTrack,
-        width: int = 0,
-        height: int = 0,
-    ) -> str:
-        def inner() -> str:
-            return item.image(width, height)
-
-        return await asyncio.to_thread(inner)
-
-    async def _get_lyrics(self, item: TidalTrack) -> TidalLyrics:
-        def inner() -> TidalLyrics:
-            return item.lyrics
-
-        return await asyncio.to_thread(inner)
 
     async def _iter_items(
         self, func: Awaitable | Callable, *args, **kwargs
     ) -> AsyncGenerator[Any, None]:
         """Yield all items from a larger listing."""
         offset = 0
-        async with self._throttler:
-            while True:
-                if asyncio.iscoroutinefunction(func):
-                    chunk = await func(*args, **kwargs, offset=offset)
-                else:
-                    chunk = await asyncio.to_thread(func, *args, **kwargs, offset=offset)
-                offset += len(chunk)
-                for item in chunk:
-                    yield item
-                if len(chunk) < DEFAULT_LIMIT:
-                    break
+        while True:
+            if asyncio.iscoroutinefunction(func):
+                chunk = await func(*args, **kwargs, offset=offset)
+            else:
+                chunk = await asyncio.to_thread(func, *args, **kwargs, offset=offset)
+            offset += len(chunk)
+            for item in chunk:
+                yield item
+            if len(chunk) < DEFAULT_LIMIT:
+                break
 
     async def _get_media_info(
         self, item_id: str, url: str, force_refresh: bool = False
@@ -817,8 +905,3 @@ class TidalProvider(MusicProvider):
             media_info = await parse_tags(url)
             await self.mass.cache.set(cache_key, media_info.raw)
         return media_info
-
-    def _is_hi_res(self, track_obj: TidalTrack) -> bool:
-        """Check if track is hi-res."""
-        hi_res: bool = track_obj.audio_quality == "HI_RES"
-        return hi_res

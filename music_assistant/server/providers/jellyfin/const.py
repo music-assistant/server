@@ -2,6 +2,13 @@
 
 from typing import Final
 
+from aiojellyfin import ImageType as JellyImageType
+from aiojellyfin import ItemFields
+
+from music_assistant.common.models.enums import ImageType, MediaType
+from music_assistant.common.models.media_items import ItemMapping
+from music_assistant.constants import UNKNOWN_ARTIST
+
 DOMAIN: Final = "jellyfin"
 
 CLIENT_VERSION: Final = "0.1"
@@ -29,20 +36,23 @@ ITEM_KEY_PRODUCTION_YEAR: Final = "ProductionYear"
 ITEM_KEY_OVERVIEW: Final = "Overview"
 ITEM_KEY_MUSICBRAINZ_RELEASE_GROUP: Final = "MusicBrainzReleaseGroup"
 ITEM_KEY_MUSICBRAINZ_ARTIST: Final = "MusicBrainzArtist"
+ITEM_KEY_MUSICBRAINZ_ALBUM: Final = "MusicBrainzAlbum"
 ITEM_KEY_MUSICBRAINZ_TRACK: Final = "MusicBrainzTrack"
 ITEM_KEY_SORT_NAME: Final = "SortName"
 ITEM_KEY_ALBUM_ARTIST: Final = "AlbumArtist"
+ITEM_KEY_ALBUM_ARTISTS: Final = "AlbumArtists"
 ITEM_KEY_ALBUM: Final = "Album"
-ITEM_KEY_PARENT_ID: Final = "ParentId"
+ITEM_KEY_ALBUM_ID: Final = "AlbumId"
 ITEM_KEY_ARTIST_ITEMS: Final = "ArtistItems"
 ITEM_KEY_CAN_DOWNLOAD: Final = "CanDownload"
 ITEM_KEY_PARENT_INDEX_NUM: Final = "ParentIndexNumber"
 ITEM_KEY_RUNTIME_TICKS: Final = "RunTimeTicks"
+ITEM_KEY_USER_DATA: Final = "UserData"
 
-ITEM_TYPE_ALBUM: Final = "MusicAlbum"
-ITEM_TYPE_ARTIST: Final = "MusicArtist"
 ITEM_TYPE_AUDIO: Final = "Audio"
 ITEM_TYPE_LIBRARY: Final = "CollectionFolder"
+
+USER_DATA_KEY_IS_FAVORITE: Final = "IsFavorite"
 
 MAX_IMAGE_WIDTH: Final = 500
 MAX_STREAMING_BITRATE: Final = "140000000"
@@ -58,6 +68,32 @@ SUPPORTED_CONTAINER_FORMATS: Final = "ogg,flac,mp3,aac,mpeg,alac,wav,aiff,wma,m4
 
 PLAYABLE_ITEM_TYPES: Final = [ITEM_TYPE_AUDIO]
 
+ARTIST_FIELDS: Final = [
+    ItemFields.Overview,
+    ItemFields.ProviderIds,
+    ItemFields.SortName,
+]
+ALBUM_FIELDS: Final = [
+    ItemFields.Overview,
+    ItemFields.ProviderIds,
+    ItemFields.SortName,
+]
+TRACK_FIELDS: Final = [
+    ItemFields.ProviderIds,
+    ItemFields.CanDownload,
+    ItemFields.SortName,
+    ItemFields.MediaSources,
+    ItemFields.MediaStreams,
+]
 
 USER_APP_NAME: Final = "Music Assistant"
 USER_AGENT: Final = "Music-Assistant-1.0"
+
+UNKNOWN_ARTIST_MAPPING: Final = ItemMapping(
+    media_type=MediaType.ARTIST, item_id=UNKNOWN_ARTIST, provider=DOMAIN, name=UNKNOWN_ARTIST
+)
+
+MEDIA_IMAGE_TYPES: Final = {
+    JellyImageType.Primary: ImageType.THUMB,
+    JellyImageType.Logo: ImageType.LOGO,
+}
