@@ -437,7 +437,7 @@ class FileSystemProviderBase(MusicProvider):
             artist_albums = await self.mass.music.artists.albums(artist_id, "library")
             artist_tracks = await self.mass.music.artists.tracks(artist_id, "library")
             if not (artist_albums or artist_tracks):
-                await self.mass.music.artists.remove_item_from_library(album_id)
+                await self.mass.music.artists.remove_item_from_library(artist_id)
 
     async def get_artist(self, prov_artist_id: str) -> Artist:
         """Get full artist details by id."""
