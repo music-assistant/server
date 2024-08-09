@@ -67,7 +67,7 @@ ConfigEntryTypeMap: dict[ConfigEntryType, type[ConfigValueType]] = {
     ConfigEntryType.STRING: str,
     ConfigEntryType.SECURE_STRING: str,
     ConfigEntryType.INTEGER: int,
-    ConfigEntryType.INTEGER_TUPLE: tuple[int, int],  # type: ignore[dict-item]
+    ConfigEntryType.INTEGER_TUPLE: tuple[int, int],
     ConfigEntryType.FLOAT: float,
     ConfigEntryType.LABEL: str,
     ConfigEntryType.DIVIDER: str,
