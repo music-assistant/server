@@ -65,7 +65,6 @@ CONF_ANNOUNCE_VOLUME_MAX: Final[str] = "announce_volume_max"
 CONF_ICON: Final[str] = "icon"
 CONF_LANGUAGE: Final[str] = "language"
 CONF_SAMPLE_RATES: Final[str] = "sample_rates"
-CONF_ONBOARD_DONE: Final[str] = "onboard_done"
 
 # config default values
 DEFAULT_HOST: Final[str] = "0.0.0.0"

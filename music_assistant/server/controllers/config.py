@@ -30,7 +30,6 @@ from music_assistant.common.models.enums import EventType, PlayerState, Provider
 from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant.constants import (
     CONF_CORE,
-    CONF_ONBOARD_DONE,
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
@@ -74,7 +73,6 @@ class ConfigController:
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
-        self.set_default(CONF_ONBOARD_DONE, len(self._data.get(CONF_PROVIDERS, {})) > 0)
         # create default server ID if needed (also used for encrypting passwords)
         self.set_default(CONF_SERVER_ID, uuid4().hex)
         server_id: str = self.get(CONF_SERVER_ID)
@@ -88,7 +86,7 @@ class ConfigController:
     @property
     def onboard_done(self) -> bool:
         """Return True if onboarding is done."""
-        return self.get(CONF_ONBOARD_DONE, False)
+        return len(self._data.get(CONF_PROVIDERS, {})) > 0
 
     async def close(self) -> None:
         """Handle logic on server stop."""
