@@ -547,7 +547,7 @@ class MusicController(CoreController):
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
         if is_library_item:
-            library_item = await ctrl.add_item_to_library(media_item)
+            library_item = await ctrl.add_item_to_library(media_item, overwrite_existing=True)
             await self.mass.metadata.update_metadata(library_item, force_refresh=True)
             return library_item
 
