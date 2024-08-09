@@ -10,7 +10,7 @@ class MediaTypeMeta(EnumType):
     """Class properties for MediaType."""
 
     @property
-    def ALL(self) -> list[MediaType]:  # noqa: N802
+    def ALL(cls) -> list[MediaType]:  # noqa: N802
         """All MediaTypes."""
         return [
             MediaType.ARTIST,
