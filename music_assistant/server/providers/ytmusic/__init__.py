@@ -81,6 +81,7 @@ VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 YT_PLAYLIST_ID_DELIMITER = "🎵"
 YT_PERSONAL_PLAYLISTS = (
     "LM",  # Liked songs
+    "SE"  # Episodes for Later
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
     "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
     "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
@@ -108,8 +109,6 @@ SUPPORTED_FEATURES = (
     ProviderFeature.SIMILAR_TRACKS,
 )
 
-YT_DLP_CACHE_SECTION = "youtube-oauth2"
-YT_DLP_CACHE_KEY = "oauth_token"
 
 # TODO: fix disabled tests
 # ruff: noqa: PLW2901, RET504
@@ -612,6 +611,7 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=str(album_id),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=f"{YTM_DOMAIN}/playlist?list={album_id}",
                 )
             },
         )
@@ -692,6 +692,7 @@ class YoutubeMusicProvider(MusicProvider):
                     item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
+                    url=f"{YTM_DOMAIN}/playlist?list={playlist_id}",
                 )
             },
         )
@@ -711,7 +712,7 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 playlist.owner = authors["name"]
         else:
-            playlist.owner = self.instance_id
+            playlist.owner = self.name
         playlist.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
@@ -720,17 +721,18 @@ class YoutubeMusicProvider(MusicProvider):
         if not track_obj.get("videoId"):
             msg = "Track is missing videoId"
             raise InvalidDataError(msg)
-
+        track_id = str(track_obj["videoId"])
         track = Track(
-            item_id=track_obj["videoId"],
+            item_id=track_id,
             provider=self.domain,
             name=track_obj["title"],
             provider_mappings={
                 ProviderMapping(
-                    item_id=str(track_obj["videoId"]),
+                    item_id=track_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     available=track_obj.get("isAvailable", True),
+                    url=f"{YTM_DOMAIN}/watch?v={track_id}",
                     audio_format=AudioFormat(
                         content_type=ContentType.M4A,
                     ),

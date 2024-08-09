@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from asyncio_throttle import Throttler
-
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
 from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed, MediaNotFoundError
@@ -20,6 +18,7 @@ from music_assistant.common.models.media_items import (
 )
 from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import CONF_USERNAME
+from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.models.music_provider import MusicProvider
 
 SUPPORTED_FEATURES = (

@@ -187,7 +187,7 @@ class Config(DataClassDictMixin):
     def get_value(self, key: str) -> ConfigValueType:
         """Return config value for given key."""
         config_value = self.values[key]
-        if config_value.type == ConfigEntryType.SECURE_STRING:
+        if config_value.type == ConfigEntryType.SECURE_STRING and config_value.value:
             assert isinstance(config_value.value, str)
             assert DECRYPT_CALLBACK is not None
             return DECRYPT_CALLBACK(config_value.value)
