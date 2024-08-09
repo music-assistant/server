@@ -70,8 +70,8 @@ def compare_artist(
 
 
 def compare_album(
-    base_item: Album | ItemMapping,
-    compare_item: Album | ItemMapping,
+    base_item: Album | ItemMapping | None,
+    compare_item: Album | ItemMapping | None,
     strict: bool = True,
 ) -> bool | None:
     """Compare two album items and return True if they match."""
@@ -117,8 +117,8 @@ def compare_album(
 
 
 def compare_track(
-    base_item: Track,
-    compare_item: Track,
+    base_item: Track | None,
+    compare_item: Track | None,
     strict: bool = True,
     track_albums: list[Album] | None = None,
 ) -> bool:
@@ -144,21 +144,6 @@ def compare_track(
         )
         if external_id_match is not None:
             return external_id_match
-    # return early on exact albumtrack match = 100% match
-    if (
-        base_item.album
-        and compare_item.album
-        and compare_album(base_item.album, compare_item.album, False)
-        and base_item.disc_number
-        and compare_item.disc_number
-        and base_item.track_number
-        and compare_item.track_number
-        and base_item.disc_number == compare_item.disc_number
-        and base_item.track_number == compare_item.track_number
-    ):
-        return True
-
-    ## fallback to comparing on attributes
 
     # compare name
     if not compare_strings(base_item.name, compare_item.name, strict=True):
@@ -176,6 +161,20 @@ def compare_track(
         compare_item.metadata.explicit = compare_item.album.metadata.explicit
     if strict and compare_explicit(base_item.metadata, compare_item.metadata) is False:
         return False
+
+    # exact albumtrack match = 100% match
+    if (
+        base_item.album
+        and compare_item.album
+        and compare_album(base_item.album, compare_item.album, False)
+        and base_item.disc_number
+        and compare_item.disc_number
+        and base_item.track_number
+        and compare_item.track_number
+        and base_item.disc_number == compare_item.disc_number
+        and base_item.track_number == compare_item.track_number
+    ):
+        return True
 
     # fallback: exact album match and (near-exact) track duration match
     if (
@@ -216,7 +215,7 @@ def compare_track(
     # Accept last resort (in non strict mode): (near) exact duration,
     # otherwise fail all other cases.
     # Note that as this stage, all other info already matches,
-    # such as title artist etc.
+    # such as title, artist etc.
     return abs(base_item.duration - compare_item.duration) <= 2
 
 
@@ -288,8 +287,6 @@ def compare_artists(
     any_match: bool = True,
 ) -> bool:
     """Compare two lists of artist and return True if both lists match (exactly)."""
-    if not base_items and not compare_items:
-        return True
     if not base_items or not compare_items:
         return False
     # match if first artist matches in both lists
