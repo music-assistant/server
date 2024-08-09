@@ -155,7 +155,7 @@ class MusicAssistant:
         # load all available providers from manifest files
         await self.__load_provider_manifests()
         # setup discovery
-        self.create_task(self._setup_discovery())
+        await self._setup_discovery()
         # load providers
         if not self.safe_mode:
             await self._load_providers()
