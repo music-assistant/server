@@ -122,7 +122,7 @@ async def get_config_entries(
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID",
+            label="Client ID (optional)",
             description="By default, a generic client ID is used which is heavy rate limited. "
             "It is advised that you create your own Spotify Developer account and use "
             "that client ID here to speedup performance.",
