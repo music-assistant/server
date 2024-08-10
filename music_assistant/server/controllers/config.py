@@ -276,15 +276,6 @@ class ConfigController:
             msg = f"Provider {instance_id} does not exist"
             raise KeyError(msg)
         prov_manifest = self.mass.get_provider_manifest(existing["domain"])
-        if prov_manifest.load_by_default and instance_id == prov_manifest.domain:
-            # Guard for a provider that is loaded by default
-            LOGGER.warning(
-                "Provider %s can not be removed, disabling instead...",
-                prov_manifest.name,
-            )
-            existing["enabled"] = False
-            await self._update_provider_config(instance_id, existing)
-            return
         if prov_manifest.builtin:
             msg = f"Builtin provider {prov_manifest.name} can not be removed."
             raise RuntimeError(msg)
@@ -756,8 +747,8 @@ class ConfigController:
         else:
             # disable provider
             prov_manifest = self.mass.get_provider_manifest(config.domain)
-            if prov_manifest.builtin:
-                msg = "Builtin provider can not be disabled."
+            if not prov_manifest.allow_disable:
+                msg = "Provider can not be disabled."
                 raise RuntimeError(msg)
             # also unload any other providers dependent of this provider
             for dep_prov in self.mass.providers:

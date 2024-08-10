@@ -31,12 +31,10 @@ class ProviderManifest(DataClassORJSONMixin):
     documentation: str | None = None
     # multi_instance: whether multiple instances of the same provider are allowed/possible
     multi_instance: bool = False
-    # builtin: whether this provider is a system/builtin and can not disabled/removed
+    # builtin: whether this provider is a system/builtin provider, loaded by default
     builtin: bool = False
-    # hidden: hide entry in the UI
-    hidden: bool = False
-    # load_by_default: load this provider by default (may be used together with `builtin`)
-    load_by_default: bool = False
+    # allow_disable: whether this provider can be disabled (used with builtin)
+    allow_disable: bool = True
     # depends_on: depends on another provider to function
     depends_on: str | None = None
     # icon: name of the material design icon (https://pictogrammers.com/library/mdi)

@@ -3,14 +3,9 @@
   "domain": "slimproto",
   "name": "Slimproto (Squeezebox players)",
   "description": "Support for slimproto based players (e.g. squeezebox, squeezelite).",
-  "codeowners": [
-    "@music-assistant"
-  ],
-  "requirements": [
-    "aioslimproto==3.0.1"
-  ],
+  "codeowners": ["@music-assistant"],
+  "requirements": ["aioslimproto==3.0.1"],
   "documentation": "https://music-assistant.io/player-support/slimproto/",
   "multi_instance": false,
-  "builtin": false,
-  "load_by_default": false
+  "builtin": false
 }
