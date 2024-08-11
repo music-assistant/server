@@ -30,10 +30,19 @@ class APICommandHandler:
         cls, command: str, func: Callable[..., Coroutine[Any, Any, Any]]
     ) -> APICommandHandler:
         """Parse APICommandHandler by providing a function."""
+        type_hints = get_type_hints(func)
+        # workaround for generic typevar ItemCls that needs to be resolved
+        # to the real media item type. TODO: find a better way to do this
+        # without this hack
+        for key, value in type_hints.items():
+            if not hasattr(value, "__name__"):
+                continue
+            if value.__name__ == "ItemCls":
+                type_hints[key] = func.__self__.item_cls
         return APICommandHandler(
             command=command,
             signature=inspect.signature(func),
-            type_hints=get_type_hints(func),
+            type_hints=type_hints,
             target=func,
         )
 
@@ -148,6 +157,7 @@ def parse_value(name: str, value: Any, value_type: Any, default: Any = MISSING) 
         return float(value)
     if value_type is int and isinstance(value, str) and value.isnumeric():
         return int(value)
+
     if not isinstance(value, value_type):  # type: ignore[arg-type]
         msg = (
             f"Value {value} of type {type(value)} is invalid for {name}, "

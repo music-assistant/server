@@ -151,7 +151,9 @@ class MetaDataController(CoreController):
                 "This will allow Music Assistant to fetch additional metadata from (enabled) "
                 "metadata providers, such as The Audio DB and Fanart.tv.\n\n"
                 "Note that these online sources are only queried when no information is already "
-                "available from local files or the music providers.\n\n"
+                "available from local files or the music providers and local artwork/metadata "
+                "will always have preference over online sources so consider metadata from online "
+                "sources as complementary only.\n\n"
                 "The retrieval of additional rich metadata is a process that is executed slowly "
                 "in the background to not overload these free services with requests. "
                 "You can speedup the process by storing the images and other metadata locally.",
