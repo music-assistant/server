@@ -274,7 +274,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
-            return [item async for item in await self.iter_library_items(search=search_query)]
+            return await self.library_items(search=search_query, limit=limit)
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
