@@ -387,11 +387,12 @@ def compare_external_ids(
     return None
 
 
-def create_safe_string(input_str: str) -> str:
+def create_safe_string(input_str: str, lowercase: bool = True, replace_space: bool = False) -> str:
     """Return clean lowered string for compare actions."""
-    input_str = input_str.lower().strip()
+    input_str = input_str.lower().strip() if lowercase else input_str.strip()
     unaccented_string = unidecode.unidecode(input_str)
-    return re.sub(r"[^a-zA-Z0-9]", "", unaccented_string)
+    regex = r"[^a-zA-Z0-9]" if replace_space else r"[^a-zA-Z0-9 ]"
+    return re.sub(regex, "", unaccented_string)
 
 
 def loose_compare_strings(base: str, alt: str) -> bool:

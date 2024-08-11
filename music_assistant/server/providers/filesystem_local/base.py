@@ -49,7 +49,7 @@ from music_assistant.constants import (
     DB_TABLE_TRACK_ARTISTS,
     VARIOUS_ARTISTS_NAME,
 )
-from music_assistant.server.helpers.compare import compare_strings
+from music_assistant.server.helpers.compare import compare_strings, create_safe_string
 from music_assistant.server.helpers.playlists import parse_m3u, parse_pls
 from music_assistant.server.helpers.tags import parse_tags, split_items
 from music_assistant.server.models.music_provider import MusicProvider
@@ -894,10 +894,11 @@ class FileSystemProviderBase(MusicProvider):
                     break
             else:
                 # check if we have an artist folder for this artist at root level
+                safe_artist_name = create_safe_string(name, lowercase=False, replace_space=False)
                 if await self.exists(name):
                     artist_path = name
-                elif await self.exists(name.title()):
-                    artist_path = name.title()
+                elif await self.exists(safe_artist_name):
+                    artist_path = safe_artist_name
 
         if artist_path:  # noqa: SIM108
             # prefer the path as id
