@@ -942,7 +942,7 @@ class MusicController(CoreController):
             return
 
         # all other versions: reset the database
-        # we only migrate from prtev version to current we do not try to handle
+        # we only migrate from prev version to current, we do not try to handle
         # more complex migrations
         self.logger.warning(
             "Database schema too old - Resetting library/database - "
