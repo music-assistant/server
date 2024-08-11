@@ -416,6 +416,7 @@ class Music:
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 50,
+        library_only: bool = False,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
@@ -429,6 +430,7 @@ class Music:
                 search_query=search_query,
                 media_types=media_types,
                 limit=limit,
+                library_only=library_only,
             ),
         )
 

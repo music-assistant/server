@@ -177,6 +177,7 @@ class MusicController(CoreController):
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 25,
+        library_only: bool = False,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
@@ -219,8 +220,10 @@ class MusicController(CoreController):
                     else:
                         return SearchResults()
 
-        # include results from all (unique) music providers
+        # include results from library +  all (unique) music providers
+        search_providers = [] if library_only else self.get_unique_providers()
         results_per_provider: list[SearchResults] = await asyncio.gather(
+            self.search_library(search_query, media_types, limit=limit),
             *[
                 self.search_provider(
                     search_query,
@@ -228,8 +231,8 @@ class MusicController(CoreController):
                     media_types,
                     limit=limit,
                 )
-                for provider_instance in self.get_unique_providers()
-            ]
+                for provider_instance in search_providers
+            ],
         )
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
@@ -278,7 +281,6 @@ class MusicController(CoreController):
         :param search_query: Search query
         :param provider_instance_id_or_domain: instance_id or domain of the provider
                                                to perform the search on.
-        :param provider_instance: instance id of the provider to perform the search on.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
@@ -309,6 +311,35 @@ class MusicController(CoreController):
             self.mass.create_task(
                 self.mass.cache.set(cache_key, result.to_dict(), expiration=86400 * 7)
             )
+        return result
+
+    async def search_library(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 10,
+    ) -> SearchResults:
+        """Perform search on the library.
+
+        :param search_query: Search query
+        :param media_types: A list of media_types to include.
+        :param limit: number of items to return in the search (per type).
+        """
+        result = SearchResults()
+        for media_type in media_types:
+            ctrl = self.get_controller(media_type)
+            search_results = await ctrl.search(search_query, "library", limit=limit)
+            if search_results:
+                if media_type == MediaType.ARTIST:
+                    result.artists = search_results
+                elif media_type == MediaType.ALBUM:
+                    result.albums = search_results
+                elif media_type == MediaType.TRACK:
+                    result.tracks = search_results
+                elif media_type == MediaType.PLAYLIST:
+                    result.playlists = search_results
+                elif media_type == MediaType.RADIO:
+                    result.radio = search_results
         return result
 
     @api_command("music/browse")
