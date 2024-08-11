@@ -101,12 +101,14 @@ LOCALES = {
 DEFAULT_LANGUAGE = "en_US"
 REFRESH_INTERVAL = 60 * 60 * 24 * 90
 MAX_ONLINE_CALLS_PER_DAY = 30
+CONF_ENABLE_ONLINE_METADATA = "enable_online_metadata"
 
 
 class MetaDataController(CoreController):
     """Several helpers to search and store metadata for mediaitems."""
 
     domain: str = "metadata"
+    config: CoreConfig
 
     def __init__(self, *args, **kwargs) -> None:
         """Initialize class."""
@@ -139,10 +141,26 @@ class MetaDataController(CoreController):
                 "in your preferred language is not available.",
                 options=tuple(ConfigValueOption(value, key) for key, value in LOCALES.items()),
             ),
+            ConfigEntry(
+                key=CONF_ENABLE_ONLINE_METADATA,
+                type=ConfigEntryType.BOOLEAN,
+                label="Enable metadata retrieval from online metadata providers",
+                required=False,
+                default_value=True,
+                description="Enable online metadata lookups.\n\n"
+                "This will allow Music Assistant to fetch additional metadata from (enabled) "
+                "metadata providers, such as The Audio DB and Fanart.tv.\n\n"
+                "Note that these online sources are only queried when no information is already "
+                "available from local files or the music providers.\n\n"
+                "The retrieval of additional rich metadata is a process that is executed slowly "
+                "in the background to not overload these free services with requests. "
+                "You can speedup the process by storing the images and other metadata locally.",
+            ),
         )
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
+        self.config = config
         if not self.logger.isEnabledFor(VERBOSE_LOG_LEVEL):
             # silence PIL logger
             logging.getLogger("PIL").setLevel(logging.WARNING)
@@ -219,15 +237,15 @@ class MetaDataController(CoreController):
             # this shouldn't happen but just in case.
             raise RuntimeError("Metadata can only be updated for library items")
         if item.media_type == MediaType.ARTIST:
-            await self._update_artist_metadata(item)
+            await self._update_artist_metadata(item, force_refresh=force_refresh)
         if item.media_type == MediaType.ALBUM:
-            await self._update_album_metadata(item)
+            await self._update_album_metadata(item, force_refresh=force_refresh)
         if item.media_type == MediaType.TRACK:
-            await self._update_track_metadata(item)
+            await self._update_track_metadata(item, force_refresh=force_refresh)
         if item.media_type == MediaType.PLAYLIST:
-            await self._update_playlist_metadata(item)
+            await self._update_playlist_metadata(item, force_refresh=force_refresh)
         if item.media_type == MediaType.RADIO:
-            await self._update_radio_metadata(item)
+            await self._update_radio_metadata(item, force_refresh=force_refresh)
 
     @api_command("metadata/scan")
     async def metadata_scanner(self) -> None:
@@ -237,39 +255,39 @@ class MetaDataController(CoreController):
             return
         self._scanner_running = True
         try:
-            timestamp = int(time() - 60 * 60 * 24 * 7)
+            timestamp = int(time() - 60 * 60 * 24 * 30)
             query = (
                 f"WHERE json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL "
                 f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') < {timestamp}"
             )
             for artist in await self.mass.music.artists.library_items(
-                limit=250, order_by="random", extra_query=query
+                limit=50, order_by="random", extra_query=query
             ):
                 await self._update_artist_metadata(artist)
                 # we really need to throttle this
-                await asyncio.sleep(10)
+                await asyncio.sleep(30)
 
             query = (
                 f"WHERE json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
                 f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {timestamp}"
             )
             for album in await self.mass.music.albums.library_items(
-                limit=250, order_by="random", extra_query=query
+                limit=50, order_by="random", extra_query=query
             ):
                 await self._update_album_metadata(album)
                 # we really need to throttle this
-                await asyncio.sleep(10)
+                await asyncio.sleep(30)
 
             query = (
                 f"WHERE json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
                 f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
             )
             for playlist in await self.mass.music.playlists.library_items(
-                limit=250, order_by="random", extra_query=query
+                limit=50, order_by="random", extra_query=query
             ):
                 await self._update_playlist_metadata(playlist)
                 # we really need to throttle this
-                await asyncio.sleep(10)
+                await asyncio.sleep(30)
 
             query = (
                 f"WHERE json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
@@ -452,9 +470,12 @@ class MetaDataController(CoreController):
         # to not overload the (free) metadata providers with api calls
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
 
-        if force_refresh or (
-            self._online_slots_available
-            and ((time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
+        if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and (
+            force_refresh
+            or (
+                self._online_slots_available
+                and ((time() - (artist.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
+            )
         ):
             self._online_slots_available -= 1
             # set timestamp, used to determine when this function was last called
@@ -506,10 +527,13 @@ class MetaDataController(CoreController):
         # NOTE: we only allow this every REFRESH_INTERVAL and a max amount of calls per day
         # to not overload the (free) metadata providers with api calls
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        if force_refresh or (
-            self._online_slots_available
-            and ((time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
-            and (album.mbid or album.artists)
+        if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and (
+            force_refresh
+            or (
+                self._online_slots_available
+                and ((time() - (album.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
+                and (album.mbid or album.artists)
+            )
         ):
             self._online_slots_available -= 1
             # set timestamp, used to determine when this function was last called
@@ -551,10 +575,13 @@ class MetaDataController(CoreController):
         # NOTE: we only allow this every REFRESH_INTERVAL and a max amount of calls per day
         # to not overload the (free) metadata providers with api calls
         # TODO: Utilize a global (cloud) cache for metadata lookups to save on API calls
-        if force_refresh or (
-            self._online_slots_available
-            and ((time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
-            and (track.mbid or track.artists or track.album)
+        if self.config.get_value(CONF_ENABLE_ONLINE_METADATA) and (
+            force_refresh
+            or (
+                self._online_slots_available
+                and ((time() - (track.metadata.last_refresh or 0)) > REFRESH_INTERVAL)
+                and (track.mbid or track.artists or track.album)
+            )
         ):
             self._online_slots_available -= 1
             # set timestamp, used to determine when this function was last called

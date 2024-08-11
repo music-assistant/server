@@ -7,7 +7,8 @@ from typing import TYPE_CHECKING, Any, cast
 
 import aiohttp.client_exceptions
 
-from music_assistant.common.models.enums import ExternalID, ProviderFeature
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import ConfigEntryType, ExternalID, ProviderFeature
 from music_assistant.common.models.media_items import (
     Album,
     AlbumType,
@@ -27,11 +28,7 @@ from music_assistant.server.helpers.throttle_retry import Throttler
 from music_assistant.server.models.metadata_provider import MetadataProvider
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import (
-        ConfigEntry,
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant.common.models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
@@ -75,6 +72,11 @@ ALBUMTYPE_MAPPING = {
     "EP": AlbumType.EP,
 }
 
+CONF_ENABLE_IMAGES = "enable_images"
+CONF_ENABLE_ARTIST_METADATA = "enable_artist_metadata"
+CONF_ENABLE_ALBUM_METADATA = "enable_album_metadata"
+CONF_ENABLE_TRACK_METADATA = "enable_track_metadata"
+
 
 async def setup(
     mass: MusicAssistant, manifest: ProviderManifest, config: ProviderConfig
@@ -99,7 +101,32 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    return ()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            key=CONF_ENABLE_ARTIST_METADATA,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable retrieval of artist metadata.",
+            default_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_ALBUM_METADATA,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable retrieval of album metadata.",
+            default_value=True,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_TRACK_METADATA,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable retrieval of track metadata.",
+            default_value=False,
+        ),
+        ConfigEntry(
+            key=CONF_ENABLE_IMAGES,
+            type=ConfigEntryType.BOOLEAN,
+            label="Enable retrieval of artist/album/track images",
+            default_value=True,
+        ),
+    )
 
 
 class AudioDbMetadataProvider(MetadataProvider):
@@ -110,7 +137,7 @@ class AudioDbMetadataProvider(MetadataProvider):
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
         self.cache = self.mass.cache
-        self.throttler = Throttler(rate_limit=1, period=30)
+        self.throttler = Throttler(rate_limit=1, period=1)
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -119,6 +146,8 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_artist_metadata(self, artist: Artist) -> MediaItemMetadata | None:
         """Retrieve metadata for artist on theaudiodb."""
+        if not self.config.get_value(CONF_ENABLE_ARTIST_METADATA):
+            return None
         if not artist.mbid:
             # for 100% accuracy we require the musicbrainz id for all lookups
             return None
@@ -129,6 +158,8 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_album_metadata(self, album: Album) -> MediaItemMetadata | None:
         """Retrieve metadata for album on theaudiodb."""
+        if not self.config.get_value(CONF_ENABLE_ALBUM_METADATA):
+            return None
         if (mbid := album.get_external_id(ExternalID.MB_RELEASEGROUP)) is None:
             return None
         result = await self._get_data("album-mb.php", i=mbid)
@@ -148,6 +179,8 @@ class AudioDbMetadataProvider(MetadataProvider):
 
     async def get_track_metadata(self, track: Track) -> MediaItemMetadata | None:
         """Retrieve metadata for track on theaudiodb."""
+        if not self.config.get_value(CONF_ENABLE_TRACK_METADATA):
+            return None
         if track.mbid:
             result = await self._get_data("track-mb.php", i=track.mbid)
             if result and result.get("track"):
@@ -200,6 +233,8 @@ class AudioDbMetadataProvider(MetadataProvider):
         else:
             metadata.description = artist_obj.get("strBiographyEN")
         # images
+        if not self.config.get_value(CONF_ENABLE_IMAGES):
+            return metadata
         metadata.images = UniqueList()
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
@@ -246,6 +281,8 @@ class AudioDbMetadataProvider(MetadataProvider):
             metadata.description = album_obj.get("strDescriptionEN")
         metadata.review = album_obj.get("strReview")
         # images
+        if not self.config.get_value(CONF_ENABLE_IMAGES):
+            return metadata
         metadata.images = UniqueList()
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
@@ -280,6 +317,8 @@ class AudioDbMetadataProvider(MetadataProvider):
         else:
             metadata.description = track_obj.get("strDescriptionEN")
         # images
+        if not self.config.get_value(CONF_ENABLE_IMAGES):
+            return metadata
         metadata.images = UniqueList([])
         for key, img_type in IMG_MAPPING.items():
             for postfix in ("", "2", "3", "4", "5", "6", "7", "8", "9", "10"):
