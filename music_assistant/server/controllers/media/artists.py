@@ -460,33 +460,27 @@ class ArtistsController(MediaControllerBase[Artist]):
                         provider_mapping.item_id, provider_mapping.provider_instance
                     )
         for ref_track in ref_tracks:
-            for search_str in (
-                f"{db_artist.name} - {ref_track.name}",
-                f"{db_artist.name} {ref_track.name}",
-                ref_track.name,
-            ):
-                search_results = await self.mass.music.tracks.search(search_str, provider.domain)
-                for search_result_item in search_results:
-                    if not compare_strings(search_result_item.name, ref_track.name, strict=True):
+            search_str = f"{db_artist.name} - {ref_track.name}"
+            search_results = await self.mass.music.tracks.search(search_str, provider.domain)
+            for search_result_item in search_results:
+                if not compare_strings(search_result_item.name, ref_track.name, strict=True):
+                    continue
+                # get matching artist from track
+                for search_item_artist in search_result_item.artists:
+                    if not compare_strings(search_item_artist.name, db_artist.name, strict=True):
                         continue
-                    # get matching artist from track
-                    for search_item_artist in search_result_item.artists:
-                        if not compare_strings(
-                            search_item_artist.name, db_artist.name, strict=True
-                        ):
-                            continue
-                        # 100% track match
-                        # get full artist details so we have all metadata
-                        prov_artist = await self.get_provider_item(
-                            search_item_artist.item_id,
-                            search_item_artist.provider,
-                            fallback=search_result_item,
-                        )
-                        # 100% match, we update the db with the additional provider mapping(s)
-                        for provider_mapping in prov_artist.provider_mappings:
-                            await self.add_provider_mapping(db_artist.item_id, provider_mapping)
-                            db_artist.provider_mappings.add(provider_mapping)
-                        return True
+                    # 100% track match
+                    # get full artist details so we have all metadata
+                    prov_artist = await self.get_provider_item(
+                        search_item_artist.item_id,
+                        search_item_artist.provider,
+                        fallback=search_result_item,
+                    )
+                    # 100% match, we update the db with the additional provider mapping(s)
+                    for provider_mapping in prov_artist.provider_mappings:
+                        await self.add_provider_mapping(db_artist.item_id, provider_mapping)
+                        db_artist.provider_mappings.add(provider_mapping)
+                    return True
         # try to get a match with some reference albums of this artist
         ref_albums = await self.mass.music.artists.albums(db_artist.item_id, db_artist.provider)
         if len(ref_albums) < 10:
@@ -501,29 +495,25 @@ class ArtistsController(MediaControllerBase[Artist]):
                 continue
             if not ref_album.artists:
                 continue
-            for search_str in (
-                ref_album.name,
-                f"{db_artist.name} - {ref_album.name}",
-                f"{db_artist.name} {ref_album.name}",
-            ):
-                search_result = await self.mass.music.albums.search(search_str, provider.domain)
-                for search_result_item in search_result:
-                    if not search_result_item.artists:
-                        continue
-                    if not compare_strings(search_result_item.name, ref_album.name):
-                        continue
-                    # artist must match 100%
-                    if not compare_artist(db_artist, search_result_item.artists[0]):
-                        continue
-                    # 100% match
-                    # get full artist details so we have all metadata
-                    prov_artist = await self.get_provider_item(
-                        search_result_item.artists[0].item_id,
-                        search_result_item.artists[0].provider,
-                        fallback=search_result_item,
-                    )
-                    await self._update_library_item(db_artist.item_id, prov_artist)
-                    return True
+            search_str = f"{db_artist.name} - {ref_album.name}"
+            search_result = await self.mass.music.albums.search(search_str, provider.domain)
+            for search_result_item in search_result:
+                if not search_result_item.artists:
+                    continue
+                if not compare_strings(search_result_item.name, ref_album.name):
+                    continue
+                # artist must match 100%
+                if not compare_artist(db_artist, search_result_item.artists[0]):
+                    continue
+                # 100% match
+                # get full artist details so we have all metadata
+                prov_artist = await self.get_provider_item(
+                    search_result_item.artists[0].item_id,
+                    search_result_item.artists[0].provider,
+                    fallback=search_result_item,
+                )
+                await self._update_library_item(db_artist.item_id, prov_artist)
+                return True
         return False
 
     def _artist_from_item_mapping(self, item: ItemMapping) -> Artist:

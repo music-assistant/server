@@ -395,31 +395,25 @@ class AlbumsController(MediaControllerBase[Album]):
                 "Trying to match album %s on provider %s", db_album.name, provider.name
             )
             match_found = False
-            for search_str in (
-                db_album.name,
-                f"{artist_name} - {db_album.name}",
-                f"{artist_name} {db_album.name}",
-            ):
-                if match_found:
-                    break
-                search_result = await self.search(search_str, provider.instance_id)
-                for search_result_item in search_result:
-                    if not search_result_item.available:
-                        continue
-                    if not compare_media_item(db_album, search_result_item):
-                        continue
-                    # we must fetch the full album version, search results can be simplified objects
-                    prov_album = await self.get_provider_item(
-                        search_result_item.item_id,
-                        search_result_item.provider,
-                        fallback=search_result_item,
-                    )
-                    if compare_album(db_album, prov_album):
-                        # 100% match, we update the db with the additional provider mapping(s)
-                        match_found = True
-                        for provider_mapping in search_result_item.provider_mappings:
-                            await self.add_provider_mapping(db_album.item_id, provider_mapping)
-                            db_album.provider_mappings.add(provider_mapping)
+            search_str = f"{artist_name} - {db_album.name}"
+            search_result = await self.search(search_str, provider.instance_id)
+            for search_result_item in search_result:
+                if not search_result_item.available:
+                    continue
+                if not compare_media_item(db_album, search_result_item):
+                    continue
+                # we must fetch the full album version, search results can be simplified objects
+                prov_album = await self.get_provider_item(
+                    search_result_item.item_id,
+                    search_result_item.provider,
+                    fallback=search_result_item,
+                )
+                if compare_album(db_album, prov_album):
+                    # 100% match, we update the db with the additional provider mapping(s)
+                    match_found = True
+                    for provider_mapping in search_result_item.provider_mappings:
+                        await self.add_provider_mapping(db_album.item_id, provider_mapping)
+                        db_album.provider_mappings.add(provider_mapping)
             return match_found
 
         # try to find match on all providers
