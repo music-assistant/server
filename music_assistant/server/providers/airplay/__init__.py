@@ -474,30 +474,26 @@ class AirPlayPlayer:
         self.discovery_info = discovery_info
         self.address = address
         self.logger = prov.logger.getChild(player_id)
-        self.lock = asyncio.Lock()
         self.raop_stream: RaopStream | None = None
 
     async def cmd_stop(self, update_state: bool = True) -> None:
         """Send STOP command to player."""
-        async with self.lock:
-            if self.raop_stream:
-                await self.raop_stream.stop()
+        if self.raop_stream:
+            await self.raop_stream.stop()
         if update_state and (mass_player := self.mass.players.get(self.player_id)):
             mass_player.state = PlayerState.IDLE
             self.mass.players.update(mass_player.player_id)
 
     async def cmd_play(self) -> None:
         """Send PLAY (unpause) command to player."""
-        async with self.lock:
-            if self.raop_stream and self.raop_stream.running:
-                await self.raop_stream.send_cli_command("ACTION=PLAY")
+        if self.raop_stream and self.raop_stream.running:
+            await self.raop_stream.send_cli_command("ACTION=PLAY")
 
     async def cmd_pause(self) -> None:
         """Send PAUSE command to player."""
         if not self.raop_stream or not self.raop_stream.running:
             return
-        async with self.lock:
-            await self.raop_stream.send_cli_command("ACTION=PAUSE")
+        await self.raop_stream.send_cli_command("ACTION=PAUSE")
 
 
 class AirplayProvider(PlayerProvider):
@@ -508,6 +504,7 @@ class AirplayProvider(PlayerProvider):
     _discovery_running: bool = False
     _dacp_server: asyncio.Server = None
     _dacp_info: AsyncServiceInfo = None
+    _play_media_lock: asyncio.Lock = asyncio.Lock()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -649,6 +646,7 @@ class AirplayProvider(PlayerProvider):
         media: PlayerMedia,
     ) -> None:
         """Handle PLAY MEDIA on given player."""
+        await self._play_media_lock.acquire()
         player = self.mass.players.get(player_id)
         if player.synced_to:
             # should not happen, but just in case
@@ -733,6 +731,7 @@ class AirplayProvider(PlayerProvider):
         self._players[player_id].raop_stream.audio_source_task = asyncio.create_task(
             audio_streamer()
         )
+        self._play_media_lock.release()
 
     async def cmd_volume_set(self, player_id: str, volume_level: int) -> None:
         """Send VOLUME_SET command to given player.
