@@ -106,6 +106,7 @@ class PlayerController(CoreController):
         )
         self.manifest.icon = "speaker-multiple"
         self._poll_task: asyncio.Task | None = None
+        self._player_locks: dict[str, asyncio.Lock] = {}
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -199,7 +200,8 @@ class PlayerController(CoreController):
             await self.mass.player_queues.play(player_id)
             return
         player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_play(player_id)
+        async with self._player_locks[player_id]:
+            await player_provider.cmd_play(player_id)
 
     @api_command("players/cmd/pause")
     @handle_player_command
@@ -242,7 +244,6 @@ class PlayerController(CoreController):
         self.mass.create_task(_watch_pause(player_id))
 
     @api_command("players/cmd/play_pause")
-    @handle_player_command
     async def cmd_play_pause(self, player_id: str) -> None:
         """Toggle play/pause on given player.
 
@@ -292,7 +293,8 @@ class PlayerController(CoreController):
         if PlayerFeature.POWER in player.supported_features:
             # forward to player provider
             player_provider = self.get_player_provider(player_id)
-            await player_provider.cmd_power(player_id, powered)
+            async with self._player_locks[player_id]:
+                await player_provider.cmd_power(player_id, powered)
         else:
             # allow the stop command to process and prevent race conditions
             await asyncio.sleep(0.2)
@@ -332,7 +334,8 @@ class PlayerController(CoreController):
             msg = f"Player {player.display_name} does not support volume_set"
             raise UnsupportedFeaturedException(msg)
         player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_volume_set(player_id, volume_level)
+        async with self._player_locks[player_id]:
+            await player_provider.cmd_volume_set(player_id, volume_level)
 
     @api_command("players/cmd/volume_up")
     @handle_player_command
@@ -438,7 +441,8 @@ class PlayerController(CoreController):
             msg = f"Player {player.display_name} does not support muting"
             raise UnsupportedFeaturedException(msg)
         player_provider = self.get_player_provider(player_id)
-        await player_provider.cmd_volume_mute(player_id, muted)
+        async with self._player_locks[player_id]:
+            await player_provider.cmd_volume_mute(player_id, muted)
 
     @api_command("players/cmd/seek")
     async def cmd_seek(self, player_id: str, position: int) -> None:
@@ -466,8 +470,8 @@ class PlayerController(CoreController):
     ) -> None:
         """Handle playback of an announcement (url) on given player."""
         player = self.get(player_id, True)
-        if player.announcement_in_progress:
-            return
+        while player.announcement_in_progress:
+            await asyncio.sleep(0.5)
         if not url.startswith("http"):
             raise PlayerCommandFailed("Only URLs are supported for announcements")
         try:
@@ -576,7 +580,8 @@ class PlayerController(CoreController):
                 )
             return
         player_prov = self.mass.players.get_player_provider(player_id)
-        await player_prov.enqueue_next_media(player_id=player_id, media=media)
+        async with self._player_locks[player_id]:
+            await player_prov.enqueue_next_media(player_id=player_id, media=media)
 
     @api_command("players/cmd/sync")
     @handle_player_command
@@ -628,7 +633,7 @@ class PlayerController(CoreController):
                 continue
             if child_player.synced_to and child_player.synced_to == target_player:
                 continue  # already synced to this target
-            if child_player.synced_to and child_player.synced_to != target_player:
+            elif child_player.synced_to:
                 # player already synced to another player, unsync first
                 self.logger.warning(
                     "Player %s is already synced, unsyncing first", child_player.name
@@ -649,7 +654,8 @@ class PlayerController(CoreController):
 
         # forward command to the player provider after all (base) sanity checks
         player_provider = self.get_player_provider(target_player)
-        await player_provider.cmd_sync_many(target_player, child_player_ids)
+        async with self._player_locks[target_player]:
+            await player_provider.cmd_sync_many(target_player, child_player_ids)
 
     @api_command("players/cmd/unsync_many")
     async def cmd_unsync_many(self, player_ids: list[str]) -> None:
@@ -734,6 +740,9 @@ class PlayerController(CoreController):
 
         # register playerqueue for this player
         self.mass.create_task(self.mass.player_queues.on_player_register(player))
+
+        # register lock for this player
+        self._player_locks[player_id] = asyncio.Lock()
 
         self._players[player_id] = player
 
