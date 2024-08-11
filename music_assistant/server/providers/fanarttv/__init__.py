@@ -79,9 +79,9 @@ async def get_config_entries(
             key=CONF_CLIENT_KEY,
             type=ConfigEntryType.SECURE_STRING,
             label="VIP Member Personal API Key (optional)",
-            description="Support this metadata provider by becoming a VIP Member,"
+            description="Support this metadata provider by becoming a VIP Member, "
             "resulting in higher rate limits and faster response times among other benefits. "
-            "See https://wiki.fanart.tv/General/personal api/ for more information.",
+            "See https://wiki.fanart.tv/General/personal%20api/ for more information.",
             required=False,
         ),
     )
