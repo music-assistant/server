@@ -764,6 +764,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     "details": provider_mapping.details,
                 },
             )
+        provider_mappings = {x for x in provider_mappings if x.provider_instance is not None}
         # we (temporary?) duplicate the provider mappings in a separate column of the media
         # item's table, because the json_group_array query is superslow
         await self.mass.music.database.update(

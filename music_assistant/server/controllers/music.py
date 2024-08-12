@@ -66,7 +66,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 4
+DB_SCHEMA_VERSION: Final[int] = 5
 
 
 class MusicController(CoreController):
@@ -1005,7 +1005,7 @@ class MusicController(CoreController):
                 primary_mapping = await self.database.get_row(
                     DB_TABLE_PROVIDER_MAPPINGS, {"item_id": track.item_id, "media_type": "track"}
                 )
-                if not primary_mapping:
+                if not primary_mapping or not primary_mapping["provider_instance"]:
                     continue
                 # remove all other mappings except the primary
                 track.provider_mappings = {
@@ -1016,7 +1016,29 @@ class MusicController(CoreController):
                 }
                 # reset the metadata timestamp to force a full metadata refresh later
                 track.metadata.last_refresh = None
-                await self.tracks.update_item_in_library(track.item_id, track, True)
+                try:
+                    await self.tracks.update_item_in_library(track.item_id, track, True)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error while migrating %s: %s",
+                        track.item_id,
+                        str(err),
+                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                    )
+                    await self.tracks.remove_item_from_library(track.item_id)
+
+        if prev_version < 5:
+            # remove corrupted provider mappings
+            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
+                query = (
+                    f"WHERE {ctrl.db_table}.provider_mappings "
+                    "LIKE '%\"provider_instance\":null%' "
+                )
+                async for item in ctrl.iter_library_items(extra_query=query):
+                    item.provider_mappings = {
+                        x for x in item.provider_mappings if x.provider_instance is not None
+                    }
+                    await ctrl.update_item_in_library(item.item_id, item, True)
 
         # save changes
         await self.database.commit()
