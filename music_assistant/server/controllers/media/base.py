@@ -743,16 +743,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if overwrite:
             # on overwrite, clear the provider_mappings table first
             # this is done for filesystem provider changing the path (and thus item_id)
-            for provider_mapping in provider_mappings:
-                await self.mass.music.database.delete(
-                    DB_TABLE_PROVIDER_MAPPINGS,
-                    {
-                        "media_type": self.media_type.value,
-                        "item_id": db_id,
-                        "provider_instance": provider_mapping.provider_instance,
-                    },
-                )
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": self.media_type.value, "item_id": db_id},
+            )
         for provider_mapping in provider_mappings:
+            if not provider_mapping.provider_instance:
+                continue
             await self.mass.music.database.insert_or_replace(
                 DB_TABLE_PROVIDER_MAPPINGS,
                 {
