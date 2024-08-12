@@ -495,6 +495,9 @@ class StreamsController(CoreController):
         last_fadeout_part = b""
         queue.flow_mode = True
         queue.stream_finished = False
+        queue.flow_mode_start_index = self.mass.player_queues.index_by_id(
+            queue.queue_id, start_queue_item.queue_item_id
+        )
         use_crossfade = await self.mass.config.get_player_config_value(
             queue.queue_id, CONF_CROSSFADE
         )
