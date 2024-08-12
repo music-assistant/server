@@ -66,7 +66,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 3
+DB_SCHEMA_VERSION: Final[int] = 4
 
 
 class MusicController(CoreController):
@@ -953,8 +953,32 @@ class MusicController(CoreController):
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
-        if prev_version == 2:
-            # migrate from version 2 to 3
+
+        if prev_version < 2:
+            # unhandled schema version
+            # we do not try to handle more complex migrations
+            self.logger.warning(
+                "Database schema too old - Resetting library/database - "
+                "a full rescan will be performed, this can take a while!"
+            )
+            for table in (
+                DB_TABLE_TRACKS,
+                DB_TABLE_ALBUMS,
+                DB_TABLE_ARTISTS,
+                DB_TABLE_PLAYLISTS,
+                DB_TABLE_RADIOS,
+                DB_TABLE_ALBUM_TRACKS,
+                DB_TABLE_PLAYLOG,
+                DB_TABLE_TRACK_LOUDNESS,
+                DB_TABLE_PROVIDER_MAPPINGS,
+            ):
+                await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+            await self.database.commit()
+            # recreate missing tables
+            await self.__create_database_tables()
+            return
+
+        if prev_version < 3:
             # convert musicbrainz external id's
             await self.database.execute(
                 f"UPDATE {DB_TABLE_ARTISTS} SET external_ids = "
@@ -969,31 +993,33 @@ class MusicController(CoreController):
                 f"UPDATE {DB_TABLE_TRACKS} SET external_ids = "
                 "replace(external_ids, 'musicbrainz', 'musicbrainz_recordingid')"
             )
-            await self.database.commit()
-            return
 
-        # all other versions: reset the database
-        # we only migrate from prev version to current, we do not try to handle
-        # more complex migrations
-        self.logger.warning(
-            "Database schema too old - Resetting library/database - "
-            "a full rescan will be performed, this can take a while!"
-        )
-        for table in (
-            DB_TABLE_TRACKS,
-            DB_TABLE_ALBUMS,
-            DB_TABLE_ARTISTS,
-            DB_TABLE_PLAYLISTS,
-            DB_TABLE_RADIOS,
-            DB_TABLE_ALBUM_TRACKS,
-            DB_TABLE_PLAYLOG,
-            DB_TABLE_TRACK_LOUDNESS,
-            DB_TABLE_PROVIDER_MAPPINGS,
-        ):
-            await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+        if prev_version < 4:
+            # remove all additional track provider mappings to cleanup the mess caused
+            # by a bug that mapped the wrong track artists.
+            async for track in self.tracks.iter_library_items():
+                if len(track.provider_mappings) <= 2:
+                    continue
+                # get the primary provider mapping from the db table
+                # as that is sorted on insertion order
+                primary_mapping = await self.database.get_row(
+                    DB_TABLE_PROVIDER_MAPPINGS, {"item_id": track.item_id, "media_type": "track"}
+                )
+                if not primary_mapping:
+                    continue
+                # remove all other mappings except the primary
+                track.provider_mappings = {
+                    x
+                    for x in track.provider_mappings
+                    if x.provider_instance == primary_mapping["provider_instance"]
+                    and x.item_id == primary_mapping["provider_item_id"]
+                }
+                # reset the metadata timestamp to force a full metadata refresh later
+                track.metadata.last_refresh = None
+                await self.tracks.update_item_in_library(track.item_id, track, True)
+
+        # save changes
         await self.database.commit()
-        # recreate missing tables
-        await self.__create_database_tables()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""

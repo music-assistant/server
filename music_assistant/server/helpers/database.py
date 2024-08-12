@@ -207,7 +207,7 @@ class DatabaseConnection:
         sql_query = f"DELETE FROM {table} "
         if match:
             sql_query += " WHERE " + " AND ".join(f"{x} = :{x}" for x in match)
-        elif query and "query" not in query.lower():
+        elif query and "where" not in query.lower():
             sql_query += "WHERE " + query
         elif query:
             sql_query += query
