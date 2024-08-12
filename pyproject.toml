@@ -23,7 +23,7 @@ server = [
   "Brotli>=1.0.9",
   "aiohttp==3.10.2",
   "aiofiles==24.1.0",
-  "aiorun==2024.5.1",
+  "aiorun==2024.8.1",
   "certifi==2024.7.4",
   "colorlog==6.8.2",
   "aiosqlite==0.20.0",
