@@ -10,7 +10,11 @@ from soundcloudpy import SoundcloudAsyncAPI
 
 from music_assistant.common.helpers.util import parse_title_and_version
 from music_assistant.common.models.config_entries import ConfigEntry, ConfigValueType
-from music_assistant.common.models.enums import ConfigEntryType, ProviderFeature, StreamType
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant.common.models.errors import InvalidDataError, LoginFailed
 from music_assistant.common.models.media_items import (
     Artist,
@@ -317,9 +321,7 @@ class SoundcloudMusicProvider(MusicProvider):
             audio_format=AudioFormat(
                 content_type=ContentType.UNKNOWN,
             ),
-            stream_type=StreamType.HLS
-            if url.startswith("https://cf-hls-media.sndcdn.com")
-            else StreamType.HTTP,
+            stream_type=StreamType.HTTP,
             path=url,
         )
 
@@ -362,12 +364,12 @@ class SoundcloudMusicProvider(MusicProvider):
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a Soundcloud Playlist response to a Playlist object."""
         playlist = Playlist(
-            item_id=playlist_obj["id"],
+            item_id=str(playlist_obj["id"]),
             provider=self.domain,
             name=playlist_obj["title"],
             provider_mappings={
                 ProviderMapping(
-                    item_id=playlist_obj["id"],
+                    item_id=str(playlist_obj["id"]),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                 )
@@ -395,14 +397,14 @@ class SoundcloudMusicProvider(MusicProvider):
         """Parse a Soundcloud Track response to a Track model object."""
         name, version = parse_title_and_version(track_obj["title"])
         track = Track(
-            item_id=track_obj["id"],
+            item_id=str(track_obj["id"]),
             provider=self.domain,
             name=name,
             version=version,
             duration=track_obj["duration"] / 1000,
             provider_mappings={
                 ProviderMapping(
-                    item_id=track_obj["id"],
+                    item_id=str(track_obj["id"]),
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
