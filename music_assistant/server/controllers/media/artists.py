@@ -510,7 +510,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 prov_artist = await self.get_provider_item(
                     search_result_item.artists[0].item_id,
                     search_result_item.artists[0].provider,
-                    fallback=search_result_item,
+                    fallback=search_result_item.artists[0],
                 )
                 await self._update_library_item(db_artist.item_id, prov_artist)
                 return True
