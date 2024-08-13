@@ -274,7 +274,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         # create safe search string
         search_query = search_query.replace("/", " ").replace("'", "")
         if provider_instance_id_or_domain == "library":
-            return [item async for item in await self.iter_library_items(search=search_query)]
+            return await self.library_items(search=search_query, limit=limit)
         prov = self.mass.get_provider(provider_instance_id_or_domain)
         if prov is None:
             return []
@@ -286,7 +286,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
 
         # prefer cache items (if any)
         cache_key = f"{prov.lookup_key}.search.{self.media_type.value}.{search_query}.{limit}"
-        cache_key = cache_key.lower().replace("", "")
+        cache_key = cache_key.lower().replace(" ", "").strip()
         if (cache := await self.mass.cache.get(cache_key)) is not None:
             return [media_from_dict(x) for x in cache]
         # no items in cache - get listing from provider
@@ -743,16 +743,13 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         if overwrite:
             # on overwrite, clear the provider_mappings table first
             # this is done for filesystem provider changing the path (and thus item_id)
-            for provider_mapping in provider_mappings:
-                await self.mass.music.database.delete(
-                    DB_TABLE_PROVIDER_MAPPINGS,
-                    {
-                        "media_type": self.media_type.value,
-                        "item_id": db_id,
-                        "provider_instance": provider_mapping.provider_instance,
-                    },
-                )
+            await self.mass.music.database.delete(
+                DB_TABLE_PROVIDER_MAPPINGS,
+                {"media_type": self.media_type.value, "item_id": db_id},
+            )
         for provider_mapping in provider_mappings:
+            if not provider_mapping.provider_instance:
+                continue
             await self.mass.music.database.insert_or_replace(
                 DB_TABLE_PROVIDER_MAPPINGS,
                 {
@@ -767,6 +764,7 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
                     "details": provider_mapping.details,
                 },
             )
+        provider_mappings = {x for x in provider_mappings if x.provider_instance is not None}
         # we (temporary?) duplicate the provider mappings in a separate column of the media
         # item's table, because the json_group_array query is superslow
         await self.mass.music.database.update(

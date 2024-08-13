@@ -7,6 +7,7 @@ import contextlib
 import json
 import os
 import platform
+import shutil
 import time
 from json.decoder import JSONDecodeError
 from tempfile import gettempdir
@@ -42,7 +43,6 @@ from music_assistant.common.models.media_items import (
     Track,
 )
 from music_assistant.common.models.streamdetails import StreamDetails
-from music_assistant.constants import CONF_PASSWORD, CONF_USERNAME
 
 # pylint: disable=no-name-in-module
 from music_assistant.server.helpers.app_vars import app_var
@@ -62,9 +62,11 @@ if TYPE_CHECKING:
     from music_assistant.server.models import ProviderInstanceType
 
 CONF_CLIENT_ID = "client_id"
+CONF_ACTION_AUTH = "auth"
 
 CACHE_DIR = gettempdir()
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
+SETUP_STORAGE_PATH = "spotify-setup"
 SUPPORTED_FEATURES = (
     ProviderFeature.LIBRARY_ARTISTS,
     ProviderFeature.LIBRARY_ALBUMS,
@@ -106,23 +108,75 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
+    data_dir = os.path.join(mass.storage_path, instance_id or SETUP_STORAGE_PATH)
+    data_dir_exists = await asyncio.to_thread(os.path.isdir, data_dir)
+
+    if action == CONF_ACTION_AUTH:
+        # authenticate with spotify using spotify connect
+        # NOTE: we like to switch to Spotify PKCE auth (and even have a branch
+        # where this is implemented), but librespot is not yet supporting this
+        # once Librespot supports using a Bearer token, we can switch to PKCE
+        # and keep the oauth flow in MA itself.
+        if not data_dir_exists:
+            await asyncio.to_thread(os.makedirs, data_dir)
+        # use librespot to perform auth using spotify connect
+        librespot_bin = await get_librespot_binary()
+        args = [
+            librespot_bin,
+            "-c",
+            data_dir,
+            "-a",
+            "-n",
+            "MUSIC_ASSISTANT",
+        ]
+        async with asyncio.timeout(300):
+            _returncode, output = await check_output(*args)
+            if _returncode == 0 and output.decode().strip() != "authorized":
+                raise LoginFailed("Authentication failed")
+
+    elif not instance_id or not data_dir_exists:
+        # authentication required
+        return (
+            ConfigEntry(
+                key="warn",
+                type=ConfigEntryType.ALERT,
+                label="Spotify needs to be authenticated with your account.\n\n"
+                "Click the authenticate button below to start the authentication process.\n\n"
+                "Then open the Spotify app on your device and select MUSIC_ASSISTANT "
+                "as playback device to authenticate.",
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_ACTION_AUTH,
+                type=ConfigEntryType.ACTION,
+                label="Authenticate Spotify",
+                required=True,
+            ),
+            ConfigEntry(
+                key=CONF_CLIENT_ID,
+                type=ConfigEntryType.SECURE_STRING,
+                label=CONF_CLIENT_ID,
+                hidden=True,
+                required=False,
+            ),
+        )
+
+    # return the default config entries
     return (
         ConfigEntry(
-            key=CONF_USERNAME,
-            type=ConfigEntryType.STRING,
-            label="Username",
-            required=True,
+            key="label_authenticated",
+            type=ConfigEntryType.LABEL,
+            label="Authenticated to Spotify",
         ),
         ConfigEntry(
-            key=CONF_PASSWORD,
-            type=ConfigEntryType.SECURE_STRING,
-            label="Password",
-            required=True,
+            key="label_whitespace",
+            type=ConfigEntryType.LABEL,
+            label=" ",
         ),
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label="Client ID",
+            label="Client ID (optional)",
             description="By default, a generic client ID is used which is heavy rate limited. "
             "It is advised that you create your own Spotify Developer account and use "
             "that client ID here to speedup performance.",
@@ -143,15 +197,24 @@ class SpotifyProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Handle async initialization of the provider."""
-        self._cache_dir = CACHE_DIR
+        self._librespot_bin = await get_librespot_binary()
         self._ap_workaround = False
-        self._cache_dir = os.path.join(CACHE_DIR, self.instance_id)
+        data_dir = os.path.join(self.mass.storage_path, self.instance_id)
+        setup_data_dir = os.path.join(self.mass.storage_path, SETUP_STORAGE_PATH)
+        data_dir_exists = await asyncio.to_thread(os.path.isdir, data_dir)
+        setup_dir_exists = await asyncio.to_thread(os.path.isdir, setup_data_dir)
+        if not data_dir_exists and setup_dir_exists:
+            # complete setup: move setup data to data dir
+            await asyncio.to_thread(os.rename, setup_data_dir, data_dir)
+        elif not data_dir_exists:
+            raise LoginFailed("Spotify is not authenticated")
+        self._data_dir = data_dir
         if self.config.get_value(CONF_CLIENT_ID):
             # loosen the throttler a bit when a custom client id is used
             self.throttler.rate_limit = 45
             self.throttler.period = 30
         # try login which will raise if it fails
-        await self.login()
+        await self.get_token()
 
     @property
     def supported_features(self) -> tuple[ProviderFeature, ...]:
@@ -441,12 +504,11 @@ class SpotifyProvider(MusicProvider):
     ) -> AsyncGenerator[bytes, None]:
         """Return the audio stream for the provider item."""
         # make sure that the token is still valid by just requesting it
-        await self.login()
-        librespot = await self.get_librespot_binary()
+        await self.get_token()
         args = [
-            librespot,
+            self._librespot_bin,
             "-c",
-            self._cache_dir,
+            self._data_dir,
             "--pass-through",
             "-b",
             "320",
@@ -642,19 +704,16 @@ class SpotifyProvider(MusicProvider):
         playlist.cache_checksum = str(playlist_obj["snapshot_id"])
         return playlist
 
-    async def login(self) -> dict:
+    async def get_token(self) -> dict:
         """Log-in Spotify and return tokeninfo."""
         # return existing token if we have one in memory
         if (
             self._auth_token
-            and await asyncio.to_thread(os.path.isdir, self._cache_dir)
-            and (self._auth_token["expiresAt"] > int(time.time()) + 600)
+            and await asyncio.to_thread(os.path.isdir, self._data_dir)
+            and (self._auth_token["expiresAt"] > int(time.time()))
         ):
             return self._auth_token
         tokeninfo, userinfo = None, self._sp_user
-        if not self.config.get_value(CONF_USERNAME) or not self.config.get_value(CONF_PASSWORD):
-            msg = "Invalid login credentials"
-            raise LoginFailed(msg)
         # retrieve token with librespot
         retries = 0
         while retries < 5:
@@ -678,7 +737,7 @@ class SpotifyProvider(MusicProvider):
             self._auth_token = tokeninfo
             self._sp_user = userinfo
             self.mass.metadata.set_default_preferred_language(userinfo["country"])
-            self.logger.info("Successfully logged in to Spotify as %s", userinfo["id"])
+            self.logger.debug("Auth token refreshed")
             self._auth_token = tokeninfo
             return tokeninfo
         if tokeninfo and not userinfo:
@@ -687,36 +746,14 @@ class SpotifyProvider(MusicProvider):
                 "probably just a temporary error"
             )
             raise LoginFailed(msg)
-        if self.config.get_value(CONF_USERNAME).isnumeric():
-            # a spotify free/basic account can be recognized when
-            # the username consists of numbers only - check that here
-            # an integer can be parsed of the username, this is a free account
-            msg = "Only Spotify Premium accounts are supported"
-            raise LoginFailed(msg)
-        msg = f"Login failed for user {self.config.get_value(CONF_USERNAME)}"
+        await asyncio.to_thread(shutil.rmtree, self._data_dir)
+        msg = "Retrieving token failed, note that only Spotify Premium accounts are supported"
         raise LoginFailed(msg)
 
     async def _get_token(self):
         """Get spotify auth token with librespot bin."""
         time_start = time.time()
-        # authorize with username and password (NOTE: this can also be Spotify Connect)
-        args = [
-            await self.get_librespot_binary(),
-            "-O",
-            "-c",
-            self._cache_dir,
-            "-a",
-            "-u",
-            self.config.get_value(CONF_USERNAME),
-            "-p",
-            self.config.get_value(CONF_PASSWORD),
-        ]
-        if self._ap_workaround:
-            args += ["--ap-port", "12345"]
-        _returncode, output = await check_output(*args)
-        if _returncode == 0 and output.decode().strip() != "authorized":
-            raise LoginFailed(f"Login failed for username {self.config.get_value(CONF_USERNAME)}")
-        # get token with (authorized) librespot
+        # get token with (pre-authorized) librespot
         scopes = [
             "user-read-playback-state",
             "user-read-currently-playing",
@@ -735,7 +772,7 @@ class SpotifyProvider(MusicProvider):
         ]
         scope = ",".join(scopes)
         args = [
-            await self.get_librespot_binary(),
+            self._librespot_bin,
             "-O",
             "-t",
             "--client-id",
@@ -743,7 +780,7 @@ class SpotifyProvider(MusicProvider):
             "--scope",
             scope,
             "-c",
-            self._cache_dir,
+            self._data_dir,
         ]
         if self._ap_workaround:
             args += ["--ap-port", "12345"]
@@ -765,7 +802,7 @@ class SpotifyProvider(MusicProvider):
         # transform token info to spotipy compatible format
         if result and "accessToken" in result:
             tokeninfo = result
-            tokeninfo["expiresAt"] = tokeninfo["expiresIn"] + int(time.time())
+            tokeninfo["expiresAt"] = tokeninfo["expiresIn"] + int(time.time() - 120)
             return tokeninfo
         return None
 
@@ -794,7 +831,7 @@ class SpotifyProvider(MusicProvider):
         kwargs["country"] = "from_token"
         tokeninfo = kwargs.pop("tokeninfo", None)
         if tokeninfo is None:
-            tokeninfo = await self.login()
+            tokeninfo = await self.get_token()
         headers = {"Authorization": f'Bearer {tokeninfo["accessToken"]}'}
         locale = self.mass.metadata.locale.replace("_", "-")
         language = locale.split("-")[0]
@@ -824,7 +861,7 @@ class SpotifyProvider(MusicProvider):
     async def _delete_data(self, endpoint, data=None, **kwargs) -> None:
         """Delete data from api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        token = await self.login()
+        token = await self.get_token()
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.delete(
             url, headers=headers, params=kwargs, json=data, ssl=False
@@ -844,7 +881,7 @@ class SpotifyProvider(MusicProvider):
     async def _put_data(self, endpoint, data=None, **kwargs) -> None:
         """Put data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        token = await self.login()
+        token = await self.get_token()
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.put(
             url, headers=headers, params=kwargs, json=data, ssl=False
@@ -864,7 +901,7 @@ class SpotifyProvider(MusicProvider):
     async def _post_data(self, endpoint, data=None, **kwargs) -> dict[str, Any]:
         """Post data on api."""
         url = f"https://api.spotify.com/v1/{endpoint}"
-        token = await self.login()
+        token = await self.get_token()
         headers = {"Authorization": f'Bearer {token["accessToken"]}'}
         async with self.mass.http_session.post(
             url, headers=headers, params=kwargs, json=data, ssl=False
@@ -881,33 +918,6 @@ class SpotifyProvider(MusicProvider):
             response.raise_for_status()
             return await response.json(loads=json_loads)
 
-    async def get_librespot_binary(self):
-        """Find the correct librespot binary belonging to the platform."""
-        # ruff: noqa: SIM102
-        if self._librespot_bin is not None:
-            return self._librespot_bin
-
-        async def check_librespot(librespot_path: str) -> str | None:
-            try:
-                returncode, output = await check_output(librespot_path, "--check")
-                if returncode == 0 and b"ok spotty" in output and b"using librespot" in output:
-                    self._librespot_bin = librespot_path
-                    return librespot_path
-            except OSError:
-                return None
-
-        base_path = os.path.join(os.path.dirname(__file__), "bin")
-        system = platform.system().lower()
-        architecture = platform.machine().lower()
-
-        if bridge_binary := await check_librespot(
-            os.path.join(base_path, f"librespot-{system}-{architecture}")
-        ):
-            return bridge_binary
-
-        msg = f"Unable to locate Librespot for {system}/{architecture}"
-        raise RuntimeError(msg)
-
     def _fix_create_playlist_api_bug(self, playlist_obj: dict[str, Any]) -> None:
         """Fix spotify API bug where incorrect owner id is returned from Create Playlist."""
         if playlist_obj["owner"]["id"] != self._sp_user["id"]:
@@ -917,3 +927,28 @@ class SpotifyProvider(MusicProvider):
             self.logger.warning(
                 "FIXME: Spotify have fixed their Create Playlist API, this fix can be removed."
             )
+
+
+async def get_librespot_binary():
+    """Find the correct librespot binary belonging to the platform."""
+    # ruff: noqa: SIM102
+
+    async def check_librespot(librespot_path: str) -> str | None:
+        try:
+            returncode, output = await check_output(librespot_path, "--check")
+            if returncode == 0 and b"ok spotty" in output and b"using librespot" in output:
+                return librespot_path
+        except OSError:
+            return None
+
+    base_path = os.path.join(os.path.dirname(__file__), "bin")
+    system = platform.system().lower()
+    architecture = platform.machine().lower()
+
+    if bridge_binary := await check_librespot(
+        os.path.join(base_path, f"librespot-{system}-{architecture}")
+    ):
+        return bridge_binary
+
+    msg = f"Unable to locate Librespot for {system}/{architecture}"
+    raise RuntimeError(msg)

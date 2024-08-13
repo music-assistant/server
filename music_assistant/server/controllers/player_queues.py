@@ -743,10 +743,15 @@ class PlayerQueuesController(CoreController):
             self.mass, queue_item, seek_position=seek_position, fade_in=fade_in
         )
         # send play_media request to player
-        await self.mass.players.play_media(
+        # NOTE that we debounce this a bit to account for someone hitting the next button
+        # like a madman. This will prevent the player from being overloaded with requests.
+        self.mass.call_later(
+            0.25,
+            self.mass.players.play_media,
             player_id=queue_id,
             # transform into PlayerMedia to send to the actual player implementation
             media=self.player_media_from_queue_item(queue_item, queue.flow_mode),
+            task_id=f"play_media_{queue_id}",
         )
 
     # Interaction with player

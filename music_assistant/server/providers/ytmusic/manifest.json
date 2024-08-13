@@ -4,7 +4,7 @@
   "name": "YouTube Music",
   "description": "Support for the YouTube Music streaming provider in Music Assistant.",
   "codeowners": ["@MarvinSchenkel"],
-  "requirements": ["ytmusicapi==1.8.0", "yt-dlp-youtube-accesstoken==0.1.1", "yt-dlp==2024.7.25"],
+  "requirements": ["ytmusicapi==1.8.0", "yt-dlp-youtube-accesstoken==0.1.1", "yt-dlp==2024.8.6"],
   "documentation": "https://music-assistant.io/music-providers/youtube-music/",
   "multi_instance": true
 }

@@ -282,28 +282,22 @@ class TracksController(MediaControllerBase[Track]):
         for artist in ref_track.artists:
             if matches:
                 break
-            for search_str in (
-                ref_track.name,
-                f"{artist.name} - {ref_track.name}",
-                f"{artist.name} {ref_track.name}",
-            ):
-                if matches:
-                    break
-                search_result = await self.search(search_str, provider.domain)
-                for search_result_item in search_result:
-                    if not search_result_item.available:
-                        continue
-                    # do a basic compare first
-                    if not compare_media_item(ref_track, search_result_item, strict=False):
-                        continue
-                    # we must fetch the full version, search results can be simplified objects
-                    prov_track = await self.get_provider_item(
-                        search_result_item.item_id,
-                        search_result_item.provider,
-                        fallback=search_result_item,
-                    )
-                    if compare_track(ref_track, prov_track, strict=strict, track_albums=ref_albums):
-                        matches.update(search_result_item.provider_mappings)
+            search_str = f"{artist.name} - {ref_track.name}"
+            search_result = await self.search(search_str, provider.domain)
+            for search_result_item in search_result:
+                if not search_result_item.available:
+                    continue
+                # do a basic compare first
+                if not compare_media_item(ref_track, search_result_item, strict=False):
+                    continue
+                # we must fetch the full version, search results can be simplified objects
+                prov_track = await self.get_provider_item(
+                    search_result_item.item_id,
+                    search_result_item.provider,
+                    fallback=search_result_item,
+                )
+                if compare_track(ref_track, prov_track, strict=strict, track_albums=ref_albums):
+                    matches.update(search_result_item.provider_mappings)
 
         if not matches:
             self.logger.debug(

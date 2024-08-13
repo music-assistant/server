@@ -66,7 +66,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 3
+DB_SCHEMA_VERSION: Final[int] = 5
 
 
 class MusicController(CoreController):
@@ -177,6 +177,7 @@ class MusicController(CoreController):
         search_query: str,
         media_types: list[MediaType] = MediaType.ALL,
         limit: int = 25,
+        library_only: bool = False,
     ) -> SearchResults:
         """Perform global search for media items on all providers.
 
@@ -219,8 +220,10 @@ class MusicController(CoreController):
                     else:
                         return SearchResults()
 
-        # include results from all (unique) music providers
+        # include results from library +  all (unique) music providers
+        search_providers = [] if library_only else self.get_unique_providers()
         results_per_provider: list[SearchResults] = await asyncio.gather(
+            self.search_library(search_query, media_types, limit=limit),
             *[
                 self.search_provider(
                     search_query,
@@ -228,8 +231,8 @@ class MusicController(CoreController):
                     media_types,
                     limit=limit,
                 )
-                for provider_instance in self.get_unique_providers()
-            ]
+                for provider_instance in search_providers
+            ],
         )
         # return result from all providers while keeping index
         # so the result is sorted as each provider delivered
@@ -278,7 +281,6 @@ class MusicController(CoreController):
         :param search_query: Search query
         :param provider_instance_id_or_domain: instance_id or domain of the provider
                                                to perform the search on.
-        :param provider_instance: instance id of the provider to perform the search on.
         :param media_types: A list of media_types to include.
         :param limit: number of items to return in the search (per type).
         """
@@ -309,6 +311,35 @@ class MusicController(CoreController):
             self.mass.create_task(
                 self.mass.cache.set(cache_key, result.to_dict(), expiration=86400 * 7)
             )
+        return result
+
+    async def search_library(
+        self,
+        search_query: str,
+        media_types: list[MediaType],
+        limit: int = 10,
+    ) -> SearchResults:
+        """Perform search on the library.
+
+        :param search_query: Search query
+        :param media_types: A list of media_types to include.
+        :param limit: number of items to return in the search (per type).
+        """
+        result = SearchResults()
+        for media_type in media_types:
+            ctrl = self.get_controller(media_type)
+            search_results = await ctrl.search(search_query, "library", limit=limit)
+            if search_results:
+                if media_type == MediaType.ARTIST:
+                    result.artists = search_results
+                elif media_type == MediaType.ALBUM:
+                    result.albums = search_results
+                elif media_type == MediaType.TRACK:
+                    result.tracks = search_results
+                elif media_type == MediaType.PLAYLIST:
+                    result.playlists = search_results
+                elif media_type == MediaType.RADIO:
+                    result.radio = search_results
         return result
 
     @api_command("music/browse")
@@ -547,7 +578,7 @@ class MusicController(CoreController):
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
         if is_library_item:
-            library_item = await ctrl.add_item_to_library(media_item)
+            library_item = await ctrl.add_item_to_library(media_item, overwrite_existing=True)
             await self.mass.metadata.update_metadata(library_item, force_refresh=True)
             return library_item
 
@@ -922,8 +953,32 @@ class MusicController(CoreController):
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
-        if prev_version == 2:
-            # migrate from version 2 to 3
+
+        if prev_version < 2:
+            # unhandled schema version
+            # we do not try to handle more complex migrations
+            self.logger.warning(
+                "Database schema too old - Resetting library/database - "
+                "a full rescan will be performed, this can take a while!"
+            )
+            for table in (
+                DB_TABLE_TRACKS,
+                DB_TABLE_ALBUMS,
+                DB_TABLE_ARTISTS,
+                DB_TABLE_PLAYLISTS,
+                DB_TABLE_RADIOS,
+                DB_TABLE_ALBUM_TRACKS,
+                DB_TABLE_PLAYLOG,
+                DB_TABLE_TRACK_LOUDNESS,
+                DB_TABLE_PROVIDER_MAPPINGS,
+            ):
+                await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+            await self.database.commit()
+            # recreate missing tables
+            await self.__create_database_tables()
+            return
+
+        if prev_version < 3:
             # convert musicbrainz external id's
             await self.database.execute(
                 f"UPDATE {DB_TABLE_ARTISTS} SET external_ids = "
@@ -938,31 +993,55 @@ class MusicController(CoreController):
                 f"UPDATE {DB_TABLE_TRACKS} SET external_ids = "
                 "replace(external_ids, 'musicbrainz', 'musicbrainz_recordingid')"
             )
-            await self.database.commit()
-            return
 
-        # all other versions: reset the database
-        # we only migrate from prtev version to current we do not try to handle
-        # more complex migrations
-        self.logger.warning(
-            "Database schema too old - Resetting library/database - "
-            "a full rescan will be performed, this can take a while!"
-        )
-        for table in (
-            DB_TABLE_TRACKS,
-            DB_TABLE_ALBUMS,
-            DB_TABLE_ARTISTS,
-            DB_TABLE_PLAYLISTS,
-            DB_TABLE_RADIOS,
-            DB_TABLE_ALBUM_TRACKS,
-            DB_TABLE_PLAYLOG,
-            DB_TABLE_TRACK_LOUDNESS,
-            DB_TABLE_PROVIDER_MAPPINGS,
-        ):
-            await self.database.execute(f"DROP TABLE IF EXISTS {table}")
+        if prev_version < 4:
+            # remove all additional track provider mappings to cleanup the mess caused
+            # by a bug that mapped the wrong track artists.
+            async for track in self.tracks.iter_library_items():
+                if len(track.provider_mappings) <= 2:
+                    continue
+                # get the primary provider mapping from the db table
+                # as that is sorted on insertion order
+                primary_mapping = await self.database.get_row(
+                    DB_TABLE_PROVIDER_MAPPINGS, {"item_id": track.item_id, "media_type": "track"}
+                )
+                if not primary_mapping or not primary_mapping["provider_instance"]:
+                    continue
+                # remove all other mappings except the primary
+                track.provider_mappings = {
+                    x
+                    for x in track.provider_mappings
+                    if x.provider_instance == primary_mapping["provider_instance"]
+                    and x.item_id == primary_mapping["provider_item_id"]
+                }
+                # reset the metadata timestamp to force a full metadata refresh later
+                track.metadata.last_refresh = None
+                try:
+                    await self.tracks.update_item_in_library(track.item_id, track, True)
+                except Exception as err:
+                    self.logger.warning(
+                        "Error while migrating %s: %s",
+                        track.item_id,
+                        str(err),
+                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                    )
+                    await self.tracks.remove_item_from_library(track.item_id)
+
+        if prev_version < 5:
+            # remove corrupted provider mappings
+            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
+                query = (
+                    f"WHERE {ctrl.db_table}.provider_mappings "
+                    "LIKE '%\"provider_instance\":null%' "
+                )
+                async for item in ctrl.iter_library_items(extra_query=query):
+                    item.provider_mappings = {
+                        x for x in item.provider_mappings if x.provider_instance is not None
+                    }
+                    await ctrl.update_item_in_library(item.item_id, item, True)
+
+        # save changes
         await self.database.commit()
-        # recreate missing tables
-        await self.__create_database_tables()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""

@@ -30,7 +30,6 @@ from music_assistant.common.models.enums import EventType, PlayerState, Provider
 from music_assistant.common.models.errors import InvalidDataError, PlayerUnavailableError
 from music_assistant.constants import (
     CONF_CORE,
-    CONF_ONBOARD_DONE,
     CONF_PLAYERS,
     CONF_PROVIDERS,
     CONF_SERVER_ID,
@@ -74,7 +73,6 @@ class ConfigController:
         """Async initialize of controller."""
         await self._load()
         self.initialized = True
-        self.set_default(CONF_ONBOARD_DONE, len(self._data.get(CONF_PROVIDERS, {})) > 0)
         # create default server ID if needed (also used for encrypting passwords)
         self.set_default(CONF_SERVER_ID, uuid4().hex)
         server_id: str = self.get(CONF_SERVER_ID)
@@ -88,7 +86,7 @@ class ConfigController:
     @property
     def onboard_done(self) -> bool:
         """Return True if onboarding is done."""
-        return self.get(CONF_ONBOARD_DONE, False)
+        return len(self._data.get(CONF_PROVIDERS, {})) > 0
 
     async def close(self) -> None:
         """Handle logic on server stop."""
@@ -278,15 +276,6 @@ class ConfigController:
             msg = f"Provider {instance_id} does not exist"
             raise KeyError(msg)
         prov_manifest = self.mass.get_provider_manifest(existing["domain"])
-        if prov_manifest.load_by_default and instance_id == prov_manifest.domain:
-            # Guard for a provider that is loaded by default
-            LOGGER.warning(
-                "Provider %s can not be removed, disabling instead...",
-                prov_manifest.name,
-            )
-            existing["enabled"] = False
-            await self._update_provider_config(instance_id, existing)
-            return
         if prov_manifest.builtin:
             msg = f"Builtin provider {prov_manifest.name} can not be removed."
             raise RuntimeError(msg)
@@ -758,8 +747,8 @@ class ConfigController:
         else:
             # disable provider
             prov_manifest = self.mass.get_provider_manifest(config.domain)
-            if prov_manifest.builtin:
-                msg = "Builtin provider can not be disabled."
+            if not prov_manifest.allow_disable:
+                msg = "Provider can not be disabled."
                 raise RuntimeError(msg)
             # also unload any other providers dependent of this provider
             for dep_prov in self.mass.providers:

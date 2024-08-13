@@ -80,6 +80,20 @@ def test_compare_album() -> None:
                 item_id="1", provider_domain="test", provider_instance="test1"
             )
         },
+        artists=media_items.UniqueList(
+            [
+                media_items.Artist(
+                    item_id="1",
+                    provider="test1",
+                    name="Artist A",
+                    provider_mappings={
+                        media_items.ProviderMapping(
+                            item_id="1", provider_domain="test", provider_instance="test1"
+                        )
+                    },
+                )
+            ]
+        ),
     )
     album_b = media_items.Album(
         item_id="1",
@@ -90,6 +104,20 @@ def test_compare_album() -> None:
                 item_id="2", provider_domain="test", provider_instance="test2"
             )
         },
+        artists=media_items.UniqueList(
+            [
+                media_items.Artist(
+                    item_id="1",
+                    provider="test1",
+                    name="Artist A",
+                    provider_mappings={
+                        media_items.ProviderMapping(
+                            item_id="1", provider_domain="test", provider_instance="test1"
+                        )
+                    },
+                )
+            ]
+        ),
     )
     # test match on name match
     assert compare.compare_album(album_a, album_b) is True
@@ -174,6 +202,20 @@ def test_compare_track() -> None:  # noqa: PLR0915
                 item_id="1", provider_domain="test", provider_instance="test1"
             )
         },
+        artists=media_items.UniqueList(
+            [
+                media_items.Artist(
+                    item_id="1",
+                    provider="test1",
+                    name="Artist A",
+                    provider_mappings={
+                        media_items.ProviderMapping(
+                            item_id="1", provider_domain="test", provider_instance="test1"
+                        )
+                    },
+                )
+            ]
+        ),
     )
     track_b = media_items.Track(
         item_id="1",
@@ -184,6 +226,20 @@ def test_compare_track() -> None:  # noqa: PLR0915
                 item_id="2", provider_domain="test", provider_instance="test2"
             )
         },
+        artists=media_items.UniqueList(
+            [
+                media_items.Artist(
+                    item_id="1",
+                    provider="test1",
+                    name="Artist A",
+                    provider_mappings={
+                        media_items.ProviderMapping(
+                            item_id="1", provider_domain="test", provider_instance="test1"
+                        )
+                    },
+                )
+            ]
+        ),
     )
     # test match on name match
     assert compare.compare_track(track_a, track_b) is True

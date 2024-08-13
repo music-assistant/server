@@ -81,6 +81,7 @@ VARIOUS_ARTISTS_YTM_ID = "UCUTXlgdcKU5vfzFqHOWIvkA"
 YT_PLAYLIST_ID_DELIMITER = "🎵"
 YT_PERSONAL_PLAYLISTS = (
     "LM",  # Liked songs
+    "SE"  # Episodes for Later
     "RDTMAK5uy_kset8DisdE7LSD4TNjEVvrKRTmG7a56sY",  # SuperMix
     "RDTMAK5uy_nGQKSMIkpr4o9VI_2i56pkGliD6FQRo50",  # My Mix 1
     "RDTMAK5uy_lz2owBgwWf1mjzyn_NbxzMViQzIg8IAIg",  # My Mix 2
@@ -711,7 +712,7 @@ class YoutubeMusicProvider(MusicProvider):
             else:
                 playlist.owner = authors["name"]
         else:
-            playlist.owner = self.instance_id
+            playlist.owner = self.name
         playlist.cache_checksum = playlist_obj.get("checksum")
         return playlist
 
