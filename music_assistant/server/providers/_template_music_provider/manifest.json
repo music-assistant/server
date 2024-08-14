@@ -4,7 +4,7 @@
   "name": "Name of the Player provider goes here",
   "description": "Short description of the player provider goes here",
   "codeowners": ["@yourgithubusername"],
-  "requirements": ["python-package-goes-here==0.0.0"],
+  "requirements": [],
   "documentation": "Link to the documentation on the music-assistant.io helppage (may be added later).",
   "mdns_discovery": ["_optional_mdns_service_type._tcp.local."]
 }

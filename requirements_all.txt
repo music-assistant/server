@@ -29,7 +29,6 @@ py-opensonic==5.1.1
 PyChromecast==14.0.1
 pycryptodome==3.20.0
 python-fullykiosk==0.0.14
-python-package-goes-here==0.0.0
 python-slugify==8.0.4
 pywidevine==1.8.0
 radios==0.3.1
