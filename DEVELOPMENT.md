@@ -2,10 +2,11 @@ Developer docs
 ==================================
 
 ## 📝 Prerequisites
-* ffmpeg (minimum version 4, version 5 recommended), must be available in the path so install at OS level
+* ffmpeg (minimum version 5, version 6 recommended), must be available in the path so install at OS level
 * Python 3.11 is minimal required (or check the pyproject for current required version)
 * [Python venv](https://docs.python.org/3/library/venv.html)
 
+We recommend developing on a (recent) MacOS or Linux machine.
 It is recommended to use Visual Studio Code as your IDE, since launch files to start Music Assistant are provided as part of the repository. Furthermore, the current code base is not verified to work on a native Windows machine. If you would like to develop on a Windows machine, install [WSL2](https://code.visualstudio.com/blogs/2019/09/03/wsl2) to increase your swag-level 🤘.
 
 ## 🚀 Setting up your development environment
@@ -20,20 +21,20 @@ It is recommended to use Visual Studio Code as your IDE, since launch files to s
 
 ### Manually
 With this repository cloned locally, execute the following commands in a terminal from the root of your repository:
-* `python -m venv .venv` (create a new separate virtual environment to nicely separate the project dependencies)
-* `source .venv/bin/activate` (activate the virtual environment)
-* `pip install -e .[test]` (install the project's dev and test dependencies)
-* Hit (Fn +) F5 to start Music Assistant locally
+* Run our development setup script to setup the development environment:
+* `scripts/setup.sh` (creates a new separate virtual environment to nicely separate the project dependencies)
+* The setup script will create a separate virtual environment (if needed), install all the project/test dependencies and configure pre-commit for linting and testing.
+* Debug: Hit (Fn +) F5 to start Music Assistant locally
 * The pre-compiled UI of Music Assistant will be available at `localhost:8095` 🎉
 
-All code is linted and verified using [pre-commit](https://pre-commit.com/). To make sure that all these checks are executed successfully *before* you push your code:
-* `pre-commit install`
-This ensures that the pre-commit checks kick in when you create a commit locally.
 
 The Music Assistant server is fully built in Python. The Python language has no real supported for multi-threading. This is why Music Assistant heavily relies on asyncio to handle blocking IO. It is important to get a good understanding of asynchronous programming before building your first provider. [This](https://www.youtube.com/watch?v=M-UcUs7IMIM) video is an excellent first step in the world of asyncio.
 
-## 🎵 Building your own Music Provider
-A Music Provider is one of the provider types that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Music Providers can be found in the `music_assistant/server/providers` folder.
+## Building a new Music Provider
+A Music Provider is the provider type that adds support for a 'source of music' to Music Assistant. Spotify and Youtube Music are examples of a Music Provider, but also Filesystem and SMB can be put in the Music Provider category. All Providers (of all types) can be found in the `music_assistant/server/providers` folder.
+
+TIP: We have created a template/stub provider in `music_assistant/server/providers/_template_music_provider` to get you started fast!
+
 
 **Adding the necessary files for a new Music Provider**
 
@@ -60,7 +61,10 @@ Create a file called `__init__.py` inside the folder of your provider. This file
 
 
 ## ▶️ Building your own Player Provider
-Will follow soon™
+A Player Provider is the provider type that adds support for a 'target of playback' to Music Assistant. Sonos, Chromecast and Airplay are examples of a Player Provider.
+All Providers (of all types) can be found in the `music_assistant/server/providers` folder.
+
+TIP: We have created a template/stub provider in `music_assistant/server/providers/_template_player_provider` to get you started fast!
 
 ## 💽 Building your own Metadata Provider
 Will follow soon™
