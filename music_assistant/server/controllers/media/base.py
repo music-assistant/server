@@ -114,7 +114,9 @@ class MediaControllerBase(Generic[ItemCls], metaclass=ABCMeta):
         return library_item
 
     async def _get_library_item_by_match(self, item: Track) -> int | None:
-        if cur_item := await self.get_library_item_by_prov_id(item.item_id, item.provider):
+        if item.provider == "library":
+            return int(item.item_id)
+        if cur_item := await self.get_library_item_by_prov_mappings(item.provider_mappings):
             return cur_item.item_id
         if cur_item := await self.get_library_item_by_external_ids(item.external_ids):
             # existing item match by external id

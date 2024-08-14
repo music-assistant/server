@@ -539,22 +539,24 @@ class MusicController(CoreController):
 
         media_type = media_item.media_type
         ctrl = self.get_controller(media_type)
-        is_library_item = media_item.provider == "library"
+        library_id = media_item.item_id if media_item.provider == "library" else None
 
-        available_providers = get_global_cache_value("provider_instance_ids")
+        available_providers = get_global_cache_value("available_providers")
         if TYPE_CHECKING:
             available_providers = cast(set[str], available_providers)
 
         # fetch the first (available) provider item
         for prov_mapping in media_item.provider_mappings:
-            provider = prov_mapping.provider_instance
-            if provider not in available_providers:
-                continue
-            item_id = prov_mapping.item_id
-            if prov_mapping.available:
-                break
+            if self.mass.get_provider(prov_mapping.provider_instance):
+                with suppress(MediaNotFoundError):
+                    media_item = await ctrl.get_provider_item(
+                        prov_mapping.item_id, prov_mapping.provider_instance, force_refresh=True
+                    )
+                    provider = media_item.provider
+                    item_id = media_item.item_id
+                    break
         else:
-            # try to find a substitute
+            # try to find a substitute using search
             searchresult = await self.search(media_item.name, [media_item.media_type], 20)
             if media_item.media_type == MediaType.ARTIST:
                 result = searchresult.artists
@@ -567,6 +569,8 @@ class MusicController(CoreController):
             else:
                 result = searchresult.radio
             for item in result:
+                if item == media_item or item.provider == "library":
+                    continue
                 if item.available:
                     provider = item.provider
                     item_id = item.item_id
@@ -577,8 +581,8 @@ class MusicController(CoreController):
         # fetch full (provider) item
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
-        if is_library_item:
-            library_item = await ctrl.add_item_to_library(media_item, overwrite_existing=True)
+        if library_id is not None:
+            library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
             await self.mass.metadata.update_metadata(library_item, force_refresh=True)
             return library_item
 
