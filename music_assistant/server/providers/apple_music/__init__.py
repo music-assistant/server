@@ -202,7 +202,7 @@ class AppleMusicProvider(MusicProvider):
         for item in await self._get_all_items(endpoint):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
-                self.logger.warning(
+                self.logger.debug(
                     "Skipping track. No catalog version found for %s - %s",
                     item["attributes"].get("artistName", ""),
                     item["attributes"].get("name", ""),
