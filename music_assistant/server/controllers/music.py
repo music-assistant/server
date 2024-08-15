@@ -66,7 +66,7 @@ DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 5
+DB_SCHEMA_VERSION: Final[int] = 6
 
 
 class MusicController(CoreController):
@@ -982,7 +982,7 @@ class MusicController(CoreController):
             await self.__create_database_tables()
             return
 
-        if prev_version < 3:
+        if prev_version <= 2:
             # convert musicbrainz external id's
             await self.database.execute(
                 f"UPDATE {DB_TABLE_ARTISTS} SET external_ids = "
@@ -998,7 +998,7 @@ class MusicController(CoreController):
                 "replace(external_ids, 'musicbrainz', 'musicbrainz_recordingid')"
             )
 
-        if prev_version < 4:
+        if prev_version <= 3:
             # remove all additional track provider mappings to cleanup the mess caused
             # by a bug that mapped the wrong track artists.
             async for track in self.tracks.iter_library_items():
@@ -1031,7 +1031,7 @@ class MusicController(CoreController):
                     )
                     await self.tracks.remove_item_from_library(track.item_id)
 
-        if prev_version < 5:
+        if prev_version <= 4:
             # remove corrupted provider mappings
             for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
                 query = (
@@ -1043,6 +1043,16 @@ class MusicController(CoreController):
                         x for x in item.provider_mappings if x.provider_instance is not None
                     }
                     await ctrl.update_item_in_library(item.item_id, item, True)
+
+        if prev_version <= 5:
+            # mark all provider mappings as available to recover from the bug
+            # that caused some items to be marked as unavailable
+            await self.database.execute(f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET available = 1")
+            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
+                await self.database.execute(
+                    f"UPDATE {ctrl.db_table} SET provider_mappings = "
+                    "replace (provider_mappings, '\"available\":false', '\"available\":true')"
+                )
 
         # save changes
         await self.database.commit()
