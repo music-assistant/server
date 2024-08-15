@@ -156,7 +156,7 @@ class MediaItemImage(DataClassDictMixin):
 
     type: ImageType
     path: str
-    provider: str
+    provider: str  # provider lookup key (only use instance id for fileproviders)
     remotely_accessible: bool = False  # url that is accessible from anywhere
 
     def __hash__(self) -> int:
@@ -168,16 +168,6 @@ class MediaItemImage(DataClassDictMixin):
         if not isinstance(other, MediaItemImage):
             return False
         return self.__hash__() == other.__hash__()
-
-    @classmethod
-    def __pre_deserialize__(cls, d: dict[Any, Any]) -> dict[Any, Any]:
-        """Handle actions before deserialization."""
-        # migrate from url provider --> builtin
-        # TODO: remove this after 2.0 is launched
-        if d["provider"] == "url":
-            d["provider"] = "builtin"
-            d["remotely_accessible"] = True
-        return d
 
 
 @dataclass(frozen=True, kw_only=True)

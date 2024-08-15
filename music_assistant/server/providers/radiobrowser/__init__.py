@@ -205,7 +205,7 @@ class RadioBrowserProvider(MusicProvider):
                         MediaItemImage(
                             type=ImageType.THUMB,
                             path=country.favicon,
-                            provider=self.instance_id,
+                            provider=self.lookup_key,
                             remotely_accessible=True,
                         )
                     ]
@@ -352,7 +352,7 @@ class RadioBrowserProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=radio_obj.favicon,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]

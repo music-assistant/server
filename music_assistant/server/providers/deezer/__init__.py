@@ -520,7 +520,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=track.album.cover_big,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -534,7 +534,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=album.cover_big,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ],
@@ -547,7 +547,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=artist.picture_big,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ],
@@ -620,7 +620,7 @@ class DeezerProvider(MusicProvider):  # pylint: disable=W0223
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=playlist.picture_big,
-                        provider=self.instance_id,
+                        provider=self.lookup_key,
                         remotely_accessible=True,
                     )
                 ],

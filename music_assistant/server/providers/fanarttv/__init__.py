@@ -125,7 +125,7 @@ class FanartTvMetadataProvider(MetadataProvider):
                         MediaItemImage(
                             type=img_type,
                             path=item["url"],
-                            provider=self.instance_id,
+                            provider=self.domain,
                             remotely_accessible=True,
                         )
                     )
@@ -153,7 +153,7 @@ class FanartTvMetadataProvider(MetadataProvider):
                             MediaItemImage(
                                 type=img_type,
                                 path=item["url"],
-                                provider=self.instance_id,
+                                provider=self.domain,
                                 remotely_accessible=True,
                             )
                         )
