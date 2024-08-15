@@ -1075,6 +1075,9 @@ class MusicController(CoreController):
         # save changes
         await self.database.commit()
 
+        # always clear the cache after a db migration
+        await self.mass.cache.clear()
+
     async def __create_database_tables(self) -> None:
         """Create database tables."""
         await self.database.execute(
