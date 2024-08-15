@@ -121,7 +121,7 @@ class MetaDataController(CoreController):
         )
         self.manifest.icon = "book-information-variant"
         self._reset_online_slots()
-        self._scanner_running: bool = False
+        self._scanner_task: asyncio.Task | None = None
 
     async def get_config_entries(
         self,
@@ -175,6 +175,7 @@ class MetaDataController(CoreController):
 
     async def close(self) -> None:
         """Handle logic on server stop."""
+        self.stop_metadata_scanner()
         self.mass.streams.unregister_dynamic_route("/imageproxy")
 
     @property
@@ -249,61 +250,24 @@ class MetaDataController(CoreController):
         if item.media_type == MediaType.RADIO:
             await self._update_radio_metadata(item, force_refresh=force_refresh)
 
-    @api_command("metadata/scan")
-    async def metadata_scanner(self) -> None:
-        """Scanner for (missing) metadata."""
-        if self._scanner_running:
+    @api_command("metadata/start_scan")
+    def start_metadata_scanner(self) -> None:
+        """
+        Start scanner for (missing) metadata.
+
+        Usually this is triggered by the music controller after finishing a library sync.
+        """
+        if self._scanner_task and not self._scanner_task.done():
             # already running
             return
-        self._scanner_running = True
-        try:
-            timestamp = int(time() - 60 * 60 * 24 * 30)
-            query = (
-                f"WHERE json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL "
-                f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') < {timestamp}"
-            )
-            for artist in await self.mass.music.artists.library_items(
-                limit=50, order_by="random", extra_query=query
-            ):
-                await self._update_artist_metadata(artist)
-                # we really need to throttle this
-                await asyncio.sleep(30)
+        self._scanner_task = self.mass.create_task(self._metadata_scanner())
 
-            query = (
-                f"WHERE json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
-                f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {timestamp}"
-            )
-            for album in await self.mass.music.albums.library_items(
-                limit=50, order_by="random", extra_query=query
-            ):
-                await self._update_album_metadata(album)
-                # we really need to throttle this
-                await asyncio.sleep(30)
-
-            query = (
-                f"WHERE json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
-                f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
-            )
-            for playlist in await self.mass.music.playlists.library_items(
-                limit=50, order_by="random", extra_query=query
-            ):
-                await self._update_playlist_metadata(playlist)
-                # we really need to throttle this
-                await asyncio.sleep(30)
-
-            query = (
-                f"WHERE json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
-                f"OR json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') < {timestamp}"
-            )
-            for track in await self.mass.music.tracks.library_items(
-                limit=50, order_by="random", extra_query=query
-            ):
-                await self._update_track_metadata(track)
-                # we really need to throttle this
-                await asyncio.sleep(30)
-
-        finally:
-            self._scanner_running = False
+    @api_command("metadata/stop_scan")
+    def stop_metadata_scanner(self) -> None:
+        """Stop scanner for (missing) metadata."""
+        if self._scanner_task and not self._scanner_task.done():
+            self._scanner_task.cancel()
+            self._scanner_task = None
 
     async def get_image_data_for_item(
         self,
@@ -711,6 +675,53 @@ class MetaDataController(CoreController):
             ref_tracks_str,
         )
         return None
+
+    async def _metadata_scanner(self) -> None:
+        """Scanner for (missing) metadata."""
+        timestamp = int(time() - 60 * 60 * 24 * 30)
+        query = (
+            f"WHERE json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') ISNULL "
+            f"OR json_extract({DB_TABLE_ARTISTS}.metadata,'$.last_refresh') < {timestamp}"
+        )
+        for artist in await self.mass.music.artists.library_items(
+            limit=25, order_by="random", extra_query=query
+        ):
+            await self._update_artist_metadata(artist)
+            # we really need to throttle this
+            await asyncio.sleep(30)
+
+        query = (
+            f"WHERE json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') ISNULL "
+            f"OR json_extract({DB_TABLE_ALBUMS}.metadata,'$.last_refresh') < {timestamp}"
+        )
+        for album in await self.mass.music.albums.library_items(
+            limit=25, order_by="random", extra_query=query
+        ):
+            await self._update_album_metadata(album)
+            # we really need to throttle this
+            await asyncio.sleep(30)
+
+        query = (
+            f"WHERE json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') ISNULL "
+            f"OR json_extract({DB_TABLE_PLAYLISTS}.metadata,'$.last_refresh') < {timestamp}"
+        )
+        for playlist in await self.mass.music.playlists.library_items(
+            limit=25, order_by="random", extra_query=query
+        ):
+            await self._update_playlist_metadata(playlist)
+            # we really need to throttle this
+            await asyncio.sleep(30)
+
+        query = (
+            f"WHERE json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') ISNULL "
+            f"OR json_extract({DB_TABLE_TRACKS}.metadata,'$.last_refresh') < {timestamp}"
+        )
+        for track in await self.mass.music.tracks.library_items(
+            limit=25, order_by="random", extra_query=query
+        ):
+            await self._update_track_metadata(track)
+            # we really need to throttle this
+            await asyncio.sleep(30)
 
     def _reset_online_slots(self) -> None:
         self._online_slots_available = MAX_ONLINE_CALLS_PER_DAY

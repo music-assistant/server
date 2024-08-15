@@ -62,6 +62,7 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.music_provider import MusicProvider
 
+CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
@@ -100,7 +101,7 @@ class MusicController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        return (
+        entries = (
             ConfigEntry(
                 key=CONF_SYNC_INTERVAL,
                 type=ConfigEntryType.INTEGER,
@@ -118,7 +119,29 @@ class MusicController(CoreController):
                 description="Automatically add a track or radio station to "
                 "the library when played (if its not already in the library).",
             ),
+            ConfigEntry(
+                key=CONF_RESET_DB,
+                type=ConfigEntryType.ACTION,
+                label="Reset library database",
+                description="This will issue a full reset of the library "
+                "database and trigger a full sync. Only use this option as a last resort "
+                "if you are seeing issues with the library database.",
+                category="advanced",
+            ),
         )
+        if action == CONF_RESET_DB:
+            await self._reset_database()
+            await self.mass.cache.clear()
+            self.start_sync()
+            entries = (
+                *entries,
+                ConfigEntry(
+                    key=CONF_RESET_DB,
+                    type=ConfigEntryType.LABEL,
+                    label="The database has been reset.",
+                ),
+            )
+        return entries
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -777,7 +800,7 @@ class MusicController(CoreController):
             # schedule db cleanup + metadata scan after sync
             if not self.in_progress_syncs:
                 self.mass.create_task(self._cleanup_database())
-                self.mass.create_task(self.mass.metadata.metadata_scanner())
+                self.mass.metadata.start_metadata_scanner()
 
         task.add_done_callback(on_sync_task_done)
 
@@ -1077,6 +1100,14 @@ class MusicController(CoreController):
 
         # always clear the cache after a db migration
         await self.mass.cache.clear()
+
+    async def _reset_database(self) -> None:
+        """Reset the database."""
+        self.mass.metadata.stop_metadata_scanner()
+        await self.close()
+        db_path = os.path.join(self.mass.storage_path, "library.db")
+        await asyncio.to_thread(os.remove, db_path)
+        await self._setup_database()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
