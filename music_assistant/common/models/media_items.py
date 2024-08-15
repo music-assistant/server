@@ -251,8 +251,9 @@ class _MediaItemBase(DataClassDictMixin):
     provider: str  # provider instance id or provider domain
     name: str
     version: str = ""
-    # sort_name and uri are auto generated, do not override unless really needed
+    # sort_name will be auto generated if omitted
     sort_name: str | None = None
+    # uri is auto generated, do not override unless really needed
     uri: str | None = None
     external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
     media_type: MediaType = MediaType.UNKNOWN
