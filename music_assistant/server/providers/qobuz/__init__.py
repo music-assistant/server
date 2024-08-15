@@ -44,7 +44,7 @@ from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.constants import (
     CONF_PASSWORD,
     CONF_USERNAME,
-    VARIOUS_ARTISTS_ID_MBID,
+    VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
 
@@ -501,7 +501,7 @@ class QobuzProvider(MusicProvider):
             },
         )
         if artist.item_id == VARIOUS_ARTISTS_ID:
-            artist.mbid = VARIOUS_ARTISTS_ID_MBID
+            artist.mbid = VARIOUS_ARTISTS_MBID
             artist.name = VARIOUS_ARTISTS_NAME
         if img := self.__get_image(artist_obj):
             artist.metadata.images = [
