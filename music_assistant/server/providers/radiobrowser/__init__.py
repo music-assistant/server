@@ -2,12 +2,18 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import TYPE_CHECKING
+from collections.abc import AsyncGenerator, Sequence
+from typing import TYPE_CHECKING, cast
 
 from radios import FilterBy, Order, RadioBrowser, RadioBrowserError, Station
 
-from music_assistant.common.models.enums import LinkType, ProviderFeature, StreamType
+from music_assistant.common.models.config_entries import ConfigEntry
+from music_assistant.common.models.enums import (
+    ConfigEntryType,
+    LinkType,
+    ProviderFeature,
+    StreamType,
+)
 from music_assistant.common.models.errors import MediaNotFoundError
 from music_assistant.common.models.media_items import (
     AudioFormat,
@@ -27,17 +33,23 @@ from music_assistant.common.models.streamdetails import StreamDetails
 from music_assistant.server.controllers.cache import use_cache
 from music_assistant.server.models.music_provider import MusicProvider
 
-SUPPORTED_FEATURES = (ProviderFeature.SEARCH, ProviderFeature.BROWSE)
+SUPPORTED_FEATURES = (
+    ProviderFeature.SEARCH,
+    ProviderFeature.BROWSE,
+    # RadioBrowser doesn't support a library feature at all
+    # but MA users like to favorite their radio stations and
+    # have that included in backups so we store it in the config.
+    ProviderFeature.LIBRARY_RADIOS,
+    ProviderFeature.LIBRARY_RADIOS_EDIT,
+)
 
 if TYPE_CHECKING:
-    from music_assistant.common.models.config_entries import (
-        ConfigEntry,
-        ConfigValueType,
-        ProviderConfig,
-    )
+    from music_assistant.common.models.config_entries import ConfigValueType, ProviderConfig
     from music_assistant.common.models.provider import ProviderManifest
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderInstanceType
+
+CONF_STORED_RADIOS = "stored_radios"
 
 
 async def setup(
@@ -63,7 +75,20 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001 D205
-    return ()  # we do not have any config entries (yet)
+    return (
+        ConfigEntry(
+            # RadioBrowser doesn't support a library feature at all
+            # but MA users like to favorite their radio stations and
+            # have that included in backups so we store it in the config.
+            key=CONF_STORED_RADIOS,
+            type=ConfigEntryType.STRING,
+            label=CONF_STORED_RADIOS,
+            default_value=[],
+            required=False,
+            multi_value=True,
+            hidden=True,
+        ),
+    )
 
 
 class RadioBrowserProvider(MusicProvider):
@@ -84,6 +109,15 @@ class RadioBrowserProvider(MusicProvider):
             await self.radios.stats()
         except RadioBrowserError as err:
             self.logger.exception("%s", err)
+
+        # copy the radiobrowser items that were added to the library
+        # TODO: remove this logic after version 2.3.0 or later
+        if not self.config.get_value(CONF_STORED_RADIOS) and self.mass.music.database:
+            async for db_row in self.mass.music.database.iter_items(
+                "provider_mappings",
+                {"media_type": "radio", "provider_domain": "radiobrowser"},
+            ):
+                await self.library_add(await self.get_radio(db_row["provider_item_id"]))
 
     async def search(
         self, search_query: str, media_types: list[MediaType], limit: int = 10
@@ -185,6 +219,42 @@ class RadioBrowserProvider(MusicProvider):
         if subsubpath in await self.get_country_codes():
             return await self.get_by_country(subsubpath)
         return []
+
+    async def get_library_radios(self) -> AsyncGenerator[Radio, None]:
+        """Retrieve library/subscribed radio stations from the provider."""
+        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
+        if TYPE_CHECKING:
+            stored_radios = cast(list[str], stored_radios)
+        for item in stored_radios:
+            yield await self.get_radio(item)
+
+    async def library_add(self, item: MediaItemType) -> bool:
+        """Add item to provider's library. Return true on success."""
+        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
+        if TYPE_CHECKING:
+            stored_radios = cast(list[str], stored_radios)
+        if item.item_id in stored_radios:
+            return False
+        self.logger.debug("Adding radio %s to stored radios", item.item_id)
+        stored_radios = [*stored_radios, item.item_id]
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_STORED_RADIOS, stored_radios
+        )
+        return True
+
+    async def library_remove(self, prov_item_id: str, media_type: MediaType) -> bool:
+        """Remove item from provider's library. Return true on success."""
+        stored_radios = self.config.get_value(CONF_STORED_RADIOS)
+        if TYPE_CHECKING:
+            stored_radios = cast(list[str], stored_radios)
+        if prov_item_id not in stored_radios:
+            return False
+        self.logger.debug("Removing radio %s from stored radios", prov_item_id)
+        stored_radios = [x for x in stored_radios if x != prov_item_id]
+        await self.mass.config.set_provider_config_value(
+            self.instance_id, CONF_STORED_RADIOS, stored_radios
+        )
+        return True
 
     @use_cache(3600 * 24)
     async def get_tag_names(self) -> Sequence[str]:
