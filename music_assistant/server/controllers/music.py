@@ -1054,6 +1054,24 @@ class MusicController(CoreController):
                     "replace (provider_mappings, '\"available\":false', '\"available\":true')"
                 )
 
+        if prev_version <= 5:
+            # migrate images to lookup key
+            unique_provs = ("filesystem", "jellyfin", "plex", "opensubsonic")
+            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
+                async for item in ctrl.iter_library_items():
+                    if not item.metadata or not item.metadata.images:
+                        continue
+                    changes = False
+                    for item in item.metadata.images:  # noqa: PLW2901, B020
+                        if "--" not in item.provider:
+                            continue
+                        if item.provider.startswith(unique_provs):
+                            continue
+                        item.provider = item.provider.split("--")[0]
+                        changes = True
+                    if changes:
+                        await ctrl.update_item_in_library(item.item_id, item, True)
+
         # save changes
         await self.database.commit()
 
