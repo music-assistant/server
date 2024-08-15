@@ -342,7 +342,7 @@ class SpotifyProvider(MusicProvider):
             MediaItemImage(
                 type=ImageType.THUMB,
                 path="https://misc.scdn.co/liked-songs/liked-songs-64.png",
-                provider=self.domain,
+                provider=self.lookup_key,
                 remotely_accessible=True,
             )
         ]
@@ -549,7 +549,7 @@ class SpotifyProvider(MusicProvider):
                         MediaItemImage(
                             type=ImageType.THUMB,
                             path=img_url,
-                            provider=self.instance_id,
+                            provider=self.lookup_key,
                             remotely_accessible=True,
                         )
                     ]
@@ -594,7 +594,7 @@ class SpotifyProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=album_obj["images"][0]["url"],
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -659,7 +659,7 @@ class SpotifyProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=track_obj["album"]["images"][0]["url"],
-                        provider=self.instance_id,
+                        provider=self.lookup_key,
                         remotely_accessible=True,
                     )
                 ]
@@ -695,7 +695,7 @@ class SpotifyProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=playlist_obj["images"][0]["url"],
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]

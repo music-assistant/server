@@ -9,11 +9,7 @@ import uuid
 from collections.abc import Callable, Coroutine
 from typing import TYPE_CHECKING, Any
 
-from music_assistant.client.exceptions import (
-    ConnectionClosed,
-    InvalidServerVersion,
-    InvalidState,
-)
+from music_assistant.client.exceptions import ConnectionClosed, InvalidServerVersion, InvalidState
 from music_assistant.common.models.api import (
     CommandMessage,
     ErrorResultMessage,
@@ -123,6 +119,8 @@ class MusicAssistantClient:
                 return None
             provider_instance_or_domain = prov.domain
         # fallback to match on domain
+        # note that this can be tricky if the provider has multiple instances
+        # and has unique data (e.g. filesystem)
         for prov in self._providers.values():
             if prov.domain != provider_instance_or_domain:
                 continue

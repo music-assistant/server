@@ -508,7 +508,7 @@ class QobuzProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -565,7 +565,7 @@ class QobuzProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -660,7 +660,7 @@ class QobuzProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -692,7 +692,7 @@ class QobuzProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]

@@ -62,11 +62,12 @@ if TYPE_CHECKING:
     from music_assistant.common.models.config_entries import CoreConfig
     from music_assistant.server.models.music_provider import MusicProvider
 
+CONF_RESET_DB = "reset_db"
 DEFAULT_SYNC_INTERVAL = 3 * 60  # default sync interval in minutes
 CONF_SYNC_INTERVAL = "sync_interval"
 CONF_DELETED_PROVIDERS = "deleted_providers"
 CONF_ADD_LIBRARY_ON_PLAY = "add_library_on_play"
-DB_SCHEMA_VERSION: Final[int] = 5
+DB_SCHEMA_VERSION: Final[int] = 6
 
 
 class MusicController(CoreController):
@@ -100,7 +101,7 @@ class MusicController(CoreController):
         values: dict[str, ConfigValueType] | None = None,
     ) -> tuple[ConfigEntry, ...]:
         """Return all Config Entries for this core module (if any)."""
-        return (
+        entries = (
             ConfigEntry(
                 key=CONF_SYNC_INTERVAL,
                 type=ConfigEntryType.INTEGER,
@@ -118,7 +119,29 @@ class MusicController(CoreController):
                 description="Automatically add a track or radio station to "
                 "the library when played (if its not already in the library).",
             ),
+            ConfigEntry(
+                key=CONF_RESET_DB,
+                type=ConfigEntryType.ACTION,
+                label="Reset library database",
+                description="This will issue a full reset of the library "
+                "database and trigger a full sync. Only use this option as a last resort "
+                "if you are seeing issues with the library database.",
+                category="advanced",
+            ),
         )
+        if action == CONF_RESET_DB:
+            await self._reset_database()
+            await self.mass.cache.clear()
+            self.start_sync()
+            entries = (
+                *entries,
+                ConfigEntry(
+                    key=CONF_RESET_DB,
+                    type=ConfigEntryType.LABEL,
+                    label="The database has been reset.",
+                ),
+            )
+        return entries
 
     async def setup(self, config: CoreConfig) -> None:
         """Async initialize of module."""
@@ -539,22 +562,24 @@ class MusicController(CoreController):
 
         media_type = media_item.media_type
         ctrl = self.get_controller(media_type)
-        is_library_item = media_item.provider == "library"
+        library_id = media_item.item_id if media_item.provider == "library" else None
 
-        available_providers = get_global_cache_value("provider_instance_ids")
+        available_providers = get_global_cache_value("available_providers")
         if TYPE_CHECKING:
             available_providers = cast(set[str], available_providers)
 
         # fetch the first (available) provider item
         for prov_mapping in media_item.provider_mappings:
-            provider = prov_mapping.provider_instance
-            if provider not in available_providers:
-                continue
-            item_id = prov_mapping.item_id
-            if prov_mapping.available:
-                break
+            if self.mass.get_provider(prov_mapping.provider_instance):
+                with suppress(MediaNotFoundError):
+                    media_item = await ctrl.get_provider_item(
+                        prov_mapping.item_id, prov_mapping.provider_instance, force_refresh=True
+                    )
+                    provider = media_item.provider
+                    item_id = media_item.item_id
+                    break
         else:
-            # try to find a substitute
+            # try to find a substitute using search
             searchresult = await self.search(media_item.name, [media_item.media_type], 20)
             if media_item.media_type == MediaType.ARTIST:
                 result = searchresult.artists
@@ -567,6 +592,8 @@ class MusicController(CoreController):
             else:
                 result = searchresult.radio
             for item in result:
+                if item == media_item or item.provider == "library":
+                    continue
                 if item.available:
                     provider = item.provider
                     item_id = item.item_id
@@ -577,8 +604,8 @@ class MusicController(CoreController):
         # fetch full (provider) item
         media_item = await ctrl.get_provider_item(item_id, provider, force_refresh=True)
         # update library item if needed (including refresh of the metadata etc.)
-        if is_library_item:
-            library_item = await ctrl.add_item_to_library(media_item, overwrite_existing=True)
+        if library_id is not None:
+            library_item = await ctrl.update_item_in_library(library_id, media_item, overwrite=True)
             await self.mass.metadata.update_metadata(library_item, force_refresh=True)
             return library_item
 
@@ -773,7 +800,7 @@ class MusicController(CoreController):
             # schedule db cleanup + metadata scan after sync
             if not self.in_progress_syncs:
                 self.mass.create_task(self._cleanup_database())
-                self.mass.create_task(self.mass.metadata.metadata_scanner())
+                self.mass.metadata.start_metadata_scanner()
 
         task.add_done_callback(on_sync_task_done)
 
@@ -978,7 +1005,7 @@ class MusicController(CoreController):
             await self.__create_database_tables()
             return
 
-        if prev_version < 3:
+        if prev_version <= 2:
             # convert musicbrainz external id's
             await self.database.execute(
                 f"UPDATE {DB_TABLE_ARTISTS} SET external_ids = "
@@ -994,7 +1021,7 @@ class MusicController(CoreController):
                 "replace(external_ids, 'musicbrainz', 'musicbrainz_recordingid')"
             )
 
-        if prev_version < 4:
+        if prev_version <= 3:
             # remove all additional track provider mappings to cleanup the mess caused
             # by a bug that mapped the wrong track artists.
             async for track in self.tracks.iter_library_items():
@@ -1027,7 +1054,7 @@ class MusicController(CoreController):
                     )
                     await self.tracks.remove_item_from_library(track.item_id)
 
-        if prev_version < 5:
+        if prev_version <= 4:
             # remove corrupted provider mappings
             for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
                 query = (
@@ -1040,8 +1067,47 @@ class MusicController(CoreController):
                     }
                     await ctrl.update_item_in_library(item.item_id, item, True)
 
+        if prev_version <= 5:
+            # mark all provider mappings as available to recover from the bug
+            # that caused some items to be marked as unavailable
+            await self.database.execute(f"UPDATE {DB_TABLE_PROVIDER_MAPPINGS} SET available = 1")
+            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
+                await self.database.execute(
+                    f"UPDATE {ctrl.db_table} SET provider_mappings = "
+                    "replace (provider_mappings, '\"available\":false', '\"available\":true')"
+                )
+
+        if prev_version <= 5:
+            # migrate images to lookup key
+            unique_provs = ("filesystem", "jellyfin", "plex", "opensubsonic")
+            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
+                async for item in ctrl.iter_library_items():
+                    if not item.metadata or not item.metadata.images:
+                        continue
+                    changes = False
+                    for item in item.metadata.images:  # noqa: PLW2901, B020
+                        if "--" not in item.provider:
+                            continue
+                        if item.provider.startswith(unique_provs):
+                            continue
+                        item.provider = item.provider.split("--")[0]
+                        changes = True
+                    if changes:
+                        await ctrl.update_item_in_library(item.item_id, item, True)
+
         # save changes
         await self.database.commit()
+
+        # always clear the cache after a db migration
+        await self.mass.cache.clear()
+
+    async def _reset_database(self) -> None:
+        """Reset the database."""
+        self.mass.metadata.stop_metadata_scanner()
+        await self.close()
+        db_path = os.path.join(self.mass.storage_path, "library.db")
+        await asyncio.to_thread(os.remove, db_path)
+        await self._setup_database()
 
     async def __create_database_tables(self) -> None:
         """Create database tables."""
