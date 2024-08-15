@@ -569,15 +569,19 @@ class MusicController(CoreController):
             available_providers = cast(set[str], available_providers)
 
         # fetch the first (available) provider item
-        for prov_mapping in media_item.provider_mappings:
-            if self.mass.get_provider(prov_mapping.provider_instance):
-                with suppress(MediaNotFoundError):
-                    media_item = await ctrl.get_provider_item(
-                        prov_mapping.item_id, prov_mapping.provider_instance, force_refresh=True
-                    )
-                    provider = media_item.provider
-                    item_id = media_item.item_id
-                    break
+        for prov_mapping in sorted(
+            media_item.provider_mappings, key=lambda x: x.priority, reverse=True
+        ):
+            if not self.mass.get_provider(prov_mapping.provider_instance):
+                # ignore unavailable providers
+                continue
+            with suppress(MediaNotFoundError):
+                media_item = await ctrl.get_provider_item(
+                    prov_mapping.item_id, prov_mapping.provider_instance, force_refresh=True
+                )
+                provider = media_item.provider
+                item_id = media_item.item_id
+                break
         else:
             # try to find a substitute using search
             searchresult = await self.search(media_item.name, [media_item.media_type], 20)

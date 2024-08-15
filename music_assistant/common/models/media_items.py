@@ -116,10 +116,22 @@ class ProviderMapping(DataClassDictMixin):
     def quality(self) -> int:
         """Return quality score."""
         quality = self.audio_format.quality
-        if "filesystem" in self.provider_domain:
-            # always prefer local file over online media
-            quality += 1
-        return quality
+        # append provider score so filebased providers are scored higher
+        return quality + self.priority
+
+    @property
+    def priority(self) -> int:
+        """Return priority score to sort local providers before online."""
+        if not (local_provs := get_global_cache_value("non_streaming_providers")):
+            # this is probably the client
+            return 0
+        if TYPE_CHECKING:
+            local_provs = cast(set[str], local_provs)
+        if self.provider_domain in ("filesystem_local", "filesystem_smb"):
+            return 2
+        if self.provider_instance in local_provs:
+            return 1
+        return 0
 
     def __hash__(self) -> int:
         """Return custom hash."""

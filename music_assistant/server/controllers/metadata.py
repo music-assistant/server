@@ -46,7 +46,7 @@ from music_assistant.constants import (
     DB_TABLE_ARTISTS,
     DB_TABLE_PLAYLISTS,
     DB_TABLE_TRACKS,
-    VARIOUS_ARTISTS_ID_MBID,
+    VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
     VERBOSE_LOG_LEVEL,
 )
@@ -417,9 +417,13 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an artist."""
         # ensure the item is matched to all providers
         await self.mass.music.artists.match_providers(artist)
-        # collect metadata from all music providers first
         unique_keys: set[str] = set()
-        for prov_mapping in artist.provider_mappings:
+        # collect metadata from all music providers first
+        # note that we sort the providers by priority so that we always
+        # prefer local providers over online providers
+        for prov_mapping in sorted(
+            artist.provider_mappings, key=lambda x: x.priority, reverse=True
+        ):
             if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
                 continue
             if prov.lookup_key in unique_keys:
@@ -471,9 +475,11 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for an album."""
         # ensure the item is matched to all providers (will also get other quality versions)
         await self.mass.music.albums.match_providers(album)
-        # collect metadata from all music providers first
         unique_keys: set[str] = set()
-        for prov_mapping in album.provider_mappings:
+        # collect metadata from all music providers first
+        # note that we sort the providers by priority so that we always
+        # prefer local providers over online providers
+        for prov_mapping in sorted(album.provider_mappings, key=lambda x: x.priority, reverse=True):
             if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
                 continue
             if prov.lookup_key in unique_keys:
@@ -523,9 +529,11 @@ class MetaDataController(CoreController):
         """Get/update rich metadata for a track."""
         # ensure the item is matched to all providers (will also get other quality versions)
         await self.mass.music.tracks.match_providers(track)
-        # collect metadata from all music providers first
         unique_keys: set[str] = set()
-        for prov_mapping in track.provider_mappings:
+        # collect metadata from all music providers first
+        # note that we sort the providers by priority so that we always
+        # prefer local providers over online providers
+        for prov_mapping in sorted(track.provider_mappings, key=lambda x: x.priority, reverse=True):
             if (prov := self.mass.get_provider(prov_mapping.provider_instance)) is None:
                 continue
             if prov.lookup_key in unique_keys:
@@ -648,7 +656,7 @@ class MetaDataController(CoreController):
     async def _get_artist_mbid(self, artist: Artist) -> str | None:
         """Fetch musicbrainz id by performing search using the artist name, albums and tracks."""
         if compare_strings(artist.name, VARIOUS_ARTISTS_NAME):
-            return VARIOUS_ARTISTS_ID_MBID
+            return VARIOUS_ARTISTS_MBID
         ref_albums = await self.mass.music.artists.albums(
             artist.item_id, artist.provider, in_library_only=False
         )
