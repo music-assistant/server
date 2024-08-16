@@ -170,10 +170,10 @@ class ConfigEntry(DataClassDictMixin):
                     self.key,
                     type(self.value),
                 )
-                self.value = self.default_value
-                return self.value
-            msg = f"{self.key} has unexpected type: {type(value)}"
-            raise ValueError(msg)
+                value = self.default_value
+            if not (value is None and allow_none):
+                msg = f"{self.key} has unexpected type: {type(value)}"
+                raise ValueError(msg)
         self.value = value
         return self.value
 

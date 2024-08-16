@@ -174,6 +174,8 @@ async def get_config_entries(
     auth_required = values.get(CONF_REFRESH_TOKEN) is None
 
     if auth_required:
+        values[CONF_CLIENT_ID] = None
+        values[CONF_ACCESS_TOKEN] = None
         label_text = (
             "You need to authenticate to Spotify. Click the authenticate button below "
             "to start the authentication process which will open in a new (popup window), "

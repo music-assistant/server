@@ -35,7 +35,6 @@ from music_assistant.constants import (
     CONF_SERVER_ID,
     CONFIGURABLE_CORE_CONTROLLERS,
     ENCRYPT_SUFFIX,
-    SECURE_STRING_SUBSTITUTE,
 )
 from music_assistant.server.helpers.api import api_command
 from music_assistant.server.helpers.util import load_provider_module
@@ -241,15 +240,6 @@ class ConfigController:
         if values is None:
             values = self.get(f"{CONF_PROVIDERS}/{instance_id}/values", {}) if instance_id else {}
 
-        # handle (edge) case where encrypted values are passed along
-        for key, value in values.items():
-            if not isinstance(value, str):
-                continue
-            if value == SECURE_STRING_SUBSTITUTE:
-                values[key] = value = self.get(f"{CONF_PROVIDERS}/{instance_id}/values/{key}", None)  # noqa: PLW2901
-            if value.startswith(ENCRYPT_SUFFIX):
-                values[key] = self.decrypt_string(value)
-
         return (
             await prov_mod.get_config_entries(
                 self.mass, instance_id=instance_id, action=action, values=values
@@ -315,7 +305,7 @@ class ConfigController:
     ) -> None:
         """Set single ProviderConfig value."""
         config = await self.get_provider_config(instance_id)
-        config.update({**config.to_raw(), key: value})
+        config.update({key: value})
         config.validate()
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
@@ -692,9 +682,8 @@ class ConfigController:
             return encrypted_str
         if not encrypted_str.startswith(ENCRYPT_SUFFIX):
             return encrypted_str
-        encrypted_str = encrypted_str.replace(ENCRYPT_SUFFIX, "")
         try:
-            return self._fernet.decrypt(encrypted_str.encode()).decode()
+            return self._fernet.decrypt(encrypted_str.replace(ENCRYPT_SUFFIX, "").encode()).decode()
         except InvalidToken as err:
             msg = "Password decryption failed"
             raise InvalidDataError(msg) from err
@@ -758,7 +747,8 @@ class ConfigController:
         # save the config first to prevent issues when the
         # provider wants to manipulate the config during load
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
-        self.set(conf_key, config.to_raw())
+        raw_conf = config.to_raw()
+        self.set(conf_key, raw_conf)
         if config.enabled:
             await self._load_provider_config(config)
         else:
