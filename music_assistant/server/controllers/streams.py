@@ -46,7 +46,7 @@ from music_assistant.server.helpers.audio import (
     check_audio_support,
     crossfade_pcm_parts,
     get_ffmpeg_stream,
-    get_hls_stream,
+    get_hls_substream,
     get_icy_stream,
     get_player_filter_params,
     get_silence,
@@ -751,9 +751,13 @@ class StreamsController(CoreController):
             async for chunk in get_silence(2, pcm_format):
                 yield chunk
         elif streamdetails.stream_type == StreamType.HLS:
-            audio_source = get_hls_stream(
-                self.mass, streamdetails.path, streamdetails, streamdetails.seek_position
-            )
+            # we simply select the best quality substream here
+            # if we ever want to support adaptive stream selection based on bandwidth
+            # we need to move the substream selection into the loop below and make it
+            # bandwidth aware. For now we just assume domestic high bandwidth where
+            # the user wants the best quality possible at all times.
+            substream = await get_hls_substream(self.mass, streamdetails.path)
+            audio_source = substream.path
         elif streamdetails.stream_type == StreamType.ENCRYPTED_HTTP:
             audio_source = streamdetails.path
             extra_input_args += ["-decryption_key", streamdetails.decryption_key]
