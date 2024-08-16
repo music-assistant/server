@@ -366,9 +366,9 @@ class YoutubeMusicProvider(MusicProvider):
             )
         except KeyError as ke:
             self.logger.warning("Could not load playlist: %s: %s", prov_playlist_id, ke)
-            return None
+            return []
         if "tracks" not in playlist_obj:
-            return None
+            return []
         result = []
         # TODO: figure out how to handle paging in YTM
         for index, track_obj in enumerate(playlist_obj["tracks"], 1):
