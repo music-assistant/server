@@ -1091,30 +1091,30 @@ class MusicController(CoreController):
             # migrate images to lookup key
             unique_provs = ("filesystem", "jellyfin", "plex", "opensubsonic")
             for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
-                async for item in ctrl.iter_library_items():
-                    if not item.metadata or not item.metadata.images:
+                async for media_item in ctrl.iter_library_items():
+                    if not media_item.metadata or not media_item.metadata.images:
                         continue
                     changes = False
                     images: UniqueList[MediaItemImage] = UniqueList()
-                    for item in item.metadata.images:  # noqa: PLW2901, B020
-                        if "--" not in item.provider:
-                            images.append(item)
+                    for item_img in media_item.metadata.images:
+                        if "--" not in item_img.provider:
+                            images.append(item_img)
                             continue
-                        if item.provider.startswith(unique_provs):
-                            images.append(item)
+                        if item_img.provider.startswith(unique_provs):
+                            images.append(item_img)
                             continue
                         images.append(
                             MediaItemImage(
-                                type=item.type,
-                                path=item.path,
-                                provider=item.provider.split("--")[0],
-                                remotely_accessible=item.remotely_accessible,
+                                type=item_img.type,
+                                path=item_img.path,
+                                provider=item_img.provider.split("--")[0],
+                                remotely_accessible=item_img.remotely_accessible,
                             )
                         )
                         changes = True
                     if changes:
-                        item.metadata.images = images
-                        await ctrl.update_item_in_library(item.item_id, item, True)
+                        media_item.metadata.images = images
+                        await ctrl.update_item_in_library(media_item.item_id, media_item, True)
 
         # save changes
         await self.database.commit()
