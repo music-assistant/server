@@ -29,7 +29,13 @@ from music_assistant.common.models.errors import (
     MusicAssistantError,
     ProviderUnavailableError,
 )
-from music_assistant.common.models.media_items import BrowseFolder, MediaItemType, SearchResults
+from music_assistant.common.models.media_items import (
+    BrowseFolder,
+    MediaItemImage,
+    MediaItemType,
+    SearchResults,
+    UniqueList,
+)
 from music_assistant.common.models.provider import SyncTask
 from music_assistant.common.models.streamdetails import LoudnessMeasurement
 from music_assistant.constants import (
@@ -1089,14 +1095,25 @@ class MusicController(CoreController):
                     if not item.metadata or not item.metadata.images:
                         continue
                     changes = False
+                    images: UniqueList[MediaItemImage] = UniqueList()
                     for item in item.metadata.images:  # noqa: PLW2901, B020
                         if "--" not in item.provider:
+                            images.append(item)
                             continue
                         if item.provider.startswith(unique_provs):
+                            images.append(item)
                             continue
-                        item.provider = item.provider.split("--")[0]
+                        images.append(
+                            MediaItemImage(
+                                type=item.type,
+                                path=item.path,
+                                provider=item.provider.split("--")[0],
+                                remotely_accessible=item.remotely_accessible,
+                            )
+                        )
                         changes = True
                     if changes:
+                        item.metadata.images = images
                         await ctrl.update_item_in_library(item.item_id, item, True)
 
         # save changes

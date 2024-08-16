@@ -742,6 +742,7 @@ class QobuzProvider(MusicProvider):
     async def _get_data(self, endpoint, sign_request=False, **kwargs):
         """Get data from api."""
         # pylint: disable=too-many-branches
+        self.logger.debug("Handling GET request to %s", endpoint)
         url = f"http://www.qobuz.com/api.json/0.2/{endpoint}"
         headers = {"X-App-Id": app_var(0)}
         locale = self.mass.metadata.locale.replace("_", "-")
@@ -790,6 +791,7 @@ class QobuzProvider(MusicProvider):
     @throttle_with_retries
     async def _post_data(self, endpoint, params=None, data=None):
         """Post data to api."""
+        self.logger.debug("Handling POST request to %s", endpoint)
         if not params:
             params = {}
         if not data:
