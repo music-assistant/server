@@ -83,33 +83,12 @@ SCOPE = [
     "user-read-playback-state",
     "user-modify-playback-state",
     "user-read-currently-playing",
+    "user-modify-private",
+    "user-modify",
+    "user-read-play-history",
+    "user-read-playback-position",
+    "user-read-recently-played",
 ]
-# SCOPE = [
-#     "app-remote-control",
-#     "playlist-modify-private",
-#     "playlist-modify-public",
-#     "playlist-read-collaborative",
-#     "playlist-read-private",
-#     "streaming",
-#     "ugc-image-upload",
-#     "user-follow-modify",
-#     "user-follow-read",
-#     "user-library-modify",
-#     "user-library-read",
-#     # "user-modify",
-#     "user-modify-playback-state",
-#     "user-modify-private",
-#     # "user-personalized",
-#     "user-read-currently-playing",
-#     "user-read-email",
-#     "user-read-play-history",
-#     "user-read-playback-position",
-#     "user-read-playback-state",
-#     "user-read-private",
-#     "user-read-recently-played",
-#     "user-top-read",
-# ]
-
 
 CACHE_DIR = "/tmp/spotify_cache"  # noqa: S108
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
@@ -251,7 +230,20 @@ async def get_config_entries(
                 action=CONF_ACTION_AUTH,
             ),
         )
-
+    else:
+        entries = (
+            *entries,
+            ConfigEntry(
+                key="label_authenticated",
+                type=ConfigEntryType.LABEL,
+                label="Authenticated to Spotify",
+            ),
+            ConfigEntry(
+                key="label_whitespace",
+                type=ConfigEntryType.LABEL,
+                label=" ",
+            ),
+        )
     return entries
 
 
@@ -271,6 +263,8 @@ class SpotifyProvider(MusicProvider):
             # loosen the throttler a bit when a custom client id is used
             self.throttler.rate_limit = 45
             self.throttler.period = 30
+        # check if we have a librespot binary for this arch
+        await self.get_librespot_binary()
         # try login which will raise if it fails
         await self.login()
 
@@ -959,7 +953,7 @@ class SpotifyProvider(MusicProvider):
                 return None
 
         base_path = os.path.join(os.path.dirname(__file__), "bin")
-        system = platform.system().lower()
+        system = platform.system().lower().replace("darwin", "macos")
         architecture = platform.machine().lower()
 
         if bridge_binary := await check_librespot(
