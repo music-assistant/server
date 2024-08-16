@@ -85,10 +85,11 @@ SCOPE = [
     "user-read-currently-playing",
     "user-modify-private",
     "user-modify",
-    "user-read-play-history",
     "user-read-playback-position",
     "user-read-recently-played",
 ]
+
+CALLBACK_REDIRECT_URL = "https://music-assistant.io/callback"
 
 CACHE_DIR = "/tmp/spotify_cache"  # noqa: S108
 LIKED_SONGS_FAKE_PLAYLIST_ID_PREFIX = "liked_songs"
@@ -133,9 +134,6 @@ async def get_config_entries(
     values: the (intermediate) raw values for config entries sent with the action.
     """
     # ruff: noqa: ARG001
-    access_token = values.get(CONF_ACCESS_TOKEN) if values else None
-    refresh_token = values.get(CONF_REFRESH_TOKEN) if values else None
-    expires_at = values.get(CONF_AUTH_EXPIRES_AT) if values else 0
 
     if action == CONF_ACTION_AUTH:
         # spotify PKCE auth flow
@@ -150,7 +148,7 @@ async def get_config_entries(
                 "scope": " ".join(SCOPE),
                 "code_challenge_method": "S256",
                 "code_challenge": code_challenge,
-                "redirect_uri": "http://music-assistant.io/callback",
+                "redirect_uri": CALLBACK_REDIRECT_URL,
                 "state": auth_helper.callback_url,
             }
             query_string = urlencode(params)
@@ -161,7 +159,7 @@ async def get_config_entries(
         params = {
             "grant_type": "authorization_code",
             "code": authorization_code,
-            "redirect_uri": "http://music-assistant.io/callback",
+            "redirect_uri": CALLBACK_REDIRECT_URL,
             "client_id": values.get(CONF_CLIENT_ID) or app_var(2),
             "code_verifier": code_verifier,
         }
@@ -169,20 +167,38 @@ async def get_config_entries(
             "https://accounts.spotify.com/api/token", data=params
         ) as response:
             result = await response.json()
-            access_token = result["access_token"]
-            refresh_token = result["refresh_token"]
-            expires_at = int(time.time() + result["expires_in"])
+            values[CONF_ACCESS_TOKEN] = result["access_token"]
+            values[CONF_REFRESH_TOKEN] = result["refresh_token"]
+            values[CONF_AUTH_EXPIRES_AT] = int(time.time() + result["expires_in"])
 
-    # default config entries
-    # always pass along the access and refresh token
-    entries = (
+    auth_required = values.get(CONF_REFRESH_TOKEN) is None
+
+    return (
+        ConfigEntry(
+            key="label_authenticated",
+            type=ConfigEntryType.LABEL,
+            label="Authenticated to Spotify.",
+            hidden=auth_required,
+        ),
+        ConfigEntry(
+            key="label_not_authenticated",
+            type=ConfigEntryType.LABEL,
+            label="You need to authenticate to Spotify. \n\n"
+            "Optionally you can use your own client ID and then "
+            "click the authenticate button below.",
+            hidden=not auth_required,
+        ),
+        ConfigEntry(
+            key="label_whitespace",
+            type=ConfigEntryType.LABEL,
+            label=" ",
+        ),
         ConfigEntry(
             key=CONF_ACCESS_TOKEN,
             type=ConfigEntryType.SECURE_STRING,
             label=CONF_ACCESS_TOKEN,
             hidden=True,
-            required=True,
-            default_value=access_token,
+            value=values.get(CONF_ACCESS_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_REFRESH_TOKEN,
@@ -190,61 +206,37 @@ async def get_config_entries(
             label=CONF_REFRESH_TOKEN,
             hidden=True,
             required=True,
-            default_value=refresh_token,
+            value=values.get(CONF_REFRESH_TOKEN) if values else None,
         ),
         ConfigEntry(
             key=CONF_AUTH_EXPIRES_AT,
             type=ConfigEntryType.INTEGER,
             label=CONF_AUTH_EXPIRES_AT,
             hidden=True,
-            required=True,
-            default_value=expires_at,
+            default_value=0,
+            value=values.get(CONF_AUTH_EXPIRES_AT) if values else None,
         ),
         ConfigEntry(
             key=CONF_CLIENT_ID,
             type=ConfigEntryType.SECURE_STRING,
-            label=CONF_CLIENT_ID,
-            hidden=True,
+            label="Client ID (optional)",
+            description="By default, a generic client ID is used which is heavy rate limited. "
+            "It is advised that you create your own Spotify Developer account and use "
+            "that client ID here to speedup performance. \n\n"
+            f"Use {CALLBACK_REDIRECT_URL} as callback URL.",
             required=False,
+            value=values.get(CONF_CLIENT_ID) if values else None,
+            hidden=not auth_required,
+        ),
+        ConfigEntry(
+            key=CONF_ACTION_AUTH,
+            type=ConfigEntryType.ACTION,
+            label="Authenticate with Spotify",
+            description="This button will redirect you to Spotify to authenticate.",
+            action=CONF_ACTION_AUTH,
+            hidden=not auth_required,
         ),
     )
-
-    if not access_token:
-        # authentication required
-        entries = (
-            *entries,
-            ConfigEntry(
-                key=CONF_CLIENT_ID,
-                type=ConfigEntryType.SECURE_STRING,
-                label="Client ID (optional)",
-                description="By default, a generic client ID is used which is heavy rate limited. "
-                "It is advised that you create your own Spotify Developer account and use "
-                "that client ID here to speedup performance.",
-                required=False,
-            ),
-            ConfigEntry(
-                key=CONF_ACTION_AUTH,
-                type=ConfigEntryType.ACTION,
-                label="Authenticate with Spotify",
-                description="This button will redirect you to Spotify to authenticate.",
-                action=CONF_ACTION_AUTH,
-            ),
-        )
-    else:
-        entries = (
-            *entries,
-            ConfigEntry(
-                key="label_authenticated",
-                type=ConfigEntryType.LABEL,
-                label="Authenticated to Spotify",
-            ),
-            ConfigEntry(
-                key="label_whitespace",
-                type=ConfigEntryType.LABEL,
-                label=" ",
-            ),
-        )
-    return entries
 
 
 class SpotifyProvider(MusicProvider):
@@ -288,6 +280,14 @@ class SpotifyProvider(MusicProvider):
             ProviderFeature.ARTIST_TOPTRACKS,
             ProviderFeature.SIMILAR_TRACKS,
         )
+
+    @property
+    def name(self) -> str:
+        """Return (custom) friendly name for this provider instance."""
+        if self._sp_user:
+            postfix = self._sp_user["display_name"]
+            return f"{self.manifest.name}: {postfix}"
+        return super().name
 
     async def search(
         self, search_query: str, media_types=list[MediaType], limit: int = 5
