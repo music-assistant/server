@@ -749,13 +749,16 @@ class ConfigController:
         """Update ProviderConfig."""
         config = await self.get_provider_config(instance_id)
         changed_keys = config.update(values)
-        # validate the new config
-        config.validate()
         available = prov.available if (prov := self.mass.get_provider(instance_id)) else False
         if not changed_keys and (config.enabled == available):
             # no changes
             return config
-        # try to load the provider first to catch errors before we save it.
+        # validate the new config
+        config.validate()
+        # save the config first to prevent issues when the
+        # provider wants to manipulate the config during load
+        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
+        self.set(conf_key, config.to_raw())
         if config.enabled:
             await self._load_provider_config(config)
         else:
@@ -775,10 +778,6 @@ class ConfigController:
                     if player.provider != instance_id:
                         continue
                     self.mass.players.remove(player.player_id, cleanup_config=False)
-        # load succeeded, save new config
-        config.last_error = None
-        conf_key = f"{CONF_PROVIDERS}/{instance_id}"
-        self.set(conf_key, config.to_raw())
         return config
 
     async def _add_provider_config(
