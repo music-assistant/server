@@ -332,6 +332,7 @@ class SoundcloudMusicProvider(MusicProvider):
         if not artist_id:
             msg = "Artist does not have a valid ID"
             raise InvalidDataError(msg)
+        artist_id = str(artist_id)
         artist = Artist(
             item_id=artist_id,
             name=artist_obj["username"],
@@ -361,13 +362,14 @@ class SoundcloudMusicProvider(MusicProvider):
 
     async def _parse_playlist(self, playlist_obj: dict) -> Playlist:
         """Parse a Soundcloud Playlist response to a Playlist object."""
+        playlist_id = str(playlist_obj["id"])
         playlist = Playlist(
-            item_id=playlist_obj["id"],
+            item_id=playlist_id,
             provider=self.domain,
             name=playlist_obj["title"],
             provider_mappings={
                 ProviderMapping(
-                    item_id=playlist_obj["id"],
+                    item_id=playlist_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                 )
@@ -394,15 +396,16 @@ class SoundcloudMusicProvider(MusicProvider):
     async def _parse_track(self, track_obj: dict, playlist_position: int = 0) -> Track:
         """Parse a Soundcloud Track response to a Track model object."""
         name, version = parse_title_and_version(track_obj["title"])
+        track_id = str(track_obj["id"])
         track = Track(
-            item_id=track_obj["id"],
+            item_id=track_id,
             provider=self.domain,
             name=name,
             version=version,
             duration=track_obj["duration"] / 1000,
             provider_mappings={
                 ProviderMapping(
-                    item_id=track_obj["id"],
+                    item_id=track_id,
                     provider_domain=self.domain,
                     provider_instance=self.instance_id,
                     audio_format=AudioFormat(
