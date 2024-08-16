@@ -4,7 +4,7 @@
   "name": "Spotify",
   "description": "Support for the Spotify streaming provider in Music Assistant.",
   "codeowners": ["@music-assistant"],
-  "requirements": [],
+  "requirements": ["pkce==1.0.3"],
   "documentation": "https://music-assistant.io/music-providers/spotify/",
   "multi_instance": true
 }
