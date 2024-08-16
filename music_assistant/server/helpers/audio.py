@@ -371,7 +371,7 @@ async def get_stream_details(
 
         # work out how to handle radio stream
         if (
-            streamdetails.media_type == MediaType.RADIO
+            streamdetails.media_type in (MediaType.RADIO, StreamType.ICY, StreamType.HLS)
             and streamdetails.stream_type == StreamType.HTTP
         ):
             resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, streamdetails.path)
@@ -467,7 +467,6 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
     - bool if the URL represents a ICY (radio) stream.
     - bool uf the URL represents a HLS stream/playlist.
     """
-    base_url = url.split("?")[0]
     cache_key = f"RADIO_RESOLVED_{url}"
     if cache := await mass.cache.get(cache_key):
         return cache
@@ -486,8 +485,12 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
         is_icy = headers.get("icy-metaint") is not None
         is_hls = headers.get("content-type") in HLS_CONTENT_TYPES
         if (
-            base_url.endswith((".m3u", ".m3u8", ".pls"))
-            or headers.get("content-type") == "audio/x-mpegurl"
+            url.endswith((".m3u", ".m3u8", ".pls"))
+            or ".m3u?" in url
+            or ".m3u8?" in url
+            or ".pls?" in url
+            or "audio/x-mpegurl" in headers.get("content-type")
+            or "audio/x-scpls" in headers.get("content-type", "")
         ):
             # url is playlist, we need to unfold it
             substreams = await fetch_playlist(mass, url)
@@ -497,7 +500,7 @@ async def resolve_radio_stream(mass: MusicAssistant, url: str) -> tuple[str, boo
                         if not line.is_url:
                             continue
                         # unfold first url of playlist
-                        resolved_url, is_icy, is_hls = await resolve_radio_stream(mass, line.path)
+                        return await resolve_radio_stream(mass, line.path)
                     raise InvalidDataError("No content found in playlist")
                 except IsHLSPlaylist:
                     is_hls = True
