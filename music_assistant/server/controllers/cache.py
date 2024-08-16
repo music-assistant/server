@@ -143,7 +143,7 @@ class CacheController(CoreController):
         """Clear all/partial items from cache."""
         self._mem_cache = {}
         self.logger.info("Clearing database...")
-        query = f"key LIKE '%{key_filter}%'" if key_filter else None
+        query = f"key LIKE '%{key_filter}%' or data LIKE '%{key_filter}%'" if key_filter else None
         await self.database.delete(DB_TABLE_CACHE, query=query)
         await self.database.vacuum()
         self.logger.info("Clearing database DONE")

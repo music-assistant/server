@@ -315,10 +315,10 @@ class ConfigController:
     ) -> None:
         """Set single ProviderConfig value."""
         config = await self.get_provider_config(instance_id)
-        config.update({key: value})
+        config.update({**config.to_raw(), key: value})
         config.validate()
-        conf_key = f"{CONF_PROVIDERS}/{instance_id}/values/{key}"
-        self.set(conf_key, config.get_value(key))
+        conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
+        self.set(conf_key, config.to_raw())
 
     @api_command("config/providers/reload")
     async def reload_provider(self, instance_id: str) -> None:
