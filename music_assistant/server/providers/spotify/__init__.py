@@ -173,25 +173,22 @@ async def get_config_entries(
 
     auth_required = values.get(CONF_REFRESH_TOKEN) is None
 
+    if auth_required:
+        label_text = (
+            "You need to authenticate to Spotify. Click the authenticate button below "
+            "to start the authentication process which will open in a new (popup window), "
+            "so make sure to disable any popup blockers.\n\n"
+        )
+    elif action == CONF_ACTION_AUTH:
+        label_text = "Authenticated to Spotify. Press save to complete setup."
+    else:
+        label_text = "Authenticated to Spotify. No further action required."
+
     return (
         ConfigEntry(
-            key="label_authenticated",
+            key="label_text",
             type=ConfigEntryType.LABEL,
-            label="Authenticated to Spotify.",
-            hidden=auth_required,
-        ),
-        ConfigEntry(
-            key="label_not_authenticated",
-            type=ConfigEntryType.LABEL,
-            label="You need to authenticate to Spotify. \n\n"
-            "Optionally you can use your own client ID and then "
-            "click the authenticate button below.",
-            hidden=not auth_required,
-        ),
-        ConfigEntry(
-            key="label_whitespace",
-            type=ConfigEntryType.LABEL,
-            label=" ",
+            label=label_text,
         ),
         ConfigEntry(
             key=CONF_ACCESS_TOKEN,
