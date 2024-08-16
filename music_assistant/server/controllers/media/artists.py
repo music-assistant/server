@@ -27,7 +27,7 @@ from music_assistant.constants import (
     DB_TABLE_ALBUM_ARTISTS,
     DB_TABLE_ARTISTS,
     DB_TABLE_TRACK_ARTISTS,
-    VARIOUS_ARTISTS_ID_MBID,
+    VARIOUS_ARTISTS_MBID,
     VARIOUS_ARTISTS_NAME,
 )
 from music_assistant.server.controllers.media.base import MediaControllerBase
@@ -311,8 +311,8 @@ class ArtistsController(MediaControllerBase[Artist]):
             item = self._artist_from_item_mapping(item)
         # enforce various artists name + id
         if compare_strings(item.name, VARIOUS_ARTISTS_NAME):
-            item.mbid = VARIOUS_ARTISTS_ID_MBID
-        if item.mbid == VARIOUS_ARTISTS_ID_MBID:
+            item.mbid = VARIOUS_ARTISTS_MBID
+        if item.mbid == VARIOUS_ARTISTS_MBID:
             item.name = VARIOUS_ARTISTS_NAME
         # no existing item matched: insert item
         new_item = await self.mass.music.database.insert(
@@ -349,8 +349,8 @@ class ArtistsController(MediaControllerBase[Artist]):
         mbid = cur_item.mbid
         if (not mbid or overwrite) and getattr(update, "mbid", None):
             if compare_strings(update.name, VARIOUS_ARTISTS_NAME):
-                update.mbid = VARIOUS_ARTISTS_ID_MBID
-            if update.mbid == VARIOUS_ARTISTS_ID_MBID:
+                update.mbid = VARIOUS_ARTISTS_MBID
+            if update.mbid == VARIOUS_ARTISTS_MBID:
                 update.name = VARIOUS_ARTISTS_NAME
 
         await self.mass.music.database.update(
@@ -510,7 +510,7 @@ class ArtistsController(MediaControllerBase[Artist]):
                 prov_artist = await self.get_provider_item(
                     search_result_item.artists[0].item_id,
                     search_result_item.artists[0].provider,
-                    fallback=search_result_item,
+                    fallback=search_result_item.artists[0],
                 )
                 await self._update_library_item(db_artist.item_id, prov_artist)
                 return True

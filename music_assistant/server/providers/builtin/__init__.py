@@ -173,7 +173,7 @@ class BuiltinProvider(MusicProvider):
                         MediaItemImage(
                             type=ImageType.THUMB,
                             path=image_url,
-                            provider=self.instance_id,
+                            provider=self.domain,
                             remotely_accessible=image_url.startswith("http"),
                         )
                     ]
@@ -194,7 +194,7 @@ class BuiltinProvider(MusicProvider):
                         MediaItemImage(
                             type=ImageType.THUMB,
                             path=image_url,
-                            provider=self.instance_id,
+                            provider=self.domain,
                             remotely_accessible=image_url.startswith("http"),
                         )
                     ]
@@ -269,7 +269,7 @@ class BuiltinProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=image_url,
-                        provider=self.instance_id,
+                        provider=self.domain,
                         remotely_accessible=image_url.startswith("http"),
                     )
                 ]
@@ -481,7 +481,7 @@ class BuiltinProvider(MusicProvider):
                     MediaItemImage(
                         type=ImageType.THUMB,
                         path=url,
-                        provider=self.instance_id,
+                        provider=self.domain,
                         remotely_accessible=False,
                     )
                 ]

@@ -116,23 +116,22 @@ class ProviderMapping(DataClassDictMixin):
     def quality(self) -> int:
         """Return quality score."""
         quality = self.audio_format.quality
-        if "filesystem" in self.provider_domain:
-            # always prefer local file over online media
-            quality += 1
-        return quality
+        # append provider score so filebased providers are scored higher
+        return quality + self.priority
 
-    def __post_serialize__(self, d: dict[Any, Any]) -> dict[Any, Any]:
-        """Execute action(s) on serialization."""
-        # prevent sending back unavailable items in the api if a provider has been disabled.
-        # by overriding the available flag here.
-        if not (available_providers := get_global_cache_value("unique_providers")):
+    @property
+    def priority(self) -> int:
+        """Return priority score to sort local providers before online."""
+        if not (local_provs := get_global_cache_value("non_streaming_providers")):
             # this is probably the client
-            return d
+            return 0
         if TYPE_CHECKING:
-            available_providers = cast(set[str], available_providers)
-        if not available_providers.intersection({d["provider_domain"], d["provider_instance"]}):
-            d["available"] = False
-        return d
+            local_provs = cast(set[str], local_provs)
+        if self.provider_domain in ("filesystem_local", "filesystem_smb"):
+            return 2
+        if self.provider_instance in local_provs:
+            return 1
+        return 0
 
     def __hash__(self) -> int:
         """Return custom hash."""
@@ -169,7 +168,7 @@ class MediaItemImage(DataClassDictMixin):
 
     type: ImageType
     path: str
-    provider: str
+    provider: str  # provider lookup key (only use instance id for fileproviders)
     remotely_accessible: bool = False  # url that is accessible from anywhere
 
     def __hash__(self) -> int:
@@ -181,16 +180,6 @@ class MediaItemImage(DataClassDictMixin):
         if not isinstance(other, MediaItemImage):
             return False
         return self.__hash__() == other.__hash__()
-
-    @classmethod
-    def __pre_deserialize__(cls, d: dict[Any, Any]) -> dict[Any, Any]:
-        """Handle actions before deserialization."""
-        # migrate from url provider --> builtin
-        # TODO: remove this after 2.0 is launched
-        if d["provider"] == "url":
-            d["provider"] = "builtin"
-            d["remotely_accessible"] = True
-        return d
 
 
 @dataclass(frozen=True, kw_only=True)
@@ -274,8 +263,9 @@ class _MediaItemBase(DataClassDictMixin):
     provider: str  # provider instance id or provider domain
     name: str
     version: str = ""
-    # sort_name and uri are auto generated, do not override unless really needed
+    # sort_name will be auto generated if omitted
     sort_name: str | None = None
+    # uri is auto generated, do not override unless really needed
     uri: str | None = None
     external_ids: set[tuple[ExternalID, str]] = field(default_factory=set)
     media_type: MediaType = MediaType.UNKNOWN
@@ -362,7 +352,15 @@ class MediaItem(_MediaItemBase):
     @property
     def available(self) -> bool:
         """Return (calculated) availability."""
-        return any(x.available for x in self.provider_mappings)
+        if not (available_providers := get_global_cache_value("unique_providers")):
+            # this is probably the client
+            return any(x.available for x in self.provider_mappings)
+        if TYPE_CHECKING:
+            available_providers = cast(set[str], available_providers)
+        for x in self.provider_mappings:
+            if available_providers.intersection({x.provider_domain, x.provider_instance}):
+                return True
+        return False
 
     @property
     def image(self) -> MediaItemImage | None:

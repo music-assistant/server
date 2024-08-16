@@ -849,7 +849,7 @@ class YoutubeMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=image_type,
                     path=url,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             )

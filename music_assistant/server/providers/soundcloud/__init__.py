@@ -353,7 +353,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img_url,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -381,7 +381,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=self._transform_artwork_url(playlist_obj["artwork_url"]),
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -424,7 +424,7 @@ class SoundcloudMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=self._transform_artwork_url(track_obj["artwork_url"]),
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]

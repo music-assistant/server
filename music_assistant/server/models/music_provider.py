@@ -414,6 +414,11 @@ class MusicProvider(Provider):
                         library_item = await controller.update_item_in_library(
                             library_item.item_id, prov_item
                         )
+                    elif library_item.available != prov_item.available:
+                        # existing item availability changed
+                        library_item = await controller.update_item_in_library(
+                            library_item.item_id, prov_item
+                        )
                     cur_db_ids.add(library_item.item_id)
                     await asyncio.sleep(0)  # yield to eventloop
                 except MusicAssistantError as err:

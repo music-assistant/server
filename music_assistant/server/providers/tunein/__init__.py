@@ -219,7 +219,7 @@ class TuneInProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=img,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]

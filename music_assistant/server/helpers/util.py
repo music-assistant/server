@@ -19,11 +19,14 @@ from typing import TYPE_CHECKING, Self
 
 import ifaddr
 import memory_tempfile
+from zeroconf import IPVersion
 
 from music_assistant.server.helpers.process import check_output
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
+
+    from zeroconf.asyncio import AsyncServiceInfo
 
     from music_assistant.server import MusicAssistant
     from music_assistant.server.models import ProviderModuleType
@@ -133,6 +136,19 @@ def divide_chunks(data: bytes, chunk_size: int) -> Iterator[bytes]:
     """Chunk bytes data into smaller chunks."""
     for i in range(0, len(data), chunk_size):
         yield data[i : i + chunk_size]
+
+
+def get_primary_ip_address_from_zeroconf(discovery_info: AsyncServiceInfo) -> str | None:
+    """Get primary IP address from zeroconf discovery info."""
+    for address in discovery_info.parsed_addresses(IPVersion.V4Only):
+        if address.startswith("127"):
+            # filter out loopback address
+            continue
+        if address.startswith("169.254"):
+            # filter out APIPA address
+            continue
+        return address
+    return None
 
 
 class TaskManager:

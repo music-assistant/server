@@ -47,6 +47,7 @@ class Provider:
     @property
     def lookup_key(self) -> str:
         """Return instance_id if multi_instance capable or domain otherwise."""
+        # should not be overridden in normal circumstances
         return self.instance_id if self.manifest.multi_instance else self.domain
 
     async def loaded_in_mass(self) -> None:

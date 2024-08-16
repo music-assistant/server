@@ -658,6 +658,8 @@ class MusicAssistant:
 
         async with TaskManager(self) as tg:
             for dir_str in os.listdir(PROVIDERS_PATH):
+                if dir_str.startswith(("_", ".")):
+                    continue
                 dir_path = os.path.join(PROVIDERS_PATH, dir_str)
                 if dir_str == "test" and not ENABLE_DEBUG:
                     continue

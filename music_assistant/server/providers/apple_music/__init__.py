@@ -202,7 +202,7 @@ class AppleMusicProvider(MusicProvider):
         for item in await self._get_all_items(endpoint):
             catalog_id = item.get("attributes", {}).get("playParams", {}).get("catalogId")
             if not catalog_id:
-                self.logger.warning(
+                self.logger.debug(
                     "Skipping track. No catalog version found for %s - %s",
                     item["attributes"].get("artistName", ""),
                     item["attributes"].get("name", ""),
@@ -410,7 +410,7 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -477,7 +477,7 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -557,7 +557,7 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=artwork["url"].format(w=artwork["width"], h=artwork["height"]),
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
@@ -595,7 +595,7 @@ class AppleMusicProvider(MusicProvider):
                 MediaItemImage(
                     type=ImageType.THUMB,
                     path=url,
-                    provider=self.instance_id,
+                    provider=self.lookup_key,
                     remotely_accessible=True,
                 )
             ]
