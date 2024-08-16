@@ -816,6 +816,14 @@ class MusicController(CoreController):
 
     async def cleanup_provider(self, provider_instance: str) -> None:
         """Cleanup provider records from the database."""
+        if provider_instance.startswith(("filesystem", "jellyfin", "plex", "opensubsonic")):
+            # removal of a local provider can become messy very fast due to the relations
+            # such as images pointing at the files etc. so we just reset the whole db
+            self.logger.warning(
+                "Removal of local provider detected, issuing full database reset..."
+            )
+            await self._reset_database()
+            return
         deleted_providers = self.mass.config.get_raw_core_config_value(
             self.domain, CONF_DELETED_PROVIDERS, []
         )
@@ -828,8 +836,8 @@ class MusicController(CoreController):
             )
             self.mass.config.save(True)
 
-        # clean cache items from deleted provider(s)
-        await self.mass.cache.clear(provider_instance)
+        # always clear cache when a provider is removed
+        await self.mass.cache.clear()
 
         # cleanup media items from db matched to deleted provider
         self.logger.info(
