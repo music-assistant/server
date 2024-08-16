@@ -820,11 +820,17 @@ class ConfigController:
         )
         # validate the new config
         config.validate()
-        # try to load the provider first to catch errors before we save it.
-        await self.mass.load_provider_config(config)
-        # the load was a success, store this config
+        # save the config first to prevent issues when the
+        # provider wants to manipulate the config during load
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
+        # try to load the provider
+        try:
+            await self._load_provider_config(config)
+        except Exception:
+            # loading failed, remove config
+            self.remove(conf_key)
+            raise
         return config
 
     async def _load_provider_config(self, config: ProviderConfig) -> None:
