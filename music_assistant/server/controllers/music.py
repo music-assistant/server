@@ -970,7 +970,7 @@ class MusicController(CoreController):
                     "Database migration failed - setup can not continue. "
                     "Try restarting the server. If this issue persists, create an issue report "
                     " on Github and/or re-install the server (or restore a backup).",
-                    exc_info=err,
+                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                 )
                 # restore backup file
                 await asyncio.to_thread(shutil.copyfile, db_path_backup, db_path)
@@ -995,6 +995,7 @@ class MusicController(CoreController):
 
     async def __migrate_database(self, prev_version: int) -> None:
         """Perform a database migration."""
+        # ruff: noqa: PLR0915
         self.logger.info(
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
@@ -1083,7 +1084,16 @@ class MusicController(CoreController):
                     item.provider_mappings = {
                         x for x in item.provider_mappings if x.provider_instance is not None
                     }
-                    await ctrl.update_item_in_library(item.item_id, item, True)
+                    try:
+                        await ctrl.update_item_in_library(item.item_id, item, True)
+                    except Exception as err:
+                        self.logger.warning(
+                            "Error while migrating %s: %s",
+                            item.item_id,
+                            str(err),
+                            exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                        )
+                        await ctrl.remove_item_from_library(item.item_id)
 
         if prev_version <= 5:
             # mark all provider mappings as available to recover from the bug
@@ -1122,7 +1132,16 @@ class MusicController(CoreController):
                         changes = True
                     if changes:
                         media_item.metadata.images = images
-                        await ctrl.update_item_in_library(media_item.item_id, media_item, True)
+                        try:
+                            await ctrl.update_item_in_library(media_item.item_id, media_item, True)
+                        except Exception as err:
+                            self.logger.warning(
+                                "Error while migrating %s: %s",
+                                media_item.item_id,
+                                str(err),
+                                exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                            )
+                            await ctrl.remove_item_from_library(media_item.item_id)
 
         # save changes
         await self.database.commit()
