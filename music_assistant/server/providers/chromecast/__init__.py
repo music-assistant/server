@@ -185,7 +185,7 @@ class ChromecastProvider(PlayerProvider):
         """Call (by config manager) when the configuration of a player changes."""
         super().on_player_config_changed(config, changed_keys)
         if "enabled" in changed_keys and config.player_id not in self.castplayers:
-            self.mass.create_task(self.mass.config.reload_provider, self.instance_id)
+            self.mass.create_task(self.mass.load_provider, self.instance_id)
 
     async def cmd_stop(self, player_id: str) -> None:
         """Send STOP command to given player."""

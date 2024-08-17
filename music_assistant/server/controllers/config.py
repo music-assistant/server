@@ -310,16 +310,6 @@ class ConfigController:
         conf_key = f"{CONF_PROVIDERS}/{config.instance_id}"
         self.set(conf_key, config.to_raw())
 
-    @api_command("config/providers/reload")
-    async def reload_provider(self, instance_id: str) -> None:
-        """Reload provider."""
-        try:
-            config = await self.get_provider_config(instance_id)
-        except KeyError:
-            # Edge case: Provider was removed before we could reload it
-            return
-        await self._load_provider_config(config)
-
     @api_command("config/players")
     async def get_player_configs(
         self, provider: str | None = None, include_values: bool = False
@@ -732,6 +722,16 @@ class ConfigController:
             await _file.write(json_dumps(self._data, indent=True))
         LOGGER.debug("Saved data to persistent storage")
 
+    @api_command("config/providers/reload")
+    async def _reload_provider(self, instance_id: str) -> None:
+        """Reload provider."""
+        try:
+            config = await self.get_provider_config(instance_id)
+        except KeyError:
+            # Edge case: Provider was removed before we could reload it
+            return
+        await self.mass.load_provider_config(config)
+
     async def _update_provider_config(
         self, instance_id: str, values: dict[str, ConfigValueType]
     ) -> ProviderConfig:
@@ -750,7 +750,7 @@ class ConfigController:
         raw_conf = config.to_raw()
         self.set(conf_key, raw_conf)
         if config.enabled:
-            await self._load_provider_config(config)
+            await self.mass.load_provider_config(config)
         else:
             # disable provider
             prov_manifest = self.mass.get_provider_manifest(config.domain)
@@ -826,24 +826,9 @@ class ConfigController:
         self.set(conf_key, config.to_raw())
         # try to load the provider
         try:
-            await self._load_provider_config(config)
+            await self.mass.load_provider_config(config)
         except Exception:
             # loading failed, remove config
             self.remove(conf_key)
             raise
         return config
-
-    async def _load_provider_config(self, config: ProviderConfig) -> None:
-        """Load given provider config."""
-        # check if there are no other providers dependent of this provider
-        deps = set()
-        for dep_prov in self.mass.providers:
-            if dep_prov.manifest.depends_on == config.domain:
-                deps.add(dep_prov.instance_id)
-                await self.mass.unload_provider(dep_prov.instance_id)
-        # (re)load the provider
-        await self.mass.load_provider_config(config)
-        # reload any dependants
-        for dep in deps:
-            conf = await self.get_provider_config(dep)
-            await self.mass.load_provider(conf.instance_id)

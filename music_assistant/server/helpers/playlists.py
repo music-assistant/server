@@ -70,6 +70,8 @@ def parse_m3u(m3u_data: str) -> list[PlaylistItem]:
             if len(info) != 2:
                 continue
             length = info[0].strip()[0]
+            if length == "-1":
+                length = None
             title = info[1].strip()
         elif line.startswith("#EXT-X-STREAM-INF:"):
             # HLS stream properties
@@ -129,9 +131,10 @@ def parse_pls(pls_data: str) -> list[PlaylistItem]:
         if file_option not in playlist_section:
             continue
         itempath = playlist_section[file_option]
+        length = playlist_section.get(f"Length{entry}")
         playlist.append(
             PlaylistItem(
-                length=playlist_section.get(f"Length{entry}"),
+                length=length if length and length != "-1" else None,
                 title=playlist_section.get(f"Title{entry}"),
                 path=itempath,
             )

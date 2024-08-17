@@ -694,4 +694,4 @@ class SnapCastProvider(PlayerProvider):
             "Connection to SnapServer lost, reason: %s. Reloading provider in 5 seconds.", str(exc)
         )
         # schedule a reload of the provider
-        self.mass.call_later(5, self.mass.config.reload_provider(self.instance_id))
+        self.mass.call_later(5, self.mass.load_provider(self.instance_id, allow_retry=True))
