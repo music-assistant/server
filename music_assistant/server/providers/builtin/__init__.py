@@ -436,7 +436,10 @@ class BuiltinProvider(MusicProvider):
         force_radio: bool = False,
     ) -> Track | Radio:
         """Parse plain URL to MediaItem of type Radio or Track."""
-        media_info = await self._get_media_info(url, force_refresh)
+        try:
+            media_info = await self._get_media_info(url, force_refresh)
+        except Exception as err:
+            raise MediaNotFoundError from err
         is_radio = media_info.get("icyname") or not media_info.duration
         provider_mappings = {
             ProviderMapping(

@@ -428,18 +428,18 @@ class MusicAssistant:
         if existing := self._tracked_timers.pop(task_id, None):
             existing.cancel()
 
-        try:
-            await self._load_provider(prov_conf)
-        # pylint: disable=broad-except
-        except Exception as exc:
-            LOGGER.error(
-                "Error loading provider(instance) %s: %s",
-                prov_conf.name or prov_conf.instance_id,
-                str(exc) or exc.__class__.__name__,
-                # log full stack trace if debug logging is enabled
-                exc_info=exc if LOGGER.isEnabledFor(logging.DEBUG) else None,
-            )
-            raise
+        await self._load_provider(prov_conf)
+
+        # (re)load any dependants
+        prov_configs = await self.config.get_provider_configs(include_values=True)
+        for dep_prov_conf in prov_configs:
+            if not dep_prov_conf.enabled:
+                continue
+            manifest = self.get_provider_manifest(dep_prov_conf.domain)
+            if not manifest.depends_on:
+                continue
+            if manifest.depends_on == prov_conf.domain:
+                await self._load_provider(dep_prov_conf)
 
     async def load_provider(
         self,
@@ -474,15 +474,29 @@ class MusicAssistant:
             # auto schedule a retry if the (re)load failed (handled exceptions only)
             if isinstance(exc, MusicAssistantError) and allow_retry:
                 self.call_later(
-                    300,
+                    120,
                     self.load_provider,
                     instance_id,
                     allow_retry,
                     task_id=task_id,
                 )
+                LOGGER.warning(
+                    "Error loading provider(instance) %s: %s (will be retried later)",
+                    prov_conf.name or prov_conf.instance_id,
+                    str(exc) or exc.__class__.__name__,
+                    # log full stack trace if verbose logging is enabled
+                    exc_info=exc if LOGGER.isEnabledFor(VERBOSE_LOG_LEVEL) else None,
+                )
                 return
             # raise in all other situations
             raise
+
+        # (re)load any dependents if needed
+        for dep_prov in self.providers:
+            if dep_prov.available:
+                continue
+            if dep_prov.manifest.depends_on == prov_conf.domain:
+                await self.unload_provider(dep_prov.instance_id)
 
     async def unload_provider(self, instance_id: str) -> None:
         """Unload a provider."""
@@ -577,17 +591,12 @@ class MusicAssistant:
             raise SetupFailedError(msg)
 
         # handle dependency on other provider
-        if prov_manifest.depends_on:
-            for _ in range(30):
-                if self.get_provider(prov_manifest.depends_on):
-                    break
-                await asyncio.sleep(1)
-            else:
-                msg = (
-                    f"Provider {domain} depends on {prov_manifest.depends_on} "
-                    "which is not available."
-                )
-                raise SetupFailedError(msg)
+        if prov_manifest.depends_on and not self.get_provider(prov_manifest.depends_on):
+            msg = (
+                f"Provider {domain} depends on {prov_manifest.depends_on} "
+                "which is not (yet) available."
+            )
+            raise SetupFailedError(msg)
 
         # try to setup the module
         prov_mod = await load_provider_module(domain, prov_manifest.requirements)

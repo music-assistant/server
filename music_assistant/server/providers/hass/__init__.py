@@ -204,6 +204,6 @@ class HomeAssistant(PluginProvider):
             await self.hass.start_listening()
         except BaseHassClientError as err:
             self.logger.warning("Connection to HA lost due to error: %s", err)
-        self.logger.info("Connection to HA lost. Reloading provider in 5 seconds.")
+        self.logger.info("Connection to HA lost. Connection will be automatically retried later.")
         # schedule a reload of the provider
-        self.mass.call_later(5, self.mass.config.reload_provider(self.instance_id))
+        self.mass.call_later(5, self.mass.load_provider(self.instance_id, allow_retry=True))
