@@ -178,7 +178,7 @@ async def get_config_entries(
         values[CONF_ACCESS_TOKEN] = None
         label_text = (
             "You need to authenticate to Spotify. Click the authenticate button below "
-            "to start the authentication process which will open in a new (popup window), "
+            "to start the authentication process which will open in a new (popup) window, "
             "so make sure to disable any popup blockers.\n\n"
         )
     elif action == CONF_ACTION_AUTH:
