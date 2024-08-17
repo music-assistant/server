@@ -82,7 +82,6 @@ class OpenSonicProvider(MusicProvider):
 
     async def handle_async_init(self) -> None:
         """Set up the music provider and test the connection."""
-        logging.getLogger("libopensonic").setLevel(self.logger.level)
         port = self.config.get_value(CONF_PORT)
         if port is None:
             port = 443
@@ -325,7 +324,7 @@ class OpenSonicProvider(MusicProvider):
                 )
             )
         else:
-            logging.getLogger("libopensonic").info(
+            self.logger.info(
                 f"Unable to find an artist ID for album '{sonic_album.name}' with "
                 f"ID '{sonic_album.id}'."
             )
@@ -428,7 +427,7 @@ class OpenSonicProvider(MusicProvider):
                     },
                 )
             else:
-                logging.getLogger("libopensonic").info(
+                self.logger.info(
                     f"Unable to find artist ID for track '{sonic_song.title}' with "
                     f"ID '{sonic_song.id}'."
                 )
