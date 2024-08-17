@@ -966,15 +966,22 @@ class MusicController(CoreController):
             try:
                 await self.__migrate_database(prev_version)
             except Exception as err:
-                self.logger.fatal(
-                    "Database migration failed - setup can not continue. "
-                    "Try restarting the server. If this issue persists, create an issue report "
-                    " on Github and/or re-install the server (or restore a backup).",
-                    exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
+                # if the migration fails completely we reset the db
+                # so the user at least can have a working situation back
+                # a backup file is made with the previous version
+                self.logger.error(
+                    "Database migration failed - starting with a fresh library database, "
+                    "a full rescan will be performed, this can take a while!",
                 )
-                # restore backup file
-                await asyncio.to_thread(shutil.copyfile, db_path_backup, db_path)
-                raise RuntimeError("Database migration failed") from err
+                if not isinstance(err, MusicAssistantError):
+                    self.logger.exception(err)
+
+                await self.database.close()
+                await asyncio.to_thread(os.remove, db_path)
+                self.database = DatabaseConnection(db_path)
+                await self.database.setup()
+                await self.mass.cache.clear()
+                await self.__create_database_tables()
 
         # store current schema version
         await self.database.insert_or_replace(
@@ -1000,7 +1007,7 @@ class MusicController(CoreController):
             "Migrating database from version %s to %s", prev_version, DB_SCHEMA_VERSION
         )
 
-        if prev_version < 2:
+        if prev_version <= 4:
             # unhandled schema version
             # we do not try to handle more complex migrations
             self.logger.warning(
@@ -1023,77 +1030,6 @@ class MusicController(CoreController):
             # recreate missing tables
             await self.__create_database_tables()
             return
-
-        if prev_version <= 2:
-            # convert musicbrainz external id's
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_ARTISTS} SET external_ids = "
-                "replace(external_ids, 'musicbrainz', 'musicbrainz_artistid')"
-            )
-            # convert musicbrainz external id's
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_ALBUMS} SET external_ids = "
-                "replace(external_ids, 'musicbrainz', 'musicbrainz_releasegroupid')"
-            )
-            await self.database.execute(
-                f"UPDATE {DB_TABLE_TRACKS} SET external_ids = "
-                "replace(external_ids, 'musicbrainz', 'musicbrainz_recordingid')"
-            )
-
-        if prev_version <= 3:
-            # remove all additional track provider mappings to cleanup the mess caused
-            # by a bug that mapped the wrong track artists.
-            async for track in self.tracks.iter_library_items():
-                if len(track.provider_mappings) <= 2:
-                    continue
-                # get the primary provider mapping from the db table
-                # as that is sorted on insertion order
-                primary_mapping = await self.database.get_row(
-                    DB_TABLE_PROVIDER_MAPPINGS, {"item_id": track.item_id, "media_type": "track"}
-                )
-                if not primary_mapping or not primary_mapping["provider_instance"]:
-                    continue
-                # remove all other mappings except the primary
-                track.provider_mappings = {
-                    x
-                    for x in track.provider_mappings
-                    if x.provider_instance == primary_mapping["provider_instance"]
-                    and x.item_id == primary_mapping["provider_item_id"]
-                }
-                # reset the metadata timestamp to force a full metadata refresh later
-                track.metadata.last_refresh = None
-                try:
-                    await self.tracks.update_item_in_library(track.item_id, track, True)
-                except Exception as err:
-                    self.logger.warning(
-                        "Error while migrating %s: %s",
-                        track.item_id,
-                        str(err),
-                        exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-                    )
-                    await self.tracks.remove_item_from_library(track.item_id)
-
-        if prev_version <= 4:
-            # remove corrupted provider mappings
-            for ctrl in (self.artists, self.albums, self.tracks, self.playlists, self.radio):
-                query = (
-                    f"WHERE {ctrl.db_table}.provider_mappings "
-                    "LIKE '%\"provider_instance\":null%' "
-                )
-                async for item in ctrl.iter_library_items(extra_query=query):
-                    item.provider_mappings = {
-                        x for x in item.provider_mappings if x.provider_instance is not None
-                    }
-                    try:
-                        await ctrl.update_item_in_library(item.item_id, item, True)
-                    except Exception as err:
-                        self.logger.warning(
-                            "Error while migrating %s: %s",
-                            item.item_id,
-                            str(err),
-                            exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
-                        )
-                        await ctrl.remove_item_from_library(item.item_id)
 
         if prev_version <= 5:
             # mark all provider mappings as available to recover from the bug
@@ -1141,7 +1077,8 @@ class MusicController(CoreController):
                                 str(err),
                                 exc_info=err if self.logger.isEnabledFor(logging.DEBUG) else None,
                             )
-                            await ctrl.remove_item_from_library(media_item.item_id)
+                            with suppress(MediaNotFoundError):
+                                await ctrl.remove_item_from_library(media_item.item_id)
 
         # save changes
         await self.database.commit()
