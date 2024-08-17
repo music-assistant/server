@@ -769,33 +769,39 @@ class SpotifyProvider(MusicProvider):
     async def login(self) -> dict:
         """Log-in Spotify and return Auth/token info."""
         # return existing token if we have one in memory
-        if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 60)):
+        if self._auth_info and (self._auth_info["expires_at"] > (time.time() - 120)):
             return self._auth_info
 
         if not (refresh_token := self.config.get_value(CONF_REFRESH_TOKEN)):
             raise LoginFailed("Authentication required")
 
-        # refresh token
-        client_id = self.config.get_value(CONF_CLIENT_ID) or app_var(2)
-        params = {
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": client_id,
-        }
-        async with self.mass.http_session.post(
-            "https://accounts.spotify.com/api/token", data=params
-        ) as response:
-            if response.status != 200:
-                err = await response.text()
-                self.mass.config.set_raw_provider_config_value(
-                    self.instance_id, CONF_REFRESH_TOKEN, None
-                )
-                raise LoginFailed(f"Failed to refresh access token: {err}")
-            data = await response.json()
-            access_token = data["access_token"]
-            refresh_token = data["refresh_token"]
-            expires_at = int(data["expires_in"] + time.time())
-            self.logger.debug("Successfully refreshed access token")
+        expires_at = self.config.get_value(CONF_AUTH_EXPIRES_AT) or 0
+        access_token = self.config.get_value(CONF_ACCESS_TOKEN)
+
+        if expires_at < (time.time() - 300):
+            # refresh token
+            client_id = self.config.get_value(CONF_CLIENT_ID) or app_var(2)
+            params = {
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            }
+            async with self.mass.http_session.post(
+                "https://accounts.spotify.com/api/token", data=params
+            ) as response:
+                if response.status != 200:
+                    err = await response.text()
+                    if "revoked" in err:
+                        # clear refresh token if it's invalid
+                        self.mass.config.set_raw_provider_config_value(
+                            self.instance_id, CONF_REFRESH_TOKEN, None
+                        )
+                    raise LoginFailed(f"Failed to refresh access token: {err}")
+                data = await response.json()
+                access_token = data.get("access_token") or access_token
+                refresh_token = data.get("refresh_token") or refresh_token
+                expires_at = int(data["expires_in"] + time.time())
+                self.logger.debug("Successfully refreshed access token")
 
         self._auth_info = auth_info = {
             "access_token": access_token,
